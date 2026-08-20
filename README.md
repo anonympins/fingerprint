@@ -20,20 +20,14 @@ The process unfolds in three steps:
     *   **IP Behavior**: An excessive number of different devices seen from the same IP, or a single device using a large number of IPs (proxy rotation).
     *   **Inconsistency**: A low similarity score between the current fingerprint and the initial one associated with the `device_id` (cookie theft detection).
 3.  **Dynamic Challenge**: If the suspicion score exceeds a certain threshold, a challenge is presented to the user. The difficulty and type of challenge depend on the score:
-    *   **Level 1 (Low Suspicion)**: CPU-based PoW challenge (SHA-256).
-    *   **Level 2 (Medium Suspicion)**: Memory-intensive PoW challenge.
-    *   **Level 3 (High Suspicion)**: Complex challenge (e.g., TSP - Traveling Salesperson Problem) or a CAPTCHA.
+    *   **Low to Medium Suspicion**: A combined CPU and Memory Proof-of-Work (PoW) challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
+    *   **High Suspicion**: For the most suspicious requests, a complex challenge like the Traveling Salesperson Problem (TSP) or a CAPTCHA can be triggered. (Note: In the current implementation, this level also defaults to a high-difficulty combined CPU/Memory challenge).
 
 Once the challenge is solved, a clearance "ticket" is issued via a cookie, exempting the user from new challenges for a set period.
 
 ## Features
 
 -   **Multi-Factor Fingerprinting**: Combines client-side data (`hardwareConcurrency`, `deviceMemory`, `screen`, `canvas`, `webgl`) and server-side data (`User-Agent`, `Client-Hints`).
--   **Weighted Suspicion Engine**: Calculates a score based on behavioral and technical indicators.
--   **Variable-Difficulty Proof-of-Work Challenges**:
-    -   `cpu_target`: An "analog" CPU challenge where difficulty is finely tuned to the suspicion score.
-    -   `memory`: A challenge that allocates an amount of memory proportional to the suspicion level.
-    -   `tsp`: An optimization challenge (Traveling Salesperson Problem) for the most suspicious cases.
 -   **Secure Ticket System**: Uses HMAC-SHA256 signatures to validate clearances and prevent tampering.
 -   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
 -   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`.
