@@ -75,8 +75,9 @@ const securityConfig = {
     },
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued
-        medium: 45, // Score for a Memory challenge
-        high: 75    // Score for a complex challenge (TSP/Captcha)
+        medium: 45, // Score for a more difficult combined CPU/Memory challenge
+        high: 75,   // Score for a very difficult challenge
+        block: 95   // Score above which the request is blocked outright (HTTP 403)
     }
 };
 

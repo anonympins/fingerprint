@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import {FingerprintBuilder} from "fingerprint.builder.js"
+import { FingerprintBuilder } from "./fingerprint.builder.js";
 const POW_SECRET = process.env.POW_SECRET;
 
 if (!POW_SECRET && process.env.NODE_ENV === 'production') {
@@ -339,7 +339,12 @@ export const isTicketValid = (ip, ticket) => {
     .digest("hex");
 
   // Utilisation de timingSafeEqual pour éviter les attaques temporelles
-  return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig));
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expectedSig, 'hex'));
+  } catch (e) {
+    // This can happen if the buffers have different lengths, which is a failure case.
+    return false;
+  }
 };
 
 /**
