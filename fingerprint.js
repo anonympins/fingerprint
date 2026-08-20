@@ -980,25 +980,30 @@ const staticExtensions =
 const isStaticResource = (req) => staticExtensions.test(req.path);
 
 // --- Middleware Proof-of-Work (Le péage) ---
-// --- Proof-of-Work Middleware (The Tollbooth) ---
-export const powMiddleware = (securityConfig) => async (req, res, next) => {
-    // Ignore PoW for static resources (images, scripts, fonts)
-    if (isStaticResource(req)) {
-        return next();
-    }
-    
+class FingerprintEngine {
+  constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
-    const { weights, thresholds, logger } = securityConfig;
+    this.securityConfig = securityConfig;
+    this.isProduction = isProduction;
+  }
 
-    const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
-    // Get the suspicion vector and calculate the final weighted score
-    const suspicionVector = await __internal.getSuspicionVector(req, res);
+  async processRequest(requestContext) {
+    const { clientIp, path, cookies, query, isStatic } = requestContext;
+    const { weights, thresholds, logger } = this.securityConfig;
+
+    if (isStatic) {
+      return { action: 'next' };
+    }
+
+    // We need to pass `req` and `res` to getSuspicionVector for cookie handling.
+    // This is a remaining coupling point that could be refactored further.
+    const suspicionVector = await __internal.getSuspicionVector(requestContext.rawReq, requestContext.rawRes);
 
     const finalScore =
-        suspicionVector.historyScore * weights.historyScore +
-        suspicionVector.rotationScore * weights.rotationScore +
-        suspicionVector.headerAnomalyScore * weights.headerAnomalyScore +
-        suspicionVector.inconsistencyScore * weights.inconsistencyScore;
+      suspicionVector.historyScore * (weights.historyScore || 0) +
+      suspicionVector.rotationScore * (weights.rotationScore || 0) +
+      suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) +
+      suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0);
 
     const isSuspiciousHigh = finalScore >= thresholds.high;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
@@ -1011,16 +1016,16 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
             (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
         )
         : 0;
-    const powCookie = req.cookies?.pow_clearance;
-    const { pow_type, pow_nonce, pow_solution, captcha_token } = req.query;
+    const powCookie = cookies?.pow_clearance;
+    const { pow_type, pow_nonce, pow_solution } = query;
 
     // Basic log for each non-static request
     if (logger && !isSuspicious) {
-        logger({ type: 'request_passed', deviceId: req.cookies?.device_id, score: finalScore, timestamp: Date.now() });
+        logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
     }
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
-        // --- CHALLENGE RESPONSE HANDLING ---
+        // --- CHALLENGE SOLUTION HANDLING ---
         if (pow_nonce && pow_solution) {
             let isValid = false,
                 ticket = null;
@@ -1055,17 +1060,23 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
                     ticket = `${expiry}:${signature}`;
                 }
 
-                res.cookie("pow_clearance", ticket, {
-                    httpOnly: true,
-                    secure: isProduction,
-                    maxAge: 3600000,
-                });
-
                 if (logger) {
-                    logger({ type: 'challenge_solved', deviceId: req.cookies?.device_id, score: finalScore, challengeType: pow_type, timestamp: Date.now() });
+                    logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: finalScore, challengeType: pow_type, timestamp: Date.now() });
                 }
 
-                return res.redirect(req.path); // Reload the page without the params
+                return {
+                  action: 'redirect',
+                  path: path,
+                  cookie: {
+                    name: 'pow_clearance',
+                    value: ticket,
+                    options: {
+                      httpOnly: true,
+                      secure: this.isProduction,
+                      maxAge: 3600000,
+                    }
+                  }
+                };
             }
         }
 
@@ -1073,7 +1084,7 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
         const nonce = crypto.randomBytes(16).toString("hex");
 
         if (logger) {
-            logger({ type: 'challenge_issued', deviceId: req.cookies?.device_id, score: finalScore, timestamp: Date.now() });
+            logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
         }
 
         // LEVEL 3: CAPTCHA (the highest)
@@ -1087,28 +1098,60 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
             const maxDifficulty = 48; // 48Mo
             const difficulty =
                 minDifficulty + suspicionFactor * (maxDifficulty - minDifficulty);
-            return res.status(429).send(
-                generateMemoryPoWChallenge(clientIp, nonce, difficulty, req.path),
-                // NOTE: For the memory challenge to work, it will also need to be
-                // integrated into `generateChallengePage` and the client script.
-            );
+            const page = generateMemoryPoWChallenge(clientIp, nonce, difficulty, path);
+            return { action: 'challenge', status: 429, body: page };
         }
-        // NIVEAU 1 : PoW CPU Standard
-        // LEVEL 1: Standard CPU PoW
+
         if (isSuspicious) {
-            // Get the challenge details
             const challengeDetails = generateCpuTargetChallenge(
                 clientIp,
                 nonce,
                 suspicionFactor,
-                req.path,
+                path,
             );
-            // Generate the HTML page with the integrated solver
             const challengePage = generateCpuTargetChallengePage(challengeDetails, clientIp);
-            return res.status(429).send(challengePage);
+            return { action: 'challenge', status: 429, body: challengePage };
         }
     }
-    next();
+
+    return { action: 'next' };
+  }
+}
+
+// --- Proof-of-Work Middleware (The Tollbooth) ---
+export const powMiddleware = (securityConfig) => {
+  const engine = new FingerprintEngine(securityConfig);
+
+  return async (req, res, next) => {
+    const requestContext = {
+      clientIp: req.ip || req.socket?.remoteAddress || "unknown",
+      path: req.path,
+      cookies: req.cookies,
+      query: req.query,
+      headers: req.headers,
+      isStatic: isStaticResource(req),
+      // Pass raw req/res for now to handle cookie setting in resolveRequestIdentity
+      rawReq: req,
+      rawRes: res,
+    };
+
+    const decision = await engine.processRequest(requestContext);
+
+    switch (decision.action) {
+      case 'challenge':
+        return res.status(decision.status).send(decision.body);
+
+      case 'redirect':
+        if (decision.cookie) {
+          res.cookie(decision.cookie.name, decision.cookie.value, decision.cookie.options);
+        }
+        return res.redirect(decision.path);
+
+      case 'next':
+      default:
+        return next();
+    }
+  };
 };
 
 /**
@@ -1119,6 +1162,7 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
 export const __internal = {
     getSuspicionVector,
     calculateTarget,
+    FingerprintEngine, // Expose for advanced testing
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---

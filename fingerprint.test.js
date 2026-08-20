@@ -1,4 +1,4 @@
-import { assert, describe, test, expect, vi } from 'vitest';
+import { beforeEach, assert, describe, test, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import * as fingerprint from './fingerprint.js';
 
@@ -8,6 +8,7 @@ const {
   FingerprintBuilder,
   powMiddleware,
   __internal,
+  configureStore,
   verifyCpuTargetPoWAndGenerateTicket,
 } = fingerprint;
 
@@ -68,11 +69,24 @@ describe('Fingerprint & PoW Security Suite', () => {
   });
 
   describe('powMiddleware', () => {
+    // Mock store for tests
+    const inMemoryStore = {
+      _map: new Map(),
+      async get(key) { return this._map.get(key); },
+      async set(key, value) { this._map.set(key, value); },
+      async has(key) { return this._map.has(key); },
+      async delete(key) { this._map.delete(key); },
+    };
+    beforeEach(() => {
+      inMemoryStore._map.clear();
+      configureStore(inMemoryStore);
+      vi.restoreAllMocks();
+    });
+
     const securityConfig = {
       weights: { historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 1 },
       thresholds: { low: 20, medium: 45, high: 75 }
     };
-    const middleware = powMiddleware(securityConfig);
 
     test('should call next() for a non-suspicious request', async () => {
       vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
@@ -83,7 +97,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const res = { cookie: vi.fn(), status: vi.fn().mockReturnThis(), send: vi.fn() };
       const next = vi.fn();
 
-      await middleware(req, res, next);
+      await powMiddleware(securityConfig)(req, res, next);
 
       expect(next, 'next() should have been called').toHaveBeenCalled();
     });
@@ -102,7 +116,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
-      await middleware(req, res, next);
+      await powMiddleware(securityConfig)(req, res, next);
 
       assert.strictEqual(sentStatus, 429, 'Status should be 429');
       assert.ok(sentBody.includes('Security Check'), 'Should send a challenge page');
@@ -123,7 +137,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
-      await middleware(req, res, next);
+      await powMiddleware(securityConfig)(req, res, next);
 
       expect(sentStatus, 'Status should be 429').toBe(429);
       expect(sentBody, 'Should send a medium challenge page').toContain('Enhanced Verification');
@@ -144,7 +158,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const res = { cookie: vi.fn() };
       const next = vi.fn();
 
-      await middleware(req, res, next);
+      await powMiddleware(securityConfig)(req, res, next);
 
       expect(next, 'next() should have been called for a request with a valid ticket').toHaveBeenCalled();
     });
@@ -167,7 +181,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const res = { cookie: (n, v) => { cookieName = n; cookieValue = v; }, redirect: (p) => { redirectedTo = p; } };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
-      await middleware(req, res, next);
+      await powMiddleware(securityConfig)(req, res, next);
 
       expect(redirectedTo, 'Should redirect to the original path').toBe('/protected');
       expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
