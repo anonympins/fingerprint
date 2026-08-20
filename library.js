@@ -1443,4 +1443,4 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
   );
 };
 
-export { Dichotomy, Optimization };
+export { Optimization };

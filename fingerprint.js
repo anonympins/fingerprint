@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
+import { getDeviceHash } from "./fingerprint.server.js";
 
 const POW_SECRET = process.env.POW_SECRET;
 
@@ -332,37 +333,6 @@ export const isTicketValid = (ip, ticket) => {
   }
 };
 
-/**
- * Creates a stable hash based on device characteristics, independent of the IP.
- * This is our "level 2 fingerprint".
- * @param {object} context - The request context.
- * @returns {string} A hash representing the device.
- */
-function getHeaderSignature(context) {
-    if (!context.rawHeaders) return '';
-    const headerKeys = [];
-    for (let i = 0; i < context.rawHeaders.length; i += 2) {
-        headerKeys.push(context.rawHeaders[i]);
-    }
-    return cyrb53(headerKeys.join(','));
-}
-function getDeviceHash(context) {
-  // Prioritize the rich client-side fingerprint if provided.
-  const clientFp = context.headers['x-device-fingerprint'];
-  if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
-    // Basic validation to ensure it looks like our client-side fingerprint.
-    return clientFp;
-  }
-
-  // Fallback to server-side only fingerprinting if the header is missing.
-  const srv = new FingerprintBuilder();
-  srv.add("ua", context.headers["user-agent"]);
-  if (context.headers["sec-ch-ua-platform"])
-    srv.add("os", context.headers["sec-ch-ua-platform"]);
-  if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
-  srv.add("h_ord", getHeaderSignature(context));
-  return srv.toString();
-}
 
 /**
  * Calculates suspicion indicators related to HTTP header anomalies.
@@ -378,10 +348,6 @@ function getHeaderAnomalies(context) {
   // Penalty if Accept-Language header is missing
   if (!context.headers["accept-language"]) {
     anomalyScore += 25;
-  }
-  // Penalty if Accept header is missing or too generic
-  if (!context.headers["accept"] || context.headers["accept"] === '*/*') {
-    anomalyScore += 30;
   }
   // Penalty for HTTP/1.0 requests, often used by old tools or bots
   if (context.httpVersion === "1.0") {
@@ -591,75 +557,29 @@ const MAX_RAPID_CHANGES_PER_DEVICE = 3; // Number of rapid fingerprint changes a
  * and IP, making spoofing more complex (requires changing the entire stack).
  */
 export const identifyRequest = async (req, res) => {
-  const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
-  const deviceId = req.cookies?.device_id; // Still need cookies from req
-
-  // --- Update IP reputation ---
-  const ipProfile = (await store.get(`ip:${clientIp}`)) || {
-    type: "residential",
-    deviceIds: new Set(),
-    statelessCount: 0,
-    lastSeen: 0,
+  // This function now acts as a lightweight wrapper around the engine's identifyRequest method.
+  // It requires a default configuration to work.
+  const defaultConfig = {
+    weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8 },
+    thresholds: { low: 20, medium: 40, high: 75 }
   };
-  ipProfile.lastSeen = Date.now();
-  if (deviceId) {
-    ipProfile.deviceIds.add(deviceId);
-  } else {
-    // Improved anti-"Amnesiac Bot" logic
-    ipProfile.statelessCount++;
-  }
+  const engine = new FingerprintEngine(defaultConfig);
 
-  // If an IP sees too many different devices, classify it as "shared".
-  if (ipProfile.deviceIds.size > SHARED_IP_DEVICE_THRESHOLD) {
-    ipProfile.type = "shared";
-  }
-
-  // If a residential IP makes too many requests without a cookie, it's a bot.
-  // For a shared IP, we are more tolerant because new users are constantly arriving.
-  const statelessLimit = ipProfile.type === "shared" ? 50 : 10;
-  if (ipProfile.statelessCount > statelessLimit) {
-    return `suspicious_high:${clientIp}`;
-  }
-  await store.set(`ip:${clientIp}`, ipProfile);
-
-  // For compatibility with the rate-limiter, calculate a simple score.
-  // The PoW will use the more complex weighted system.
-  const context = {
-      clientIp: clientIp,
+  const requestContext = {
+      clientIp: req.ip || req.socket?.remoteAddress || "unknown",
       cookies: req.cookies,
       headers: req.headers,
       rawHeaders: req.rawHeaders,
       httpVersion: req.httpVersion,
   };
-  const vector = await getSuspicionVector(context);
 
-  // The original `res` is passed here so that if a new device_id is created,
-  // the cookie can be set for the rate-limiter use case.
-  if (context._newCookies && res) {
-    context._newCookies.forEach(c => res.cookie(c.name, c.value, c.options));
+  const key = await engine.identifyRequest(requestContext);
+
+  if (requestContext._newCookies && res) {
+    requestContext._newCookies.forEach(c => res.cookie(c.name, c.value, c.options));
   }
 
-  const score =
-    vector.historyScore * 0.3 +
-    vector.rotationScore * 0.5 +
-    vector.headerAnomalyScore * 0.1 +
-    vector.inconsistencyScore * 0.8; // Inconsistency is a very strong signal
-
-  // Return a string for compatibility with rate limiters,
-  // but based on suspicion thresholds.
-  // NOTE: These thresholds are fixed here, but the PoW will use dynamic thresholds.
-  if (score >= 75) {
-    return `suspicious_high:${clientIp}`;
-  }
-  if (score >= 40) {
-    return `suspicious_medium:${clientIp}`;
-  }
-
-  // For normal requests, return a hash of the fingerprint for rate limiting.
-  // Use the device hash so the rate-limit follows the device, not the IP.
-  const deviceIdForIp = await store.get(`ip-device:${clientIp}`);
-  const finalDeviceId = deviceId || deviceIdForIp || clientIp;
-  return `device:${finalDeviceId}`;
+  return key;
 };
 // --- NOUVEAU CHALLENGE CPU "ANALOGIQUE" ---
 
@@ -1044,6 +964,7 @@ class FingerprintEngine {
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
+    if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
     if (score >= this.securityConfig.thresholds.medium) return `suspicious_medium:${clientIp}`;
 
     // If a new device_id was created, it's in the context.
@@ -1107,6 +1028,7 @@ export const powMiddleware = (securityConfig) => {
  * This is a common pattern to allow mocking of ES module functions.
  */
 export const __internal = {
+    getDeviceHash,
     getSuspicionVector,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing

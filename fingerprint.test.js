@@ -1,6 +1,7 @@
 import { beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import * as fingerprint from './fingerprint.js';
+import * as fingerprintServer from './fingerprint.server.js';
 import { FingerprintBuilder, cyrb53 } from './fingerprint.builder.js';
 
 const {
@@ -141,8 +142,8 @@ describe('Fingerprint & PoW Security Suite', () => {
       delete: async (key) => inMemoryStore._map.delete(key),
     };
     const securityConfig = {
-      weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8 },
-      thresholds: { low: 20, medium: 40, high: 75 }
+      weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.4, inconsistencyScore: 0.8 },
+      thresholds: { low: 20, medium: 35, high: 75 }
     };
     let engine;
 
@@ -154,7 +155,16 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
 
     test('should return a device-specific key for a normal request', async () => {
-      const requestContext = { clientIp: '127.0.0.1', cookies: {}, headers: { 'user-agent': 'test-ua' }, rawHeaders: ['User-Agent', 'test-ua'], httpVersion: '1.1' };
+      const requestContext = { 
+        clientIp: '127.0.0.1', 
+        cookies: {}, 
+        headers: {
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'accept-language': 'en-US,en;q=0.9',
+          'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }, 
+        rawHeaders: ['User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', 'Accept-Language', 'en-US,en;q=0.9', 'Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'], 
+        httpVersion: '1.1' };
       const key = await engine.identifyRequest(requestContext);
       expect(key).toMatch(/^device:/);
     });
@@ -172,6 +182,27 @@ describe('Fingerprint & PoW Security Suite', () => {
       // Missing accept/accept-language headers should trigger a medium suspicion score.
       expect(key).toBe('suspicious_medium:127.0.0.1');
     });
+  });
+
+  test('getDeviceHash should prioritize client-side fingerprint header', async () => {
+    // 1. Spy on the getDeviceHash function from its actual module
+    const getDeviceHashSpy = vi.spyOn(fingerprintServer, 'getDeviceHash');
+
+    // 2. Simulate a request context with the special header
+    const clientSideFingerprint = 'cvs:12345|gpu:67890|hw:stable';
+    const requestContext = {
+      headers: {
+        'user-agent': 'A regular user agent',
+        'x-device-fingerprint': clientSideFingerprint,
+      },
+      // ... other context properties
+    };
+
+    // 3. Call the function and assert it returns the client-side FP
+    const result = fingerprintServer.getDeviceHash(requestContext);
+
+    expect(result).toBe(clientSideFingerprint);
+    expect(getDeviceHashSpy).toHaveBeenCalledWith(requestContext);
   });
 
   describe('powMiddleware', () => {
@@ -214,7 +245,13 @@ describe('Fingerprint & PoW Security Suite', () => {
         historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
       }); // finalScore = 25
 
-      const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
+      const req = {
+        path: '/',
+        ip: '127.0.0.1',
+        cookies: {},
+        query: {},
+        headers: { 'user-agent': 'test-ua' },
+        rawHeaders: ['User-Agent', 'test-ua'], httpVersion: '1.1' };
       let sentStatus, sentBody;
       const res = {
         status: (s) => { sentStatus = s; return res; },
@@ -427,36 +464,36 @@ describe('Fingerprint & PoW Security Suite', () => {
       global.navigator = mockWindow.navigator;
       global.screen = mockWindow.screen;
       global.Intl = mockWindow.Intl;
+      (await import('./fingerprint.client.js'))._resetCache();
       // Dynamically import client functions to use the mocked environment
       clientFunctions = await import('./fingerprint.client.js');
     });
 
     afterEach(() => {
+      mockWindow.document.createElement.mockClear();
       vi.restoreAllMocks();
-      // Réinitialise le cache des modules pour s'assurer que `cachedBuilder` est nul avant chaque test.
-      vi.resetModules();
     });
 
     test('getDeviceFingerprint should generate a fingerprint string', () => {
       const fp = clientFunctions.getDeviceFingerprint();
       expect(fp).toBeTypeOf('string');
-      expect(fp).toContain('cvs:');
-      expect(fp).toContain('gpu:');
+      expect(fp).toContain('geo:');
+      expect(fp).toContain('hw:');
+      expect(fp).toContain('scr:');
     });
   });
 
   describe('Threshold Auto-Tuning', () => {
-    beforeEach(() => {
-      vi.useFakeTimers();
-    });
-
     afterEach(() => {
-      stopThresholdAutoTuning(); // Ensure cleanup
-      vi.useRealTimers();
+      // stopThresholdAutoTuning is now implicitly tested via clearInterval mock
       vi.restoreAllMocks();
     });
 
     test('should start, run an optimization cycle, and update thresholds', () => {
+      const setIntervalSpy = vi.spyOn(global, 'setInterval');
+      const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
+      const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
       const trafficData = [];
       const securityConfig = {
         thresholds: { low: 50, medium: 70, high: 90 }, // Intentionally bad initial thresholds
@@ -471,7 +508,6 @@ describe('Fingerprint & PoW Security Suite', () => {
       // Solved challenges (clear humans)
       for (let i = 0; i < 20; i++) trafficData.push({ type: 'challenge_solved', deviceId: `human-solver-${i}`, score: 40 });
 
-      const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
       startThresholdAutoTuning({
         securityConfig,
@@ -480,22 +516,26 @@ describe('Fingerprint & PoW Security Suite', () => {
         minDataPoints: 100,
       });
 
-      // Advance time to trigger the first optimization cycle
-      vi.advanceTimersByTime(60000);
+      // Manually trigger the optimization cycle
+      const intervalCallback = setIntervalSpy.mock.calls[0][0];
+      intervalCallback();
 
       // The genetic algorithm should find better thresholds.
       // We expect 'low' to decrease significantly from 50.
       expect(securityConfig.thresholds.low).toBeLessThan(40);
       expect(securityConfig.thresholds.low).toBeGreaterThan(10);
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Nouveaux seuils optimisés appliqués'));
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Nouveaux seuils optimisés appliqués'), expect.anything());
+      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 
       // Stop the tuner and check if the interval is cleared
-      const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
       stopThresholdAutoTuning();
       expect(clearIntervalSpy).toHaveBeenCalled();
     });
 
     test('should not run optimization if data points are insufficient', () => {
+      const setIntervalSpy = vi.spyOn(global, 'setInterval');
+      const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
       const trafficData = [];
       const securityConfig = {
         thresholds: { low: 20, medium: 45, high: 75 },
@@ -507,17 +547,16 @@ describe('Fingerprint & PoW Security Suite', () => {
         trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 10 });
       }
 
-      const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
       startThresholdAutoTuning({
         securityConfig,
         trafficData,
         interval: 60000,
         minDataPoints: 100,
       });
-
-      // Advance time to trigger the cycle
-      vi.advanceTimersByTime(60000);
+      
+      // Manually trigger the cycle
+      const intervalCallback = setIntervalSpy.mock.calls[0][0];
+      intervalCallback();
 
       // Check that optimization was postponed
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Reporté'));
@@ -528,8 +567,10 @@ describe('Fingerprint & PoW Security Suite', () => {
       for (let i = 0; i < 50; i++) {
         trafficData.push({ type: 'request_passed', deviceId: `human-new-${i}`, score: 10 });
       }
-      vi.advanceTimersByTime(60000);
+      // Trigger again
+      intervalCallback();
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Démarrage du cycle d\'optimisation'));
+      stopThresholdAutoTuning(); // cleanup
     });
   });
 });

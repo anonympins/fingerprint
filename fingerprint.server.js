@@ -343,21 +343,6 @@ export const isTicketValid = (ip, ticket) => {
 };
 
 /**
- * Crée un hash stable basé sur les caractéristiques de l'appareil, indépendamment de l'IP.
- * C'est notre "empreinte de niveau 2".
- * @param {object} req - L'objet de la requête Express.
- * @returns {string} Un hash représentant l'appareil.
- */
-function getDeviceHash(req) {
-  const srv = new FingerprintBuilder();
-  srv.add("ua", req.headers["user-agent"]);
-  if (req.headers["sec-ch-ua-platform"])
-    srv.add("os", req.headers["sec-ch-ua-platform"]);
-  if (req.headers["sec-ch-ua"]) srv.add("ch", req.headers["sec-ch-ua"]);
-  return srv.toString(); // Retourne la chaîne de caractères complète de l'empreinte pour une comparaison détaillée.
-}
-
-/**
  * Calcule les indicateurs de suspicion liés aux anomalies des headers HTTP.
  * @param {object} req - L'objet de la requête Express.
  * @returns {{headerAnomalyScore: number}}
@@ -409,6 +394,37 @@ const inMemoryStore = {
   async delete(key) { this._map.delete(key); },
 };
 
+/**
+ * Creates a stable hash based on device characteristics, independent of the IP.
+ * This is our "level 2 fingerprint".
+ * @param {object} context - The request context.
+ * @returns {string} A hash representing the device.
+ */
+function getHeaderSignature(context) {
+    if (!context.rawHeaders) return '';
+    const headerKeys = [];
+    for (let i = 0; i < context.rawHeaders.length; i += 2) {
+        headerKeys.push(context.rawHeaders[i]);
+    }
+    return cyrb53(headerKeys.join(','));
+}
+export function getDeviceHash(context) {
+    // Prioritize the rich client-side fingerprint if provided.
+    const clientFp = context.headers['x-device-fingerprint'];
+    if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
+        // Basic validation to ensure it looks like our client-side fingerprint.
+        return clientFp;
+    }
+
+    // Fallback to server-side only fingerprinting if the header is missing.
+    const srv = new FingerprintBuilder();
+    srv.add("ua", context.headers["user-agent"]);
+    if (context.headers["sec-ch-ua-platform"])
+        srv.add("os", context.headers["sec-ch-ua-platform"]);
+    if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
+    srv.add("h_ord", getHeaderSignature(context));
+    return srv.toString();
+}
 /** @type {IStore} */
 let store = inMemoryStore;
 

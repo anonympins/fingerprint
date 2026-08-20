@@ -66,9 +66,9 @@ export const getDeviceFingerprint = () => {
         ctx.fillStyle = "#f60";
         ctx.fillRect(125, 1, 62, 20);
         ctx.fillStyle = "#069";
-        ctx.fillText("Primals", 2, 15);
+        ctx.fillText("fingerprint", 2, 15);
         ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
-        ctx.fillText("Primals", 4, 17);
+        ctx.fillText("fingerprint", 4, 17);
         cachedBuilder.add("cvs", canvas.toDataURL());
       }
     } catch (e) {}
