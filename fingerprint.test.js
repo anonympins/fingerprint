@@ -30,7 +30,7 @@ describe('Fingerprint & PoW Security Suite', () => {
   test('CPU Target PoW Workflow: Solve, Verify, and Validate Ticket', () => {
     const ip = '127.0.0.1';
     const nonce = 'test-nonce';
-    const suspicionFactor = 0.1; // Faible suspicion pour un test rapide
+    const suspicionFactor = 0.1; // Low suspicion for a quick test
 
     // Simulation d'un solveur côté client
     let solution = 0;
@@ -43,28 +43,28 @@ describe('Fingerprint & PoW Security Suite', () => {
       solution++;
     }
 
-    // 1. Vérification de la solution et génération du ticket
+    // 1. Verify the solution and generate the ticket
     const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor);
-    expect(ticket, "Le ticket devrait être généré pour une solution valide").toBeTruthy();
+    expect(ticket, "Ticket should be generated for a valid solution").toBeTruthy();
 
-    // 2. Validation du ticket
-    expect(isTicketValid(ip, ticket), "Le ticket devrait être valide pour la même IP").toBe(true);
+    // 2. Validate the ticket
+    expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
 
-    // 3. Cas d'échec : Mauvaise IP
-    expect(isTicketValid('1.1.1.1', ticket), "Le ticket ne doit pas être valide pour une IP différente").toBe(false);
+    // 3. Failure case: Wrong IP
+    expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
 
-    // 4. Cas d'échec : Solution invalide
+    // 4. Failure case: Invalid solution
     const badTicket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, "mauvaise-solution", suspicionFactor);
-    expect(badTicket, "Une mauvaise solution ne doit pas produire de ticket").toBeNull();
+    expect(badTicket, "A bad solution should not produce a ticket").toBeNull();
   });
 
   test('PoW Ticket Expiration', () => {
     const ip = '127.0.0.1';
-    // On simule un ticket expiré en manipulant la chaîne (pour le test)
+    // Simulate an expired ticket by manipulating the string (for testing)
     const expiredTimestamp = Date.now() - 1000;
     const signature = crypto.createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiredTimestamp}`).digest("hex");
     const ticket = `${expiredTimestamp}:${signature}`;
-    expect(isTicketValid(ip, ticket), "Un ticket expiré doit être refusé").toBe(false);
+    expect(isTicketValid(ip, ticket), "An expired ticket should be rejected").toBe(false);
   });
 
   describe('powMiddleware', () => {
@@ -126,8 +126,8 @@ describe('Fingerprint & PoW Security Suite', () => {
       await middleware(req, res, next);
 
       expect(sentStatus, 'Status should be 429').toBe(429);
-      expect(sentBody, 'Should send a medium challenge page').toContain('Vérification renforcée');
-      expect(sentBody, 'Challenge should be of type memory').toContain('Allocation et calcul mémoire');
+      expect(sentBody, 'Should send a medium challenge page').toContain('Enhanced Verification');
+      expect(sentBody, 'Challenge should be of type memory').toContain('Performing memory allocation and calculation');
     });
 
     test('should call next() for a suspicious request with a valid ticket', async () => {

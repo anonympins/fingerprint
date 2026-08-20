@@ -1,5 +1,6 @@
 // C:/Dev/games.primals.net/src/utils/fingerprint.js
 import crypto from "node:crypto";
+import { Optimization } from "./library.js";
 
 const POW_SECRET = process.env.POW_SECRET;
 
@@ -9,7 +10,7 @@ if (!POW_SECRET && process.env.NODE_ENV === 'production') {
   console.warn('Warning: POW_SECRET environment variable not set. Using a default, insecure secret for development.');
 }
 /**
- * Algorithme de hachage cyrb53 (rapide et faible taux de collision). Exporté pour réutilisation.
+ * cyrb53 hash algorithm (fast with a low collision rate). Exported for reuse.
  */
 export const cyrb53 = (str, seed = 0) => {
   let h1 = 0xdeadbeef ^ seed,
@@ -29,8 +30,8 @@ export const cyrb53 = (str, seed = 0) => {
 };
 
 /**
- * Classe pour construire une empreinte composite (Multi-Hash).
- * Format de sortie : "grp1:hash1|grp2:hash2|grp3:hash3"
+ * Class to build a composite fingerprint (Multi-Hash).
+ * Output format: "grp1:hash1|grp2:hash2|grp3:hash3"
  */
 export class FingerprintBuilder {
   constructor() {
@@ -38,20 +39,20 @@ export class FingerprintBuilder {
   }
 
   /**
-   * Ajoute un composant au hash global.
-   * @param {string} group - Le nom du groupe (ex: 'hw', 'screen', 'geo')
-   * @param {string|number|boolean} value - La valeur brute à hasher
+   * Adds a component to the global hash.
+   * @param {string} group - The group name (e.g., 'hw', 'screen', 'geo')
+   * @param {string|number|boolean} value - The raw value to be hashed
    */
   add(group, value) {
     if (value === undefined || value === null) return this;
-    // On hash la valeur individuellement pour l'anonymiser et réduire sa taille
+    // Hash the value individually to anonymize it and reduce its size
     this.components.set(group, cyrb53(String(value)));
     return this;
   }
 
   /**
-   * Génère la chaîne de signature finale.
-   * Trie les clés pour garantir un ordre déterministe.
+   * Generates the final signature string.
+   * Sorts keys to ensure a deterministic order.
    */
   toString() {
     return Array.from(this.components.entries())
@@ -61,10 +62,10 @@ export class FingerprintBuilder {
   }
 
   /**
-   * Compare deux empreintes et retourne un score de similarité (0 à 1).
-   * Utilise des poids pour donner plus d'importance aux invariants forts (Canvas, GPU).
-   * @param {string} fpString1 - Empreinte A
-   * @param {string} fpString2 - Empreinte B
+   * Compares two fingerprints and returns a similarity score (0 to 1).
+   * Uses weights to give more importance to strong invariants (Canvas, GPU).
+   * @param {string} fpString1 - Fingerprint A
+   * @param {string} fpString2 - Fingerprint B
    */
   static compare(fpString1, fpString2) {
     if (!fpString1 || !fpString2) return 0;
@@ -81,15 +82,15 @@ export class FingerprintBuilder {
     const map1 = parse(fpString1);
     const map2 = parse(fpString2);
 
-    // Poids de "véracité" (Entropie/Stabilité)
+    // "Veracity" weights (Entropy/Stability)
     const weights = {
-      cvs: 4.0, // Canvas: Très haute entropie (Rendu unique)
-      gpu: 3.0, // GPU: Haute entropie (Matériel spécifique)
-      hw: 1.5, // Hardware: Moyenne entropie
-      scr: 1.0, // Screen: Moyenne
-      geo: 0.5, // Geo: Faible (VPN/Voyage)
-      os: 0.5, // OS: Faible (Générique)
-      bot: 0.0, // Bot: Informatif
+      cvs: 4.0, // Canvas: Very high entropy (Unique rendering)
+      gpu: 3.0, // GPU: High entropy (Specific hardware)
+      hw: 1.5, // Hardware: Medium entropy
+      scr: 1.0, // Screen: Medium
+      geo: 0.5, // Geo: Low (VPN/Travel)
+      os: 0.5, // OS: Low (Generic)
+      bot: 0.0, // Bot: Informational
     };
 
     let weightedMatches = 0;
@@ -112,11 +113,11 @@ export class FingerprintBuilder {
   }
 }
 
-// Cache pour éviter de recalculer les constantes (Hardware, etc.)
+// Cache to avoid recalculating constants (Hardware, etc.)
 let cachedBuilder = null;
 
 /**
- * Génère l'empreinte de l'appareil actuel.
+ * Generates the fingerprint of the current device.
  */
 export const getDeviceFingerprint = () => {
   // NOTE: This is client-side code and should be in a separate file.
@@ -131,29 +132,29 @@ export const getDeviceFingerprint = () => {
 
     cachedBuilder = new FingerprintBuilder();
 
-    // 1. Hardware (Très stable) : Cœurs, RAM, GPU (si dispo via canvas), Touch
+    // 1. Hardware (Very stable): Cores, RAM, GPU (if available via canvas), Touch
     cachedBuilder.add(
       "hw",
       `${nav.hardwareConcurrency}_${nav.deviceMemory}_${nav.maxTouchPoints}`,
     );
 
-    // 2. Geo/Locale (Stable sauf voyage/VPN) : Timezone, Langue
+    // 2. Geo/Locale (Stable except for travel/VPN): Timezone, Language
     cachedBuilder.add(
       "geo",
       `${Intl.DateTimeFormat().resolvedOptions().timeZone}_${nav.language}_${new Date().getTimezoneOffset()}`,
     );
 
-    // 3. Screen (Stable sauf changement moniteur/zoom) : Dimensions, ColorDepth
-    // Note : On utilise availWidth/Height qui exclut la barre des tâches, parfois plus unique
+    // 3. Screen (Stable except for monitor/zoom changes): Dimensions, ColorDepth
+    // Note: We use availWidth/Height which excludes the taskbar, sometimes more unique
     cachedBuilder.add(
       "scr",
       `${screen.width}x${screen.height}_${screen.colorDepth}`,
     );
 
-    // 4. Platform (Stable) : OS, Engine
+    // 4. Platform (Stable): OS, Engine
     cachedBuilder.add("os", nav.platform);
 
-    // 5. Graphics (WebGL Vendor/Renderer) - Invariant matériel fort
+    // 5. Graphics (WebGL Vendor/Renderer) - Strong hardware invariant
     try {
       const canvas = document.createElement("canvas");
       const gl =
@@ -168,8 +169,8 @@ export const getDeviceFingerprint = () => {
       }
     } catch (e) {}
 
-    // 6. Canvas Fingerprinting (Rendering quirks) - Ajoute ~5-10% d'unicité
-    // Exploite les micro-différences d'anti-aliasing et de rendu des polices
+    // 6. Canvas Fingerprinting (Rendering quirks) - Adds ~5-10% uniqueness
+    // Exploits micro-differences in anti-aliasing and font rendering
     try {
       const canvas = document.createElement("canvas");
       const ctx = canvas.getContext("2d");
@@ -188,23 +189,23 @@ export const getDeviceFingerprint = () => {
       }
     } catch (e) {}
 
-    // 7. Bot Detection (Indication cachée)
+    // 7. Bot Detection (Hidden indicator)
     if (nav.webdriver) cachedBuilder.add("bot", "true");
   }
 
-  // On retourne une copie pour permettre d'ajouter des champs dynamiques si besoin sans polluer le cache
+  // Return a copy to allow adding dynamic fields if needed without polluting the cache
   return cachedBuilder.toString();
 };
 
 /**
- * Génère une signature de requête incluant le contexte.
+ * Generates a request signature including the context.
  * @param {object} payload
  */
 export const generateRequestSignature = (payload = {}) => {
   const deviceFp = getDeviceFingerprint();
 
-  // On crée un builder temporaire qui hérite du deviceFp
-  // Note: Ici on fait simple, on concatène juste le hash du payload
+  // Create a temporary builder that inherits from deviceFp
+  // Note: Here we keep it simple, just concatenating the payload hash
   const sortedPayload = Object.keys(payload)
     .sort()
     .map((k) => `${k}=${payload[k]}`)
@@ -215,22 +216,22 @@ export const generateRequestSignature = (payload = {}) => {
 };
 
 /**
- * Génère une signature HMAC-SHA256 pour les données de combat.
- * @param {object} payload - Les données à signer (ex: { opponentId, victory, damageDealt }).
- * @param {string} secret - La clé secrète partagée.
- * @returns {Promise<string>} La signature hexadécimale.
+ * Generates an HMAC-SHA256 signature for combat data.
+ * @param {object} payload - The data to sign (e.g., { opponentId, victory, damageDealt }).
+ * @param {string} secret - The shared secret key.
+ * @returns {Promise<string>} The hexadecimal signature.
  */
 export const generateCombatSignature = async (payload, secret) => {
   // NOTE: This is client-side code using the Web Crypto API (`window.crypto`).
   // It should be moved to a client-side script file.
 
-  // 1. Créer une chaîne de caractères stable à partir du payload.
+  // 1. Create a stable string from the payload.
   const sortedPayload = Object.keys(payload)
     .sort()
     .map((k) => `${k}=${payload[k]}`)
     .join("&");
 
-  // 2. Utiliser l'API Web Crypto pour le HMAC
+  // 2. Use the Web Crypto API for HMAC
   const encoder = new TextEncoder();
   const key = await window.crypto.subtle.importKey(
     "raw",
@@ -245,7 +246,7 @@ export const generateCombatSignature = async (payload, secret) => {
     encoder.encode(sortedPayload),
   );
 
-  // 3. Convertir la signature en chaîne hexadécimale.
+  // 3. Convert the signature to a hexadecimal string.
   const hashArray = Array.from(new Uint8Array(signatureBuffer));
   const hexString = hashArray
     .map((b) => b.toString(16).padStart(2, "0"))
@@ -254,13 +255,13 @@ export const generateCombatSignature = async (payload, secret) => {
 };
 
 /**
- * Génère le contenu HTML pour un challenge TSP (Traveling Salesperson Problem).
- * @param {string} nonce - Nonce unique pour le challenge.
- * @param {number} numCities - Nombre de villes à inclure dans le problème.
- * @param {number} targetMaxDistance - Distance maximale acceptable pour la solution.
- * @param {Array<{x: number, y: number}>} cities - Coordonnées des villes.
- * @param {string} path - Chemin de redirection après résolution.
- * @returns {string} HTML de la page de challenge.
+ * Generates the HTML content for a TSP (Traveling Salesperson Problem) challenge.
+ * @param {string} nonce - Unique nonce for the challenge.
+ * @param {number} numCities - Number of cities to include in the problem.
+ * @param {number} targetMaxDistance - Maximum acceptable distance for the solution.
+ * @param {Array<{x: number, y: number}>} cities - Coordinates of the cities.
+ * @param {string} path - Redirect path after solving.
+ * @returns {string} HTML of the challenge page.
  */
 const generateTspChallenge = (
   nonce,
@@ -272,28 +273,28 @@ const generateTspChallenge = (
   const citiesJson = JSON.stringify(cities);
   return `
       <html>
-        <head><title>Vérification de sécurité Avancée (Niveau 3)</title></head>
+        <head><title>Advanced Security Check (Level 3)</title></head>
         <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
-          <h1>Vérification Ultime (Niveau 3)</h1>
-          <p>Veuillez résoudre ce petit problème d'optimisation pour prouver que vous êtes humain.</p>
-          <div id="loader" style="margin:20px;">⚙️ Calcul d'itinéraire en cours... (${numCities} villes)</div>
+          <h1>Ultimate Verification (Level 3)</h1>
+          <p>Please solve this small optimization problem to prove you are human.</p>
+          <div id="loader" style="margin:20px;">⚙️ Calculating route... (${numCities} cities)</div>
           <script>
             const cities = ${citiesJson};
             const nonce = "${nonce}";
             const targetMaxDistance = ${targetMaxDistance};
 
-            // Fonction utilitaire pour calculer la distance entre deux villes
+            // Utility function to calculate the distance between two cities
             function distance(city1, city2) {
                 return Math.sqrt(Math.pow(city1.x - city2.x, 2) + Math.pow(city1.y - city2.y, 2));
             }
 
-            // Fonction utilitaire pour évaluer la distance totale d'un chemin
+            // Utility function to evaluate the total distance of a path
             function evaluatePathDistance(cities, path) {
                 let totalDistance = 0;
                 for (let i = 0; i < path.length - 1; i++) {
                     totalDistance += distance(cities[path[i]], cities[path[i + 1]]);
                 }
-                totalDistance += distance(cities[path[path.length - 1]], cities[path[0]]); // Retour au départ
+                totalDistance += distance(cities[path[path.length - 1]], cities[path[0]]); // Return to start
                 return totalDistance;
             }
 
@@ -305,7 +306,7 @@ const generateTspChallenge = (
                 let currentPath = [];
                 let visited = new Array(numCities).fill(false);
 
-                let currentCityIndex = 0; // Toujours commencer par la première ville pour la reproductibilité
+                let currentCityIndex = 0; // Always start with the first city for reproducibility
                 currentPath.push(currentCityIndex);
                 visited[currentCityIndex] = true;
 
@@ -330,7 +331,7 @@ const generateTspChallenge = (
             }
 
             async function solve() {
-              // Pour ne pas freezer le navigateur, on yield le thread de temps en temps
+              // To avoid freezing the browser, yield the thread from time to time
               await new Promise(resolve => setTimeout(resolve, 10));
               const solutionPath = solveTspNearestNeighbor(cities);
               const solutionDistance = evaluatePathDistance(cities, solutionPath);
@@ -338,7 +339,7 @@ const generateTspChallenge = (
               if (solutionDistance <= targetMaxDistance) {
                 window.location.href = "${path}" + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(solutionPath);
               } else {
-                document.getElementById('loader').innerText = "Erreur: Impossible de trouver une solution suffisante. Veuillez réessayer.";
+                document.getElementById('loader').innerText = "Error: Could not find a sufficient solution. Please try again.";
               }
             }
             solve();
@@ -348,13 +349,13 @@ const generateTspChallenge = (
 };
 
 /**
- * Vérifie une solution de PoW TSP.
- * @param {string} nonce - Nonce du challenge.
- * @param {string} solutionPathJson - Chemin proposé par le client (JSON stringifié).
- * @param {number} numCities - Nombre de villes du challenge.
- * @param {number} targetMaxDistance - Distance maximale acceptable.
- * @param {Array<{x: number, y: number}>} cities - Coordonnées des villes.
- * @returns {boolean} True si la solution est valide.
+ * Verifies a TSP PoW solution.
+ * @param {string} nonce - The challenge nonce.
+ * @param {string} solutionPathJson - The path proposed by the client (stringified JSON).
+ * @param {number} numCities - The number of cities in the challenge.
+ * @param {number} targetMaxDistance - The maximum acceptable distance.
+ * @param {Array<{x: number, y: number}>} cities - The coordinates of the cities.
+ * @returns {boolean} True if the solution is valid.
  */
 export const verifyTspChallenge = (
   nonce,
@@ -368,7 +369,7 @@ export const verifyTspChallenge = (
     if (!Array.isArray(solutionPath) || solutionPath.length !== numCities)
       return false;
 
-    // Vérifier que le chemin est une permutation valide des villes
+    // Verify that the path is a valid permutation of the cities
     const uniqueCities = new Set(solutionPath);
     if (
       uniqueCities.size !== numCities ||
@@ -377,11 +378,11 @@ export const verifyTspChallenge = (
     )
       return false;
 
-    // Recalculer la distance côté serveur
+    // Recalculate the distance on the server side
     let totalDistance = 0;
     let totalPenalty = 0;
 
-    // Fonction pour calculer l'angle entre 3 points (p1 -> p2 -> p3)
+    // Function to calculate the angle between 3 points (p1 -> p2 -> p3)
     const calculateAngle = (p1, p2, p3) => {
       const v1 = { x: p1.x - p2.x, y: p1.y - p2.y };
       const v2 = { x: p3.x - p2.x, y: p3.y - p2.y };
@@ -398,31 +399,31 @@ export const verifyTspChallenge = (
       const p2_idx = solutionPath[(i + 1) % numCities];
       const p3_idx = solutionPath[(i + 2) % numCities];
 
-      // 1. Calcul de la distance du segment
+      // 1. Calculate segment distance
       totalDistance += Math.sqrt(Math.pow(cities[p1_idx].x - cities[p2_idx].x, 2) + Math.pow(cities[p1_idx].y - cities[p2_idx].y, 2));
 
-      // 2. Calcul de la pénalité de virage
+      // 2. Calculate turn penalty
       const angle = calculateAngle(
         cities[p1_idx],
         cities[p2_idx],
         cities[p3_idx],
       );
       if (angle < 45) {
-        // Pénalité pour les virages très serrés (< 45 degrés)
-        totalPenalty += (45 - angle) * 5; // La pénalité est proportionnelle à l'acuité de l'angle
+        // Penalty for very sharp turns (< 45 degrees)
+        totalPenalty += (45 - angle) * 5; // The penalty is proportional to the sharpness of the angle
       }
     }
 
     const finalScore = totalDistance + totalPenalty;
     return finalScore <= targetMaxDistance;
   } catch (e) {
-    console.error("Erreur lors de la vérification du challenge TSP:", e);
+    console.error("Error during TSP challenge verification:", e);
     return false;
   }
 };
 
 /**
- * Génère le contenu HTML pour le challenge PoW CPU (SHA-256).
+ * Generates the HTML content for the CPU PoW challenge (SHA-256).
  */
 const generateCpuPoWChallenge = (
   clientIp,
@@ -432,11 +433,11 @@ const generateCpuPoWChallenge = (
 ) => {
   return `
       <html>
-        <head><title>Vérification de sécurité</title></head>
+        <head><title>Security Check</title></head>
         <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
-          <h1>Un instant... (Niveau 1)</h1>
-          <p>Nous vérifions que vous n'êtes pas un bot. Cela prend quelques secondes.</p>
-          <div id="loader" style="margin:20px;">⚙️ Calcul de sécurité CPU en cours...</div>
+          <h1>One moment... (Level 1)</h1>
+          <p>We are verifying that you are not a bot. This takes a few seconds.</p>
+          <div id="loader" style="margin:20px;">⚙️ Performing CPU security calculation...</div>
           <script>
             async function solve() {
               const ip = "${clientIp}";
@@ -451,7 +452,7 @@ const generateCpuPoWChallenge = (
                 const hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
                 if (hash.startsWith(target)) break;
                 solution++;
-                if (solution % 100000 === 0) await new Promise(resolve => setTimeout(resolve, 0)); // Pour ne pas freezer le navigateur
+                if (solution % 100000 === 0) await new Promise(resolve => setTimeout(resolve, 0)); // To avoid freezing the browser
               }
               window.location.href = "${path}" + "?pow_type=cpu&pow_nonce=" + nonce + "&pow_solution=" + solution;
             }
@@ -463,7 +464,7 @@ const generateCpuPoWChallenge = (
 };
 
 /**
- * Génère le contenu HTML pour un challenge PoW gourmand en mémoire.
+ * Generates the HTML content for a memory-intensive PoW challenge.
  */
 const generateMemoryPoWChallenge = (
   clientIp,
@@ -471,14 +472,14 @@ const generateMemoryPoWChallenge = (
   difficulty = 16,
   path = "",
 ) => {
-  // difficulty ici est la taille du buffer en Mo.
+  // difficulty here is the buffer size in MB.
   return `
       <html>
-        <head><title>Vérification de sécurité Avancée</title></head>
+        <head><title>Advanced Security Check</title></head>
         <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
-          <h1>Vérification renforcée... (Niveau 2)</h1>
-          <p>Votre activité nécessite une vérification de sécurité supplémentaire.</p>
-          <div id="loader" style="margin:20px;">⚙️ Allocation et calcul mémoire en cours... (${difficulty} Mo)</div>
+          <h1>Enhanced Verification... (Level 2)</h1>
+          <p>Your activity requires an additional security check.</p>
+          <div id="loader" style="margin:20px;">⚙️ Performing memory allocation and calculation... (${difficulty} MB)</div>
           <script>
             async function solve() {
               const nonce = "${nonce}";
@@ -499,7 +500,7 @@ const generateMemoryPoWChallenge = (
                 }
                 window.location.href = "${path}" + "?pow_type=mem&pow_nonce=" + nonce + "&pow_solution=" + finalHash;
               } catch(e) {
-                document.getElementById('loader').innerText = "Erreur: Mémoire insuffisante. Veuillez rafraîchir.";
+                document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
               }
             }
             solve();
@@ -509,7 +510,7 @@ const generateMemoryPoWChallenge = (
 };
 
 /**
- * Vérifie si une solution PoW est valide et génère un ticket de passage.
+ * Verifies if a PoW solution is valid and generates a clearance ticket.
  */
 export const verifyPoWAndGenerateTicket = (
   ip,
@@ -517,7 +518,7 @@ export const verifyPoWAndGenerateTicket = (
   solution,
   difficulty = 4,
 ) => {
-  // 1. Vérifier la solution : hash(ip + nonce + solution) doit commencer par N zéros
+  // 1. Verify the solution: hash(ip + nonce + solution) must start with N zeros
   const hash = crypto
     .createHash("sha256")
     .update(`${ip}:${nonce}:${solution}`)
@@ -527,7 +528,7 @@ export const verifyPoWAndGenerateTicket = (
     return null;
   }
 
-  // 2. Générer un ticket HMAC pour que le client n'ait plus à le refaire pendant 1h
+  // 2. Generate an HMAC ticket so the client doesn't have to do it again for 1 hour
   const expiry = Date.now() + 3600000; // 1 heure
   const signature = crypto
     .createHmac("sha256", POW_SECRET || "fallback-dev-secret-32-chars-minimum")
@@ -538,8 +539,8 @@ export const verifyPoWAndGenerateTicket = (
 };
 
 /**
- * Vérifie une solution de PoW mémoire.
- * Le serveur refait le même calcul pour valider.
+ * Verifies a memory PoW solution.
+ * The server performs the same calculation to validate.
  */
 export const verifyMemoryPoW = (nonce, solution, difficulty = 16) => {
   const size = difficulty * 1024 * 1024;
@@ -565,15 +566,15 @@ export const isTicketValid = (ip, ticket) => {
     .update(`${ip}:${expiry}`)
     .digest("hex");
 
-  // Utilisation de timingSafeEqual pour éviter les attaques temporelles
+  // Use timingSafeEqual to prevent timing attacks
   return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig));
 };
 
 /**
- * Crée un hash stable basé sur les caractéristiques de l'appareil, indépendamment de l'IP.
- * C'est notre "empreinte de niveau 2".
- * @param {object} req - L'objet de la requête Express.
- * @returns {string} Un hash représentant l'appareil.
+ * Creates a stable hash based on device characteristics, independent of the IP.
+ * This is our "level 2 fingerprint".
+ * @param {object} req - The Express request object.
+ * @returns {string} A hash representing the device.
  */
 function getDeviceHash(req) {
   const srv = new FingerprintBuilder();
@@ -581,33 +582,33 @@ function getDeviceHash(req) {
   if (req.headers["sec-ch-ua-platform"])
     srv.add("os", req.headers["sec-ch-ua-platform"]);
   if (req.headers["sec-ch-ua"]) srv.add("ch", req.headers["sec-ch-ua"]);
-  return srv.toString(); // Retourne la chaîne de caractères complète de l'empreinte pour une comparaison détaillée.
+  return srv.toString(); // Returns the full fingerprint string for detailed comparison.
 }
 
 /**
- * Calcule les indicateurs de suspicion liés aux anomalies des headers HTTP.
- * @param {object} req - L'objet de la requête Express.
+ * Calculates suspicion indicators related to HTTP header anomalies.
+ * @param {object} req - The Express request object.
  * @returns {{headerAnomalyScore: number}}
  */
 function getHeaderAnomalies(req, consistencyScore) {
   // FIX: consistencyScore est maintenant passé
   let anomalyScore = 0;
-  // Pénalité forte si le User-Agent est manquant ou très court (signe de script simple)
+  // Strong penalty if User-Agent is missing or very short (sign of a simple script)
   if (!req.headers["user-agent"] || req.headers["user-agent"].length < 10) {
     anomalyScore += 60;
   }
-  // Pénalité si le header Accept-Language est manquant
+  // Penalty if Accept-Language header is missing
   if (!req.headers["accept-language"]) {
     anomalyScore += 25;
   }
-  // Pénalité pour les requêtes HTTP/1.0, souvent utilisées par des outils anciens ou des bots
+  // Penalty for HTTP/1.0 requests, often used by old tools or bots
   if (req.httpVersion === "1.0") {
     anomalyScore += 15;
   }
 
-  // NOUVEAU : Score d'incohérence (cookie volé ?)
-  // Si le score de cohérence est bas, on ajoute une pénalité massive.
-  // Un score de 0.2 signifie une différence énorme.
+  // NEW: Inconsistency score (stolen cookie?)
+  // If the consistency score is low, add a massive penalty.
+  // A score of 0.2 means a huge difference.
   const inconsistencyScore = Math.max(0, (1 - consistencyScore) * 200);
 
   return {
@@ -625,8 +626,8 @@ function getHeaderAnomalies(req, consistencyScore) {
  */
 
 /**
- * Implémentation par défaut du store, en mémoire.
- * @type {IStore}
+ * Default in-memory store implementation.
+ * @type {IStore} 
  */
 const inMemoryStore = {
   _map: new Map(),
@@ -640,26 +641,26 @@ const inMemoryStore = {
 let store = inMemoryStore;
 
 /**
- * Permet de configurer un datastore externe (ex: Redis).
- * Doit être appelée avant que le middleware ne soit utilisé.
- * @param {IStore} externalStore - Une implémentation de l'interface IStore.
+ * Allows configuring an external datastore (e.g., Redis).
+ * Must be called before the middleware is used.
+ * @param {IStore} externalStore - An implementation of the IStore interface.
  */
 export const configureStore = (externalStore) => {
   store = externalStore;
 };
 
 /**
- * Orchestre l'identification de la requête en utilisant une ancre persistante (cookie)
- * et une vérification par empreinte.
- * @param {object} req - L'objet de la requête Express.
- * @param {object} res - L'objet de la réponse Express (pour poser le cookie).
- * @returns {Promise<{deviceId: string, deviceData: object, consistencyScore: number}>}
+ * Orchestrates request identification using a persistent anchor (cookie)
+ * and fingerprint verification.
+ * @param {object} req - The Express request object.
+ * @param {object} res - The Express response object (to set the cookie).
+ * @returns {Promise<{deviceId: string, deviceData: object, consistencyScore: number}>} 
  */
 async function resolveRequestIdentity(req, res) {
   const existingDeviceId = req.cookies?.device_id;
   const currentDeviceHash = getDeviceHash(req);
   let deviceId = existingDeviceId;
-  let consistencyScore = 1.0; // 1.0 = parfaitement cohérent
+  let consistencyScore = 1.0; // 1.0 = perfectly consistent
   let deviceData = null;
 
   if (deviceId) {
@@ -667,36 +668,36 @@ async function resolveRequestIdentity(req, res) {
   }
 
   if (deviceData) {
-    // Cas 1: L'utilisateur a un "passeport" et nous le connaissons.
+    // Case 1: The user has a "passport" and we know them.
     const storedHash = deviceData.initialDeviceHash;
 
-    // Comparaison de l'empreinte actuelle avec celle de référence.
+    // Compare the current fingerprint with the reference one.
     consistencyScore = FingerprintBuilder.compare(
       storedHash,
       currentDeviceHash,
     );
   } else {
-    // Cas 2: Nouvel utilisateur ou cookie perdu/invalide.
-    deviceId = crypto.randomUUID(); // On génère un nouveau "passeport".
+    // Case 2: New user or lost/invalid cookie.
+    deviceId = crypto.randomUUID(); // Generate a new "passport".
 
-    // On pose le cookie de manière sécurisée.
+    // Set the cookie securely.
     res.cookie("device_id", deviceId, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "strict",
-      maxAge: 31536000000, // 1 an
+      maxAge: 31536000000, // 1 year
     });
 
-    // On initialise le suivi pour ce nouvel appareil.
+    // Initialize tracking for this new device.
     deviceData = {
-      initialDeviceHash: currentDeviceHash, // On ancre l'empreinte initiale.
+      initialDeviceHash: currentDeviceHash, // Anchor the initial fingerprint.
       ips: new Set(),
       lastUpdate: Date.now(),
       lastFpHash: currentDeviceHash,
       lastChangeTimestamp: 0,
       rapidChangeCount: 0,
     };
-    // L'écriture se fera dans getSuspicionVector après toutes les modifications.
+    // The write will happen in getSuspicionVector after all modifications.
   }
 
   return { deviceId, deviceData, consistencyScore };
@@ -704,37 +705,37 @@ async function resolveRequestIdentity(req, res) {
 
 /*
  * Calcule les indicateurs de suspicion liés au comportement de l'appareil (historique, rotation).
- * @param {object} req - L'objet de la requête Express.
- * @param {object} deviceData - Les données d'activité de l'appareil.
+ * @param {object} req - The Express request object.
+ * @param {object} deviceData - The device's activity data.
  * @returns {Promise<{historyScore: number, rotationScore: number}>}
  */
 async function getBehavioralIndicators(req, deviceData) {
   const now = Date.now();
   const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
 
-  // On récupère le type d'IP pour moduler le score
+  // Get the IP type to modulate the score
   const ipProfile = (await store.get(`ip:${clientIp}`)) || { type: "residential" };
   const isSharedIp = ipProfile.type === "shared";
 
-  const currentFpHash = getDeviceHash(req); // On utilise le hash de l'appareil
+  const currentFpHash = getDeviceHash(req); // Use the device hash
 
-  // --- Analyse de comportement (Fréquence de changement) ---
+  // --- Behavior analysis (Change frequency) ---
   if (deviceData.lastFpHash && currentFpHash !== deviceData.lastFpHash) {
     const timeSinceLastChange = now - deviceData.lastChangeTimestamp;
 
     if (timeSinceLastChange < RAPID_CHANGE_THRESHOLD_MS) {
       deviceData.rapidChangeCount = Math.min(
         deviceData.rapidChangeCount + 1,
-        MAX_RAPID_CHANGES_PER_DEVICE * 2,
-      ); // Augmente rapidement
+        MAX_RAPID_CHANGES_PER_DEVICE * 2, // Increases quickly
+      ); 
     } else {
-      deviceData.rapidChangeCount = Math.max(0, deviceData.rapidChangeCount - 1); // Diminue lentement
+      deviceData.rapidChangeCount = Math.max(0, deviceData.rapidChangeCount - 1); // Decreases slowly
     }
     deviceData.lastChangeTimestamp = now;
   }
 
   deviceData.lastFpHash = currentFpHash;
-  deviceData.ips.add(clientIp); // On enregistre l'IP utilisée par cet appareil
+  deviceData.ips.add(clientIp); // Record the IP used by this device
 
   // NOUVELLE LOGIQUE : Le score d'historique est basé sur le nombre d'IPs utilisées par l'appareil.
   // Très efficace contre la rotation de proxy.
@@ -750,7 +751,7 @@ async function getBehavioralIndicators(req, deviceData) {
       100,
   );
 
-  // Score basé sur la rotation rapide d'identité (0-100)
+  // Score based on rapid identity rotation (0-100)
   const rotationScore = Math.min(
     100,
     (deviceData.rapidChangeCount / MAX_RAPID_CHANGES_PER_DEVICE) * 100,
@@ -760,17 +761,17 @@ async function getBehavioralIndicators(req, deviceData) {
 }
 
 /**
- * Retourne un vecteur de scores de suspicion bruts (non pondérés).
- * @param {object} req - L'objet de la requête Express.
+ * Returns a vector of raw (unweighted) suspicion scores.
+ * @param {object} req - The Express request object.
  * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number}>}
  */
 export const getSuspicionVector = async (req, res) => {
   const { deviceId, deviceData, consistencyScore } = await resolveRequestIdentity(req, res);
 
   const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
-  await store.set(`ip-device:${clientIp}`, deviceId); // On lie l'IP à l'appareil
+  await store.set(`ip-device:${clientIp}`, deviceId); // Link the IP to the device
 
-  // Nettoyage périodique des données de l'appareil
+  // Periodically clean up device data
   if (Date.now() - deviceData.lastUpdate > 10 * 60 * 1000) { // 10 minutes
     deviceData.ips.clear();
     deviceData.rapidChangeCount = 0;
@@ -780,13 +781,13 @@ export const getSuspicionVector = async (req, res) => {
   const behavioral = await getBehavioralIndicators(req, deviceData);
   const anomalies = getHeaderAnomalies(req, consistencyScore);
 
-  // Sauvegarde l'état mis à jour de l'appareil dans le store
+  // Save the updated device state to the store
   await store.set(`device:${deviceId}`, deviceData);
 
   return { ...behavioral, ...anomalies };
 };
 
-// Un utilisateur résidentiel peut changer de réseau (maison, 4G, wifi public).
+// A residential user can change networks (home, 4G, public wifi).
 const MAX_DISTINCT_IPS_PER_DEVICE = 15;
 // Un utilisateur derrière un NAT/proxy ne devrait pas utiliser BEAUCOUP d'autres IPs.
 const MAX_DISTINCT_IPS_FOR_SHARED_USER = 5;
@@ -795,18 +796,18 @@ const MAX_DISTINCT_IPS_FOR_SHARED_USER = 5;
 const SHARED_IP_DEVICE_THRESHOLD = 50;
 
 const RAPID_CHANGE_THRESHOLD_MS = 2000; // 2 secondes
-const MAX_RAPID_CHANGES_PER_DEVICE = 3; // Nombre de changements rapides d'empreinte autorisés par appareil.
+const MAX_RAPID_CHANGES_PER_DEVICE = 3; // Number of rapid fingerprint changes allowed per device.
 
 /**
- * Identifie une requête côté serveur de manière granulaire.
- * Utilise le FingerprintBuilder pour créer une empreinte basée sur les headers
- * et l'IP, rendant le spoofing plus complexe (nécessite de changer toute la stack).
+ * Identifies a request on the server side in a granular way.
+ * Uses FingerprintBuilder to create a fingerprint based on headers
+ * and IP, making spoofing more complex (requires changing the entire stack).
  */
 export const identifyRequest = async (req, res) => {
   const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
   const deviceId = req.cookies?.device_id;
 
-  // --- Mise à jour de la réputation de l'IP ---
+  // --- Update IP reputation ---
   const ipProfile = (await store.get(`ip:${clientIp}`)) || {
     type: "residential",
     deviceIds: new Set(),
@@ -817,35 +818,35 @@ export const identifyRequest = async (req, res) => {
   if (deviceId) {
     ipProfile.deviceIds.add(deviceId);
   } else {
-    // Logique anti "Bot Amnésique" améliorée
+    // Improved anti-"Amnesiac Bot" logic
     ipProfile.statelessCount++;
   }
 
-  // Si une IP voit trop d'appareils différents, on la classe comme "partagée".
+  // If an IP sees too many different devices, classify it as "shared".
   if (ipProfile.deviceIds.size > SHARED_IP_DEVICE_THRESHOLD) {
     ipProfile.type = "shared";
   }
 
-  // Si une IP résidentielle fait trop de requêtes sans cookie, c'est un bot.
-  // Pour une IP partagée, on est plus tolérant car de nouveaux utilisateurs arrivent constamment.
+  // If a residential IP makes too many requests without a cookie, it's a bot.
+  // For a shared IP, we are more tolerant because new users are constantly arriving.
   const statelessLimit = ipProfile.type === "shared" ? 50 : 10;
   if (ipProfile.statelessCount > statelessLimit) {
     return `suspicious_high:${clientIp}`;
   }
   await store.set(`ip:${clientIp}`, ipProfile);
 
-  // Pour la compatibilité avec le rate-limiter, on calcule un score simple.
-  // Le PoW utilisera le système pondéré, plus complexe.
+  // For compatibility with the rate-limiter, calculate a simple score.
+  // The PoW will use the more complex weighted system.
   const vector = await getSuspicionVector(req, res);
   const score =
     vector.historyScore * 0.3 +
     vector.rotationScore * 0.5 +
     vector.headerAnomalyScore * 0.1 +
-    vector.inconsistencyScore * 0.8; // L'incohérence est un signal très fort
+    vector.inconsistencyScore * 0.8; // Inconsistency is a very strong signal
 
-  // On retourne une chaîne de caractères pour la compatibilité avec les rate limiters,
-  // mais basée sur les seuils de suspicion.
-  // NOTE : Ces seuils sont fixes ici, mais le PoW utilisera les seuils dynamiques.
+  // Return a string for compatibility with rate limiters,
+  // but based on suspicion thresholds.
+  // NOTE: These thresholds are fixed here, but the PoW will use dynamic thresholds.
   if (score >= 75) {
     return `suspicious_high:${clientIp}`;
   }
@@ -853,8 +854,8 @@ export const identifyRequest = async (req, res) => {
     return `suspicious_medium:${clientIp}`;
   }
 
-  // Pour les requêtes normales, on retourne un hash de l'empreinte pour le rate limiting.
-  // On utilise le hash de l'appareil pour que le rate-limit suive l'appareil, pas l'IP.
+  // For normal requests, return a hash of the fingerprint for rate limiting.
+  // Use the device hash so the rate-limit follows the device, not the IP.
   const deviceIdForIp = await store.get(`ip-device:${clientIp}`);
   const finalDeviceId = deviceId || deviceIdForIp || clientIp;
   return `device:${finalDeviceId}`;
@@ -862,34 +863,37 @@ export const identifyRequest = async (req, res) => {
 // --- NOUVEAU CHALLENGE CPU "ANALOGIQUE" ---
 
 // Le plus grand nombre possible avec SHA-256 (2^256 - 1)
+// The largest possible number with SHA-256 (2^256 - 1)
 const MAX_DIFFICULTY_TARGET = 2n ** 256n - 1n;
 // Une difficulté de base, ex: nécessite que les 16 premiers bits soient à 0
 // (équivalent à 4 zéros en hexadécimal)
+// A base difficulty, e.g., requires the first 16 bits to be 0
+// (equivalent to 4 zeros in hexadecimal)
 const BASE_TARGET = MAX_DIFFICULTY_TARGET >> 16n;
 
 /**
- * Calcule le target de difficulté en fonction du facteur de suspicion.
- * @param {number} suspicionFactor - Un nombre de 0 à 1.
- * @returns {BigInt} Le nombre cible.
+ * Calculates the difficulty target based on the suspicion factor.
+ * @param {number} suspicionFactor - A number from 0 to 1.
+ * @returns {BigInt} The target number.
  */
 function calculateTarget(suspicionFactor) {
-  // Plage de difficulté ajustée pour être réaliste.
-  // MIN_DIFFICULTY: Assez rapide pour ne pas gêner un utilisateur légèrement suspect.
-  // MAX_DIFFICULTY: Assez lent pour pénaliser lourdement un bot, mais faisable pour un humain patient (5-30s).
-  const MIN_DIFFICULTY_BITS = 18; // Valeur par défaut, devrait être configurable
-  const MAX_DIFFICULTY_BITS = 26; // Valeur par défaut, devrait être configurable
+  // Difficulty range adjusted to be realistic.
+  // MIN_DIFFICULTY: Fast enough not to bother a slightly suspicious user.
+  // MAX_DIFFICULTY: Slow enough to heavily penalize a bot, but feasible for a patient human (5-30s).
+  const MIN_DIFFICULTY_BITS = 18; // Default value, should be configurable
+  const MAX_DIFFICULTY_BITS = 26; // Default value, should be configurable
 
-  // On utilise une interpolation linéaire entre la difficulté min et max.
+  // Use linear interpolation between min and max difficulty.
   const totalDifficultyBits =
     MIN_DIFFICULTY_BITS +
     suspicionFactor * (MAX_DIFFICULTY_BITS - MIN_DIFFICULTY_BITS);
 
-  // Le target est le max / 2^bits
+  // The target is max / 2^bits
   return MAX_DIFFICULTY_TARGET >> BigInt(Math.floor(totalDifficultyBits));
 }
 
 /**
- * Génère un challenge CPU basé sur un target.
+ * Generates a CPU challenge based on a target.
  */
 export function generateCpuTargetChallenge(
   clientIp,
@@ -901,7 +905,7 @@ export function generateCpuTargetChallenge(
   return {
     type: "cpu_target",
     nonce: nonce,
-    target: target.toString(16), // On envoie le target en hexadécimal
+    target: target.toString(16), // Send the target in hexadecimal
     path: originalUrl,
   };
 }
@@ -942,7 +946,7 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
 }
 
 /**
- * Vérifie une solution de PoW basée sur un target et génère un ticket.
+ * Verifies a PoW solution based on a target and generates a ticket.
  */
 export function verifyCpuTargetPoWAndGenerateTicket(
   clientIp,
@@ -958,8 +962,8 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   const hashAsInt = BigInt("0x" + hash);
 
   if (hashAsInt < target) {
-    // La comparaison est directe avec les BigInt natifs
-    // La preuve est valide, on génère le ticket
+    // The comparison is direct with native BigInts
+    // The proof is valid, generate the ticket
     const expiry = Date.now() + 3600000; // 1 heure
     const signature = crypto
       .createHmac("sha256", POW_SECRET || "fallback-dev-secret-32-chars-minimum")
@@ -976,17 +980,18 @@ const staticExtensions =
 const isStaticResource = (req) => staticExtensions.test(req.path);
 
 // --- Middleware Proof-of-Work (Le péage) ---
+// --- Proof-of-Work Middleware (The Tollbooth) ---
 export const powMiddleware = (securityConfig) => async (req, res, next) => {
-    // On ignore le PoW pour les ressources statiques (images, scripts, fonts)
+    // Ignore PoW for static resources (images, scripts, fonts)
     if (isStaticResource(req)) {
         return next();
     }
     
     const isProduction = process.env.NODE_ENV === 'production';
-    const { weights, thresholds } = securityConfig;
+    const { weights, thresholds, logger } = securityConfig;
 
     const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
-    // On récupère le vecteur de suspicion et on calcule le score final pondéré
+    // Get the suspicion vector and calculate the final weighted score
     const suspicionVector = await __internal.getSuspicionVector(req, res);
 
     const finalScore =
@@ -999,7 +1004,7 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
     const isSuspiciousMedium = finalScore >= thresholds.medium;
     const isSuspicious = finalScore >= thresholds.low;
 
-    // Calcul d'un "facteur de suspicion" analogique (0 à 1+) pour une difficulté progressive
+    // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
     const suspicionFactor = isSuspicious
         ? Math.min(
             1,
@@ -1009,18 +1014,23 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
     const powCookie = req.cookies?.pow_clearance;
     const { pow_type, pow_nonce, pow_solution, captcha_token } = req.query;
 
+    // Basic log for each non-static request
+    if (logger && !isSuspicious) {
+        logger({ type: 'request_passed', deviceId: req.cookies?.device_id, score: finalScore, timestamp: Date.now() });
+    }
+
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
-        // --- GESTION DES RÉPONSES AUX CHALLENGES ---
+        // --- CHALLENGE RESPONSE HANDLING ---
         if (pow_nonce && pow_solution) {
             let isValid = false,
                 ticket = null;
             if (pow_type === "cpu_target") {
-                // On vérifie le nouveau type
+                // Verify the new type
                 ticket = verifyCpuTargetPoWAndGenerateTicket(
                     clientIp,
                     pow_nonce,
                     pow_solution,
-                    suspicionFactor, // On passe directement le facteur analogique
+                    suspicionFactor, // Pass the analog factor directly
                 );
                 isValid = ticket !== null;
             } else if (pow_type === "mem") {
@@ -1030,13 +1040,13 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
                     minDifficulty + suspicionFactor * (maxDifficulty - minDifficulty);
                 isValid = verifyMemoryPoW(pow_nonce, pow_solution, difficulty);
             } else if (pow_type === "tsp") {
-                // La logique pour TSP reste la même
+                // Logic for TSP remains the same
                 // ...
             }
 
             if (isValid) {
                 if (!ticket) {
-                    // Si le ticket n'a pas déjà été généré (cas CPU)
+                    // If the ticket has not already been generated (CPU case)
                     const expiry = Date.now() + 3600000; // 1 heure
                     const signature = crypto
                         .createHmac("sha256", POW_SECRET || "fallback-dev-secret-32-chars-minimum")
@@ -1050,19 +1060,28 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
                     secure: isProduction,
                     maxAge: 3600000,
                 });
-                return res.redirect(req.path); // Recharge la page sans les params
+
+                if (logger) {
+                    logger({ type: 'challenge_solved', deviceId: req.cookies?.device_id, score: finalScore, challengeType: pow_type, timestamp: Date.now() });
+                }
+
+                return res.redirect(req.path); // Reload the page without the params
             }
         }
 
-        // --- SÉLECTION ET ENVOI DU CHALLENGE APPROPRIÉ ---
+        // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
 
-        // NIVEAU 3 : CAPTCHA (le plus élevé)
-        if (isSuspiciousHigh) {
-            // ... logique pour le challenge TSP/Captcha
+        if (logger) {
+            logger({ type: 'challenge_issued', deviceId: req.cookies?.device_id, score: finalScore, timestamp: Date.now() });
         }
 
-        // NIVEAU 2 : PoW Gourmand en Mémoire
+        // LEVEL 3: CAPTCHA (the highest)
+        if (isSuspiciousHigh) {
+            // ... logic for TSP/Captcha challenge
+        }
+
+        // LEVEL 2: Memory-Intensive PoW
         if (isSuspiciousMedium) {
             const minDifficulty = 16; // 16Mo
             const maxDifficulty = 48; // 48Mo
@@ -1070,20 +1089,21 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
                 minDifficulty + suspicionFactor * (maxDifficulty - minDifficulty);
             return res.status(429).send(
                 generateMemoryPoWChallenge(clientIp, nonce, difficulty, req.path),
-                // NOTE: Pour que le challenge mémoire fonctionne, il faudra aussi
-                // l'intégrer dans `generateChallengePage` et le script client.
+                // NOTE: For the memory challenge to work, it will also need to be
+                // integrated into `generateChallengePage` and the client script.
             );
         }
         // NIVEAU 1 : PoW CPU Standard
+        // LEVEL 1: Standard CPU PoW
         if (isSuspicious) {
-            // On récupère les détails du challenge
+            // Get the challenge details
             const challengeDetails = generateCpuTargetChallenge(
                 clientIp,
                 nonce,
                 suspicionFactor,
                 req.path,
             );
-            // On génère la page HTML avec le solveur intégré
+            // Generate the HTML page with the integrated solver
             const challengePage = generateCpuTargetChallengePage(challengeDetails, clientIp);
             return res.status(429).send(challengePage);
         }
@@ -1100,3 +1120,126 @@ export const __internal = {
     getSuspicionVector,
     calculateTarget,
 };
+
+// --- THRESHOLD AUTO-TUNING SECTION ---
+
+let autoTuningJobId = null;
+
+/**
+ * Executes a threshold optimization pass using collected traffic data.
+ * @private
+ * @param {object} securityConfig - The security configuration object to update.
+ * @param {Array<object>} trafficData - The array containing traffic logs.
+ * @param {number} minDataPoints - The minimum number of data points required to start optimization.
+ */
+function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
+    if (trafficData.length < minDataPoints) {
+        console.log(`[AutoTuning] Reporté : ${trafficData.length}/${minDataPoints} points de données.`);
+        return;
+    }
+    console.log(`[AutoTuning] Démarrage du cycle d'optimisation avec ${trafficData.length} points de données.`);
+
+    // Identify "bots" (those who received a challenge but never solved it)
+    // and "humans" (those who passed the challenge or never received one).
+    const solvedDevices = new Set(trafficData.filter(e => e.type === 'challenge_solved').map(e => e.deviceId));
+    const historicalRequests = trafficData.map(log => {
+        let isBot = false;
+        if (log.type === 'challenge_issued' && !solvedDevices.has(log.deviceId)) {
+            isBot = true; // Assumption: a challenge issued and not solved is a bot.
+        }
+        return { score: log.score, isBot };
+    });
+
+    // The "fitness" function evaluates the quality of a set of thresholds.
+    // A lower score is better.
+    const fitnessFunction = (solution) => {
+        const [low, medium, high] = solution;
+        // Constraints: thresholds must be ordered and within a reasonable range.
+        if (low >= medium || medium >= high || low < 10 || high > 90) return Infinity;
+
+        let falsePositives = 0; // Humans challenged unnecessarily.
+        let falseNegatives = 0; // Undetected bots.
+
+        for (const req of historicalRequests) {
+            if (req.isBot) {
+                if (req.score < low) falseNegatives++;
+            } else { // Human
+                if (req.score >= low) falsePositives++;
+            }
+        }
+        // Penalize passing bots 2x more than inconvenienced humans.
+        return (falsePositives * 1.0) + (falseNegatives * 2.0);
+    };
+
+    // Functions for the genetic algorithm.
+    const createIndividual = () => [10 + Math.random() * 20, 30 + Math.random() * 30, 60 + Math.random() * 30];
+    const crossover = (p1, p2) => [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2];
+    const mutate = (s) => {
+        const n = [...s];
+        const i = Math.floor(Math.random() * 3);
+        n[i] += (Math.random() - 0.5) * 5;
+        return n;
+    };
+
+    // Start optimization.
+    const result = Optimization.geneticAlgorithm(createIndividual, fitnessFunction, crossover, mutate, {
+        generations: 50,
+        populationSize: 40
+    });
+
+    const [newLow, newMedium, newHigh] = result.solution;
+
+    // Update the configuration live.
+    securityConfig.thresholds = {
+        low: Math.round(newLow),
+        medium: Math.round(newMedium),
+        high: Math.round(newHigh)
+    };
+
+    console.log("[AutoTuning] Nouveaux seuils optimisés appliqués :", securityConfig.thresholds);
+}
+
+/**
+ * Starts the background process for auto-tuning security thresholds.
+ * @export
+ * @param {object} options - Configuration options for auto-tuning.
+ * @param {object} options.securityConfig - The live security configuration object that will be mutated.
+ * @param {Array<object>} options.trafficData - The array where the logger pushes traffic data.
+ * @param {number} [options.interval=1800000] - The interval in milliseconds between each optimization cycle (default: 30 minutes).
+ * @param {number} [options.minDataPoints=200] - The minimum number of requests to analyze before starting a cycle (default: 200).
+ */
+export function startThresholdAutoTuning(options) {
+    if (autoTuningJobId) {
+        console.warn("[AutoTuning] Le job est déjà en cours d'exécution.");
+        return;
+    }
+
+    const {
+        securityConfig,
+        trafficData,
+        interval = 1800000,
+        minDataPoints = 200
+    } = options;
+
+    if (!securityConfig || !trafficData) {
+        throw new Error("[AutoTuning] `securityConfig` et `trafficData` sont requis.");
+    }
+
+    console.log(`[AutoTuning] Job d'optimisation des seuils démarré. Prochain cycle dans ${interval / 60000} minutes.`);
+
+    autoTuningJobId = setInterval(() => {
+        runThresholdOptimization(securityConfig, trafficData, minDataPoints);
+    }, interval);
+}
+
+/**
+ * Stops the threshold auto-tuning process.
+ * @export
+ */
+export function stopThresholdAutoTuning() {
+    if (autoTuningJobId) {
+        clearInterval(autoTuningJobId);
+        autoTuningJobId = null;
+        console.log("[AutoTuning] Job d'optimisation des seuils arrêté.");
+    }
+}
