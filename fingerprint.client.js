@@ -108,3 +108,9 @@ export const generateClientSideSignature = async (payload, secret) => {
   const hashArray = Array.from(new Uint8Array(signatureBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 };
+
+/**
+ * @internal
+ * Resets the cached fingerprint builder. Used for testing purposes.
+ */
+export const _resetCache = () => (cachedBuilder = null);
