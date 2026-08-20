@@ -96,6 +96,13 @@ app.get('/', (req, res) => {
     res.send('Welcome to the protected page!');
 });
 
+// Example of accessing the suspicion score in a subsequent middleware or route.
+// The `fingerprint` object is attached to the request by `powMiddleware`.
+app.use((req, res, next) => {
+    console.log(`Request from ${req.ip} has a suspicion score of: ${req.fingerprint?.score}`);
+    next();
+});
+
 app.listen(3000, () => console.log('Server started on port 3000'));
 ```
 
@@ -160,7 +167,22 @@ const fp = builder.toString(); // "os:hash1|ua:hash2"
 
 #### `getDeviceFingerprint()`
 *Client-side function only.* Generates a detailed browser fingerprint using APIs like Canvas, WebGL, etc.
+This is the primary function for client-side identification.
 
+#### `generateRequestSignature(payload)`
+*Client-side function only.* Creates a signature for an outgoing request. It combines the device fingerprint with a hash of the request's `payload`. This can be used on the server-side to verify that a request comes from a recognized device and that its payload has not been trivially altered.
+
+```javascript
+// On the client
+const signature = generateRequestSignature({ action: 'update', id: 123 });
+// Send signature in headers...
+```
+
+#### `generateClientSideSignature(payload, secret)`
+*Client-side function only.* Generates a secure HMAC-SHA256 signature for a given `payload` using a `secret`.
+**Security Note:** This function is powerful but should be used with caution. The `secret` must be managed securely. It is typically used with a temporary, single-use secret provided by the server for a specific action, rather than a long-lived shared secret embedded in the client-side code.
+
+---
 ## Advanced Features
 
 ### Architecture: `FingerprintEngine`
@@ -212,6 +234,10 @@ const server = http.createServer(async (req, res) => {
 
     // 2. Process and get a decision
     const decision = await engine.processRequest(requestContext);
+
+    // The decision object now contains the score and the raw suspicion vector.
+    // You can use it for logging or custom logic.
+    console.log(`Request from ${requestContext.clientIp} processed with score: ${decision.score}`);
 
     // 3. Act on the decision
     if (decision.action === 'challenge') {

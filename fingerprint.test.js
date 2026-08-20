@@ -1,17 +1,19 @@
-import { beforeEach, assert, describe, test, expect, vi } from 'vitest';
+import { beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import * as fingerprint from './fingerprint.js';
+import { FingerprintBuilder, cyrb53 } from './fingerprint.builder.js';
 
 const {
-  cyrb53,
   isTicketValid,
-  FingerprintBuilder,
+  identifyRequest,
   powMiddleware,
   __internal,
   configureStore,
   verifyCpuTargetPoWAndGenerateTicket,
   verifyMemoryPoW,
   verifyTspChallenge,
+  startThresholdAutoTuning,
+  stopThresholdAutoTuning,
 } = fingerprint;
 
 describe('Fingerprint & PoW Security Suite', () => {
@@ -130,6 +132,48 @@ describe('Fingerprint & PoW Security Suite', () => {
     }
   });
 
+  describe('identifyRequest (for Rate Limiting)', () => {
+    const inMemoryStore = {
+      _map: new Map(),
+      get: async (key) => inMemoryStore._map.get(key),
+      set: async (key, value) => inMemoryStore._map.set(key, value),
+      has: async (key) => inMemoryStore._map.has(key),
+      delete: async (key) => inMemoryStore._map.delete(key),
+    };
+    const securityConfig = {
+      weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8 },
+      thresholds: { low: 20, medium: 40, high: 75 }
+    };
+    let engine;
+
+    beforeEach(() => {
+      inMemoryStore._map.clear();
+      configureStore(inMemoryStore);
+      vi.restoreAllMocks();
+      engine = new __internal.FingerprintEngine(securityConfig);
+    });
+
+    test('should return a device-specific key for a normal request', async () => {
+      const requestContext = { clientIp: '127.0.0.1', cookies: {}, headers: { 'user-agent': 'test-ua' }, rawHeaders: ['User-Agent', 'test-ua'], httpVersion: '1.1' };
+      const key = await engine.identifyRequest(requestContext);
+      expect(key).toMatch(/^device:/);
+    });
+
+    test('should return a suspicion-based key for a highly suspicious request', async () => {
+      // This context simulates a request from a simple script (e.g., curl) with missing headers.
+      const requestContext = {
+        clientIp: '127.0.0.1',
+        cookies: {},
+        headers: {}, // Simulate completely missing headers
+        rawHeaders: [],
+        httpVersion: '1.1'
+      };
+      const key = await engine.identifyRequest(requestContext);
+      // Missing accept/accept-language headers should trigger a medium suspicion score.
+      expect(key).toBe('suspicious_medium:127.0.0.1');
+    });
+  });
+
   describe('powMiddleware', () => {
     // Mock store for tests
     const inMemoryStore = {
@@ -159,6 +203,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const res = { cookie: vi.fn(), status: vi.fn().mockReturnThis(), send: vi.fn() };
       const next = vi.fn();
 
+      req.fingerprint = {}; // Middleware would initialize this
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(next, 'next() should have been called').toHaveBeenCalled();
@@ -178,6 +223,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
+      req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
       assert.strictEqual(sentStatus, 429, 'Status should be 429');
@@ -199,6 +245,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
+      req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(sentStatus, 'Status should be 429').toBe(429);
@@ -206,7 +253,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(sentBody, 'Challenge should be the combined CPU+Mem type').toContain('Initializing combined verification...');
     });
 
-    test('should issue a TSP challenge for a high-suspicion request', async () => {
+    test('should issue a high-difficulty combined challenge for a high-suspicion request', async () => {
       vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 80, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
       }); // finalScore = 80
@@ -220,10 +267,11 @@ describe('Fingerprint & PoW Security Suite', () => {
       };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
+      req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(sentStatus, 'Status should be 429').toBe(429);
-      expect(sentBody, 'Should send a high-level challenge page').toContain('Enhanced Verification');
+      expect(sentBody, 'Should send a combined challenge page for high suspicion').toContain('Enhanced Verification');
     });
 
     test('should call next() for a suspicious request with a valid ticket', async () => {
@@ -240,6 +288,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const res = { cookie: vi.fn() };
       const next = vi.fn();
 
+      req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(next, 'next() should have been called for a request with a valid ticket').toHaveBeenCalled();
@@ -263,6 +312,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const res = { cookie: (n, v) => { cookieName = n; cookieValue = v; }, redirect: (p) => { redirectedTo = p; } };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
+      req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(redirectedTo, 'Should redirect to the original path').toBe('/protected');
@@ -283,7 +333,13 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
 
     test('should produce a high historyScore for rapid IP rotation', async () => {
-      const req = { headers: { 'user-agent': 'test' }, cookies: {}, ip: '1.1.1.1', path: '/', query: {}, rawHeaders: ['User-Agent', 'test'] };
+      const req = { 
+        headers: { 
+          'user-agent': 'test',
+          'x-device-fingerprint': 'cvs:123|gpu:456|hw:789' // Simulate client-side FP
+        }, 
+        cookies: {}, ip: '1.1.1.1', path: '/', query: {}, rawHeaders: ['User-Agent', 'test'] 
+      };
       const res = { cookie: vi.fn() };
       // Simulate a device using many IPs
       const deviceData = { initialDeviceHash: 'hash1', ips: new Set(['1.1.1.2', '1.1.1.3', '1.1.1.4', '1.1.1.5', '1.1.1.6']), lastUpdate: Date.now(), lastFpHash: 'hash1', lastChangeTimestamp: 0, rapidChangeCount: 0 };
@@ -294,5 +350,186 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(vector.historyScore).toBeGreaterThan(20);
     });
 
+  });
+
+  describe('Client-Side Functions', () => {
+    // Mock browser environment for client-side functions
+    const mockWindow = {
+      navigator: {
+        hardwareConcurrency: 8,
+        deviceMemory: 8,
+        maxTouchPoints: 0,
+        platform: 'Win32',
+        webdriver: false,
+        language: 'en-US',
+      },
+      screen: {
+        width: 1920,
+        height: 1080,
+        colorDepth: 24,
+      },
+      document: {
+        createElement: vi.fn().mockImplementation((tag) => {
+          if (tag === "canvas") {
+            const canvasMock = {
+              width: 0,
+              height: 0,
+              getContext: vi.fn((contextType) => {
+                if (contextType === "2d") {
+                  return {
+                    // These are for the 2D context
+                    fillRect: vi.fn(),
+                    fillText: vi.fn(),
+                    toDataURL: vi
+                      .fn()
+                      .mockReturnValue("data:image/png;base64,mock-canvas-data"),
+                  };
+                }
+                if (
+                  contextType === "webgl" ||
+                  contextType === "experimental-webgl"
+                ) {
+                  // These are for the WebGL context
+                  return {
+                    getExtension: vi.fn().mockReturnValue({
+                      UNMASKED_VENDOR_WEBGL: "vendor_id",
+                      UNMASKED_RENDERER_WEBGL: "renderer_id",
+                    }),
+                  };
+                }
+                return null;
+              }),
+            };
+            return canvasMock;
+          }
+          return {};
+        }),
+      },
+      Intl: {
+        DateTimeFormat: () => ({
+          resolvedOptions: () => ({ timeZone: 'Europe/Paris' }),
+        }),
+      },
+      crypto: {
+        subtle: {
+          importKey: vi.fn().mockResolvedValue('mock-key'),
+          sign: vi.fn().mockResolvedValue(new ArrayBuffer(32)), // Mock 32-byte signature
+        }
+      }
+    };
+
+    let clientFunctions;
+
+    beforeEach(async () => {
+      // Assign the mock window to the global scope for the tests
+      global.window = mockWindow;
+      global.document = mockWindow.document;
+      global.navigator = mockWindow.navigator;
+      global.screen = mockWindow.screen;
+      global.Intl = mockWindow.Intl;
+      // Dynamically import client functions to use the mocked environment
+      clientFunctions = await import('./fingerprint.client.js');
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      // Réinitialise le cache des modules pour s'assurer que `cachedBuilder` est nul avant chaque test.
+      vi.resetModules();
+    });
+
+    test('getDeviceFingerprint should generate a fingerprint string', () => {
+      const fp = clientFunctions.getDeviceFingerprint();
+      expect(fp).toBeTypeOf('string');
+      expect(fp).toContain('cvs:');
+      expect(fp).toContain('gpu:');
+    });
+  });
+
+  describe('Threshold Auto-Tuning', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      stopThresholdAutoTuning(); // Ensure cleanup
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    test('should start, run an optimization cycle, and update thresholds', () => {
+      const trafficData = [];
+      const securityConfig = {
+        thresholds: { low: 50, medium: 70, high: 90 }, // Intentionally bad initial thresholds
+        logger: (log) => trafficData.push(log),
+      };
+
+      // Generate mock data where optimal 'low' threshold is around 25
+      // Bots with low scores (false negatives)
+      for (let i = 0; i < 50; i++) trafficData.push({ type: 'challenge_issued', deviceId: `bot-${i}`, score: 15 + Math.random() * 5 });
+      // Humans with slightly higher scores (false positives)
+      for (let i = 0; i < 50; i++) trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 30 + Math.random() * 5 });
+      // Solved challenges (clear humans)
+      for (let i = 0; i < 20; i++) trafficData.push({ type: 'challenge_solved', deviceId: `human-solver-${i}`, score: 40 });
+
+      const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      startThresholdAutoTuning({
+        securityConfig,
+        trafficData,
+        interval: 60000, // 1 minute
+        minDataPoints: 100,
+      });
+
+      // Advance time to trigger the first optimization cycle
+      vi.advanceTimersByTime(60000);
+
+      // The genetic algorithm should find better thresholds.
+      // We expect 'low' to decrease significantly from 50.
+      expect(securityConfig.thresholds.low).toBeLessThan(40);
+      expect(securityConfig.thresholds.low).toBeGreaterThan(10);
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Nouveaux seuils optimisés appliqués'));
+
+      // Stop the tuner and check if the interval is cleared
+      const clearIntervalSpy = vi.spyOn(global, 'clearInterval');
+      stopThresholdAutoTuning();
+      expect(clearIntervalSpy).toHaveBeenCalled();
+    });
+
+    test('should not run optimization if data points are insufficient', () => {
+      const trafficData = [];
+      const securityConfig = {
+        thresholds: { low: 20, medium: 45, high: 75 },
+        logger: (log) => trafficData.push(log),
+      };
+
+      // Generate only 50 data points, less than the minimum of 100
+      for (let i = 0; i < 50; i++) {
+        trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 10 });
+      }
+
+      const consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      startThresholdAutoTuning({
+        securityConfig,
+        trafficData,
+        interval: 60000,
+        minDataPoints: 100,
+      });
+
+      // Advance time to trigger the cycle
+      vi.advanceTimersByTime(60000);
+
+      // Check that optimization was postponed
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Reporté'));
+      // Thresholds should not have changed
+      expect(securityConfig.thresholds).toEqual({ low: 20, medium: 45, high: 75 });
+
+      // Add more data to meet the threshold
+      for (let i = 0; i < 50; i++) {
+        trafficData.push({ type: 'request_passed', deviceId: `human-new-${i}`, score: 10 });
+      }
+      vi.advanceTimersByTime(60000);
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Démarrage du cycle d\'optimisation'));
+    });
   });
 });
