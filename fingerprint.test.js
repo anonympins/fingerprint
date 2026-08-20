@@ -1,5 +1,4 @@
-import test from 'node:test';
-import assert from 'node:assert';
+import { assert, describe, test, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import * as fingerprint from './fingerprint.js';
 
@@ -12,23 +11,23 @@ const {
   verifyCpuTargetPoWAndGenerateTicket,
 } = fingerprint;
 
-test('Fingerprint & PoW Security Suite', async (t) => {
-  await t.test('cyrb53 should be deterministic', () => {
+describe('Fingerprint & PoW Security Suite', () => {
+  test('cyrb53 should be deterministic', () => {
     const input = "test-string";
-    assert.strictEqual(cyrb53(input), cyrb53(input));
-    assert.notStrictEqual(cyrb53("a"), cyrb53("b"));
+    expect(cyrb53(input)).toBe(cyrb53(input));
+    expect(cyrb53("a")).not.toBe(cyrb53("b"));
   });
 
-  await t.test('FingerprintBuilder comparison logic', () => {
+  test('FingerprintBuilder comparison logic', () => {
     const fp1 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
     const fp2 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
     const fp3 = new FingerprintBuilder().add('hw', '4_8').add('gpu', 'amd').toString();
 
-    assert.strictEqual(FingerprintBuilder.compare(fp1, fp2), 1, "Identical FPs should return 1");
-    assert.ok(FingerprintBuilder.compare(fp1, fp3) < 0.5, "Different FPs should have low similarity score");
+    expect(FingerprintBuilder.compare(fp1, fp2), "Identical FPs should return 1").toBe(1);
+    expect(FingerprintBuilder.compare(fp1, fp3), "Different FPs should have low similarity score").toBeLessThan(0.5);
   });
 
-  await t.test('CPU Target PoW Workflow: Solve, Verify, and Validate Ticket', () => {
+  test('CPU Target PoW Workflow: Solve, Verify, and Validate Ticket', () => {
     const ip = '127.0.0.1';
     const nonce = 'test-nonce';
     const suspicionFactor = 0.1; // Faible suspicion pour un test rapide
@@ -46,64 +45,62 @@ test('Fingerprint & PoW Security Suite', async (t) => {
 
     // 1. Vérification de la solution et génération du ticket
     const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor);
-    assert.ok(ticket, "Le ticket devrait être généré pour une solution valide");
+    expect(ticket, "Le ticket devrait être généré pour une solution valide").toBeTruthy();
 
     // 2. Validation du ticket
-    assert.ok(isTicketValid(ip, ticket), "Le ticket devrait être valide pour la même IP");
+    expect(isTicketValid(ip, ticket), "Le ticket devrait être valide pour la même IP").toBe(true);
 
     // 3. Cas d'échec : Mauvaise IP
-    assert.strictEqual(isTicketValid('1.1.1.1', ticket), false, "Le ticket ne doit pas être valide pour une IP différente");
+    expect(isTicketValid('1.1.1.1', ticket), "Le ticket ne doit pas être valide pour une IP différente").toBe(false);
 
     // 4. Cas d'échec : Solution invalide
     const badTicket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, "mauvaise-solution", suspicionFactor);
-    assert.strictEqual(badTicket, null, "Une mauvaise solution ne doit pas produire de ticket");
+    expect(badTicket, "Une mauvaise solution ne doit pas produire de ticket").toBeNull();
   });
 
-  await t.test('PoW Ticket Expiration', () => {
+  test('PoW Ticket Expiration', () => {
     const ip = '127.0.0.1';
     // On simule un ticket expiré en manipulant la chaîne (pour le test)
     const expiredTimestamp = Date.now() - 1000;
     const signature = crypto.createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiredTimestamp}`).digest("hex");
     const ticket = `${expiredTimestamp}:${signature}`;
-    assert.strictEqual(isTicketValid(ip, ticket), false, "Un ticket expiré doit être refusé");
+    expect(isTicketValid(ip, ticket), "Un ticket expiré doit être refusé").toBe(false);
   });
 
-  await t.test('powMiddleware', async (t) => {
+  describe('powMiddleware', () => {
     const securityConfig = {
       weights: { historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 1 },
       thresholds: { low: 20, medium: 45, high: 75 }
     };
     const middleware = powMiddleware(securityConfig);
 
-    await t.test('should call next() for a non-suspicious request', async () => {
-      t.mock.method(__internal, 'getSuspicionVector', () => Promise.resolve({
+    test('should call next() for a non-suspicious request', async () => {
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      }));
-        let sentStatus, sentBody;
+      });
 
-        const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
-      const res = { cookie: () => {}, status: (s) => { sentStatus = s; return res; }, send: (b) => { sentBody = b; } }; // Add a mock cookie function
-      let nextCalled = false;
-      const next = () => { nextCalled = true; };
+      const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
+      const res = { cookie: vi.fn(), status: vi.fn().mockReturnThis(), send: vi.fn() };
+      const next = vi.fn();
 
       await middleware(req, res, next);
 
-      assert.ok(nextCalled, 'next() should have been called');
+      expect(next, 'next() should have been called').toHaveBeenCalled();
     });
 
-    await t.test('should issue a CPU challenge for a suspicious request', async () => {
-      t.mock.method(__internal, 'getSuspicionVector', () => Promise.resolve({
+    test('should issue a CPU challenge for a suspicious request', async () => {
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      }));
+      });
 
       const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
       let sentStatus, sentBody;
       const res = {
         status: (s) => { sentStatus = s; return res; },
         send: (b) => { sentBody = b; },
-        cookie: () => {} // Mock cookie to prevent errors in getSuspicionVector
+        cookie: vi.fn() // Mock cookie to prevent errors in getSuspicionVector
       };
-      const next = () => { assert.fail('next() should not be called'); };
+      const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
       await middleware(req, res, next);
 
@@ -111,34 +108,32 @@ test('Fingerprint & PoW Security Suite', async (t) => {
       assert.ok(sentBody.includes('Security Check'), 'Should send a challenge page');
       assert.ok(sentBody.includes('cpu_target'), 'Challenge should be of type cpu_target');
     });
-    // In the test above, I've added a mock `cookie` function to the `res` object.
-    // I also adjusted how `sentStatus` and `sentBody` are captured to avoid potential closure issues, though the original way was likely fine.
 
-    await t.test('should issue a Memory challenge for a medium-suspicious request', async () => {
-      t.mock.method(__internal, 'getSuspicionVector', () => Promise.resolve({
+    test('should issue a Memory challenge for a medium-suspicious request', async () => {
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      }));
+      });
 
       const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
       let sentStatus, sentBody;
       const res = {
         status: (s) => { sentStatus = s; return res; },
         send: (b) => { sentBody = b; },
-        cookie: () => {} // Mock cookie to prevent errors in getSuspicionVector
+        cookie: vi.fn() // Mock cookie to prevent errors in getSuspicionVector
       };
-      const next = () => { assert.fail('next() should not be called'); };
+      const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
       await middleware(req, res, next);
 
-      assert.strictEqual(sentStatus, 429, 'Status should be 429');
-      assert.ok(sentBody.includes('Vérification renforcée'), 'Should send a medium challenge page');
-      assert.ok(sentBody.includes('Allocation et calcul mémoire'), 'Challenge should be of type memory');
+      expect(sentStatus, 'Status should be 429').toBe(429);
+      expect(sentBody, 'Should send a medium challenge page').toContain('Vérification renforcée');
+      expect(sentBody, 'Challenge should be of type memory').toContain('Allocation et calcul mémoire');
     });
 
-    await t.test('should call next() for a suspicious request with a valid ticket', async () => {
-      t.mock.method(__internal, 'getSuspicionVector', () => Promise.resolve({
+    test('should call next() for a suspicious request with a valid ticket', async () => {
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      }));
+      });
 
       const ip = '127.0.0.1';
       const expiry = Date.now() + 3600000;
@@ -146,16 +141,15 @@ test('Fingerprint & PoW Security Suite', async (t) => {
       const validTicket = `${expiry}:${signature}`;
 
       const req = { path: '/', ip, cookies: { pow_clearance: validTicket }, query: {}, headers: { 'user-agent': 'test-ua' } };
-      const res = { cookie: () => {} }; // Add a mock cookie function
-      let nextCalled = false;
-      const next = () => { nextCalled = true; };
+      const res = { cookie: vi.fn() };
+      const next = vi.fn();
 
       await middleware(req, res, next);
 
-      assert.ok(nextCalled, 'next() should have been called for a request with a valid ticket');
+      expect(next, 'next() should have been called for a request with a valid ticket').toHaveBeenCalled();
     });
 
-    await t.test('should redirect after a valid PoW solution is provided', async () => {
+    test('should redirect after a valid PoW solution is provided', async () => {
       const ip = '127.0.0.1';
       const nonce = 'test-nonce-redirect';
       const suspicionFactor = 0.1;
@@ -167,17 +161,17 @@ test('Fingerprint & PoW Security Suite', async (t) => {
         solution++;
       }
 
-      t.mock.method(__internal, 'getSuspicionVector', () => Promise.resolve({ historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0 }));
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({ historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0 });
       const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' } };
       let redirectedTo, cookieName, cookieValue;
       const res = { cookie: (n, v) => { cookieName = n; cookieValue = v; }, redirect: (p) => { redirectedTo = p; } };
-      const next = () => { assert.fail('next() should not be called'); };
+      const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
       await middleware(req, res, next);
 
-      assert.strictEqual(redirectedTo, '/protected', 'Should redirect to the original path');
-      assert.strictEqual(cookieName, 'pow_clearance', 'Should set the clearance cookie');
-      assert.ok(isTicketValid(ip, cookieValue), 'The set cookie should be valid');
+      expect(redirectedTo, 'Should redirect to the original path').toBe('/protected');
+      expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
+      expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
     });
   });
 });

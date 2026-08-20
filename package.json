@@ -8,7 +8,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "test": "vitest -- --test"
+    "test": "vitest run"
   },
   "files": [
     "fingerprint.js",
@@ -41,6 +41,10 @@
   "homepage": "https://github.com/anonympins/fingerprint#readme",
   "devDependencies": {
     "cookie-parser": "^1.4.6",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+
   }
 }
