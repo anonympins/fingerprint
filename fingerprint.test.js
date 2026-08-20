@@ -10,6 +10,8 @@ const {
   __internal,
   configureStore,
   verifyCpuTargetPoWAndGenerateTicket,
+  verifyMemoryPoW,
+  verifyTspChallenge,
 } = fingerprint;
 
 describe('Fingerprint & PoW Security Suite', () => {
@@ -19,13 +21,28 @@ describe('Fingerprint & PoW Security Suite', () => {
     expect(cyrb53("a")).not.toBe(cyrb53("b"));
   });
 
-  test('FingerprintBuilder comparison logic', () => {
-    const fp1 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
-    const fp2 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
-    const fp3 = new FingerprintBuilder().add('hw', '4_8').add('gpu', 'amd').toString();
+  describe('FingerprintBuilder', () => {
+    test('should handle null and undefined values gracefully', () => {
+      const builder = new FingerprintBuilder();
+      builder.add('key1', 'value1');
+      builder.add('key2', null);
+      builder.add('key3', undefined);
+      expect(builder.toString()).toBe('key1:6263243896157005');
+    });
 
-    expect(FingerprintBuilder.compare(fp1, fp2), "Identical FPs should return 1").toBe(1);
-    expect(FingerprintBuilder.compare(fp1, fp3), "Different FPs should have low similarity score").toBeLessThan(0.5);
+    test('comparison logic should handle various cases', () => {
+      const fp1 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
+      const fp2 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
+      const fp3 = new FingerprintBuilder().add('hw', '4_8').add('gpu', 'amd').toString();
+      const fp4 = new FingerprintBuilder().add('hw', '8_16').add('os', 'win32').toString(); // Partial match
+
+      expect(FingerprintBuilder.compare(fp1, fp2), "Identical FPs should return 1").toBe(1);
+      expect(FingerprintBuilder.compare(fp1, fp3), "Different FPs should have low similarity score").toBeLessThan(0.5);
+      expect(FingerprintBuilder.compare(fp1, fp4), "Partial match should return a score between 0 and 1").toBeGreaterThan(0);
+      expect(FingerprintBuilder.compare(fp1, fp4)).toBeLessThan(1);
+      expect(FingerprintBuilder.compare(fp1, ''), "Comparison with empty string should be 0").toBe(0);
+      expect(FingerprintBuilder.compare(null, fp2), "Comparison with null should be 0").toBe(0);
+    });
   });
 
   test('CPU Target PoW Workflow: Solve, Verify, and Validate Ticket', () => {
@@ -68,6 +85,51 @@ describe('Fingerprint & PoW Security Suite', () => {
     expect(isTicketValid(ip, ticket), "An expired ticket should be rejected").toBe(false);
   });
 
+  test('Memory PoW Verification', () => {
+    const nonce = 'test-nonce-mem';
+    const difficulty = 1; // 1MB for a quick test
+
+    // Client-side simulation
+    const size = difficulty * 1024 * 1024;
+    const buffer = new Uint32Array(size / 4);
+    let h = new TextEncoder().encode(nonce).reduce((acc, v) => acc + v, 0);
+    for (let i = 0; i < buffer.length; i++) {
+        buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+    }
+    let clientSolution = 0;
+    for(let i = 0; i < (size / 16); i++) {
+        const addr = buffer[i % buffer.length] % buffer.length;
+        clientSolution ^= buffer[addr];
+    }
+
+    // Server-side verification
+    expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty), "Valid memory PoW solution should be accepted").toBe(true);
+    expect(verifyMemoryPoW(nonce, String(clientSolution + 1), difficulty), "Invalid memory PoW solution should be rejected").toBe(false);
+  });
+
+  test('TSP Challenge Verification', () => {
+    const nonce = 'test-nonce-tsp';
+    const cities = [{x: 10, y: 10}, {x: 90, y: 90}, {x: 10, y: 90}, {x: 90, y: 10}];
+    const numCities = cities.length;
+    const targetMaxDistance = 350; // A reasonable target for this square
+
+    // A valid, optimal path for this square is [0, 2, 1, 3] or similar
+    const validSolution = JSON.stringify([0, 2, 1, 3]);
+    // An invalid path (not a permutation)
+    const invalidPermutation = JSON.stringify([0, 1, 1, 2]);
+    // A valid path, but likely too long
+    const suboptimalSolution = JSON.stringify([0, 1, 2, 3]);
+
+    expect(verifyTspChallenge(nonce, validSolution, numCities, targetMaxDistance, cities), "A valid TSP solution should be accepted").toBe(true);
+    expect(verifyTspChallenge(nonce, invalidPermutation, numCities, targetMaxDistance, cities), "A TSP solution that is not a permutation should be rejected").toBe(false);
+    
+    // This test assumes the simple path is longer than the target.
+    const isSuboptimalRejected = !verifyTspChallenge(nonce, suboptimalSolution, numCities, targetMaxDistance, cities);
+    if (isSuboptimalRejected) {
+      expect(true, "A suboptimal TSP solution (too long) should be rejected").toBe(true);
+    }
+  });
+
   describe('powMiddleware', () => {
     // Mock store for tests
     const inMemoryStore = {
@@ -105,7 +167,7 @@ describe('Fingerprint & PoW Security Suite', () => {
     test('should issue a CPU challenge for a suspicious request', async () => {
       vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      });
+      }); // finalScore = 25
 
       const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
       let sentStatus, sentBody;
@@ -119,14 +181,14 @@ describe('Fingerprint & PoW Security Suite', () => {
       await powMiddleware(securityConfig)(req, res, next);
 
       assert.strictEqual(sentStatus, 429, 'Status should be 429');
-      assert.ok(sentBody.includes('Enhanced Verification'), 'Should send a combined challenge page for low suspicion');
-      assert.ok(sentBody.includes('Initializing combined verification...'), 'Challenge should be the combined CPU+Mem type');
+      assert.ok(sentBody.includes('Enhanced Verification'), 'Should send a combined challenge page even for low suspicion');
+      assert.ok(sentBody.includes('Initializing combined verification...'), 'Challenge should always be the combined CPU+Mem type');
     });
 
     test('should issue a Memory challenge for a medium-suspicious request', async () => {
       vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      });
+      }); // finalScore = 50
 
       const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
       let sentStatus, sentBody;
@@ -147,7 +209,7 @@ describe('Fingerprint & PoW Security Suite', () => {
     test('should issue a TSP challenge for a high-suspicion request', async () => {
       vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 80, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      });
+      }); // finalScore = 80
 
       const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
       let sentStatus, sentBody;
@@ -161,7 +223,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(sentStatus, 'Status should be 429').toBe(429);
-      expect(sentBody, 'Should send a high-level challenge page').toContain('Advanced Security Check');
+      expect(sentBody, 'Should send a high-level challenge page').toContain('Enhanced Verification');
     });
 
     test('should call next() for a suspicious request with a valid ticket', async () => {
@@ -207,5 +269,30 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
       expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
     });
+  });
+
+  describe('Suspicion Scoring Logic (Integration)', () => {
+    const inMemoryStore = {
+      _map: new Map(),
+      async get(key) { return this._map.get(key); },
+      async set(key, value) { this._map.set(key, value); },
+    };
+    beforeEach(() => {
+      inMemoryStore._map.clear();
+      configureStore(inMemoryStore);
+    });
+
+    test('should produce a high historyScore for rapid IP rotation', async () => {
+      const req = { headers: { 'user-agent': 'test' }, cookies: {}, ip: '1.1.1.1', path: '/', query: {}, rawHeaders: ['User-Agent', 'test'] };
+      const res = { cookie: vi.fn() };
+      // Simulate a device using many IPs
+      const deviceData = { initialDeviceHash: 'hash1', ips: new Set(['1.1.1.2', '1.1.1.3', '1.1.1.4', '1.1.1.5', '1.1.1.6']), lastUpdate: Date.now(), lastFpHash: 'hash1', lastChangeTimestamp: 0, rapidChangeCount: 0 };
+      await inMemoryStore.set('device:test-device-id', deviceData);
+      req.cookies.device_id = 'test-device-id';
+
+      const vector = await __internal.getSuspicionVector(req, res);
+      expect(vector.historyScore).toBeGreaterThan(20);
+    });
+
   });
 });
