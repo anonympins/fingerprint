@@ -1,15 +1,15 @@
 # fingerprint
-![](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci.yml)
-![](https://img.shields.io/github/v/release/anonympins/fingerprint)
-![](https://img.shields.io/github/license/anonympins/fingerprint)
-![](https://img.shields.io/github/downloads/anonympins/fingerprint/total)
-![](https://img.shields.io/github/watchers/anonympins/fingerprint)
+[![CI](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/releases)
+[![License](https://img.shields.io/github/license/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/blob/main/LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/anonympins/fingerprint/total)](https://github.com/anonympins/fingerprint/releases)
+[![Watchers](https://img.shields.io/github/watchers/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/watchers)
 
 An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.
 
 ## How It Works
 
-This system is designed to identify and slow down bots and automated scripts by evaluating the "suspicion" level of each incoming request. Instead of outright blocking, it imposes challenges with a difficulty proportional to the suspicion score, penalizing bots without significantly impacting legitimate users.
+This system identifies and slows down bots and automated scripts by evaluating the "suspicion" level of each incoming request. Instead of outright blocking, it imposes challenges with a difficulty proportional to the suspicion score, penalizing bots without significantly impacting legitimate users.
 
 The process unfolds in three steps:
 
@@ -21,9 +21,9 @@ The process unfolds in three steps:
     *   **Inconsistency**: A low similarity score between the current fingerprint and the initial one associated with the `device_id` (cookie theft detection).
 3.  **Dynamic Challenge**: If the suspicion score exceeds a certain threshold, a challenge is presented to the user. The difficulty and type of challenge depend on the score:
     *   **Low to Medium Suspicion**: A combined CPU and Memory Proof-of-Work (PoW) challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
-    *   **High Suspicion**: For the most suspicious requests, a complex challenge like the Traveling Salesperson Problem (TSP) or a CAPTCHA can be triggered. (Note: In the current implementation, this level also defaults to a high-difficulty combined CPU/Memory challenge).
+    *   **High Suspicion**: For the most suspicious requests, the system issues a high-difficulty combined CPU/Memory challenge. The architecture allows for plugging in more complex challenges like CAPTCHAs if needed.
 
-Once the challenge is solved, a clearance "ticket" is issued via a cookie, exempting the user from new challenges for a set period.
+Once the challenge is solved, a clearance "ticket" is issued via a secure cookie, exempting the user from new challenges for a set period.
 
 ## Features
 
@@ -32,7 +32,7 @@ Once the challenge is solved, a clearance "ticket" is issued via a cookie, exemp
 -   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
 -   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`.
 -   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure ticket validation.
--   **Automatic Threshold Tuning**: (Optional) Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust suspicion thresholds (`low`, `medium`, `high`), improving bot detection accuracy and reducing false positives over time.
+-   **Automatic Threshold Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust suspicion thresholds (`low`, `medium`, `high`), improving bot detection accuracy and reducing false positives over time.
 
 ## Installation and Usage
 
@@ -52,13 +52,11 @@ export POW_SECRET="your_secret_key_of_at_least_32_characters"
 
 ### Integration Example
 
-For the `powMiddleware` to work, it needs a configuration defining the weights of suspicion indicators and the challenge trigger thresholds.
+The `powMiddleware` requires a configuration object defining the weights of suspicion indicators and the challenge trigger thresholds.
 
 ```javascript
 import express from 'express';
 import cookieParser from 'cookie-parser';
-// The `configurePow` function is a conceptual example. In the actual implementation,
-// you would pass the configuration to the middleware, for example, via a factory function.
 import { powMiddleware /*, configurePow */ } from './fingerprint.js'; // Adjust the path
 
 const app = express();
@@ -81,16 +79,14 @@ const securityConfig = {
     }
 };
 
-// In a real-world scenario, you would configure the middleware.
-// For example: const configuredPowMiddleware = createPowMiddleware(securityConfig);
+// Create an instance of the middleware with your security configuration.
 const powMiddlewareInstance = powMiddleware(securityConfig);
 
 // Enable trust proxy if your app is behind a reverse proxy (Nginx, etc.)
 // to correctly retrieve the client's IP.
 app.set('trust proxy', 1);
 
-// Apply the protection middleware to all routes or to specific routes.
-// You would use the configured middleware here.
+// Apply the protection middleware to all routes or to specific ones.
 app.use(powMiddlewareInstance);
 
 app.get('/', (req, res) => {
@@ -98,7 +94,7 @@ app.get('/', (req, res) => {
 });
 
 // Example of accessing the suspicion score in a subsequent middleware or route.
-// The `fingerprint` object is attached to the request by `powMiddleware`.
+// The `fingerprint` object is attached to the request object by the middleware.
 app.use((req, res, next) => {
     console.log(`Request from ${req.ip} has a suspicion score of: ${req.fingerprint?.score}`);
     next();
@@ -113,7 +109,7 @@ In addition to the main middleware, several functions are exported to allow for 
 
 ### Main Functions
 
-#### `powMiddleware(req, res, next)`
+#### `powMiddleware(securityConfig)`
 The main Express middleware. It orchestrates identification, suspicion calculation, and challenge issuance. It is the main entry point of the library.
 
 #### `configureStore(store)`
@@ -121,7 +117,7 @@ Allows replacing the in-memory store with an external datastore (like Redis) for
 
 ```javascript
 import { configureStore } from './fingerprint.js';
-import { createRedisStore } from './redis-store.js'; // Assuming you have a redis store implementation
+import { createRedisStore } from './redis-store.js'; // Assuming a redis store implementation exists
 
 const redisStore = createRedisStore(process.env.REDIS_URL);
 configureStore(redisStore);
@@ -156,7 +152,7 @@ app.use(async (req, res, next) => {
 #### `isTicketValid(ip, ticket)`
 Checks the validity of a `pow_clearance` cookie. Returns `true` if the ticket is present, not expired, and correctly signed for the given IP.
 
-#### `FingerprintBuilder` (Class)
+#### `FingerprintBuilder`
 A class for building granular server-side fingerprints.
 
 ```javascript
