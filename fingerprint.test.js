@@ -144,6 +144,26 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(sentBody, 'Challenge should be the combined CPU+Mem type').toContain('Initializing combined verification...');
     });
 
+    test('should issue a TSP challenge for a high-suspicion request', async () => {
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+        historyScore: 80, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
+      });
+
+      const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
+      let sentStatus, sentBody;
+      const res = {
+        status: (s) => { sentStatus = s; return res; },
+        send: (b) => { sentBody = b; },
+        cookie: vi.fn()
+      };
+      const next = vi.fn(() => { throw new Error('next() should not be called'); });
+
+      await powMiddleware(securityConfig)(req, res, next);
+
+      expect(sentStatus, 'Status should be 429').toBe(429);
+      expect(sentBody, 'Should send a high-level challenge page').toContain('Advanced Security Check');
+    });
+
     test('should call next() for a suspicious request with a valid ticket', async () => {
       vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
         historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
