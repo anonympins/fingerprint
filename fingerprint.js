@@ -1006,6 +1006,9 @@ export const powMiddleware = (securityConfig) => {
     }
 
     switch (decision.action) {
+      case 'block':
+        return res.status(decision.status).send(decision.body);
+
       case 'challenge':
         return res.status(decision.status).send(decision.body);
 
