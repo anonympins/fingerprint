@@ -1,9 +1,9 @@
 # fingerprint
 ![](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci.yml)
 ![](https://img.shields.io/github/v/release/anonympins/fingerprint)
+![](https://img.shields.io/github/license/anonympins/fingerprint)
 ![](https://img.shields.io/github/downloads/anonympins/fingerprint/total)
 ![](https://img.shields.io/github/watchers/anonympins/fingerprint)
-![](https://img.shields.io/github/license/anonympins/fingerprint)
 
 An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.
 
