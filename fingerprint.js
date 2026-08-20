@@ -946,6 +946,66 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
 }
 
 /**
+ * Generates the HTML content for a combined CPU + Memory PoW challenge.
+ * @param {object} cpuChallengeDetails - Details from generateCpuTargetChallenge.
+ * @param {number} memoryDifficulty - Memory allocation in MB.
+ * @param {string} clientIp - The client's IP address.
+ * @returns {string} HTML content.
+ */
+function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp) {
+    const { nonce, target, path } = cpuChallengeDetails;
+    return `
+      <html><head><title>Advanced Security Check</title></head>
+      <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
+        <h1>Enhanced Verification... (Level 2)</h1>
+        <p>Your activity requires an additional security check. This may take a few moments.</p>
+        <div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div>
+        <script>
+          async function solve() {
+            const nonce = "${nonce}";
+            const path = "${path}";
+
+            // --- CPU Challenge ---
+            document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
+            const cpuTarget = BigInt("0x${target}");
+            let cpuSolution = 0;
+            while (true) {
+              const msg = "${clientIp}:${nonce}:" + cpuSolution;
+              const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
+              const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+              if (BigInt('0x' + hashHex) < cpuTarget) break;
+              cpuSolution++;
+              if (cpuSolution % 100000 === 0) await new Promise(r => setTimeout(r, 0));
+            }
+
+            // --- Memory Challenge ---
+            document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (${memoryDifficulty} MB)';
+            await new Promise(r => setTimeout(r, 10)); // Yield to update UI
+
+            let memSolution = 0;
+            try {
+                const size = ${memoryDifficulty} * 1024 * 1024;
+                const buffer = new Uint32Array(size / 4);
+                let h = new TextEncoder().encode(nonce).reduce((acc, v) => acc + v, 0);
+                for (let i = 0; i < buffer.length; i++) {
+                    buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+                }
+                for(let i = 0; i < (size / 16); i++) {
+                    const addr = buffer[i % buffer.length] % buffer.length;
+                    memSolution ^= buffer[addr];
+                }
+            } catch(e) {
+                document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
+                return;
+            }
+            window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
+          }
+          solve();
+        </script>
+      </body></html>`;
+}
+
+/**
  * Verifies a PoW solution based on a target and generates a ticket.
  */
 export function verifyCpuTargetPoWAndGenerateTicket(
@@ -1016,8 +1076,8 @@ class FingerprintEngine {
             (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
         )
         : 0;
-    const powCookie = cookies?.pow_clearance;
-    const { pow_type, pow_nonce, pow_solution } = query;
+    const powCookie = cookies?.pow_clearance;    
+    const { pow_type, pow_nonce, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
 
     // Basic log for each non-static request
     if (logger && !isSuspicious) {
@@ -1026,7 +1086,7 @@ class FingerprintEngine {
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
         // --- CHALLENGE SOLUTION HANDLING ---
-        if (pow_nonce && pow_solution) {
+        if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
             let isValid = false,
                 ticket = null;
             if (pow_type === "cpu_target") {
@@ -1044,6 +1104,19 @@ class FingerprintEngine {
                 const difficulty =
                     minDifficulty + suspicionFactor * (maxDifficulty - minDifficulty);
                 isValid = verifyMemoryPoW(pow_nonce, pow_solution, difficulty);
+            } else if (pow_type === "cpu_mem") {
+                // Verify combined challenge
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(
+                    clientIp, pow_nonce, pow_solution_cpu, suspicionFactor
+                );
+
+                const minDifficulty = 16; // 16Mo
+                const maxDifficulty = 48; // 48Mo
+                const memDifficulty = minDifficulty + suspicionFactor * (maxDifficulty - minDifficulty);
+                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, memDifficulty);
+
+                isValid = cpuTicket !== null && isMemValid;
+                if (isValid) ticket = cpuTicket; // Reuse the ticket generated by the CPU verification
             } else if (pow_type === "tsp") {
                 // Logic for TSP remains the same
                 // ...
@@ -1094,23 +1167,35 @@ class FingerprintEngine {
 
         // LEVEL 2: Memory-Intensive PoW
         if (isSuspiciousMedium) {
-            const minDifficulty = 16; // 16Mo
-            const maxDifficulty = 48; // 48Mo
-            const difficulty =
-                minDifficulty + suspicionFactor * (maxDifficulty - minDifficulty);
-            const page = generateMemoryPoWChallenge(clientIp, nonce, difficulty, path);
-            return { action: 'challenge', status: 429, body: page };
+            // Utilisons notre nouveau challenge combiné !
+            const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path);
+            
+            const minMemDifficulty = 16; // 16Mo
+            const maxMemDifficulty = 48; // 48Mo
+            const memDifficulty = minMemDifficulty + suspicionFactor * (maxMemDifficulty - minMemDifficulty);
+
+            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp);
+            return {
+                action: 'challenge',
+                status: 429, body: page
+            };
         }
 
-        if (isSuspicious) {
-            const challengeDetails = generateCpuTargetChallenge(
-                clientIp,
-                nonce,
-                suspicionFactor,
-                path,
-            );
-            const challengePage = generateCpuTargetChallengePage(challengeDetails, clientIp);
-            return { action: 'challenge', status: 429, body: challengePage };
+        // NOUVELLE LOGIQUE UNIFIÉE POUR TOUS LES NIVEAUX DE SUSPICION (low et medium)
+        if (isSuspicious) { // Couvre à la fois low et medium
+            const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path);
+
+            // La difficulté mémoire démarre à 0 et augmente seulement après un certain seuil de suspicion.
+            // Par exemple, elle ne commence à augmenter qu'à partir de 25% du chemin entre 'low' et 'high'.
+            const memActivationFactor = Math.max(0, (suspicionFactor - 0.25) / 0.75);
+
+            const minMemDifficulty = 0;   // Peut être 0 Mo !
+            const maxMemDifficulty = 48;  // 48Mo pour les plus suspects
+            const memDifficulty = minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty);
+
+            // On utilise toujours la page combinée, même si la difficulté mémoire est 0 (le calcul sera quasi instantané).
+            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp);
+            return { action: 'challenge', status: 429, body: page };
         }
     }
 

@@ -119,8 +119,8 @@ describe('Fingerprint & PoW Security Suite', () => {
       await powMiddleware(securityConfig)(req, res, next);
 
       assert.strictEqual(sentStatus, 429, 'Status should be 429');
-      assert.ok(sentBody.includes('Security Check'), 'Should send a challenge page');
-      assert.ok(sentBody.includes('cpu_target'), 'Challenge should be of type cpu_target');
+      assert.ok(sentBody.includes('Enhanced Verification'), 'Should send a combined challenge page for low suspicion');
+      assert.ok(sentBody.includes('Initializing combined verification...'), 'Challenge should be the combined CPU+Mem type');
     });
 
     test('should issue a Memory challenge for a medium-suspicious request', async () => {
@@ -140,8 +140,8 @@ describe('Fingerprint & PoW Security Suite', () => {
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(sentStatus, 'Status should be 429').toBe(429);
-      expect(sentBody, 'Should send a medium challenge page').toContain('Enhanced Verification');
-      expect(sentBody, 'Challenge should be of type memory').toContain('Performing memory allocation and calculation');
+      expect(sentBody, 'Should send a combined challenge page for medium suspicion').toContain('Enhanced Verification');
+      expect(sentBody, 'Challenge should be the combined CPU+Mem type').toContain('Initializing combined verification...');
     });
 
     test('should call next() for a suspicious request with a valid ticket', async () => {
