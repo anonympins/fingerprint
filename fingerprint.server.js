@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-
+import {FingerprintBuilder} from "fingerprint.builder.js"
 const POW_SECRET = process.env.POW_SECRET;
 
 if (!POW_SECRET && process.env.NODE_ENV === 'production') {
@@ -26,91 +26,6 @@ export const cyrb53 = (str, seed = 0) => {
     Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 };
-
-/**
- * Classe pour construire une empreinte composite (Multi-Hash).
- * Format de sortie : "grp1:hash1|grp2:hash2|grp3:hash3"
- */
-export class FingerprintBuilder {
-  constructor() {
-    this.components = new Map();
-  }
-
-  /**
-   * Ajoute un composant au hash global.
-   * @param {string} group - Le nom du groupe (ex: 'hw', 'screen', 'geo')
-   * @param {string|number|boolean} value - La valeur brute à hasher
-   */
-  add(group, value) {
-    if (value === undefined || value === null) return this;
-    // On hash la valeur individuellement pour l'anonymiser et réduire sa taille
-    this.components.set(group, cyrb53(String(value)));
-    return this;
-  }
-
-  /**
-   * Génère la chaîne de signature finale.
-   * Trie les clés pour garantir un ordre déterministe.
-   */
-  toString() {
-    return Array.from(this.components.entries())
-      .sort((a, b) => a[0].localeCompare(b[0])) // Tri alphabétique des clés
-      .map(([key, hash]) => `${key}:${hash}`)
-      .join("|");
-  }
-
-  /**
-   * Compare deux empreintes et retourne un score de similarité (0 à 1).
-   * Utilise des poids pour donner plus d'importance aux invariants forts (Canvas, GPU).
-   * @param {string} fpString1 - Empreinte A
-   * @param {string} fpString2 - Empreinte B
-   */
-  static compare(fpString1, fpString2) {
-    if (!fpString1 || !fpString2) return 0;
-
-    const parse = (str) => {
-      const map = new Map();
-      str.split("|").forEach((part) => {
-        const [k, v] = part.split(":");
-        if (k && v) map.set(k, v);
-      });
-      return map;
-    };
-
-    const map1 = parse(fpString1);
-    const map2 = parse(fpString2);
-
-    // Poids de "véracité" (Entropie/Stabilité)
-    const weights = {
-      cvs: 4.0, // Canvas: Très haute entropie (Rendu unique)
-      gpu: 3.0, // GPU: Haute entropie (Matériel spécifique)
-      hw: 1.5, // Hardware: Moyenne entropie
-      scr: 1.0, // Screen: Moyenne
-      geo: 0.5, // Geo: Faible (VPN/Voyage)
-      os: 0.5, // OS: Faible (Générique)
-      bot: 0.0, // Bot: Informatif
-    };
-
-    let weightedMatches = 0;
-    let totalWeight = 0;
-
-    const allKeys = new Set([...map1.keys(), ...map2.keys()]);
-
-    allKeys.forEach((key) => {
-      if (map1.has(key) && map2.has(key)) {
-        const weight = weights[key] || 1.0;
-        totalWeight += weight;
-
-        if (map1.get(key) === map2.get(key)) {
-          weightedMatches += weight;
-        }
-      }
-    });
-
-    return totalWeight === 0 ? 0 : weightedMatches / totalWeight;
-  }
-}
-
 /**
  * Génère le contenu HTML pour un challenge TSP (Traveling Salesperson Problem).
  * @param {string} nonce - Nonce unique pour le challenge.
@@ -428,21 +343,6 @@ export const isTicketValid = (ip, ticket) => {
 };
 
 /**
- * Crée un hash stable basé sur les caractéristiques de l'appareil, indépendamment de l'IP.
- * C'est notre "empreinte de niveau 2".
- * @param {object} req - L'objet de la requête Express.
- * @returns {string} Un hash représentant l'appareil.
- */
-function getDeviceHash(req) {
-  const srv = new FingerprintBuilder();
-  srv.add("ua", req.headers["user-agent"]);
-  if (req.headers["sec-ch-ua-platform"])
-    srv.add("os", req.headers["sec-ch-ua-platform"]);
-  if (req.headers["sec-ch-ua"]) srv.add("ch", req.headers["sec-ch-ua"]);
-  return srv.toString(); // Retourne la chaîne de caractères complète de l'empreinte pour une comparaison détaillée.
-}
-
-/**
  * Calcule les indicateurs de suspicion liés aux anomalies des headers HTTP.
  * @param {object} req - L'objet de la requête Express.
  * @returns {{headerAnomalyScore: number}}
@@ -494,6 +394,37 @@ const inMemoryStore = {
   async delete(key) { this._map.delete(key); },
 };
 
+/**
+ * Creates a stable hash based on device characteristics, independent of the IP.
+ * This is our "level 2 fingerprint".
+ * @param {object} context - The request context.
+ * @returns {string} A hash representing the device.
+ */
+function getHeaderSignature(context) {
+    if (!context.rawHeaders) return '';
+    const headerKeys = [];
+    for (let i = 0; i < context.rawHeaders.length; i += 2) {
+        headerKeys.push(context.rawHeaders[i]);
+    }
+    return cyrb53(headerKeys.join(','));
+}
+export function getDeviceHash(context) {
+    // Prioritize the rich client-side fingerprint if provided.
+    const clientFp = context.headers['x-device-fingerprint'];
+    if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
+        // Basic validation to ensure it looks like our client-side fingerprint.
+        return clientFp;
+    }
+
+    // Fallback to server-side only fingerprinting if the header is missing.
+    const srv = new FingerprintBuilder();
+    srv.add("ua", context.headers["user-agent"]);
+    if (context.headers["sec-ch-ua-platform"])
+        srv.add("os", context.headers["sec-ch-ua-platform"]);
+    if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
+    srv.add("h_ord", getHeaderSignature(context));
+    return srv.toString();
+}
 /** @type {IStore} */
 let store = inMemoryStore;
 

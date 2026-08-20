@@ -1,6 +1,8 @@
 // C:/Dev/games.primals.net/src/utils/fingerprint.js
 import crypto from "node:crypto";
 import { Optimization } from "./library.js";
+import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
+import { getDeviceHash } from "./fingerprint.server.js";
 
 const POW_SECRET = process.env.POW_SECRET;
 
@@ -9,249 +11,6 @@ if (!POW_SECRET && process.env.NODE_ENV === 'production') {
 } else if (!POW_SECRET) {
   console.warn('Warning: POW_SECRET environment variable not set. Using a default, insecure secret for development.');
 }
-/**
- * cyrb53 hash algorithm (fast with a low collision rate). Exported for reuse.
- */
-export const cyrb53 = (str, seed = 0) => {
-  let h1 = 0xdeadbeef ^ seed,
-    h2 = 0x41c6ce57 ^ seed;
-  for (let i = 0, ch; i < str.length; i++) {
-    ch = str.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 =
-    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
-    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 =
-    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
-    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
-};
-
-/**
- * Class to build a composite fingerprint (Multi-Hash).
- * Output format: "grp1:hash1|grp2:hash2|grp3:hash3"
- */
-export class FingerprintBuilder {
-  constructor() {
-    this.components = new Map();
-  }
-
-  /**
-   * Adds a component to the global hash.
-   * @param {string} group - The group name (e.g., 'hw', 'screen', 'geo')
-   * @param {string|number|boolean} value - The raw value to be hashed
-   */
-  add(group, value) {
-    if (value === undefined || value === null) return this;
-    // Hash the value individually to anonymize it and reduce its size
-    this.components.set(group, cyrb53(String(value)));
-    return this;
-  }
-
-  /**
-   * Generates the final signature string.
-   * Sorts keys to ensure a deterministic order.
-   */
-  toString() {
-    return Array.from(this.components.entries())
-      .sort((a, b) => a[0].localeCompare(b[0])) // Tri alphabétique des clés
-      .map(([key, hash]) => `${key}:${hash}`)
-      .join("|");
-  }
-
-  /**
-   * Compares two fingerprints and returns a similarity score (0 to 1).
-   * Uses weights to give more importance to strong invariants (Canvas, GPU).
-   * @param {string} fpString1 - Fingerprint A
-   * @param {string} fpString2 - Fingerprint B
-   */
-  static compare(fpString1, fpString2) {
-    if (!fpString1 || !fpString2) return 0;
-
-    const parse = (str) => {
-      const map = new Map();
-      str.split("|").forEach((part) => {
-        const [k, v] = part.split(":");
-        if (k && v) map.set(k, v);
-      });
-      return map;
-    };
-
-    const map1 = parse(fpString1);
-    const map2 = parse(fpString2);
-
-    // "Veracity" weights (Entropy/Stability)
-    const weights = {
-      cvs: 4.0, // Canvas: Very high entropy (Unique rendering)
-      gpu: 3.0, // GPU: High entropy (Specific hardware)
-      hw: 1.5, // Hardware: Medium entropy
-      scr: 1.0, // Screen: Medium
-      geo: 0.5, // Geo: Low (VPN/Travel)
-      os: 0.5, // OS: Low (Generic)
-      bot: 0.0, // Bot: Informational
-    };
-
-    let weightedMatches = 0;
-    let totalWeight = 0;
-
-    const allKeys = new Set([...map1.keys(), ...map2.keys()]);
-
-    allKeys.forEach((key) => {
-      const weight = weights[key] || 1.0;
-      totalWeight += weight;
-      if (map1.has(key) && map2.has(key)) {
-        if (map1.get(key) === map2.get(key)) {
-          weightedMatches += weight;
-        }
-      }
-    });
-
-    return totalWeight === 0 ? 0 : weightedMatches / totalWeight;
-  }
-}
-
-// Cache to avoid recalculating constants (Hardware, etc.)
-let cachedBuilder = null;
-
-/**
- * Generates the fingerprint of the current device.
- */
-export const getDeviceFingerprint = () => {
-  // NOTE: This is client-side code and should be in a separate file.
-  // It will not work in a Node.js environment.
-  // The presence of `window` and `document` confirms this.
-
-  if (typeof window === "undefined") return "server-side";
-
-  if (!cachedBuilder) {
-    const nav = window.navigator;
-    const screen = window.screen;
-
-    cachedBuilder = new FingerprintBuilder();
-
-    // 1. Hardware (Very stable): Cores, RAM, GPU (if available via canvas), Touch
-    cachedBuilder.add(
-      "hw",
-      `${nav.hardwareConcurrency}_${nav.deviceMemory}_${nav.maxTouchPoints}`,
-    );
-
-    // 2. Geo/Locale (Stable except for travel/VPN): Timezone, Language
-    cachedBuilder.add(
-      "geo",
-      `${Intl.DateTimeFormat().resolvedOptions().timeZone}_${nav.language}_${new Date().getTimezoneOffset()}`,
-    );
-
-    // 3. Screen (Stable except for monitor/zoom changes): Dimensions, ColorDepth
-    // Note: We use availWidth/Height which excludes the taskbar, sometimes more unique
-    cachedBuilder.add(
-      "scr",
-      `${screen.width}x${screen.height}_${screen.colorDepth}`,
-    );
-
-    // 4. Platform (Stable): OS, Engine
-    cachedBuilder.add("os", nav.platform);
-
-    // 5. Graphics (WebGL Vendor/Renderer) - Strong hardware invariant
-    try {
-      const canvas = document.createElement("canvas");
-      const gl =
-        canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
-      if (gl) {
-        const debugInfo = gl.getExtension("WEBGL_debug_renderer_info");
-        if (debugInfo) {
-          const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
-          const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
-          cachedBuilder.add("gpu", `${vendor}_${renderer}`);
-        }
-      }
-    } catch (e) {}
-
-    // 6. Canvas Fingerprinting (Rendering quirks) - Adds ~5-10% uniqueness
-    // Exploits micro-differences in anti-aliasing and font rendering
-    try {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        canvas.width = 200;
-        canvas.height = 50;
-        ctx.textBaseline = "alphabetic";
-        ctx.font = "14px 'Arial'";
-        ctx.fillStyle = "#f60";
-        ctx.fillRect(125, 1, 62, 20);
-        ctx.fillStyle = "#069";
-        ctx.fillText("Primals", 2, 15);
-        ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
-        ctx.fillText("Primals", 4, 17);
-        cachedBuilder.add("cvs", canvas.toDataURL());
-      }
-    } catch (e) {}
-
-    // 7. Bot Detection (Hidden indicator)
-    if (nav.webdriver) cachedBuilder.add("bot", "true");
-  }
-
-  // Return a copy to allow adding dynamic fields if needed without polluting the cache
-  return cachedBuilder.toString();
-};
-
-/**
- * Generates a request signature including the context.
- * @param {object} payload
- */
-export const generateRequestSignature = (payload = {}) => {
-  const deviceFp = getDeviceFingerprint();
-
-  // Create a temporary builder that inherits from deviceFp
-  // Note: Here we keep it simple, just concatenating the payload hash
-  const sortedPayload = Object.keys(payload)
-    .sort()
-    .map((k) => `${k}=${payload[k]}`)
-    .join("&");
-  const payloadHash = cyrb53(sortedPayload);
-
-  return `${deviceFp}|req:${payloadHash}`;
-};
-
-/**
- * Generates an HMAC-SHA256 signature for combat data.
- * @param {object} payload - The data to sign (e.g., { opponentId, victory, damageDealt }).
- * @param {string} secret - The shared secret key.
- * @returns {Promise<string>} The hexadecimal signature.
- */
-export const generateCombatSignature = async (payload, secret) => {
-  // NOTE: This is client-side code using the Web Crypto API (`window.crypto`).
-  // It should be moved to a client-side script file.
-
-  // 1. Create a stable string from the payload.
-  const sortedPayload = Object.keys(payload)
-    .sort()
-    .map((k) => `${k}=${payload[k]}`)
-    .join("&");
-
-  // 2. Use the Web Crypto API for HMAC
-  const encoder = new TextEncoder();
-  const key = await window.crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signatureBuffer = await window.crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(sortedPayload),
-  );
-
-  // 3. Convert the signature to a hexadecimal string.
-  const hashArray = Array.from(new Uint8Array(signatureBuffer));
-  const hexString = hashArray
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return hexString;
-};
 
 /**
  * Generates the HTML content for a TSP (Traveling Salesperson Problem) challenge.
@@ -566,32 +325,14 @@ export const isTicketValid = (ip, ticket) => {
     .digest("hex");
 
   // Use timingSafeEqual to prevent timing attacks
-  return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig));
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expectedSig, 'hex'));
+  } catch (e) {
+    // This can happen if the buffers have different lengths, which is a failure case.
+    return false;
+  }
 };
 
-/**
- * Creates a stable hash based on device characteristics, independent of the IP.
- * This is our "level 2 fingerprint".
- * @param {object} context - The request context.
- * @returns {string} A hash representing the device.
- */
-function getHeaderSignature(context) {
-    if (!context.rawHeaders) return '';
-    const headerKeys = [];
-    for (let i = 0; i < context.rawHeaders.length; i += 2) {
-        headerKeys.push(context.rawHeaders[i]);
-    }
-    return cyrb53(headerKeys.join(','));
-}
-function getDeviceHash(context) {
-  const srv = new FingerprintBuilder();
-  srv.add("ua", context.headers["user-agent"]);
-  if (context.headers["sec-ch-ua-platform"])
-    srv.add("os", context.headers["sec-ch-ua-platform"]);
-  if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
-  srv.add("h_ord", getHeaderSignature(context)); // Ajout de la signature d'ordre des en-têtes
-  return srv.toString(); // Returns the full fingerprint string for detailed comparison.
-}
 
 /**
  * Calculates suspicion indicators related to HTTP header anomalies.
@@ -607,10 +348,6 @@ function getHeaderAnomalies(context) {
   // Penalty if Accept-Language header is missing
   if (!context.headers["accept-language"]) {
     anomalyScore += 25;
-  }
-  // Penalty if Accept header is missing or too generic
-  if (!context.headers["accept"] || context.headers["accept"] === '*/*') {
-    anomalyScore += 30;
   }
   // Penalty for HTTP/1.0 requests, often used by old tools or bots
   if (context.httpVersion === "1.0") {
@@ -820,75 +557,29 @@ const MAX_RAPID_CHANGES_PER_DEVICE = 3; // Number of rapid fingerprint changes a
  * and IP, making spoofing more complex (requires changing the entire stack).
  */
 export const identifyRequest = async (req, res) => {
-  const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
-  const deviceId = req.cookies?.device_id; // Still need cookies from req
-
-  // --- Update IP reputation ---
-  const ipProfile = (await store.get(`ip:${clientIp}`)) || {
-    type: "residential",
-    deviceIds: new Set(),
-    statelessCount: 0,
-    lastSeen: 0,
+  // This function now acts as a lightweight wrapper around the engine's identifyRequest method.
+  // It requires a default configuration to work.
+  const defaultConfig = {
+    weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8 },
+    thresholds: { low: 20, medium: 40, high: 75 }
   };
-  ipProfile.lastSeen = Date.now();
-  if (deviceId) {
-    ipProfile.deviceIds.add(deviceId);
-  } else {
-    // Improved anti-"Amnesiac Bot" logic
-    ipProfile.statelessCount++;
-  }
+  const engine = new FingerprintEngine(defaultConfig);
 
-  // If an IP sees too many different devices, classify it as "shared".
-  if (ipProfile.deviceIds.size > SHARED_IP_DEVICE_THRESHOLD) {
-    ipProfile.type = "shared";
-  }
-
-  // If a residential IP makes too many requests without a cookie, it's a bot.
-  // For a shared IP, we are more tolerant because new users are constantly arriving.
-  const statelessLimit = ipProfile.type === "shared" ? 50 : 10;
-  if (ipProfile.statelessCount > statelessLimit) {
-    return `suspicious_high:${clientIp}`;
-  }
-  await store.set(`ip:${clientIp}`, ipProfile);
-
-  // For compatibility with the rate-limiter, calculate a simple score.
-  // The PoW will use the more complex weighted system.
-  const context = {
-      clientIp: clientIp,
+  const requestContext = {
+      clientIp: req.ip || req.socket?.remoteAddress || "unknown",
       cookies: req.cookies,
       headers: req.headers,
       rawHeaders: req.rawHeaders,
       httpVersion: req.httpVersion,
   };
-  const vector = await getSuspicionVector(context);
 
-  // The original `res` is passed here so that if a new device_id is created,
-  // the cookie can be set for the rate-limiter use case.
-  if (context._newCookies && res) {
-    context._newCookies.forEach(c => res.cookie(c.name, c.value, c.options));
+  const key = await engine.identifyRequest(requestContext);
+
+  if (requestContext._newCookies && res) {
+    requestContext._newCookies.forEach(c => res.cookie(c.name, c.value, c.options));
   }
 
-  const score =
-    vector.historyScore * 0.3 +
-    vector.rotationScore * 0.5 +
-    vector.headerAnomalyScore * 0.1 +
-    vector.inconsistencyScore * 0.8; // Inconsistency is a very strong signal
-
-  // Return a string for compatibility with rate limiters,
-  // but based on suspicion thresholds.
-  // NOTE: These thresholds are fixed here, but the PoW will use dynamic thresholds.
-  if (score >= 75) {
-    return `suspicious_high:${clientIp}`;
-  }
-  if (score >= 40) {
-    return `suspicious_medium:${clientIp}`;
-  }
-
-  // For normal requests, return a hash of the fingerprint for rate limiting.
-  // Use the device hash so the rate-limit follows the device, not the IP.
-  const deviceIdForIp = await store.get(`ip-device:${clientIp}`);
-  const finalDeviceId = deviceId || deviceIdForIp || clientIp;
-  return `device:${finalDeviceId}`;
+  return key;
 };
 // --- NOUVEAU CHALLENGE CPU "ANALOGIQUE" ---
 
@@ -1082,7 +773,7 @@ class FingerprintEngine {
     const { weights, thresholds, logger } = this.securityConfig;
 
     if (isStatic) {
-      return { action: 'next' };
+      return { action: 'next', score: 0, vector: {} };
     }
 
     // The engine now works with the context directly, no more rawReq dependency here.
@@ -1164,6 +855,8 @@ class FingerprintEngine {
                 return {
                   action: 'redirect',
                   path: path,
+                  score: finalScore,
+                  vector: suspicionVector,
                   cookie: {
                     name: 'pow_clearance',
                     value: ticket,
@@ -1200,7 +893,7 @@ class FingerprintEngine {
 
             const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp);
             return {
-                action: 'challenge',
+                action: 'challenge', score: finalScore, vector: suspicionVector,
                 status: 429, body: page
             };
         }
@@ -1219,7 +912,7 @@ class FingerprintEngine {
 
             // On utilise toujours la page combinée, même si la difficulté mémoire est 0 (le calcul sera quasi instantané).
             const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp);
-            return { action: 'challenge', status: 429, body: page };
+            return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
         }
     }
 
@@ -1228,7 +921,7 @@ class FingerprintEngine {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
     }
 
-    return { action: 'next' };
+    return { action: 'next', score: finalScore, vector: suspicionVector };
   }
 
   /**
@@ -1271,6 +964,7 @@ class FingerprintEngine {
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
+    if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
     if (score >= this.securityConfig.thresholds.medium) return `suspicious_medium:${clientIp}`;
 
     // If a new device_id was created, it's in the context.
@@ -1300,6 +994,12 @@ export const powMiddleware = (securityConfig) => {
 
     const decision = await engine.processRequest(requestContext);
 
+    // Attach the fingerprinting result to the request object for downstream middlewares.
+    req.fingerprint = {
+      score: decision.score,
+      vector: decision.vector,
+    };
+
     // After getSuspicionVector runs, it might have attached cookies to be set.
     if (requestContext._newCookies) {
       requestContext._newCookies.forEach(c => res.cookie(c.name, c.value, c.options));
@@ -1328,7 +1028,10 @@ export const powMiddleware = (securityConfig) => {
  * This is a common pattern to allow mocking of ES module functions.
  */
 export const __internal = {
+    getDeviceHash,
     getSuspicionVector,
+    cyrb53, // Export for testing
+    FingerprintBuilder, // Export for testing
     calculateTarget,
     FingerprintEngine, // Expose for advanced testing
 };

@@ -1,54 +1,4 @@
-/**
- * Algorithme de hachage cyrb53 (rapide et faible taux de collision).
- */
-export const cyrb53 = (str, seed = 0) => {
-  let h1 = 0xdeadbeef ^ seed,
-    h2 = 0x41c6ce57 ^ seed;
-  for (let i = 0, ch; i < str.length; i++) {
-    ch = str.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 =
-    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
-    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 =
-    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
-    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
-};
-
-/**
- * Classe pour construire une empreinte composite (Multi-Hash).
- * Format de sortie : "grp1:hash1|grp2:hash2|grp3:hash3"
- */
-export class FingerprintBuilder {
-  constructor() {
-    this.components = new Map();
-  }
-
-  /**
-   * Ajoute un composant au hash global.
-   * @param {string} group - Le nom du groupe (ex: 'hw', 'screen', 'geo')
-   * @param {string|number|boolean} value - La valeur brute à hasher
-   */
-  add(group, value) {
-    if (value === undefined || value === null) return this;
-    this.components.set(group, cyrb53(String(value)));
-    return this;
-  }
-
-  /**
-   * Génère la chaîne de signature finale.
-   * Trie les clés pour garantir un ordre déterministe.
-   */
-  toString() {
-    return Array.from(this.components.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([key, hash]) => `${key}:${hash}`)
-      .join("|");
-  }
-}
+import { cyrb53, FingerprintBuilder } from './fingerprint.builder.js';
 
 // Cache pour éviter de recalculer les constantes (Hardware, etc.)
 let cachedBuilder = null;
@@ -116,9 +66,9 @@ export const getDeviceFingerprint = () => {
         ctx.fillStyle = "#f60";
         ctx.fillRect(125, 1, 62, 20);
         ctx.fillStyle = "#069";
-        ctx.fillText("Primals", 2, 15);
+        ctx.fillText("fingerprint", 2, 15);
         ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
-        ctx.fillText("Primals", 4, 17);
+        ctx.fillText("fingerprint", 4, 17);
         cachedBuilder.add("cvs", canvas.toDataURL());
       }
     } catch (e) {}
@@ -158,3 +108,9 @@ export const generateClientSideSignature = async (payload, secret) => {
   const hashArray = Array.from(new Uint8Array(signatureBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 };
+
+/**
+ * @internal
+ * Resets the cached fingerprint builder. Used for testing purposes.
+ */
+export const _resetCache = () => (cachedBuilder = null);
