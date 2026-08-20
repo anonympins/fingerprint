@@ -1,4 +1,3 @@
-// C:/Dev/games.primals.net/src/utils/fingerprint.js
 import crypto from "node:crypto";
 
 const POW_SECRET = process.env.POW_SECRET;
@@ -111,147 +110,6 @@ export class FingerprintBuilder {
     return totalWeight === 0 ? 0 : weightedMatches / totalWeight;
   }
 }
-
-// Cache pour éviter de recalculer les constantes (Hardware, etc.)
-let cachedBuilder = null;
-
-/**
- * Génère l'empreinte de l'appareil actuel.
- */
-export const getDeviceFingerprint = () => {
-  // NOTE: This is client-side code and should be in a separate file.
-  // It will not work in a Node.js environment.
-  // The presence of `window` and `document` confirms this.
-
-  if (typeof window === "undefined") return "server-side";
-
-  if (!cachedBuilder) {
-    const nav = window.navigator;
-    const screen = window.screen;
-
-    cachedBuilder = new FingerprintBuilder();
-
-    // 1. Hardware (Très stable) : Cœurs, RAM, GPU (si dispo via canvas), Touch
-    cachedBuilder.add(
-      "hw",
-      `${nav.hardwareConcurrency}_${nav.deviceMemory}_${nav.maxTouchPoints}`,
-    );
-
-    // 2. Geo/Locale (Stable sauf voyage/VPN) : Timezone, Langue
-    cachedBuilder.add(
-      "geo",
-      `${Intl.DateTimeFormat().resolvedOptions().timeZone}_${nav.language}_${new Date().getTimezoneOffset()}`,
-    );
-
-    // 3. Screen (Stable sauf changement moniteur/zoom) : Dimensions, ColorDepth
-    // Note : On utilise availWidth/Height qui exclut la barre des tâches, parfois plus unique
-    cachedBuilder.add(
-      "scr",
-      `${screen.width}x${screen.height}_${screen.colorDepth}`,
-    );
-
-    // 4. Platform (Stable) : OS, Engine
-    cachedBuilder.add("os", nav.platform);
-
-    // 5. Graphics (WebGL Vendor/Renderer) - Invariant matériel fort
-    try {
-      const canvas = document.createElement("canvas");
-      const gl =
-        canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
-      if (gl) {
-        const debugInfo = gl.getExtension("WEBGL_debug_renderer_info");
-        if (debugInfo) {
-          const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
-          const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
-          cachedBuilder.add("gpu", `${vendor}_${renderer}`);
-        }
-      }
-    } catch (e) {}
-
-    // 6. Canvas Fingerprinting (Rendering quirks) - Ajoute ~5-10% d'unicité
-    // Exploite les micro-différences d'anti-aliasing et de rendu des polices
-    try {
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        canvas.width = 200;
-        canvas.height = 50;
-        ctx.textBaseline = "alphabetic";
-        ctx.font = "14px 'Arial'";
-        ctx.fillStyle = "#f60";
-        ctx.fillRect(125, 1, 62, 20);
-        ctx.fillStyle = "#069";
-        ctx.fillText("Primals", 2, 15);
-        ctx.fillStyle = "rgba(102, 204, 0, 0.7)";
-        ctx.fillText("Primals", 4, 17);
-        cachedBuilder.add("cvs", canvas.toDataURL());
-      }
-    } catch (e) {}
-
-    // 7. Bot Detection (Indication cachée)
-    if (nav.webdriver) cachedBuilder.add("bot", "true");
-  }
-
-  // On retourne une copie pour permettre d'ajouter des champs dynamiques si besoin sans polluer le cache
-  return cachedBuilder.toString();
-};
-
-/**
- * Génère une signature de requête incluant le contexte.
- * @param {object} payload
- */
-export const generateRequestSignature = (payload = {}) => {
-  const deviceFp = getDeviceFingerprint();
-
-  // On crée un builder temporaire qui hérite du deviceFp
-  // Note: Ici on fait simple, on concatène juste le hash du payload
-  const sortedPayload = Object.keys(payload)
-    .sort()
-    .map((k) => `${k}=${payload[k]}`)
-    .join("&");
-  const payloadHash = cyrb53(sortedPayload);
-
-  return `${deviceFp}|req:${payloadHash}`;
-};
-
-/**
- * Génère une signature HMAC-SHA256 pour les données de combat.
- * @param {object} payload - Les données à signer (ex: { opponentId, victory, damageDealt }).
- * @param {string} secret - La clé secrète partagée.
- * @returns {Promise<string>} La signature hexadécimale.
- */
-export const generateCombatSignature = async (payload, secret) => {
-  // NOTE: This is client-side code using the Web Crypto API (`window.crypto`).
-  // It should be moved to a client-side script file.
-
-  // 1. Créer une chaîne de caractères stable à partir du payload.
-  const sortedPayload = Object.keys(payload)
-    .sort()
-    .map((k) => `${k}=${payload[k]}`)
-    .join("&");
-
-  // 2. Utiliser l'API Web Crypto pour le HMAC
-  const encoder = new TextEncoder();
-  const key = await window.crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signatureBuffer = await window.crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(sortedPayload),
-  );
-
-  // 3. Convertir la signature en chaîne hexadécimale.
-  const hashArray = Array.from(new Uint8Array(signatureBuffer));
-  const hexString = hashArray
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return hexString;
-};
 
 /**
  * Génère le contenu HTML pour un challenge TSP (Traveling Salesperson Problem).
@@ -764,7 +622,7 @@ async function getBehavioralIndicators(req, deviceData) {
  * @param {object} req - L'objet de la requête Express.
  * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number}>}
  */
-export const getSuspicionVector = async (req, res) => {
+export async function getSuspicionVector(req, res) {
   const { deviceId, deviceData, consistencyScore } = await resolveRequestIdentity(req, res);
 
   const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
@@ -784,7 +642,7 @@ export const getSuspicionVector = async (req, res) => {
   await store.set(`device:${deviceId}`, deviceData);
 
   return { ...behavioral, ...anomalies };
-};
+}
 
 // Un utilisateur résidentiel peut changer de réseau (maison, 4G, wifi public).
 const MAX_DISTINCT_IPS_PER_DEVICE = 15;
@@ -872,7 +730,7 @@ const BASE_TARGET = MAX_DIFFICULTY_TARGET >> 16n;
  * @param {number} suspicionFactor - Un nombre de 0 à 1.
  * @returns {BigInt} Le nombre cible.
  */
-function calculateTarget(suspicionFactor) {
+export function calculateTarget(suspicionFactor) {
   // Plage de difficulté ajustée pour être réaliste.
   // MIN_DIFFICULTY: Assez rapide pour ne pas gêner un utilisateur légèrement suspect.
   // MAX_DIFFICULTY: Assez lent pour pénaliser lourdement un bot, mais faisable pour un humain patient (5-30s).
@@ -914,29 +772,31 @@ export function generateCpuTargetChallenge(
  */
 function generateCpuTargetChallengePage(challengeDetails, clientIp) {
     const { nonce, target, path } = challengeDetails;
+    // On injecte les détails du challenge dans l'objet window pour que le script externe puisse les lire.
+    const challengeData = JSON.stringify({
+        type: 'cpu_target',
+        ip: clientIp,
+        nonce: nonce,
+        target: target,
+        path: path
+    });
+
     return `
       <html><head><title>Security Check</title></head>
       <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
         <h1>Please wait... (Level 1)</h1>
         <p>We are verifying that you are not a bot. This may take a few seconds.</p>
         <div id="loader" style="margin:20px;">⚙️ Performing CPU security calculation...</div>
+        
+        <!-- On passe les données du challenge au script via un objet global -->
+        <script>window.powChallenge = ${challengeData};</script>
+
+        <!-- On charge le script client qui contient la logique de résolution -->
+        <!-- Ce chemin '/js/fingerprint.client.js' doit être servi par votre app Express -->
+        <script src="/js/fingerprint.client.js" defer></script>
+
         <script>
-          async function solve() {
-            const target = BigInt("0x${target}");
-            let solution = 0;
-            while (true) {
-              const msg = "${clientIp}:${nonce}:" + solution;
-              const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-              const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-              if (BigInt('0x' + hashHex) < target) {
-                window.location.href = "${path}?pow_type=cpu_target&pow_nonce=${nonce}&pow_solution=" + solution;
-                break;
-              }
-              solution++;
-              if (solution % 100000 === 0) await new Promise(r => setTimeout(r, 0));
-            }
-          }
-          solve();
+          // Le script externe va maintenant lire window.powChallenge et exécuter le solveur.
         </script>
       </body></html>`;
 }
@@ -987,7 +847,7 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
 
     const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
     // On récupère le vecteur de suspicion et on calcule le score final pondéré
-    const suspicionVector = await __internal.getSuspicionVector(req, res);
+    const suspicionVector = await getSuspicionVector(req, res);
 
     const finalScore =
         suspicionVector.historyScore * weights.historyScore +
@@ -1089,14 +949,4 @@ export const powMiddleware = (securityConfig) => async (req, res, next) => {
         }
     }
     next();
-};
-
-/**
- * @internal
- * Exporting an object containing the functions to make them mockable in tests.
- * This is a common pattern to allow mocking of ES module functions.
- */
-export const __internal = {
-    getSuspicionVector,
-    calculateTarget,
 };

@@ -1,0 +1,46 @@
+{
+  "name": "fingerprint",
+  "version": "0.0.1",
+  "description": "An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.",
+  "main": "fingerprint.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "test": "vitest -- --test"
+  },
+  "files": [
+    "fingerprint.js",
+    "library.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anonympins/fingerprint.git"
+  },
+  "keywords": [
+    "fingerprint",
+    "bot",
+    "anti-bot",
+    "security",
+    "express",
+    "middleware",
+    "proof-of-work",
+    "pow",
+    "rate-limiting",
+    "mitigation",
+    "captcha"
+  ],
+  "author": "anonympins",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/anonympins/fingerprint/issues"
+  },
+  "homepage": "https://github.com/anonympins/fingerprint#readme",
+  "devDependencies": {
+    "cookie-parser": "^1.4.6",
+    "express": "^4.18.2"
+  }
+}

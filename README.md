@@ -1,4 +1,6 @@
 # fingerprint
+![](https://img.shields.io/github/v/release/anonympins/fingerprint)
+![](https://img.shields.io/github/license/anonympins/fingerprint)
 
 An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.
 
@@ -30,6 +32,7 @@ Once the challenge is solved, a clearance "ticket" is issued via a cookie, exemp
     -   `memory`: A challenge that allocates an amount of memory proportional to the suspicion level.
     -   `tsp`: An optimization challenge (Traveling Salesperson Problem) for the most suspicious cases.
 -   **Secure Ticket System**: Uses HMAC-SHA256 signatures to validate clearances and prevent tampering.
+-   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
 -   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`.
 -   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure ticket validation.
 
@@ -49,31 +52,119 @@ Define a secret key for signing PoW tickets in your environment variables.
 export POW_SECRET="your_secret_key_of_at_least_32_characters"
 ```
 
-### Exemple d'intégration
+### Integration Example
+
+For the `powMiddleware` to work, it needs a configuration defining the weights of suspicion indicators and the challenge trigger thresholds.
 
 ```javascript
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import { powMiddleware } from './fingerprint.js'; // Ajustez le chemin
+// The `configurePow` function is a conceptual example. In the actual implementation,
+// you would pass the configuration to the middleware, for example, via a factory function.
+import { powMiddleware /*, configurePow */ } from './fingerprint.js'; // Adjust the path
 
 const app = express();
 app.use(cookieParser());
 
-// Activez la confiance dans le proxy si votre app est derrière un reverse proxy (Nginx, etc.)
-// afin de récupérer correctement l'IP du client.
+// Configuration of weights and thresholds for calculating the suspicion score.
+// These values should be adjusted based on traffic and expected user behavior.
+const securityConfig = {
+  weights: {
+    historyScore: 0.3,       // Penalizes IP rotation (proxy)
+    rotationScore: 0.5,      // Penalizes rapid fingerprint changes (user-agent, etc.)
+    headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
+    inconsistencyScore: 0.8  // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
+  },
+  thresholds: {
+    low: 20,    // Score from which a CPU challenge is issued
+    medium: 45, // Score for a Memory challenge
+    high: 75    // Score for a complex challenge (TSP/Captcha)
+  }
+};
+
+// In a real-world scenario, you would configure the middleware.
+// For example: const configuredPowMiddleware = createPowMiddleware(securityConfig);
+const powMiddlewareInstance = powMiddleware(securityConfig);
+
+// Enable trust proxy if your app is behind a reverse proxy (Nginx, etc.)
+// to correctly retrieve the client's IP.
 app.set('trust proxy', 1);
 
-// Appliquez le middleware de protection à toutes les routes
-// ou à des routes spécifiques.
-app.use(powMiddleware);
+// Apply the protection middleware to all routes or to specific routes.
+// You would use the configured middleware here.
+app.use(powMiddlewareInstance);
 
 app.get('/', (req, res) => {
-  res.send('Bienvenue sur la page protégée !');
+  res.send('Welcome to the protected page!');
 });
 
-app.listen(3000, () => console.log('Serveur démarré sur le port 3000'));
+app.listen(3000, () => console.log('Server started on port 3000'));
 ```
 
-## Licence
+## Public API
 
-Ce projet est sous licence MIT. Voir le fichier `LICENSE` pour plus de détails.
+In addition to the main middleware, several functions are exported to allow for more advanced integrations.
+
+### Main Functions
+
+#### `powMiddleware(req, res, next)`
+The main Express middleware. It orchestrates identification, suspicion calculation, and challenge issuance. It is the main entry point of the library.
+
+#### `configureStore(store)`
+Allows replacing the in-memory store with an external datastore (like Redis) for persistence and scaling.
+
+```javascript
+import { configureStore } from './fingerprint.js';
+import { createRedisStore } from './redis-store.js'; // Assuming you have a redis store implementation
+
+const redisStore = createRedisStore(process.env.REDIS_URL);
+configureStore(redisStore);
+```
+
+#### `identifyRequest(req, res)`
+An asynchronous function that returns an identification string for a given request, based on its suspicion level (`device:<id>`, `suspicious_medium:<ip>`, etc.). Useful for integration with a custom rate-limiter.
+
+```javascript
+import { RateLimiterMemory } from 'rate-limiter-flexible';
+import { identifyRequest } from './fingerprint.js';
+
+const rateLimiter = new RateLimiterMemory({
+  keyPrefix: 'rate_limit',
+  points: 10,
+  duration: 1,
+});
+
+app.use(async (req, res, next) => {
+  try {
+    const key = await identifyRequest(req, res);
+    await rateLimiter.consume(key);
+    next();
+  } catch (err) {
+    res.status(429).send('Too Many Requests');
+  }
+});
+```
+
+### Utilities
+
+#### `isTicketValid(ip, ticket)`
+Checks the validity of a `pow_clearance` cookie. Returns `true` if the ticket is present, not expired, and correctly signed for the given IP.
+
+#### `FingerprintBuilder` (Class)
+A class for building granular server-side fingerprints.
+
+```javascript
+const builder = new FingerprintBuilder();
+builder.add("ua", req.headers["user-agent"]);
+builder.add("os", req.headers["sec-ch-ua-platform"]);
+const fp = builder.toString(); // "os:hash1|ua:hash2"
+```
+
+#### `getDeviceFingerprint()`
+*Client-side function only.* Generates a detailed browser fingerprint using APIs like Canvas, WebGL, etc.
+
+---
+
+## License
+
+This project is licensed under the MIT License. See the `LICENSE` file for more details.
