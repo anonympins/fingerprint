@@ -655,68 +655,6 @@ const SHARED_IP_DEVICE_THRESHOLD = 50;
 const RAPID_CHANGE_THRESHOLD_MS = 2000; // 2 secondes
 const MAX_RAPID_CHANGES_PER_DEVICE = 3; // Nombre de changements rapides d'empreinte autorisés par appareil.
 
-/**
- * Identifie une requête côté serveur de manière granulaire.
- * Utilise le FingerprintBuilder pour créer une empreinte basée sur les headers
- * et l'IP, rendant le spoofing plus complexe (nécessite de changer toute la stack).
- */
-export const identifyRequest = async (req, res) => {
-  const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
-  const deviceId = req.cookies?.device_id;
-
-  // --- Mise à jour de la réputation de l'IP ---
-  const ipProfile = (await store.get(`ip:${clientIp}`)) || {
-    type: "residential",
-    deviceIds: new Set(),
-    statelessCount: 0,
-    lastSeen: 0,
-  };
-  ipProfile.lastSeen = Date.now();
-  if (deviceId) {
-    ipProfile.deviceIds.add(deviceId);
-  } else {
-    // Logique anti "Bot Amnésique" améliorée
-    ipProfile.statelessCount++;
-  }
-
-  // Si une IP voit trop d'appareils différents, on la classe comme "partagée".
-  if (ipProfile.deviceIds.size > SHARED_IP_DEVICE_THRESHOLD) {
-    ipProfile.type = "shared";
-  }
-
-  // Si une IP résidentielle fait trop de requêtes sans cookie, c'est un bot.
-  // Pour une IP partagée, on est plus tolérant car de nouveaux utilisateurs arrivent constamment.
-  const statelessLimit = ipProfile.type === "shared" ? 50 : 10;
-  if (ipProfile.statelessCount > statelessLimit) {
-    return `suspicious_high:${clientIp}`;
-  }
-  await store.set(`ip:${clientIp}`, ipProfile);
-
-  // Pour la compatibilité avec le rate-limiter, on calcule un score simple.
-  // Le PoW utilisera le système pondéré, plus complexe.
-  const vector = await getSuspicionVector(req, res);
-  const score =
-    vector.historyScore * 0.3 +
-    vector.rotationScore * 0.5 +
-    vector.headerAnomalyScore * 0.1 +
-    vector.inconsistencyScore * 0.8; // L'incohérence est un signal très fort
-
-  // On retourne une chaîne de caractères pour la compatibilité avec les rate limiters,
-  // mais basée sur les seuils de suspicion.
-  // NOTE : Ces seuils sont fixes ici, mais le PoW utilisera les seuils dynamiques.
-  if (score >= 75) {
-    return `suspicious_high:${clientIp}`;
-  }
-  if (score >= 40) {
-    return `suspicious_medium:${clientIp}`;
-  }
-
-  // Pour les requêtes normales, on retourne un hash de l'empreinte pour le rate limiting.
-  // On utilise le hash de l'appareil pour que le rate-limit suive l'appareil, pas l'IP.
-  const deviceIdForIp = await store.get(`ip-device:${clientIp}`);
-  const finalDeviceId = deviceId || deviceIdForIp || clientIp;
-  return `device:${finalDeviceId}`;
-};
 // --- NOUVEAU CHALLENGE CPU "ANALOGIQUE" ---
 
 // Le plus grand nombre possible avec SHA-256 (2^256 - 1)

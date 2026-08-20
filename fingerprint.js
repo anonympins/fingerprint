@@ -99,10 +99,9 @@ export class FingerprintBuilder {
     const allKeys = new Set([...map1.keys(), ...map2.keys()]);
 
     allKeys.forEach((key) => {
+      const weight = weights[key] || 1.0;
+      totalWeight += weight;
       if (map1.has(key) && map2.has(key)) {
-        const weight = weights[key] || 1.0;
-        totalWeight += weight;
-
         if (map1.get(key) === map2.get(key)) {
           weightedMatches += weight;
         }
@@ -573,47 +572,53 @@ export const isTicketValid = (ip, ticket) => {
 /**
  * Creates a stable hash based on device characteristics, independent of the IP.
  * This is our "level 2 fingerprint".
- * @param {object} req - The Express request object.
+ * @param {object} context - The request context.
  * @returns {string} A hash representing the device.
  */
-function getDeviceHash(req) {
+function getHeaderSignature(context) {
+    if (!context.rawHeaders) return '';
+    const headerKeys = [];
+    for (let i = 0; i < context.rawHeaders.length; i += 2) {
+        headerKeys.push(context.rawHeaders[i]);
+    }
+    return cyrb53(headerKeys.join(','));
+}
+function getDeviceHash(context) {
   const srv = new FingerprintBuilder();
-  srv.add("ua", req.headers["user-agent"]);
-  if (req.headers["sec-ch-ua-platform"])
-    srv.add("os", req.headers["sec-ch-ua-platform"]);
-  if (req.headers["sec-ch-ua"]) srv.add("ch", req.headers["sec-ch-ua"]);
+  srv.add("ua", context.headers["user-agent"]);
+  if (context.headers["sec-ch-ua-platform"])
+    srv.add("os", context.headers["sec-ch-ua-platform"]);
+  if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
+  srv.add("h_ord", getHeaderSignature(context)); // Ajout de la signature d'ordre des en-têtes
   return srv.toString(); // Returns the full fingerprint string for detailed comparison.
 }
 
 /**
  * Calculates suspicion indicators related to HTTP header anomalies.
- * @param {object} req - The Express request object.
+ * @param {object} context - The request context.
  * @returns {{headerAnomalyScore: number}}
  */
-function getHeaderAnomalies(req, consistencyScore) {
-  // FIX: consistencyScore est maintenant passé
+function getHeaderAnomalies(context) {
   let anomalyScore = 0;
   // Strong penalty if User-Agent is missing or very short (sign of a simple script)
-  if (!req.headers["user-agent"] || req.headers["user-agent"].length < 10) {
+  if (!context.headers["user-agent"] || context.headers["user-agent"].length < 10) {
     anomalyScore += 60;
   }
   // Penalty if Accept-Language header is missing
-  if (!req.headers["accept-language"]) {
+  if (!context.headers["accept-language"]) {
     anomalyScore += 25;
   }
+  // Penalty if Accept header is missing or too generic
+  if (!context.headers["accept"] || context.headers["accept"] === '*/*') {
+    anomalyScore += 30;
+  }
   // Penalty for HTTP/1.0 requests, often used by old tools or bots
-  if (req.httpVersion === "1.0") {
+  if (context.httpVersion === "1.0") {
     anomalyScore += 15;
   }
 
-  // NEW: Inconsistency score (stolen cookie?)
-  // If the consistency score is low, add a massive penalty.
-  // A score of 0.2 means a huge difference.
-  const inconsistencyScore = Math.max(0, (1 - consistencyScore) * 200);
-
   return {
     headerAnomalyScore: Math.min(100, anomalyScore),
-    inconsistencyScore: Math.min(100, inconsistencyScore),
   };
 }
 
@@ -652,16 +657,16 @@ export const configureStore = (externalStore) => {
 /**
  * Orchestrates request identification using a persistent anchor (cookie)
  * and fingerprint verification.
- * @param {object} req - The Express request object.
- * @param {object} res - The Express response object (to set the cookie).
- * @returns {Promise<{deviceId: string, deviceData: object, consistencyScore: number}>} 
+ * @param {object} context - The request context.
+ * @returns {Promise<{deviceId: string, deviceData: object, consistencyScore: number, newCookie: object|null}>} 
  */
-async function resolveRequestIdentity(req, res) {
-  const existingDeviceId = req.cookies?.device_id;
-  const currentDeviceHash = getDeviceHash(req);
+async function resolveRequestIdentity(context) {
+  const existingDeviceId = context.cookies?.device_id;
+  const currentDeviceHash = getDeviceHash(context);
   let deviceId = existingDeviceId;
   let consistencyScore = 1.0; // 1.0 = perfectly consistent
   let deviceData = null;
+  let newCookie = null;
 
   if (deviceId) {
     deviceData = await store.get(`device:${deviceId}`);
@@ -680,13 +685,14 @@ async function resolveRequestIdentity(req, res) {
     // Case 2: New user or lost/invalid cookie.
     deviceId = crypto.randomUUID(); // Generate a new "passport".
 
-    // Set the cookie securely.
-    res.cookie("device_id", deviceId, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 31536000000, // 1 year
-    });
+    // Return the intention to set a cookie.
+    newCookie = {
+      name: "device_id",
+      value: deviceId,
+      options: {
+        httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: 31536000000, // 1 year
+      }
+    };
 
     // Initialize tracking for this new device.
     deviceData = {
@@ -700,24 +706,24 @@ async function resolveRequestIdentity(req, res) {
     // The write will happen in getSuspicionVector after all modifications.
   }
 
-  return { deviceId, deviceData, consistencyScore };
+  return { deviceId, deviceData, consistencyScore, newCookie };
 }
 
 /*
  * Calcule les indicateurs de suspicion liés au comportement de l'appareil (historique, rotation).
- * @param {object} req - The Express request object.
+ * @param {object} context - The request context.
  * @param {object} deviceData - The device's activity data.
  * @returns {Promise<{historyScore: number, rotationScore: number}>}
  */
-async function getBehavioralIndicators(req, deviceData) {
+async function getBehavioralIndicators(context, deviceData) {
   const now = Date.now();
-  const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
+  const clientIp = context.clientIp;
 
   // Get the IP type to modulate the score
   const ipProfile = (await store.get(`ip:${clientIp}`)) || { type: "residential" };
   const isSharedIp = ipProfile.type === "shared";
 
-  const currentFpHash = getDeviceHash(req); // Use the device hash
+  const currentFpHash = getDeviceHash(context); // Use the device hash
 
   // --- Behavior analysis (Change frequency) ---
   if (deviceData.lastFpHash && currentFpHash !== deviceData.lastFpHash) {
@@ -762,13 +768,20 @@ async function getBehavioralIndicators(req, deviceData) {
 
 /**
  * Returns a vector of raw (unweighted) suspicion scores.
- * @param {object} req - The Express request object.
+ * @param {object} context - The request context object.
  * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number}>}
  */
-export const getSuspicionVector = async (req, res) => {
-  const { deviceId, deviceData, consistencyScore } = await resolveRequestIdentity(req, res);
+export const getSuspicionVector = async (context) => {
+  const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context);
 
-  const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
+  const clientIp = context.clientIp;
+
+  // If a new cookie needs to be set, attach it to the request object
+  // so the middleware can handle it. This is a temporary state holder.
+  if (newCookie) {
+    context._newCookies = context._newCookies || [];
+    context._newCookies.push(newCookie);
+  }
   await store.set(`ip-device:${clientIp}`, deviceId); // Link the IP to the device
 
   // Periodically clean up device data
@@ -778,13 +791,16 @@ export const getSuspicionVector = async (req, res) => {
   }
   deviceData.lastUpdate = Date.now();
 
-  const behavioral = await getBehavioralIndicators(req, deviceData);
-  const anomalies = getHeaderAnomalies(req, consistencyScore);
+  const behavioral = await getBehavioralIndicators(context, deviceData);
+  const { headerAnomalyScore } = getHeaderAnomalies(context);
+  // Calculate the inconsistency score here, separately.
+  const inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200));
+
 
   // Save the updated device state to the store
   await store.set(`device:${deviceId}`, deviceData);
 
-  return { ...behavioral, ...anomalies };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -805,7 +821,7 @@ const MAX_RAPID_CHANGES_PER_DEVICE = 3; // Number of rapid fingerprint changes a
  */
 export const identifyRequest = async (req, res) => {
   const clientIp = req.ip || req.socket?.remoteAddress || "unknown";
-  const deviceId = req.cookies?.device_id;
+  const deviceId = req.cookies?.device_id; // Still need cookies from req
 
   // --- Update IP reputation ---
   const ipProfile = (await store.get(`ip:${clientIp}`)) || {
@@ -837,7 +853,21 @@ export const identifyRequest = async (req, res) => {
 
   // For compatibility with the rate-limiter, calculate a simple score.
   // The PoW will use the more complex weighted system.
-  const vector = await getSuspicionVector(req, res);
+  const context = {
+      clientIp: clientIp,
+      cookies: req.cookies,
+      headers: req.headers,
+      rawHeaders: req.rawHeaders,
+      httpVersion: req.httpVersion,
+  };
+  const vector = await getSuspicionVector(context);
+
+  // The original `res` is passed here so that if a new device_id is created,
+  // the cookie can be set for the rate-limiter use case.
+  if (context._newCookies && res) {
+    context._newCookies.forEach(c => res.cookie(c.name, c.value, c.options));
+  }
+
   const score =
     vector.historyScore * 0.3 +
     vector.rotationScore * 0.5 +
@@ -1055,9 +1085,8 @@ class FingerprintEngine {
       return { action: 'next' };
     }
 
-    // We need to pass `req` and `res` to getSuspicionVector for cookie handling.
-    // This is a remaining coupling point that could be refactored further.
-    const suspicionVector = await __internal.getSuspicionVector(requestContext.rawReq, requestContext.rawRes);
+    // The engine now works with the context directly, no more rawReq dependency here.
+    const suspicionVector = await __internal.getSuspicionVector(requestContext);
 
     const finalScore =
       suspicionVector.historyScore * (weights.historyScore || 0) +
@@ -1078,11 +1107,6 @@ class FingerprintEngine {
         : 0;
     const powCookie = cookies?.pow_clearance;    
     const { pow_type, pow_nonce, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
-
-    // Basic log for each non-static request
-    if (logger && !isSuspicious) {
-        logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
-    }
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
         // --- CHALLENGE SOLUTION HANDLING ---
@@ -1199,7 +1223,61 @@ class FingerprintEngine {
         }
     }
 
+    // Basic log for each non-static request that passed without a challenge
+    if (logger) {
+        logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
+    }
+
     return { action: 'next' };
+  }
+
+  /**
+   * Identifies a request in a granular way for non-Express environments.
+   * @param {object} requestContext - The request context object.
+   * @returns {Promise<string>} An identification string (e.g., "device:<id>", "suspicious_high:<ip>").
+   */
+  async identifyRequest(requestContext) {
+    const { clientIp, cookies, rawReq, rawRes } = requestContext;
+
+    // --- Update IP reputation ---
+    const ipProfile = (await store.get(`ip:${clientIp}`)) || {
+      type: "residential",
+      deviceIds: new Set(),
+      statelessCount: 0,
+      lastSeen: 0,
+    };
+    ipProfile.lastSeen = Date.now();
+    if (cookies?.device_id) {
+      ipProfile.deviceIds.add(cookies.device_id);
+    } else {
+      ipProfile.statelessCount++;
+    }
+
+    if (ipProfile.deviceIds.size > SHARED_IP_DEVICE_THRESHOLD) {
+      ipProfile.type = "shared";
+    }
+
+    const statelessLimit = ipProfile.type === "shared" ? 50 : 10;
+    if (ipProfile.statelessCount > statelessLimit) {
+      return `suspicious_high:${clientIp}`;
+    }
+    await store.set(`ip:${clientIp}`, ipProfile);
+
+    const vector = await __internal.getSuspicionVector(requestContext);
+    const score =
+      vector.historyScore * (this.securityConfig.weights.historyScore || 0.3) +
+      vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
+      vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
+      vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8);
+
+    if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
+    if (score >= this.securityConfig.thresholds.medium) return `suspicious_medium:${clientIp}`;
+
+    // If a new device_id was created, it's in the context.
+    const newDeviceId = requestContext._newCookies?.find(c => c.name === 'device_id')?.value;
+    const finalDeviceId = cookies?.device_id || newDeviceId || clientIp;
+
+    return `device:${finalDeviceId}`;
   }
 }
 
@@ -1215,12 +1293,17 @@ export const powMiddleware = (securityConfig) => {
       query: req.query,
       headers: req.headers,
       isStatic: isStaticResource(req),
-      // Pass raw req/res for now to handle cookie setting in resolveRequestIdentity
-      rawReq: req,
-      rawRes: res,
+      // Add the newly required properties for full decoupling
+      rawHeaders: req.rawHeaders,
+      httpVersion: req.httpVersion,
     };
 
     const decision = await engine.processRequest(requestContext);
+
+    // After getSuspicionVector runs, it might have attached cookies to be set.
+    if (requestContext._newCookies) {
+      requestContext._newCookies.forEach(c => res.cookie(c.name, c.value, c.options));
+    }
 
     switch (decision.action) {
       case 'challenge':
