@@ -38,6 +38,7 @@ Once the challenge is solved, a clearance "ticket" is issued via a cookie, exemp
 -   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
 -   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`.
 -   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure ticket validation.
+-   **Automatic Threshold Tuning**: (Optional) Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust suspicion thresholds (`low`, `medium`, `high`), improving bot detection accuracy and reducing false positives over time.
 
 ## Installation and Usage
 
@@ -72,17 +73,17 @@ app.use(cookieParser());
 // Configuration of weights and thresholds for calculating the suspicion score.
 // These values should be adjusted based on traffic and expected user behavior.
 const securityConfig = {
-  weights: {
-    historyScore: 0.3,       // Penalizes IP rotation (proxy)
-    rotationScore: 0.5,      // Penalizes rapid fingerprint changes (user-agent, etc.)
-    headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
-    inconsistencyScore: 0.8  // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
-  },
-  thresholds: {
-    low: 20,    // Score from which a CPU challenge is issued
-    medium: 45, // Score for a Memory challenge
-    high: 75    // Score for a complex challenge (TSP/Captcha)
-  }
+    weights: {
+        historyScore: 0.3,       // Penalizes IP rotation (proxy)
+        rotationScore: 0.5,      // Penalizes rapid fingerprint changes (user-agent, etc.)
+        headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
+        inconsistencyScore: 0.8  // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
+    },
+    thresholds: {
+        low: 20,    // Score from which a CPU challenge is issued
+        medium: 45, // Score for a Memory challenge
+        high: 75    // Score for a complex challenge (TSP/Captcha)
+    }
 };
 
 // In a real-world scenario, you would configure the middleware.
@@ -98,7 +99,7 @@ app.set('trust proxy', 1);
 app.use(powMiddlewareInstance);
 
 app.get('/', (req, res) => {
-  res.send('Welcome to the protected page!');
+    res.send('Welcome to the protected page!');
 });
 
 app.listen(3000, () => console.log('Server started on port 3000'));
@@ -132,19 +133,19 @@ import { RateLimiterMemory } from 'rate-limiter-flexible';
 import { identifyRequest } from './fingerprint.js';
 
 const rateLimiter = new RateLimiterMemory({
-  keyPrefix: 'rate_limit',
-  points: 10,
-  duration: 1,
+    keyPrefix: 'rate_limit',
+    points: 10,
+    duration: 1,
 });
 
 app.use(async (req, res, next) => {
-  try {
-    const key = await identifyRequest(req, res);
-    await rateLimiter.consume(key);
-    next();
-  } catch (err) {
-    res.status(429).send('Too Many Requests');
-  }
+    try {
+        const key = await identifyRequest(req, res);
+        await rateLimiter.consume(key);
+        next();
+    } catch (err) {
+        res.status(429).send('Too Many Requests');
+    }
 });
 ```
 
@@ -165,6 +166,116 @@ const fp = builder.toString(); // "os:hash1|ua:hash2"
 
 #### `getDeviceFingerprint()`
 *Client-side function only.* Generates a detailed browser fingerprint using APIs like Canvas, WebGL, etc.
+
+## Advanced Features
+
+### Architecture: `FingerprintEngine`
+
+The core logic of the library is encapsulated within the `FingerprintEngine` class. The `powMiddleware` is essentially a lightweight wrapper that adapts this engine for use with Express.js.
+
+The engine is responsible for:
+1.  Receiving a `requestContext` (IP, headers, cookies, etc.).
+2.  Calculating the suspicion score using the configured weights.
+3.  Making a decision: `next`, `challenge`, or `redirect` (after solving a challenge).
+
+Although not exported for direct public use, understanding its role can be useful for advanced integrations or debugging.
+
+### Manual Integration (outside Express.js)
+
+While `powMiddleware` is convenient for Express, you can use the `FingerprintEngine` directly in any Node.js server environment (e.g., native `http`, Fastify, Koa). This gives you full control over the request/response cycle.
+
+The engine is available via the internal exports: `import { __internal } from './fingerprint.js'`.
+
+**Workflow:**
+
+1.  **Instantiate the Engine**: Create an instance with your `securityConfig`.
+2.  **Build the `requestContext`**: On each request, manually create a context object. It must include `clientIp`, `path`, `cookies`, `query`, `headers`, and mock `rawReq`/`rawRes` objects for cookie handling.
+3.  **Process the Request**: Call `engine.processRequest(requestContext)`.
+4.  **Handle the Decision**: The engine returns a decision object (`{ action: 'challenge' | 'redirect' | 'next', ... }`). You are responsible for implementing the corresponding HTTP response.
+
+**Example with native Node.js `http` server:**
+
+```javascript
+import http from 'http';
+import { __internal } from './fingerprint.js'; // Adjust path
+
+const { FingerprintEngine } = __internal;
+const securityConfig = { /* ... your config ... */ };
+const engine = new FingerprintEngine(securityConfig);
+
+const server = http.createServer(async (req, res) => {
+    // 1. Manually build the context
+    const requestContext = {
+        clientIp: req.socket.remoteAddress,
+        path: req.url.split('?')[0],
+        cookies: {}, // Parse cookies from req.headers.cookie
+        query: {},   // Parse query string from req.url
+        headers: req.headers,
+        isStatic: /\.(js|css|png)$/.test(req.url),
+        rawReq: req, // Pass the raw request
+        rawRes: res, // Pass the raw response for cookie setting
+    };
+
+    // 2. Process and get a decision
+    const decision = await engine.processRequest(requestContext);
+
+    // 3. Act on the decision
+    if (decision.action === 'challenge') {
+        res.writeHead(decision.status, { 'Content-Type': 'text/html' });
+        res.end(decision.body);
+    } else if (decision.action === 'redirect') {
+        // The engine sets the cookie directly on `res` via `rawRes`
+        res.writeHead(302, { 'Location': decision.path });
+        res.end();
+    } else { // 'next'
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Welcome to the protected page!');
+    }
+});
+
+server.listen(3000, () => console.log('Server with manual fingerprint engine started on port 3000'));
+```
+
+### Automatic Threshold Tuning
+
+Manually setting the `low`, `medium`, and `high` thresholds can be challenging. This library provides a powerful tool to automate this process based on real traffic data. It uses a genetic algorithm to find the optimal thresholds that maximize bot detection while minimizing the impact on legitimate users.
+
+#### How to use it:
+
+1.  **Enable Logging**: The auto-tuner needs data. You must provide a `logger` function in your security configuration. This function will be called for significant events (`challenge_issued`, `challenge_solved`, etc.).
+
+2.  **Start the Tuner**: Call `startThresholdAutoTuning` with your live security configuration and the array where logs are stored.
+
+```javascript
+import { powMiddleware, startThresholdAutoTuning } from './fingerprint.js';
+
+// Array to store traffic analysis data. In a real application, this could be
+// a more robust logging system.
+const trafficData = [];
+
+const securityConfig = {
+    weights: { /* ... your weights ... */ },
+    thresholds: {
+        low: 20,    // Initial values, will be optimized
+        medium: 45,
+        high: 75
+    },
+    // The logger is required for auto-tuning
+    logger: (log) => trafficData.push(log)
+};
+
+// Start the background optimization process.
+// The `securityConfig.thresholds` object will be mutated with optimized values.
+startThresholdAutoTuning({
+    securityConfig: securityConfig, // The config object to be updated
+    trafficData: trafficData,       // The data source for the algorithm
+    interval: 1800000,              // Optimization cycle every 30 minutes
+    minDataPoints: 200              // Minimum requests before starting optimization
+});
+
+const powMiddlewareInstance = powMiddleware(securityConfig);
+app.use(powMiddlewareInstance);
+```
 
 ---
 
