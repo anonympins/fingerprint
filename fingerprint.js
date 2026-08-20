@@ -1073,7 +1073,7 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
     const fitnessFunction = (solution) => {
         const [low, medium, high] = solution;
         // Constraints: thresholds must be ordered and within a reasonable range.
-        if (low >= medium || medium >= high || low < 10 || high > 90) return Infinity;
+        if (low >= medium || medium >= high || low <= 10 || high >= 90) return Infinity;
 
         let falsePositives = 0; // Humans challenged unnecessarily.
         let falseNegatives = 0; // Undetected bots.
