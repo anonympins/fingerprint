@@ -1,7 +1,8 @@
-import { beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
+import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import * as fingerprint from '../fingerprint.js';
 import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
+
 
 const {
   isTicketValid,
@@ -15,6 +16,8 @@ const {
   startThresholdAutoTuning,
   stopThresholdAutoTuning,
 } = fingerprint;
+
+const { getParamAnomalyScore } = __internal;
 
 describe('Fingerprint & PoW Security Suite', () => {
   test('cyrb53 should be deterministic', () => {
@@ -711,4 +714,97 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Démarrage du cycle d\'optimisation'));
     });
   });
+
+
+    describe('getParamAnomalyScore', () => {
+
+        // Définir une configuration de test réutilisable
+        const testConfig = {
+            paramSchemas: [
+                {
+                    path: '/api/search',
+                    allowed: ['q', 'page', 'sort'],
+                    maxUnknown: 1 // Tolère 1 paramètre inconnu
+                },
+                {
+                    path: '/user/profile',
+                    allowed: ['id'],
+                    maxUnknown: 0 // Très strict, aucun paramètre inconnu n'est permis
+                }
+            ]
+        };
+
+        it('should return a score of 0 if no schemas are configured', () => {
+            const context = { path: '/api/search', query: { q: 'test', debug: 'true' } };
+            const config = {}; // Pas de paramSchemas
+            const { paramAnomalyScore } = getParamAnomalyScore(context, config);
+            expect(paramAnomalyScore).toBe(0);
+        });
+
+        it('should return a score of 0 if the path does not match any schema', () => {
+            const context = { path: '/api/unknown', query: { param1: 'value1' } };
+            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
+            expect(paramAnomalyScore).toBe(0);
+        });
+
+        it('should return a score of 0 for a request with only allowed parameters', () => {
+            const context = { path: '/api/search', query: { q: 'books', page: '2' } };
+            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
+            expect(paramAnomalyScore).toBe(0);
+        });
+
+        it('should return a score of 0 when the number of unknown params is within the maxUnknown limit', () => {
+            // /api/search autorise 1 paramètre inconnu. On en passe un seul : 'limit'.
+            const context = { path: '/api/search', query: { q: 'movies', limit: '10' } };
+            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
+            expect(paramAnomalyScore).toBe(0);
+        });
+
+        it('should return a significant score when unknown params exceed the maxUnknown limit', () => {
+            // /api/search autorise 1 paramètre inconnu. On en passe deux : 'limit' et 'debug'.
+            const context = { path: '/api/search', query: { q: 'games', limit: '25', debug: 'true' } };
+            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
+            // unknownCount = 2, maxUnknown = 1.
+            // score = 50 + (2 - 1) * 25 = 75
+            expect(paramAnomalyScore).toBe(75);
+        });
+
+        it('should return a significant score for a strict path with one unknown parameter', () => {
+            // /user/profile autorise 0 paramètre inconnu. On en passe un : 'mode'.
+            const context = { path: '/user/profile', query: { id: '123', mode: 'edit' } };
+            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
+            // unknownCount = 1, maxUnknown = 0.
+            // score = 50 + (1 - 0) * 25 = 75
+            expect(paramAnomalyScore).toBe(75);
+        });
+
+        it('should cap the score at 100 for a large number of unknown parameters', () => {
+            // /user/profile autorise 0 paramètre inconnu. On en passe trois.
+            const context = { path: '/user/profile', query: { id: '123', a: '1', b: '2', c: '3' } };
+            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
+            // unknownCount = 3, maxUnknown = 0.
+            // score = 50 + (3 - 0) * 25 = 125. Capped at 100.
+            expect(paramAnomalyScore).toBe(100);
+        });
+
+        it('should correctly handle query as a URLSearchParams object', () => {
+            const query = new URLSearchParams();
+            query.append('id', '456');
+            query.append('token', 'xyz'); // Paramètre inconnu
+            query.append('session', 'abc'); // Paramètre inconnu
+
+            const context = { path: '/user/profile', query };
+            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
+            // unknownCount = 2, maxUnknown = 0.
+            // score = 50 + (2 - 0) * 25 = 100.
+            expect(paramAnomalyScore).toBe(100);
+        });
+
+        it('should return a score of 0 if the query is empty', () => {
+            const context = { path: '/api/search', query: {} };
+            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
+            expect(paramAnomalyScore).toBe(0);
+        });
+
+    });
 });

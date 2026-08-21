@@ -409,15 +409,61 @@ function getHoneypotScore(context, honeypotConfig) {
     return { honeypotScore: 0 };
   }
 
-  // Convert URLSearchParams to a plain object if necessary
-  const queryData = context.query instanceof URLSearchParams ? Object.fromEntries(context.query.entries()) : context.query;
-  const requestData = { ...queryData, ...context.body };
+  // Check both query parameters and the request body for honeypot fields.
+  // This prevents a value in the body from overwriting and hiding a honeypot field from the query.
+  const queryData = context.query instanceof URLSearchParams ? Object.fromEntries(context.query.entries()) : (context.query || {});
+  const bodyData = context.body || {};
+
   for (const field of honeypotConfig.fields) {
-    if (requestData[field]) {
+    // A bot is trapped if the field exists in either the query OR the body.
+    // Using `Object.prototype.hasOwnProperty.call` is safer than `requestData[field]`.
+    if (Object.prototype.hasOwnProperty.call(queryData, field) || 
+        Object.prototype.hasOwnProperty.call(bodyData, field)) {
       return { honeypotScore: 100 }; // A bot fell into the trap, maximum score.
     }
   }
   return { honeypotScore: 0 };
+}
+
+/**
+ * Calculates a score based on URL parameter anomalies against defined schemas.
+ * This helps detect bots probing endpoints with unexpected query parameters.
+ * @param {object} context - The request context.
+ * @param {object} honeypotConfig - The honeypot configuration.
+ * @returns {{paramAnomalyScore: number}}
+ */
+function getParamAnomalyScore(context, honeypotConfig) {
+  if (!honeypotConfig?.paramSchemas) {
+    return { paramAnomalyScore: 0 };
+  }
+
+  const relevantSchema = honeypotConfig.paramSchemas.find(s => context.path.startsWith(s.path));
+
+  // If no schema matches this path, there's no anomaly.
+  if (!relevantSchema) {
+    return { paramAnomalyScore: 0 };
+  }
+
+  const allowedParams = new Set(relevantSchema.allowed || []);
+  const maxUnknown = relevantSchema.maxUnknown ?? 1; // Default to allowing 1 unknown param
+
+  const queryKeys = Object.keys(context.query instanceof URLSearchParams ? Object.fromEntries(context.query.entries()) : context.query);
+
+  let unknownCount = 0;
+  for (const key of queryKeys) {
+    if (!allowedParams.has(key)) {
+      unknownCount++;
+    }
+  }
+
+  if (unknownCount > maxUnknown) {
+    // The score is proportional to how many extra parameters were provided.
+    // Using a base of 50 and adding to it makes it significant.
+    const score = Math.min(100, 50 + (unknownCount - maxUnknown) * 25);
+    return { paramAnomalyScore: score };
+  }
+
+  return { paramAnomalyScore: 0 };
 }
 
 /**
@@ -591,10 +637,11 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const behavioral = await getBehavioralIndicators(context, deviceData);
   const { headerAnomalyScore } = getHeaderAnomalies(context);
   // Calculate the inconsistency score here, separately.
-  const inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200));
+  const inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
 
 
   // Save the updated device state to the store
+  // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
   await store.set(`device:${deviceId}`, deviceData);
 
   return { ...behavioral, headerAnomalyScore, inconsistencyScore };
@@ -849,12 +896,15 @@ class FingerprintEngine {
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
     suspicionVector.honeypotScore = getHoneypotScore(requestContext, this.securityConfig?.honeypot).honeypotScore;
+    suspicionVector.paramAnomalyScore = getParamAnomalyScore(requestContext, this.securityConfig?.honeypot).paramAnomalyScore;
+
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig?.honeypot);
     const finalScore =
       suspicionVector.historyScore * (weights.historyScore || 0) +
       suspicionVector.rotationScore * (weights.rotationScore || 0) +
       suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) +
       suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0) +
+      suspicionVector.paramAnomalyScore * (weights.paramAnomalyScore || 0) +
       honeypotScore * (weights.honeypotScore || 0);
 
     const isBlocked = finalScore >= (thresholds.block || 95);
@@ -1027,11 +1077,13 @@ class FingerprintEngine {
 
     const vector = await __internal.getSuspicionVector(requestContext, this.securityConfig); // Pass the config
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig?.honeypot);
+    const { paramAnomalyScore } = getParamAnomalyScore(requestContext, this.securityConfig?.honeypot);
     const score =
       vector.historyScore * (this.securityConfig.weights.historyScore || 0.3) +
       vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
       vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
+      paramAnomalyScore * (this.securityConfig.weights.paramAnomalyScore || 0) +
       honeypotScore * (this.securityConfig.weights.honeypotScore || 0);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
@@ -1111,6 +1163,7 @@ export const powMiddleware = (securityConfig) => {
  */
 export const __internal = {
     getDeviceHash,
+    getParamAnomalyScore, // Exporter pour les tests
     getSuspicionVector,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
