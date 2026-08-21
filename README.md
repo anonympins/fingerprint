@@ -261,34 +261,29 @@ Manually setting the `low`, `medium`, and `high` thresholds can be challenging. 
 
 1.  **Enable Logging**: The auto-tuner needs data. You must provide a `logger` function in your security configuration. This function will be called for significant events (`challenge_issued`, `challenge_solved`, etc.).
 
-2.  **Start the Tuner**: Call `startThresholdAutoTuning` with your live security configuration and the array where logs are stored.
+2.  **Enable Auto-tuning**: Add an `autotuning` property to your security configuration. The middleware will automatically start the tuning process.
 
 ```javascript
-import { powMiddleware, startThresholdAutoTuning } from './fingerprint.js';
+import { powMiddleware } from './fingerprint.js';
 
 // Array to store traffic analysis data. In a real application, this could be
 // a more robust logging system.
 const trafficData = [];
 
 const securityConfig = {
-    weights: { /* ... your weights ... */ },
+    weights: { /* ... */ },
     thresholds: {
         low: 20,    // Initial values, will be optimized
         medium: 45,
         high: 75
     },
-    // The logger is required for auto-tuning
-    logger: (log) => trafficData.push(log)
+    logger: (log) => trafficData.push(log), // The logger is required for auto-tuning
+    autotune: {
+        trafficData: trafficData,       // The data source for the algorithm
+        interval: 1800000,              // Optimization cycle every 30 minutes (optional)
+        minDataPoints: 200              // Minimum requests before starting optimization (optional)
+    }
 };
-
-// Start the background optimization process.
-// The `securityConfig.thresholds` object will be mutated with optimized values.
-startThresholdAutoTuning({
-    securityConfig: securityConfig, // The config object to be updated
-    trafficData: trafficData,       // The data source for the algorithm
-    interval: 1800000,              // Optimization cycle every 30 minutes
-    minDataPoints: 200              // Minimum requests before starting optimization
-});
 
 const powMiddlewareInstance = powMiddleware(securityConfig);
 app.use(powMiddlewareInstance);

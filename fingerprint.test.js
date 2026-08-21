@@ -1,7 +1,6 @@
 import { beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
 import * as fingerprint from './fingerprint.js';
-import * as fingerprintServer from './fingerprint.server.js';
 import { FingerprintBuilder, cyrb53 } from './fingerprint.builder.js';
 
 const {
@@ -220,7 +219,7 @@ describe('Fingerprint & PoW Security Suite', () => {
 
   test('getDeviceHash should prioritize client-side fingerprint header', async () => {
     // 1. Spy on the getDeviceHash function from its actual module
-    const getDeviceHashSpy = vi.spyOn(fingerprintServer, 'getDeviceHash');
+    const getDeviceHashSpy = vi.spyOn(fingerprint, 'getDeviceHash');
 
     // 2. Simulate a request context with the special header
     const clientSideFingerprint = 'cvs:12345|gpu:67890|hw:stable';
@@ -233,7 +232,7 @@ describe('Fingerprint & PoW Security Suite', () => {
     };
 
     // 3. Call the function and assert it returns the client-side FP
-    const result = fingerprintServer.getDeviceHash(requestContext);
+    const result = fingerprint.getDeviceHash(requestContext);
 
     expect(result).toBe(clientSideFingerprint);
     expect(getDeviceHashSpy).toHaveBeenCalledWith(requestContext);

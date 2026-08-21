@@ -2,7 +2,6 @@
 import crypto from "node:crypto";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
-import { getDeviceHash } from "./fingerprint.server.js";
 
 /**
  * Retrieves the POW_SECRET from environment variables with appropriate checks.
@@ -15,6 +14,38 @@ const getPowSecret = () => {
   }
   return secret || "fallback-dev-secret-32-chars-minimum";
 };
+
+/**
+ * Creates a stable hash based on device characteristics, independent of the IP.
+ * This is our "level 2 fingerprint".
+ * @param {object} context - The request context.
+ * @returns {string} A hash representing the device.
+ */
+function getHeaderSignature(context) {
+    if (!context.rawHeaders) return '';
+    const headerKeys = [];
+    for (let i = 0; i < context.rawHeaders.length; i += 2) {
+        headerKeys.push(context.rawHeaders[i]);
+    }
+    return cyrb53(headerKeys.join(','));
+}
+export function getDeviceHash(context) {
+    // Prioritize the rich client-side fingerprint if provided.
+    const clientFp = context.headers['x-device-fingerprint'];
+    if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
+        // Basic validation to ensure it looks like our client-side fingerprint.
+        return clientFp;
+    }
+
+    // Fallback to server-side only fingerprinting if the header is missing.
+    const srv = new FingerprintBuilder();
+    srv.add("ua", context.headers["user-agent"]);
+    if (context.headers["sec-ch-ua-platform"])
+        srv.add("os", context.headers["sec-ch-ua-platform"]);
+    if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
+    srv.add("h_ord", getHeaderSignature(context));
+    return srv.toString();
+}
 
 /**
  * Generates the HTML content for a TSP (Traveling Salesperson Problem) challenge.
@@ -983,6 +1014,13 @@ class FingerprintEngine {
 // --- Proof-of-Work Middleware (The Tollbooth) ---
 export const powMiddleware = (securityConfig) => {
   const engine = new FingerprintEngine(securityConfig);
+
+  if (securityConfig.autotuning) {
+    startThresholdAutoTuning({
+      securityConfig: securityConfig,
+      ...securityConfig.autotuning,
+    });
+  }
 
   return async (req, res, next) => {
     const requestContext = {
