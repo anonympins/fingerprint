@@ -16,6 +16,50 @@ const getPowSecret = () => {
 };
 
 /**
+ * Calculates the JA3 fingerprint hash from the TLS Client Hello message.
+ * JA3 is a more reliable way to identify client applications (e.g., a specific browser or a script)
+ * based on the specifics of its TLS handshake.
+ * @param {object} context - The request context, containing the raw request object.
+ * @returns {string|null} The MD5 hash of the JA3 string, or null if it cannot be computed.
+ */
+function getJa3Hash(context) {
+    // 1. Prefer the JA3 hash from a trusted reverse proxy (e.g., Nginx, Cloudflare).
+    const ja3FromHeader = context.headers['x-ja3-hash'];
+    if (ja3FromHeader) {
+        return ja3FromHeader;
+    }
+
+    // 2. Fallback to calculating from the raw socket if available (requires Node.js to handle TLS).
+    const clientHello = context.rawReq?.socket?.clientHello;
+    if (!clientHello) {
+        return null;
+    }
+
+    try {
+        const { version, ciphers, extensions, ellipticCurves, ellipticCurvePointFormats } = clientHello;
+
+        // The official JA3 spec includes the TLS version.
+        // Node.js provides it as a string like 'TLSv1.3', we need the corresponding decimal value.
+        const tlsVersionMap = {
+            'TLSv1': 769, 'TLSv1.1': 770, 'TLSv1.2': 771, 'TLSv1.3': 772
+        };
+        const tlsVersionId = tlsVersionMap[version] || 0;
+
+        const ja3String = [
+            tlsVersionId,
+            // The ciphers array from clientHello is an array of objects, not just IDs.
+            Array.isArray(ciphers) ? ciphers.join('-') : '',
+            extensions?.join('-') || '',
+            ellipticCurves?.join('-') || '',
+            ellipticCurvePointFormats?.join('-') || ''
+        ].join(',');
+
+        return crypto.createHash('md5').update(ja3String).digest('hex');
+    } catch (e) {
+        return null; // Could fail if clientHello structure is unexpected.
+    }
+}
+/**
  * Creates a stable hash based on device characteristics, independent of the IP.
  * This is our "level 2 fingerprint".
  * @param {object} context - The request context.
@@ -43,6 +87,10 @@ export function getDeviceHash(context) {
     if (context.headers["sec-ch-ua-platform"])
         srv.add("os", context.headers["sec-ch-ua-platform"]);
     if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
+    // Add JA3 hash if available. This is a very strong signal.
+    const ja3 = getJa3Hash(context);
+    if (ja3) srv.add("ja3", ja3);
+
     srv.add("h_ord", getHeaderSignature(context));
     return srv.toString();
 }
@@ -406,6 +454,14 @@ function getHeaderAnomalies(context) {
  */
 function getHoneypotScore(context, honeypotConfig = {}) {
   const { fields = [], trapUrls = [], detectInjections = true } = honeypotConfig;
+  // (NOUVEAU) Permettre de brancher des analyseurs externes plus robustes.
+  // L'utilisateur pourrait passer une fonction qui prend les données de la requête
+  // et retourne `true` si une menace est détectée.
+  // Exemple: `(data) => myWafLibrary.isMalicious(data)`
+  const externalAnalyzers = honeypotConfig.analyzers || [];
+  if (typeof detectInjections === 'object' && detectInjections.analyzers) {
+      externalAnalyzers.push(...detectInjections.analyzers);
+  }
 
   // 1. Check for trap URL access
   if (trapUrls.some(trap => context.path.startsWith(trap))) {
@@ -434,6 +490,17 @@ function getHoneypotScore(context, honeypotConfig = {}) {
     }
   }
 
+  // 3. (NOUVEAU) Utiliser les analyseurs externes
+  const allData = { ...queryData, ...bodyData };
+  if (externalAnalyzers.length > 0) {
+      for (const analyzer of externalAnalyzers) {
+          // On passe à l'analyseur l'ensemble des données de la requête.
+          if (analyzer(allData)) {
+              return { honeypotScore: 100 };
+          }
+      }
+  }
+
   // 3. Check for injection attempts in values
   if (detectInjections) {
     // Regex for common SQL injection patterns
@@ -453,13 +520,19 @@ function getHoneypotScore(context, honeypotConfig = {}) {
       "(\\.\\./|\\.\\.\\\\)|\\b(exec|system|shell_exec|passthru|popen|proc_open|eval|assert|require|include|process|child_process)(_once)?\\s*\\(|\\b(wget|curl|bash|sh|powershell|php)\\b",
       "i"
     );
+    // Regex for Log4Shell (JNDI injection)
+    const log4shellRegex = new RegExp("\\$\\{jndi:", "i");
+    // Regex for Server-Side Template Injection (SSTI)
+    const sstiRegex = new RegExp(
+      "(\\{\\{|\\{%|#\\{)[^}]+(config|settings|self|class|application|request|session|process|env)", "i"
+    );
 
     const inspect = (obj) => {
         for (const key in obj) {
             if (Object.prototype.hasOwnProperty.call(obj, key)) {
                 const value = obj[key];
                 if (typeof value === 'string') {
-                    if (rceRegex.test(value) || sqlRegex.test(value)) return true;
+                    if (rceRegex.test(value) || sqlRegex.test(value) || log4shellRegex.test(value) || sstiRegex.test(value)) return true;
                 } else if (typeof value === 'object' && value !== null) {
                     // For NoSQL, we check the stringified version of the object to find keys like "$gt"
                     // This is more accurate when done on the object itself.
@@ -499,7 +572,9 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         scrapeThreshold = 1000, scrapeWeight = 20, scrapeBurstWeight = 40,
         historySize = 10,
         decayFactor = 0.9,
-        inactivityReset = 30000
+        inactivityReset = 30000,
+        // Nouveau paramètre pour la détection de séquences
+        sequenceLength = 3, sequenceWeight = 60
     } = patternConfig;
 
     const now = Date.now();
@@ -528,7 +603,6 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
             score += velocityWeight; // score = 30
         }
 
-        console.log(currentPath, lastRequest.path,currentQueryString, lastRequest.queryString, timeSinceLast, burstThreshold)
         // 2. Burst Check: Add additional penalty for identical requests in a very short time frame.
         if (currentPath === lastRequest.path && currentQueryString === lastRequest.queryString && timeSinceLast < burstThreshold) { // 150 < 500 -> true
             score += burstWeight; // score = 30 + 50 = 80
@@ -543,6 +617,17 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
             } else {
                 score += scrapeWeight; // First sign of a potential scraping pattern
             }
+        }
+
+        // 4. (NOUVEAU) Détection de séquences répétitives (ex: A -> B -> C -> A -> B -> C)
+        if (history.length >= sequenceLength * 2) {
+            const lastSequence = history.slice(-sequenceLength);
+            const previousSequence = history.slice(-sequenceLength * 2, -sequenceLength);
+            
+            const isRepeating = lastSequence.every((req, i) => 
+                req.path === previousSequence[i].path && req.queryString === previousSequence[i].queryString
+            );
+            if (isRepeating) score += sequenceWeight;
         }
     }
 
@@ -692,6 +777,8 @@ async function resolveRequestIdentity(context) {
       lastFpHash: currentDeviceHash,
       lastChangeTimestamp: 0,
       rapidChangeCount: 0,
+      highScoreCount: 0,
+      lastHighScoreTimestamp: 0,
     };
     // The write will happen in getSuspicionVector after all modifications.
   }
@@ -791,6 +878,11 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
   await store.set(`device:${deviceId}`, deviceData);
 
+  // Ensure deviceData.ips is a Set for subsequent operations within the same request,
+  // even if the store returns an array.
+  if (Array.isArray(deviceData.ips)) {
+      deviceData.ips = new Set(deviceData.ips);
+  }
   return { ...behavioral, headerAnomalyScore, inconsistencyScore };
 };
 
@@ -1025,7 +1117,7 @@ const staticExtensions = new RegExp(
 const isStaticResource = (path) => staticExtensions.test(path);
 
 // --- Middleware Proof-of-Work (Le péage) ---
-class FingerprintEngine {
+export class FingerprintEngine {
   constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
     this.securityConfig = securityConfig;
@@ -1062,6 +1154,9 @@ class FingerprintEngine {
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
+    // (NOUVEAU) Vérifier si un nouveau device_id a été créé lors de cette requête
+    const isNewDevice = requestContext._newCookies?.some(c => c.name === 'device_id');
+
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
@@ -1075,6 +1170,11 @@ class FingerprintEngine {
       suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) + suspicionVector.requestPatternScore * (weights.requestPatternScore || 0) +
       suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0) +
       honeypotScore * (weights.honeypotScore || 0);
+
+    // Si c'est un nouvel appareil, on lui impose un challenge de base, même si son score est bas.
+    // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
+    const requiresChallengeForNewDevice = isNewDevice && finalScore < thresholds.low;
+
 
     const isBlocked = finalScore >= (thresholds.block || 95);
 
@@ -1120,11 +1220,14 @@ class FingerprintEngine {
         if (onDeviceCompromised) {
             onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Triggered signed honeypot trap URL', score: 100, vector: { honeypotScore: 100 } });
         }
+        if (logger) {
+            logger({ type: 'trap_triggered', deviceId: cookies?.device_id, score: 100, path: path, timestamp: Date.now() });
+        }
         await store.set(`device:${cookies.device_id}`, deviceData);
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
-    if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
+    if ((isSuspicious || requiresChallengeForNewDevice) && !isTicketValid(clientIp, powCookie)) {
         // --- CHALLENGE SOLUTION HANDLING ---
         if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
             let isValid = false,
@@ -1220,7 +1323,7 @@ class FingerprintEngine {
         }
 
         // UNIFIED CHALLENGE LOGIC for all suspicion levels (low, medium, high)
-        if (isSuspicious) { // Couvre à la fois low et medium
+        if (isSuspicious || requiresChallengeForNewDevice) { // Couvre à la fois low et medium
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce));
@@ -1329,6 +1432,8 @@ export const powMiddleware = (securityConfig) => {
       isStatic: isStaticResource(req.path),
       // Add the newly required properties for full decoupling
       rawHeaders: req.rawHeaders,
+      // Pass the raw request object for advanced inspection (e.g., JA3)
+      rawReq: req,
       httpVersion: req.httpVersion,
     };
 
@@ -1376,7 +1481,6 @@ export const __internal = {
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
     calculateTarget,
-    FingerprintEngine, // Expose for advanced testing
     getRequestPatternScore, // Expose for testing
 };
 
@@ -1398,38 +1502,60 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
     }
     console.log(`[AutoTuning] Démarrage du cycle d'optimisation avec ${trafficData.length} points de données.`);
 
-    // Identify "bots" (those who received a challenge but never solved it)
-    // and "humans" (those who passed the challenge or never received one).
+    // Classify historical requests with a confidence weight.
     const solvedDevices = new Set(trafficData.filter(e => e.type === 'challenge_solved').map(e => e.deviceId));
+    const challengedDevices = new Set(trafficData.filter(e => e.type === 'challenge_issued').map(e => e.deviceId));
+
     const historicalRequests = trafficData.map(log => {
-        let isBot = false;
-        if (log.type === 'challenge_issued' && !solvedDevices.has(log.deviceId)) {
-            isBot = true; // Assumption: a challenge issued and not solved is a bot.
+        // Assign a label ('bot' or 'human') and a confidence weight to each log entry.
+        switch (log.type) {
+            case 'honeypot_probe':
+            case 'trap_triggered':
+                return { score: log.score, label: 'bot', confidence: 10.0 }; // Very high confidence
+            
+            case 'challenge_issued':
+                // A challenge issued to a device that never solved it is a strong bot signal.
+                if (!solvedDevices.has(log.deviceId)) {
+                    return { score: log.score, label: 'bot', confidence: 3.0 }; // High confidence
+                }
+                // If the challenge was eventually solved, this specific log is neutral.
+                return null;
+
+            case 'challenge_solved':
+                return { score: log.score, label: 'human', confidence: 5.0 }; // High confidence
+
+            case 'request_passed':
+                // A passed request from a device that was never even challenged is likely a human.
+                if (!challengedDevices.has(log.deviceId)) {
+                    return { score: log.score, label: 'human', confidence: 0.5 }; // Low confidence
+                }
+                // If the device was challenged at some point, this log is ambiguous.
+                return null;
+            
+            default:
+                return null;
         }
-        return { score: log.score, isBot };
-    });
+    }).filter(Boolean); // Remove null entries
 
     // The "fitness" function evaluates the quality of a set of thresholds.
     // A lower score is better.
     const fitnessFunction = (solution) => {
         const [low, medium, high, velocityThreshold, burstThreshold, scrapeThreshold] = solution;
-        // Constraints: thresholds must be ordered and within a reasonable range.
         if (low >= medium || medium >= high || low < 10 || high > 90) return Infinity;
-        // Constraints for pattern thresholds
         if (velocityThreshold < 50 || velocityThreshold > burstThreshold || burstThreshold > scrapeThreshold) return Infinity;
 
-        let falsePositives = 0; // Humans challenged unnecessarily.
-        let falseNegatives = 0; // Undetected bots.
+        let weightedFalsePositives = 0; // Humans challenged unnecessarily.
+        let weightedFalseNegatives = 0; // Undetected bots.
 
         for (const req of historicalRequests) {
-            if (req.isBot) {
-                if (req.score < low) falseNegatives++;
-            } else { // Human
-                if (req.score >= low) falsePositives++;
+            if (req.label === 'bot') {
+                if (req.score < low) weightedFalseNegatives += req.confidence;
+            } else { // 'human'
+                if (req.score >= low) weightedFalsePositives += req.confidence;
             }
         }
-        // Penalize passing bots 2x more than inconvenienced humans.
-        return (falsePositives * 1.0) + (falseNegatives * 2.0);
+        // The penalty for false negatives is implicitly higher due to the higher confidence scores of bot signals.
+        return weightedFalsePositives + weightedFalseNegatives;
     };
 
     // Functions for the genetic algorithm.

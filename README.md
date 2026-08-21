@@ -13,7 +13,7 @@ This system identifies and slows down bots and automated scripts by evaluating t
 
 The process unfolds in three steps:
 
-1.  **Identification & Fingerprinting**: A unique fingerprint is generated for each device based on browser characteristics (client-side) and request headers (server-side). A `device_id` cookie is used to track the device over time.
+1.  **Identification & Fingerprinting**: A unique fingerprint is generated for each device. This combines a client-side browser fingerprint, server-side request headers, and the **JA3 fingerprint** from the TLS handshake, which reliably identifies the underlying HTTP client library (e.g., Chrome vs. a Python script). A `device_id` cookie is used to track the device over time.
 2.  **Suspicion Score Calculation**: Several indicators are analyzed to calculate a suspicion score:
     *   **Header Anomalies**: Missing `User-Agent`, `Accept-Language`, etc.
     *   **Device Behavior**: Rapid fingerprint changes (User-Agent rotation).
@@ -104,7 +104,33 @@ const securityConfig = {
         // A request to one of these paths will immediately flag the device as malicious.
         trapUrls: ['/wp-admin', '/.env', '/admin.php', '/phpmyadmin'], // (Optional)
         // Automatically detect common SQL/NoSQL injection and RCE patterns in request values. (Optional, default: true)
-        detectInjections: true
+        detectInjections: true,
+        // (Optional) Plug in external, more robust analyzers. This allows you to extend the default detection with specialized libraries (e.g., WAFs, anti-spam) or your own custom logic.
+        // Each function receives an object with all query and body data and should return `true` if a threat is detected.
+        analyzers: [
+            // Example 1: Using a general-purpose WAF library.
+            // (npm install generic-waf)
+            (data) => {
+                const WAF = require('generic-waf');
+                const waf = new WAF();
+                // This WAF expects a string, so we stringify the data to check all values at once.
+                return waf.isMalicious(JSON.stringify(data));
+            },
+            // Example 2: Using a specialized library for XSS detection.
+            // (npm install xss)
+            (data) => {
+                const xss = require('xss');
+                const originalData = JSON.stringify(data);
+                // If the sanitized string is different from the original, it means malicious HTML/JS was found and removed.
+                return xss(originalData) !== originalData;
+            },
+            // Example 3: A custom function to detect specific keywords (e.g., for anti-spam).
+            (data) => {
+                const spamKeywords = ['viagra', 'free money', 'crypto pump'];
+                const dataString = JSON.stringify(data).toLowerCase();
+                return spamKeywords.some(keyword => dataString.includes(keyword));
+            }
+        ]
     },
     // The logger is required for auto-tuning. It collects data on requests.
     logger: (log) => trafficData.push(log),
@@ -151,6 +177,8 @@ The main Express middleware. It orchestrates identification, suspicion calculati
 
 #### `configureStore(store)`
 Allows replacing the in-memory store with an external datastore (like Redis) for persistence and scaling.
+
+See the Datastore Integration Guide for a complete example of creating a Redis store.
 
 ```javascript
 import { configureStore } from './fingerprint.js';
@@ -234,22 +262,23 @@ Although not exported for direct public use, understanding its role can be usefu
 
 While `powMiddleware` is convenient for Express, you can use the `FingerprintEngine` directly in any Node.js server environment (e.g., native `http`, Fastify, Koa). This gives you full control over the request/response cycle.
 
-The engine is available via the internal exports: `import { __internal } from './fingerprint.js'`.
+**For concrete examples with Koa and Fastify, see our Framework Integration Guide.**
+
+The engine is a named export from the main module.
 
 **Workflow:**
 
 1.  **Instantiate the Engine**: Create an instance with your `securityConfig`.
 2.  **Build the `requestContext`**: On each request, manually create a context object. It must include `clientIp`, `path`, `cookies`, `query`, `headers`, and mock `rawReq`/`rawRes` objects for cookie handling.
-3.  **Process the Request**: Call `engine.processRequest(requestContext)`.
+3.  **Process the Request**: Call `engine.processRequest(requestContext)`. This method is asynchronous.
 4.  **Handle the Decision**: The engine returns a decision object (`{ action: 'challenge' | 'redirect' | 'next', ... }`). You are responsible for implementing the corresponding HTTP response.
 
 **Example with native Node.js `http` server:**
 
 ```javascript
 import http from 'http';
-import { __internal } from './fingerprint.js'; // Adjust path
+import { FingerprintEngine } from './fingerprint.js'; // Adjust path
 
-const { FingerprintEngine } = __internal;
 const securityConfig = { /* ... your config ... */ };
 const engine = new FingerprintEngine(securityConfig);
 

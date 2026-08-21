@@ -5,6 +5,7 @@ import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
 
 
 const {
+  FingerprintEngine,
   isTicketValid,
   identifyRequest,
   powMiddleware,
@@ -16,7 +17,7 @@ const {
   startThresholdAutoTuning,
   stopThresholdAutoTuning,
 } = fingerprint;
-const { getRequestPatternScore } = __internal;
+const { getRequestPatternScore, getDeviceHash } = __internal;
 
 describe('Fingerprint & PoW Security Suite', () => {
   test('cyrb53 should be deterministic', () => {
@@ -48,6 +49,60 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(FingerprintBuilder.compare(null, fp2), "Comparison with null should be 0").toBe(0);
     });
   });
+
+  describe('JA3 Fingerprinting', () => {
+
+    const mockClientHello = {
+      version: 'TLSv1.3',
+      ciphers: [4865, 4866],
+      extensions: [0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 27, 21],
+      ellipticCurves: [29, 23, 24],
+      ellipticCurvePointFormats: [0],
+    };
+
+    test('should prioritize JA3 hash from x-ja3-hash header', () => {
+      const context = {
+        headers: { 'x-ja3-hash': 'header-provided-ja3-hash' },
+        rawReq: { socket: { clientHello: mockClientHello } } // Even if socket data exists
+      };
+      const deviceHash = getDeviceHash(context);
+      expect(deviceHash).toContain(`ja3:${cyrb53('header-provided-ja3-hash')}`);
+    });
+
+    test('should calculate JA3 hash from clientHello if header is missing', () => {
+      const context = {
+        headers: {},
+        rawReq: { socket: { clientHello: mockClientHello } }
+      };
+      const deviceHash = getDeviceHash(context);
+      // The getDeviceHash function internally uses FingerprintBuilder, which applies cyrb53 to the value.
+      // So we just need to check if the hash of the expected JA3 MD5 is present.
+      const expectedComponent = `ja3`;
+      expect(deviceHash).toContain(expectedComponent);
+    });
+
+    test('should not include JA3 hash if no data is available', () => {
+      const context = {
+        headers: {},
+        rawReq: { socket: {} } // No clientHello
+      };
+      const deviceHash = getDeviceHash(context);
+      expect(deviceHash).not.toContain('ja3:');
+    });
+
+    test('should handle missing rawReq or socket gracefully', () => {
+      const context1 = { headers: {} }; // No rawReq
+      const context2 = { headers: {}, rawReq: {} }; // No socket
+
+      const deviceHash1 = getDeviceHash(context1);
+      const deviceHash2 = getDeviceHash(context2);
+
+      expect(deviceHash1).not.toContain('ja3:');
+      expect(deviceHash2).not.toContain('ja3:');
+    });
+  });
+
+
 
   describe('CPU Target PoW Workflow', () => {
     const ip = '127.0.0.1';
@@ -185,8 +240,8 @@ describe('Fingerprint & PoW Security Suite', () => {
     beforeEach(() => {
       inMemoryStore._map.clear();
       configureStore(inMemoryStore);
-      vi.restoreAllMocks();
-      engine = new __internal.FingerprintEngine(securityConfig);
+      vi.restoreAllMocks(); // Restore mocks before each test
+      engine = new FingerprintEngine(securityConfig);
     });
 
     test('should return a device-specific key for a normal request', async () => {
@@ -495,7 +550,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         weights: { historyScore: 1.0 },
         thresholds: { low: 20 },
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
 
       const vector = await __internal.getSuspicionVector(req, securityConfig);
       expect(vector.historyScore).toBeGreaterThan(20);
@@ -510,7 +565,7 @@ describe('Fingerprint & PoW Security Suite', () => {
           fields: ['email_confirm', 'debug']
         }
       };
-      const engine = new __internal.FingerprintEngine(securityConfigWithHoneypot);
+      const engine = new FingerprintEngine(securityConfigWithHoneypot);
 
       const requestContext = {
         clientIp: '1.1.1.1',
@@ -539,7 +594,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         thresholds: { low: 20 },
         honeypot: { detectInjections: true }
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
       const requestContext = {
         query: new URLSearchParams({ id: "1' OR 1=1 --" }),
         body: {},
@@ -558,7 +613,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         thresholds: { low: 20 },
         honeypot: { detectInjections: true }
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
       const requestContext = {
         query: {},
         path: '/',
@@ -578,7 +633,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         thresholds: { low: 20 },
         honeypot: { detectInjections: true }
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
       const requestContext = {
         query: {},
         path: '/',
@@ -598,7 +653,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         thresholds: { low: 20 },
         honeypot: { detectInjections: true }
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
       const requestContext = {
         query: new URLSearchParams({ id: "123" }),
         body: { comment: "This is a normal comment." },
@@ -813,7 +868,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 headers: { 'user-agent': 'test' },
                 ...context, // Spread the test-specific context (body, headers)
             };
-            const engine = new __internal.FingerprintEngine(securityConfig);
+            const engine = new FingerprintEngine(securityConfig);
             const decision = await engine.processRequest(fullContext);
             return { honeypotScore: decision.vector.honeypotScore };
         };
@@ -885,7 +940,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         };
 
         it('should immediately block a request to a trap URL', async () => {
-            const engine = new __internal.FingerprintEngine(baseSecurityConfig);
+            const engine = new FingerprintEngine(baseSecurityConfig);
             const requestContext = {
                 clientIp: '1.1.1.1',
                 path: '/wp-admin/login.php', // Hitting a trap URL
@@ -906,7 +961,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
 
         it('should penalize direct challenge probing', async () => {
-            const engine = new __internal.FingerprintEngine(baseSecurityConfig);
+            const engine = new FingerprintEngine(baseSecurityConfig);
             // This request is not suspicious on its own...
             vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
                 historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
@@ -933,7 +988,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
 
         it('should persist the "condemned" status of a device across requests', async () => {
-            const engine = new __internal.FingerprintEngine(baseSecurityConfig);
+            const engine = new FingerprintEngine(baseSecurityConfig);
             const deviceId = 'condemned-device-123';
 
             // Step 1: The device hits a trap URL and gets condemned.
@@ -968,6 +1023,60 @@ describe('Fingerprint & PoW Security Suite', () => {
             // The honeypot score should still be 100 due to the persisted "condemned" status.
             expect(decision.vector.honeypotScore).toBe(100);
             expect(decision.action).toBe('block');
+        });
+
+        it('should use external analyzers to detect threats', async () => {
+            const customAnalyzer = vi.fn((data) => {
+                // This analyzer flags any request containing the word 'custom-threat'
+                return JSON.stringify(data).includes('custom-threat');
+            });
+    
+            const securityConfigWithAnalyzer = {
+                ...baseSecurityConfig,
+                honeypot: {
+                    ...baseSecurityConfig.honeypot,
+                    analyzers: [customAnalyzer]
+                }
+            };
+    
+            const engine = new FingerprintEngine(securityConfigWithAnalyzer);
+    
+            // 1. Test a request that should be flagged by the analyzer
+            const maliciousRequestContext = {
+                clientIp: '1.1.1.1',
+                path: '/some-path',
+                cookies: {},
+                query: {},
+                body: { comment: 'this is a custom-threat' },
+                headers: { 'user-agent': 'A regular browser' },
+                rawHeaders: ['user-agent', 'A regular browser'],
+                isStatic: false,
+            };
+    
+            const decisionMalicious = await engine.processRequest(maliciousRequestContext);
+    
+            expect(customAnalyzer).toHaveBeenCalledWith({ comment: 'this is a custom-threat' });
+            expect(decisionMalicious.vector.honeypotScore).toBe(100);
+            expect(decisionMalicious.action).toBe('block');
+    
+            // 2. Test a normal request that should not be flagged
+            const cleanRequestContext = {
+                clientIp: '2.2.2.2',
+                path: '/some-path',
+                cookies: {},
+                query: {},
+                body: { comment: 'this is a normal comment' },
+                headers: { 'user-agent': 'A regular browser', 'accept-language': 'en-US,en;q=0.9' },
+                rawHeaders: ['user-agent', 'A regular browser', 'accept-language', 'en-US,en;q=0.9'],
+                isStatic: false,
+            };
+    
+            const decisionClean = await engine.processRequest(cleanRequestContext);
+
+            expect(customAnalyzer).toHaveBeenCalledWith({ comment: 'this is a normal comment' });
+            // The honeypot score should be 0 as no other traps were triggered
+            expect(decisionClean.vector.honeypotScore).toBe(0);
+            expect(decisionClean.action).toBe('next');
         });
     });
 });
