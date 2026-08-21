@@ -4,13 +4,17 @@ import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
 import { getDeviceHash } from "./fingerprint.server.js";
 
-const POW_SECRET = process.env.POW_SECRET;
-
-if (!POW_SECRET && process.env.NODE_ENV === 'production') {
-  throw new Error('POW_SECRET environment variable is not set. This is required for production.');
-} else if (!POW_SECRET) {
-  console.warn('Warning: POW_SECRET environment variable not set. Using a default, insecure secret for development.');
-}
+/**
+ * Retrieves the POW_SECRET from environment variables with appropriate checks.
+ * @returns {string} The secret key.
+ */
+const getPowSecret = () => {
+  const secret = process.env.POW_SECRET;
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('POW_SECRET environment variable is not set. This is required for production.');
+  }
+  return secret || "fallback-dev-secret-32-chars-minimum";
+};
 
 /**
  * Generates the HTML content for a TSP (Traveling Salesperson Problem) challenge.
@@ -289,7 +293,7 @@ export const verifyPoWAndGenerateTicket = (
   // 2. Generate an HMAC ticket so the client doesn't have to do it again for 1 hour
   const expiry = Date.now() + 3600000; // 1 heure
   const signature = crypto
-    .createHmac("sha256", POW_SECRET || "fallback-dev-secret-32-chars-minimum")
+    .createHmac("sha256", getPowSecret())
     .update(`${ip}:${expiry}`)
     .digest("hex");
 
@@ -300,18 +304,22 @@ export const verifyPoWAndGenerateTicket = (
  * Verifies a memory PoW solution.
  * The server performs the same calculation to validate.
  */
-export const verifyMemoryPoW = (nonce, solution, difficulty = 16) => {
+export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret) => {
   const size = difficulty * 1024 * 1024;
   const iterations = size / 16;
   const buffer = new Uint32Array(size / 4);
-  let h = new TextEncoder().encode(nonce).reduce((acc, v) => acc + v, 0);
+  const seed = clientSecret ? `${nonce}:${clientSecret}` : nonce;
+  let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
+
   for (let i = 0; i < buffer.length; i++) {
     buffer[i] = h = Math.imul(h ^ i, 1597334677);
   }
+
   let finalHash = 0;
+  let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
   for (let i = 0; i < iterations; i++) {
-    const addr = buffer[i % buffer.length] % buffer.length;
-    finalHash ^= buffer[addr];
+    addr = buffer[addr] % buffer.length;
+    finalHash ^= addr;
   }
   return finalHash === parseInt(solution, 10);
 };
@@ -320,7 +328,7 @@ export const isTicketValid = (ip, ticket) => {
   const [expiry, sig] = ticket.split(":");
   if (!expiry || !sig || Date.now() > parseInt(expiry, 10)) return false;
   const expectedSig = crypto
-    .createHmac("sha256", POW_SECRET || "fallback-dev-secret-32-chars-minimum")
+    .createHmac("sha256", getPowSecret())
     .update(`${ip}:${expiry}`)
     .digest("hex");
 
@@ -369,7 +377,7 @@ function getHeaderAnomalies(context) {
 
 /**
  * Default in-memory store implementation.
- * @type {IStore} 
+ * @type {IStore}
  */
 const inMemoryStore = {
   _map: new Map(),
@@ -395,7 +403,7 @@ export const configureStore = (externalStore) => {
  * Orchestrates request identification using a persistent anchor (cookie)
  * and fingerprint verification.
  * @param {object} context - The request context.
- * @returns {Promise<{deviceId: string, deviceData: object, consistencyScore: number, newCookie: object|null}>} 
+ * @returns {Promise<{deviceId: string, deviceData: object, consistencyScore: number, newCookie: object|null}>}
  */
 async function resolveRequestIdentity(context) {
   const existingDeviceId = context.cookies?.device_id;
@@ -470,7 +478,7 @@ async function getBehavioralIndicators(context, deviceData) {
       deviceData.rapidChangeCount = Math.min(
         deviceData.rapidChangeCount + 1,
         MAX_RAPID_CHANGES_PER_DEVICE * 2, // Increases quickly
-      ); 
+      );
     } else {
       deviceData.rapidChangeCount = Math.max(0, deviceData.rapidChangeCount - 1); // Decreases slowly
     }
@@ -673,7 +681,7 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  * @param {string} clientIp - The client's IP address.
  * @returns {string} HTML content.
  */
-function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp) {
+function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret) {
     const { nonce, target, path } = cpuChallengeDetails;
     return `
       <html><head><title>Advanced Security Check</title></head>
@@ -685,13 +693,14 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
           async function solve() {
             const nonce = "${nonce}";
             const path = "${path}";
+            const clientSecret = "${clientSecret}"; // Secret is now available to the client
 
             // --- CPU Challenge ---
             document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
             const cpuTarget = BigInt("0x${target}");
             let cpuSolution = 0;
             while (true) {
-              const msg = "${clientIp}:${nonce}:" + cpuSolution;
+              const msg = "${clientIp}:${nonce}:" + cpuSolution + ":" + clientSecret;
               const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
               const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
               if (BigInt('0x' + hashHex) < cpuTarget) break;
@@ -704,14 +713,16 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
             await new Promise(r => setTimeout(r, 10)); // Yield to update UI
 
             let memSolution = 0;
+            const iterations = size / 16;
             try {
                 const size = ${memoryDifficulty} * 1024 * 1024;
                 const buffer = new Uint32Array(size / 4);
-                let h = new TextEncoder().encode(nonce).reduce((acc, v) => acc + v, 0);
+                const seed = nonce + ":" + clientSecret;
+                let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
                 for (let i = 0; i < buffer.length; i++) {
-                    buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+                    buffer[i] = h = Math.imul(h ^ i, 1597334677);
                 }
-                for(let i = 0; i < (size / 16); i++) {
+                for(let i = 0; i < iterations; i++) {
                     const addr = buffer[i % buffer.length] % buffer.length;
                     memSolution ^= buffer[addr];
                 }
@@ -734,11 +745,13 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   nonce,
   solution,
   suspicionFactor,
+  clientSecret, // Le secret est maintenant requis
 ) {
   const target = calculateTarget(suspicionFactor);
+  const message = clientSecret ? `${clientIp}:${nonce}:${solution}:${clientSecret}` : `${clientIp}:${nonce}:${solution}`;
   const hash = crypto
     .createHash("sha256")
-    .update(`${clientIp}:${nonce}:${solution}`)
+    .update(message)
     .digest("hex");
   const hashAsInt = BigInt("0x" + hash);
 
@@ -747,7 +760,7 @@ export function verifyCpuTargetPoWAndGenerateTicket(
     // The proof is valid, generate the ticket
     const expiry = Date.now() + 3600000; // 1 heure
     const signature = crypto
-      .createHmac("sha256", POW_SECRET || "fallback-dev-secret-32-chars-minimum")
+      .createHmac("sha256", getPowSecret())
       .update(`${clientIp}:${expiry}`)
       .digest("hex");
     return `${expiry}:${signature}`;
@@ -756,9 +769,11 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   return null;
 }
 
-const staticExtensions =
-    /\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map)$/i;
-const isStaticResource = (req) => staticExtensions.test(req.path);
+const staticExtensions = new RegExp(
+  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map)$",
+  "i",
+);
+const isStaticResource = (path) => staticExtensions.test(path);
 
 // --- Middleware Proof-of-Work (Le péage) ---
 class FingerprintEngine {
@@ -796,13 +811,15 @@ class FingerprintEngine {
             (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
         )
         : 0;
-    const powCookie = cookies?.pow_clearance;    
+    const powCookie = cookies?.pow_clearance;
     const { pow_type, pow_nonce, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
         // --- CHALLENGE SOLUTION HANDLING ---
         if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
             let isValid = false,
+                // Retrieve the client-side secret associated with this nonce
+                clientSecret = await store.get(`secret:${pow_nonce}`),
                 ticket = null;
             if (pow_type === "cpu_target") {
                 // Verify the new type
@@ -810,25 +827,20 @@ class FingerprintEngine {
                     clientIp,
                     pow_nonce,
                     pow_solution,
-                    suspicionFactor, // Pass the analog factor directly
+                    suspicionFactor, // Pass the analog factor
+                    clientSecret,
                 );
-                isValid = ticket !== null;
-            } else if (pow_type === "mem") {
-                const minDifficulty = 16; // 16Mo
-                const maxDifficulty = 48; // 48Mo
-                const difficulty =
-                    minDifficulty + suspicionFactor * (maxDifficulty - minDifficulty);
-                isValid = verifyMemoryPoW(pow_nonce, pow_solution, difficulty);
-            } else if (pow_type === "cpu_mem") {
+                isValid = ticket !== null;            } else if (pow_type === "cpu_mem") {
                 // Verify combined challenge
                 const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(
-                    clientIp, pow_nonce, pow_solution_cpu, suspicionFactor
+                    clientIp, pow_nonce, pow_solution_cpu, suspicionFactor, clientSecret
                 );
-
                 const minDifficulty = 16; // 16Mo
                 const maxDifficulty = 48; // 48Mo
-                const memDifficulty = minDifficulty + suspicionFactor * (maxDifficulty - minDifficulty);
-                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, memDifficulty);
+                const memActivationFactor = Math.max(0, (suspicionFactor - 0.25) / 0.75);
+                const memDifficulty = Math.round(minDifficulty + memActivationFactor * (maxDifficulty - minDifficulty));
+
+                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, memDifficulty, clientSecret);
 
                 isValid = cpuTicket !== null && isMemValid;
                 if (isValid) ticket = cpuTicket; // Reuse the ticket generated by the CPU verification
@@ -838,11 +850,16 @@ class FingerprintEngine {
             }
 
             if (isValid) {
+                // The secret has been used, delete it to prevent replay.
+                if (clientSecret) {
+                    await store.delete(`secret:${pow_nonce}`);
+                }
+
                 if (!ticket) {
                     // If the ticket has not already been generated (CPU case)
                     const expiry = Date.now() + 3600000; // 1 heure
                     const signature = crypto
-                        .createHmac("sha256", POW_SECRET || "fallback-dev-secret-32-chars-minimum")
+                        .createHmac("sha256", getPowSecret())
                         .update(`${clientIp}:${expiry}`)
                         .digest("hex");
                     ticket = `${expiry}:${signature}`;
@@ -872,6 +889,10 @@ class FingerprintEngine {
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
+        const clientSecret = crypto.randomBytes(16).toString("hex");
+
+        // Store the secret with a short TTL (e.g., 5 minutes)
+        await store.set(`secret:${nonce}`, clientSecret, 300);
 
         if (logger) {
             logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
@@ -882,23 +903,7 @@ class FingerprintEngine {
             // ... logic for TSP/Captcha challenge
         }
 
-        // LEVEL 2: Memory-Intensive PoW
-        if (isSuspiciousMedium) {
-            // Utilisons notre nouveau challenge combiné !
-            const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path);
-            
-            const minMemDifficulty = 16; // 16Mo
-            const maxMemDifficulty = 48; // 48Mo
-            const memDifficulty = minMemDifficulty + suspicionFactor * (maxMemDifficulty - minMemDifficulty);
-
-            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp);
-            return {
-                action: 'challenge', score: finalScore, vector: suspicionVector,
-                status: 429, body: page
-            };
-        }
-
-        // NOUVELLE LOGIQUE UNIFIÉE POUR TOUS LES NIVEAUX DE SUSPICION (low et medium)
+        // UNIFIED CHALLENGE LOGIC for all suspicion levels (low, medium, high)
         if (isSuspicious) { // Couvre à la fois low et medium
             const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path);
 
@@ -908,10 +913,10 @@ class FingerprintEngine {
 
             const minMemDifficulty = 0;   // Peut être 0 Mo !
             const maxMemDifficulty = 48;  // 48Mo pour les plus suspects
-            const memDifficulty = minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty);
+            const memDifficulty = Math.round(minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty));
 
-            // On utilise toujours la page combinée, même si la difficulté mémoire est 0 (le calcul sera quasi instantané).
-            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp);
+            // Always use the combined page, even if memory difficulty is 0 (it will be almost instant).
+            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret);
             return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
         }
     }
@@ -986,7 +991,7 @@ export const powMiddleware = (securityConfig) => {
       cookies: req.cookies,
       query: req.query,
       headers: req.headers,
-      isStatic: isStaticResource(req),
+      isStatic: isStaticResource(req.path),
       // Add the newly required properties for full decoupling
       rawHeaders: req.rawHeaders,
       httpVersion: req.httpVersion,
