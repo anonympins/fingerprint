@@ -13,7 +13,7 @@ This system identifies and slows down bots and automated scripts by evaluating t
 
 The process unfolds in three steps:
 
-1.  **Identification & Fingerprinting**: A unique fingerprint is generated for each device based on browser characteristics (client-side) and request headers (server-side). A `device_id` cookie is used to track the device over time.
+1.  **Identification & Fingerprinting**: A unique fingerprint is generated for each device. This combines a client-side browser fingerprint, server-side request headers, and the **JA3 fingerprint** from the TLS handshake, which reliably identifies the underlying HTTP client library (e.g., Chrome vs. a Python script). A `device_id` cookie is used to track the device over time.
 2.  **Suspicion Score Calculation**: Several indicators are analyzed to calculate a suspicion score:
     *   **Header Anomalies**: Missing `User-Agent`, `Accept-Language`, etc.
     *   **Device Behavior**: Rapid fingerprint changes (User-Agent rotation).
@@ -152,6 +152,8 @@ The main Express middleware. It orchestrates identification, suspicion calculati
 #### `configureStore(store)`
 Allows replacing the in-memory store with an external datastore (like Redis) for persistence and scaling.
 
+See the Datastore Integration Guide for a complete example of creating a Redis store.
+
 ```javascript
 import { configureStore } from './fingerprint.js';
 import { createRedisStore } from './redis-store.js'; // Assuming a redis store implementation exists
@@ -233,6 +235,8 @@ Although not exported for direct public use, understanding its role can be usefu
 ### Manual Integration (outside Express.js)
 
 While `powMiddleware` is convenient for Express, you can use the `FingerprintEngine` directly in any Node.js server environment (e.g., native `http`, Fastify, Koa). This gives you full control over the request/response cycle.
+
+**For concrete examples with Koa and Fastify, see our Framework Integration Guide.**
 
 The engine is a named export from the main module.
 

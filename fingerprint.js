@@ -16,6 +16,50 @@ const getPowSecret = () => {
 };
 
 /**
+ * Calculates the JA3 fingerprint hash from the TLS Client Hello message.
+ * JA3 is a more reliable way to identify client applications (e.g., a specific browser or a script)
+ * based on the specifics of its TLS handshake.
+ * @param {object} context - The request context, containing the raw request object.
+ * @returns {string|null} The MD5 hash of the JA3 string, or null if it cannot be computed.
+ */
+function getJa3Hash(context) {
+    // 1. Prefer the JA3 hash from a trusted reverse proxy (e.g., Nginx, Cloudflare).
+    const ja3FromHeader = context.headers['x-ja3-hash'];
+    if (ja3FromHeader) {
+        return ja3FromHeader;
+    }
+
+    // 2. Fallback to calculating from the raw socket if available (requires Node.js to handle TLS).
+    const clientHello = context.rawReq?.socket?.clientHello;
+    if (!clientHello) {
+        return null;
+    }
+
+    try {
+        const { version, ciphers, extensions, ellipticCurves, ellipticCurvePointFormats } = clientHello;
+
+        // The official JA3 spec includes the TLS version.
+        // Node.js provides it as a string like 'TLSv1.3', we need the corresponding decimal value.
+        const tlsVersionMap = {
+            'TLSv1': 769, 'TLSv1.1': 770, 'TLSv1.2': 771, 'TLSv1.3': 772
+        };
+        const tlsVersionId = tlsVersionMap[version] || 0;
+
+        const ja3String = [
+            tlsVersionId,
+            // The ciphers array from clientHello is an array of objects, not just IDs.
+            Array.isArray(ciphers) ? ciphers.join('-') : '',
+            extensions?.join('-') || '',
+            ellipticCurves?.join('-') || '',
+            ellipticCurvePointFormats?.join('-') || ''
+        ].join(',');
+
+        return crypto.createHash('md5').update(ja3String).digest('hex');
+    } catch (e) {
+        return null; // Could fail if clientHello structure is unexpected.
+    }
+}
+/**
  * Creates a stable hash based on device characteristics, independent of the IP.
  * This is our "level 2 fingerprint".
  * @param {object} context - The request context.
@@ -43,6 +87,10 @@ export function getDeviceHash(context) {
     if (context.headers["sec-ch-ua-platform"])
         srv.add("os", context.headers["sec-ch-ua-platform"]);
     if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
+    // Add JA3 hash if available. This is a very strong signal.
+    const ja3 = getJa3Hash(context);
+    if (ja3) srv.add("ja3", ja3);
+
     srv.add("h_ord", getHeaderSignature(context));
     return srv.toString();
 }
@@ -1341,6 +1389,8 @@ export const powMiddleware = (securityConfig) => {
       isStatic: isStaticResource(req.path),
       // Add the newly required properties for full decoupling
       rawHeaders: req.rawHeaders,
+      // Pass the raw request object for advanced inspection (e.g., JA3)
+      rawReq: req,
       httpVersion: req.httpVersion,
     };
 

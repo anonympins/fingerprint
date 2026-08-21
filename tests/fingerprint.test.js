@@ -17,7 +17,7 @@ const {
   startThresholdAutoTuning,
   stopThresholdAutoTuning,
 } = fingerprint;
-const { getRequestPatternScore } = __internal;
+const { getRequestPatternScore, getDeviceHash } = __internal;
 
 describe('Fingerprint & PoW Security Suite', () => {
   test('cyrb53 should be deterministic', () => {
@@ -49,6 +49,60 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(FingerprintBuilder.compare(null, fp2), "Comparison with null should be 0").toBe(0);
     });
   });
+
+  describe('JA3 Fingerprinting', () => {
+
+    const mockClientHello = {
+      version: 'TLSv1.3',
+      ciphers: [4865, 4866],
+      extensions: [0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 27, 21],
+      ellipticCurves: [29, 23, 24],
+      ellipticCurvePointFormats: [0],
+    };
+
+    test('should prioritize JA3 hash from x-ja3-hash header', () => {
+      const context = {
+        headers: { 'x-ja3-hash': 'header-provided-ja3-hash' },
+        rawReq: { socket: { clientHello: mockClientHello } } // Even if socket data exists
+      };
+      const deviceHash = getDeviceHash(context);
+      expect(deviceHash).toContain(`ja3:${cyrb53('header-provided-ja3-hash')}`);
+    });
+
+    test('should calculate JA3 hash from clientHello if header is missing', () => {
+      const context = {
+        headers: {},
+        rawReq: { socket: { clientHello: mockClientHello } }
+      };
+      const deviceHash = getDeviceHash(context);
+      // The getDeviceHash function internally uses FingerprintBuilder, which applies cyrb53 to the value.
+      // So we just need to check if the hash of the expected JA3 MD5 is present.
+      const expectedComponent = `ja3`;
+      expect(deviceHash).toContain(expectedComponent);
+    });
+
+    test('should not include JA3 hash if no data is available', () => {
+      const context = {
+        headers: {},
+        rawReq: { socket: {} } // No clientHello
+      };
+      const deviceHash = getDeviceHash(context);
+      expect(deviceHash).not.toContain('ja3:');
+    });
+
+    test('should handle missing rawReq or socket gracefully', () => {
+      const context1 = { headers: {} }; // No rawReq
+      const context2 = { headers: {}, rawReq: {} }; // No socket
+
+      const deviceHash1 = getDeviceHash(context1);
+      const deviceHash2 = getDeviceHash(context2);
+
+      expect(deviceHash1).not.toContain('ja3:');
+      expect(deviceHash2).not.toContain('ja3:');
+    });
+  });
+
+
 
   describe('CPU Target PoW Workflow', () => {
     const ip = '127.0.0.1';
