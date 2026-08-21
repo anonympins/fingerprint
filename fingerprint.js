@@ -528,7 +528,6 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
             score += velocityWeight; // score = 30
         }
 
-        console.log(currentPath, lastRequest.path,currentQueryString, lastRequest.queryString, timeSinceLast, burstThreshold)
         // 2. Burst Check: Add additional penalty for identical requests in a very short time frame.
         if (currentPath === lastRequest.path && currentQueryString === lastRequest.queryString && timeSinceLast < burstThreshold) { // 150 < 500 -> true
             score += burstWeight; // score = 30 + 50 = 80
