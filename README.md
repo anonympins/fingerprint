@@ -30,7 +30,7 @@ Once the challenge is solved, a clearance "ticket" is issued via a secure cookie
 -   **Multi-Factor Fingerprinting**: Combines client-side data (`hardwareConcurrency`, `deviceMemory`, `screen`, `canvas`, `webgl`) and server-side data (`User-Agent`, `Client-Hints`).
 -   **Secure Ticket System**: Uses HMAC-SHA256 signatures to validate clearances and prevent tampering.
 -   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
--   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`.
+-   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`. The datastore must support setting a Time-To-Live (TTL) for challenge secrets.
 -   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure ticket validation.
 -   **Automatic Threshold Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust suspicion thresholds (`low`, `medium`, `high`), improving bot detection accuracy and reducing false positives over time.
 
@@ -75,7 +75,8 @@ const securityConfig = {
         low: 20,    // Score from which a CPU challenge is issued
         medium: 45, // Score for a more difficult combined CPU/Memory challenge
         high: 75,   // Score for a very difficult challenge
-        block: 95   // Score above which the request is blocked outright (HTTP 403)
+        block: 95,  // Score above which the request is blocked outright (HTTP 403)
+        isStaticResource: (req) => req.path.startsWith('/static/') // Optional: Custom function to identify static resources
     }
 };
 
@@ -222,9 +223,8 @@ const server = http.createServer(async (req, res) => {
         clientIp: req.socket.remoteAddress,
         path: req.url.split('?')[0],
         cookies: {}, // Parse cookies from req.headers.cookie
-        query: {},   // Parse query string from req.url
+        query: new URL(req.url, `http://${req.headers.host}`).searchParams,
         headers: req.headers,
-        isStatic: /\.(js|css|png)$/.test(req.url),
         rawReq: req, // Pass the raw request
         rawRes: res, // Pass the raw response for cookie setting
     };

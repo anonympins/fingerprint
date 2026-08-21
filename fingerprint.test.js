@@ -48,35 +48,49 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
   });
 
-  test('CPU Target PoW Workflow: Solve, Verify, and Validate Ticket', () => {
+  describe('CPU Target PoW Workflow', () => {
     const ip = '127.0.0.1';
     const nonce = 'test-nonce';
     const suspicionFactor = 0.1; // Low suspicion for a quick test
+    const clientSecret = 'my-super-secret-client-key';
 
-    // Simulation d'un solveur côté client
-    let solution = 0;
-    let hash = '';
-    const target = __internal.calculateTarget(suspicionFactor);
+    test('should solve and verify correctly without a clientSecret (fallback)', () => {
+      let solution = 0;
+      const target = __internal.calculateTarget(suspicionFactor);
+      while (true) {
+        const hash = crypto.createHash('sha256').update(`${ip}:${nonce}:${solution}`).digest('hex');
+        if (BigInt('0x' + hash) < target) break;
+        solution++;
+      }
+      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor, undefined);
+      expect(ticket, "Ticket should be generated for a valid solution without secret").toBeTruthy();
+      expect(isTicketValid(ip, ticket), "Ticket should be valid").toBe(true);
+    });
 
-    while (true) {
-      hash = crypto.createHash('sha256').update(`${ip}:${nonce}:${solution}`).digest('hex');
-      if (BigInt('0x' + hash) < target) break;
-      solution++;
-    }
+    test('should solve and verify correctly WITH a clientSecret', () => {
+      let solution = 0;
+      const target = __internal.calculateTarget(suspicionFactor);
+      // Client-side simulation now includes the secret
+      const message = `${ip}:${nonce}:${solution}:${clientSecret}`;
+      while (true) {
+        const currentMessage = `${ip}:${nonce}:${solution}:${clientSecret}`;
+        const hash = crypto.createHash('sha256').update(currentMessage).digest('hex');
+        if (BigInt('0x' + hash) < target) break;
+        solution++;
+      }
 
-    // 1. Verify the solution and generate the ticket
-    const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor);
-    expect(ticket, "Ticket should be generated for a valid solution").toBeTruthy();
+      // Server-side verification includes the secret
+      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor, clientSecret);
+      expect(ticket, "Ticket should be generated for a valid solution with secret").toBeTruthy();
+      expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
+      expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
 
-    // 2. Validate the ticket
-    expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
-
-    // 3. Failure case: Wrong IP
-    expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
-
-    // 4. Failure case: Invalid solution
-    const badTicket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, "mauvaise-solution", suspicionFactor);
-    expect(badTicket, "A bad solution should not produce a ticket").toBeNull();
+      // Verification should fail if the secret is wrong or missing
+      const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor, 'wrong-secret');
+      expect(badTicket1, "Ticket should not be generated with wrong secret").toBeNull();
+      const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor, undefined);
+      expect(badTicket2, "Ticket should not be generated when secret is expected but missing").toBeNull();
+    });
   });
 
   test('PoW Ticket Expiration', () => {
@@ -88,26 +102,42 @@ describe('Fingerprint & PoW Security Suite', () => {
     expect(isTicketValid(ip, ticket), "An expired ticket should be rejected").toBe(false);
   });
 
-  test('Memory PoW Verification', () => {
+  describe('Memory PoW Verification', () => {
     const nonce = 'test-nonce-mem';
     const difficulty = 1; // 1MB for a quick test
+    const clientSecret = 'my-mem-secret';
 
-    // Client-side simulation
-    const size = difficulty * 1024 * 1024;
-    const buffer = new Uint32Array(size / 4);
-    let h = new TextEncoder().encode(nonce).reduce((acc, v) => acc + v, 0);
-    for (let i = 0; i < buffer.length; i++) {
-        buffer[i] = (h = Math.imul(h ^ i, 1597334677));
-    }
-    let clientSolution = 0;
-    for(let i = 0; i < (size / 16); i++) {
-        const addr = buffer[i % buffer.length] % buffer.length;
-        clientSolution ^= buffer[addr];
-    }
+    const solveMemPoW = (seed, diff) => {
+      const size = diff * 1024 * 1024;
+      const buffer = new Uint32Array(size / 4);
+      let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
+      for (let i = 0; i < buffer.length; i++) {
+          buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+      }
+      let clientSolution = 0;
+      for(let i = 0; i < (size / 16); i++) {
+          const addr = (buffer[i % buffer.length] & 0x7FFFFFFF) % buffer.length;
+          clientSolution ^= buffer[addr];
+      }
+      return clientSolution;
+    };
 
-    // Server-side verification
-    expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty), "Valid memory PoW solution should be accepted").toBe(true);
-    expect(verifyMemoryPoW(nonce, String(clientSolution + 1), difficulty), "Invalid memory PoW solution should be rejected").toBe(false);
+    test('should verify correctly without a clientSecret', () => {
+      const clientSolution = solveMemPoW(nonce, difficulty);
+      expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, undefined), "Valid memory PoW solution should be accepted").toBe(true);
+      expect(verifyMemoryPoW(nonce, String(clientSolution + 1), difficulty, undefined), "Invalid memory PoW solution should be rejected").toBe(false);
+    });
+
+    test('should verify correctly WITH a clientSecret', () => {
+      const seed = `${nonce}:${clientSecret}`;
+      const clientSolution = solveMemPoW(seed, difficulty);
+
+      // Server-side verification
+      expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, clientSecret), "Valid memory PoW with secret should be accepted").toBe(true);
+      expect(verifyMemoryPoW(nonce, String(clientSolution + 1), difficulty, clientSecret), "Invalid memory PoW with secret should be rejected").toBe(false);
+      expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, 'wrong-secret'), "Memory PoW with wrong secret should be rejected").toBe(false);
+      expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, undefined), "Memory PoW expecting a secret should be rejected if it's missing").toBe(false);
+    });
   });
 
   test('TSP Challenge Verification', () => {
@@ -334,17 +364,22 @@ describe('Fingerprint & PoW Security Suite', () => {
     test('should redirect after a valid PoW solution is provided', async () => {
       const ip = '127.0.0.1';
       const nonce = 'test-nonce-redirect';
+      const clientSecret = 'a-secret-for-redirect';
       const suspicionFactor = 0.1;
       const target = __internal.calculateTarget(suspicionFactor);
       let solution = 0;
       while (true) {
-        const hash = crypto.createHash('sha256').update(`${ip}:${nonce}:${solution}`).digest('hex');
+        const hash = crypto.createHash('sha256').update(`${ip}:${nonce}:${solution}:${clientSecret}`).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
 
+      // The middleware stores the secret upon challenge issuance
+      await inMemoryStore.set(`secret:${nonce}`, clientSecret);
+
       vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({ historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0 });
-      const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' } };
+      // The request comes back with the solution
+      const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
       let redirectedTo, cookieName, cookieValue;
       const res = { cookie: (n, v) => { cookieName = n; cookieValue = v; }, redirect: (p) => { redirectedTo = p; } };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
