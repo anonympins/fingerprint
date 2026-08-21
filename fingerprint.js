@@ -405,7 +405,13 @@ function getHeaderAnomalies(context) {
  * @returns {{honeypotScore: number}}
  */
 function getHoneypotScore(context, honeypotConfig = {}) {
-  const { fields = [], detectInjections = true } = honeypotConfig; // Enable by default
+  const { fields = [], trapUrls = [], detectInjections = true } = honeypotConfig;
+
+  // 1. Check for trap URL access
+  if (trapUrls.some(trap => context.path.startsWith(trap))) {
+    return { honeypotScore: 100 };
+  }
+
   if (fields.length === 0 && !detectInjections) {
     return { honeypotScore: 0 };
   }
@@ -417,7 +423,7 @@ function getHoneypotScore(context, honeypotConfig = {}) {
       : context.query || {};
   const bodyData = context.body || {};
 
-  // 1. Check for honeypot field names (existing logic)
+  // 2. Check for honeypot field names
   for (const field of fields) {
     // A bot is trapped if the field exists in either the query OR the body.
     if (
@@ -428,11 +434,11 @@ function getHoneypotScore(context, honeypotConfig = {}) {
     }
   }
 
-  // 2. Check for injection attempts in values (new logic)
+  // 3. Check for injection attempts in values
   if (detectInjections) {
     // Regex for common SQL injection patterns
     const sqlRegex = new RegExp(
-      "('|\"|;|--|#|/\\*)|\\b(union|select|insert|update|delete|drop|truncate)\\b",
+      "('|\"|;|--|#|/\\*.*\\*/)|\\b(union|select|insert|update|delete|drop|truncate)\\b",
       "i"
     );
     // Regex for common NoSQL (MongoDB) injection patterns (e.g., keys starting with '$')
@@ -899,6 +905,12 @@ class FingerprintEngine {
       return { action: 'next', score: 0, vector: {} };
     }
 
+    // Check for persisted "condemned" status early.
+    const { deviceData } = await resolveRequestIdentity(requestContext);
+    if (deviceData?.condemned) {
+        return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+    }
+
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
@@ -913,11 +925,6 @@ class FingerprintEngine {
 
     const isBlocked = finalScore >= (thresholds.block || 95);
 
-    // If the action is to block, we should still include the score and vector for logging/testing.
-    if (isBlocked) {
-      return { action: 'block', status: 403, body: 'Forbidden', score: finalScore, vector: suspicionVector };
-    }
-
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
     const isSuspicious = finalScore >= thresholds.low;
@@ -931,6 +938,23 @@ class FingerprintEngine {
         : 0;
     const powCookie = cookies?.pow_clearance;
     const { pow_type, pow_nonce, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
+
+    // Honeypot: Direct probing of challenge endpoints is highly suspicious.
+    // A legitimate user only hits these endpoints via the challenge page itself.
+    if (pow_nonce && !isSuspicious) {
+      if (logger) {
+          logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now() });
+      }
+      suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
+      // Recalculate score and block immediately.
+      const newFinalScore = finalScore + (100 * (weights.honeypotScore || 0));
+      return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
+    }
+
+    // If the action is to block, we should still include the score and vector for logging/testing.
+    if (isBlocked) {
+      return { action: 'block', status: 403, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+    }
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
         // --- CHALLENGE SOLUTION HANDLING ---

@@ -87,8 +87,11 @@ const securityConfig = {
         // List of field names that are traps for bots.
         // These should be hidden in forms for humans, or be URL parameters your app never uses.
         fields: ['email_confirm', 'user_nickname', 'debug', 'test_mode', 'admin'], // (Optional)
-        // Automatically detect common SQL/NoSQL injection and RCE patterns in request values.
-        detectInjections: true // (Optional, default: true)
+        // List of URL paths that should never be accessed by a legitimate user.
+        // A request to one of these paths will immediately flag the device as malicious.
+        trapUrls: ['/wp-admin', '/.env', '/admin.php', '/phpmyadmin'], // (Optional)
+        // Automatically detect common SQL/NoSQL injection and RCE patterns in request values. (Optional, default: true)
+        detectInjections: true
     }
 };
 
