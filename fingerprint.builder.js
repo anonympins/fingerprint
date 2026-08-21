@@ -40,6 +40,17 @@ export class FingerprintBuilder {
     }
 
     /**
+     * Adds a raw component without hashing it.
+     * Useful for metrics that need to be read on the server.
+     * @param {string} group - The name of the group.
+     * @param {string|number} value - The raw value.
+     */
+    addRaw(group, value) {
+        if (value === undefined || value === null) return this;
+        this.components.set(group, value);
+        return this;
+    }
+    /**
      * Génère la chaîne de signature finale.
      * Trie les clés pour garantir un ordre déterministe.
      */
