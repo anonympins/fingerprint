@@ -289,42 +289,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(3000, () => console.log('Server with manual fingerprint engine started on port 3000'));
 ```
 
-### Automatic Threshold Tuning
-
-Manually setting the `low`, `medium`, and `high` thresholds, along with behavioral pattern parameters, can be challenging. This library provides a powerful tool to automate this process based on real traffic data. It uses a genetic algorithm to find the optimal set of parameters that maximize bot detection while minimizing the impact on legitimate users.
-
-#### How to use it:
-
-1.  **Enable Logging**: The auto-tuner needs data. You must provide a `logger` function in your security configuration. This function will be called for significant events (`challenge_issued`, `challenge_solved`, etc.).
-
-2.  **Enable Auto-tuning**: Add an `autotuning` property to your security configuration. The middleware will automatically start the tuning process.
-
-```javascript
-import { powMiddleware } from './fingerprint.js';
-
-// Array to store traffic analysis data. In a real application, this could be
-// a more robust logging system.
-const trafficData = [];
-
-const securityConfig = {
-    weights: { /* ... */ },
-    thresholds: {
-        low: 20,    // Initial values, will be optimized
-        medium: 45,
-        high: 75
-    },
-    logger: (log) => trafficData.push(log), // The logger is required for auto-tuning
-    autotune: {
-        trafficData: trafficData,       // The data source for the algorithm
-        interval: 1800000,              // Optimization cycle every 30 minutes (optional)
-        minDataPoints: 200              // Minimum requests before starting optimization (optional)
-    }
-};
-
-const powMiddlewareInstance = powMiddleware(securityConfig);
-app.use(powMiddlewareInstance);
-```
-
 ---
 
 ## License
