@@ -234,22 +234,21 @@ Although not exported for direct public use, understanding its role can be usefu
 
 While `powMiddleware` is convenient for Express, you can use the `FingerprintEngine` directly in any Node.js server environment (e.g., native `http`, Fastify, Koa). This gives you full control over the request/response cycle.
 
-The engine is available via the internal exports: `import { __internal } from './fingerprint.js'`.
+The engine is a named export from the main module.
 
 **Workflow:**
 
 1.  **Instantiate the Engine**: Create an instance with your `securityConfig`.
 2.  **Build the `requestContext`**: On each request, manually create a context object. It must include `clientIp`, `path`, `cookies`, `query`, `headers`, and mock `rawReq`/`rawRes` objects for cookie handling.
-3.  **Process the Request**: Call `engine.processRequest(requestContext)`.
+3.  **Process the Request**: Call `engine.processRequest(requestContext)`. This method is asynchronous.
 4.  **Handle the Decision**: The engine returns a decision object (`{ action: 'challenge' | 'redirect' | 'next', ... }`). You are responsible for implementing the corresponding HTTP response.
 
 **Example with native Node.js `http` server:**
 
 ```javascript
 import http from 'http';
-import { __internal } from './fingerprint.js'; // Adjust path
+import { FingerprintEngine } from './fingerprint.js'; // Adjust path
 
-const { FingerprintEngine } = __internal;
 const securityConfig = { /* ... your config ... */ };
 const engine = new FingerprintEngine(securityConfig);
 

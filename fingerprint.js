@@ -1037,7 +1037,7 @@ const staticExtensions = new RegExp(
 const isStaticResource = (path) => staticExtensions.test(path);
 
 // --- Middleware Proof-of-Work (Le péage) ---
-class FingerprintEngine {
+export class FingerprintEngine {
   constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
     this.securityConfig = securityConfig;
@@ -1388,7 +1388,6 @@ export const __internal = {
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
     calculateTarget,
-    FingerprintEngine, // Expose for advanced testing
     getRequestPatternScore, // Expose for testing
 };
 

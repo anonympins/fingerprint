@@ -5,6 +5,7 @@ import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
 
 
 const {
+  FingerprintEngine,
   isTicketValid,
   identifyRequest,
   powMiddleware,
@@ -185,8 +186,8 @@ describe('Fingerprint & PoW Security Suite', () => {
     beforeEach(() => {
       inMemoryStore._map.clear();
       configureStore(inMemoryStore);
-      vi.restoreAllMocks();
-      engine = new __internal.FingerprintEngine(securityConfig);
+      vi.restoreAllMocks(); // Restore mocks before each test
+      engine = new FingerprintEngine(securityConfig);
     });
 
     test('should return a device-specific key for a normal request', async () => {
@@ -495,7 +496,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         weights: { historyScore: 1.0 },
         thresholds: { low: 20 },
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
 
       const vector = await __internal.getSuspicionVector(req, securityConfig);
       expect(vector.historyScore).toBeGreaterThan(20);
@@ -510,7 +511,7 @@ describe('Fingerprint & PoW Security Suite', () => {
           fields: ['email_confirm', 'debug']
         }
       };
-      const engine = new __internal.FingerprintEngine(securityConfigWithHoneypot);
+      const engine = new FingerprintEngine(securityConfigWithHoneypot);
 
       const requestContext = {
         clientIp: '1.1.1.1',
@@ -539,7 +540,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         thresholds: { low: 20 },
         honeypot: { detectInjections: true }
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
       const requestContext = {
         query: new URLSearchParams({ id: "1' OR 1=1 --" }),
         body: {},
@@ -558,7 +559,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         thresholds: { low: 20 },
         honeypot: { detectInjections: true }
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
       const requestContext = {
         query: {},
         path: '/',
@@ -578,7 +579,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         thresholds: { low: 20 },
         honeypot: { detectInjections: true }
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
       const requestContext = {
         query: {},
         path: '/',
@@ -598,7 +599,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         thresholds: { low: 20 },
         honeypot: { detectInjections: true }
       };
-      const engine = new __internal.FingerprintEngine(securityConfig);
+      const engine = new FingerprintEngine(securityConfig);
       const requestContext = {
         query: new URLSearchParams({ id: "123" }),
         body: { comment: "This is a normal comment." },
@@ -813,7 +814,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 headers: { 'user-agent': 'test' },
                 ...context, // Spread the test-specific context (body, headers)
             };
-            const engine = new __internal.FingerprintEngine(securityConfig);
+            const engine = new FingerprintEngine(securityConfig);
             const decision = await engine.processRequest(fullContext);
             return { honeypotScore: decision.vector.honeypotScore };
         };
@@ -885,7 +886,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         };
 
         it('should immediately block a request to a trap URL', async () => {
-            const engine = new __internal.FingerprintEngine(baseSecurityConfig);
+            const engine = new FingerprintEngine(baseSecurityConfig);
             const requestContext = {
                 clientIp: '1.1.1.1',
                 path: '/wp-admin/login.php', // Hitting a trap URL
@@ -906,7 +907,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
 
         it('should penalize direct challenge probing', async () => {
-            const engine = new __internal.FingerprintEngine(baseSecurityConfig);
+            const engine = new FingerprintEngine(baseSecurityConfig);
             // This request is not suspicious on its own...
             vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
                 historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
@@ -933,7 +934,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
 
         it('should persist the "condemned" status of a device across requests', async () => {
-            const engine = new __internal.FingerprintEngine(baseSecurityConfig);
+            const engine = new FingerprintEngine(baseSecurityConfig);
             const deviceId = 'condemned-device-123';
 
             // Step 1: The device hits a trap URL and gets condemned.
