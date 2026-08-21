@@ -984,6 +984,13 @@ class FingerprintEngine {
 export const powMiddleware = (securityConfig) => {
   const engine = new FingerprintEngine(securityConfig);
 
+  if (securityConfig.autotuning) {
+    startThresholdAutoTuning({
+      securityConfig: securityConfig,
+      ...securityConfig.autotuning,
+    });
+  }
+
   return async (req, res, next) => {
     const requestContext = {
       clientIp: req.ip || req.socket?.remoteAddress || "unknown",
