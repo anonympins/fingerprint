@@ -935,7 +935,7 @@ class FingerprintEngine {
 
   async processRequest(requestContext) {
     const { clientIp, path, cookies, query, isStatic } = requestContext;
-    const { weights, thresholds, logger } = this.securityConfig;
+    const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
 
     if (isStatic) {
       return { action: 'next', score: 0, vector: {} };
@@ -944,6 +944,9 @@ class FingerprintEngine {
     // Check for persisted "condemned" status early.
     const { deviceData } = await resolveRequestIdentity(requestContext);
     if (deviceData?.condemned) {
+        if (onDeviceCompromised) {
+            onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
+        }
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
@@ -989,6 +992,9 @@ class FingerprintEngine {
 
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
+      if (onDeviceCompromised) {
+        onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Score exceeded block threshold', score: finalScore, vector: suspicionVector });
+      }
       return { action: 'block', status: 403, body: 'Forbidden', score: finalScore, vector: suspicionVector };
     }
 
@@ -997,6 +1003,9 @@ class FingerprintEngine {
     const lastNonce = deviceData?.lastChallengeNonce;
     if (lastNonce && query.sig && verifyTrapUrl(path, query.sig, lastNonce)) {
         deviceData.condemned = true; // This device is a bot. Condemn it.
+        if (onDeviceCompromised) {
+            onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Triggered signed honeypot trap URL', score: 100, vector: { honeypotScore: 100 } });
+        }
         await store.set(`device:${cookies.device_id}`, deviceData);
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
