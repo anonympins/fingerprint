@@ -1024,6 +1024,60 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(decision.vector.honeypotScore).toBe(100);
             expect(decision.action).toBe('block');
         });
+
+        it('should use external analyzers to detect threats', async () => {
+            const customAnalyzer = vi.fn((data) => {
+                // This analyzer flags any request containing the word 'custom-threat'
+                return JSON.stringify(data).includes('custom-threat');
+            });
+    
+            const securityConfigWithAnalyzer = {
+                ...baseSecurityConfig,
+                honeypot: {
+                    ...baseSecurityConfig.honeypot,
+                    analyzers: [customAnalyzer]
+                }
+            };
+    
+            const engine = new FingerprintEngine(securityConfigWithAnalyzer);
+    
+            // 1. Test a request that should be flagged by the analyzer
+            const maliciousRequestContext = {
+                clientIp: '1.1.1.1',
+                path: '/some-path',
+                cookies: {},
+                query: {},
+                body: { comment: 'this is a custom-threat' },
+                headers: { 'user-agent': 'A regular browser' },
+                rawHeaders: ['user-agent', 'A regular browser'],
+                isStatic: false,
+            };
+    
+            const decisionMalicious = await engine.processRequest(maliciousRequestContext);
+    
+            expect(customAnalyzer).toHaveBeenCalledWith({ comment: 'this is a custom-threat' });
+            expect(decisionMalicious.vector.honeypotScore).toBe(100);
+            expect(decisionMalicious.action).toBe('block');
+    
+            // 2. Test a normal request that should not be flagged
+            const cleanRequestContext = {
+                clientIp: '2.2.2.2',
+                path: '/some-path',
+                cookies: {},
+                query: {},
+                body: { comment: 'this is a normal comment' },
+                headers: { 'user-agent': 'A regular browser', 'accept-language': 'en-US,en;q=0.9' },
+                rawHeaders: ['user-agent', 'A regular browser', 'accept-language', 'en-US,en;q=0.9'],
+                isStatic: false,
+            };
+    
+            const decisionClean = await engine.processRequest(cleanRequestContext);
+
+            expect(customAnalyzer).toHaveBeenCalledWith({ comment: 'this is a normal comment' });
+            // The honeypot score should be 0 as no other traps were triggered
+            expect(decisionClean.vector.honeypotScore).toBe(0);
+            expect(decisionClean.action).toBe('next');
+        });
     });
 });
 

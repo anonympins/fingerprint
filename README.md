@@ -104,7 +104,33 @@ const securityConfig = {
         // A request to one of these paths will immediately flag the device as malicious.
         trapUrls: ['/wp-admin', '/.env', '/admin.php', '/phpmyadmin'], // (Optional)
         // Automatically detect common SQL/NoSQL injection and RCE patterns in request values. (Optional, default: true)
-        detectInjections: true
+        detectInjections: true,
+        // (Optional) Plug in external, more robust analyzers. This allows you to extend the default detection with specialized libraries (e.g., WAFs, anti-spam) or your own custom logic.
+        // Each function receives an object with all query and body data and should return `true` if a threat is detected.
+        analyzers: [
+            // Example 1: Using a general-purpose WAF library.
+            // (npm install generic-waf)
+            (data) => {
+                const WAF = require('generic-waf');
+                const waf = new WAF();
+                // This WAF expects a string, so we stringify the data to check all values at once.
+                return waf.isMalicious(JSON.stringify(data));
+            },
+            // Example 2: Using a specialized library for XSS detection.
+            // (npm install xss)
+            (data) => {
+                const xss = require('xss');
+                const originalData = JSON.stringify(data);
+                // If the sanitized string is different from the original, it means malicious HTML/JS was found and removed.
+                return xss(originalData) !== originalData;
+            },
+            // Example 3: A custom function to detect specific keywords (e.g., for anti-spam).
+            (data) => {
+                const spamKeywords = ['viagra', 'free money', 'crypto pump'];
+                const dataString = JSON.stringify(data).toLowerCase();
+                return spamKeywords.some(keyword => dataString.includes(keyword));
+            }
+        ]
     },
     // The logger is required for auto-tuning. It collects data on requests.
     logger: (log) => trafficData.push(log),

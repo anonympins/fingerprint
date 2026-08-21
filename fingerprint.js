@@ -454,6 +454,14 @@ function getHeaderAnomalies(context) {
  */
 function getHoneypotScore(context, honeypotConfig = {}) {
   const { fields = [], trapUrls = [], detectInjections = true } = honeypotConfig;
+  // (NOUVEAU) Permettre de brancher des analyseurs externes plus robustes.
+  // L'utilisateur pourrait passer une fonction qui prend les données de la requête
+  // et retourne `true` si une menace est détectée.
+  // Exemple: `(data) => myWafLibrary.isMalicious(data)`
+  const externalAnalyzers = honeypotConfig.analyzers || [];
+  if (typeof detectInjections === 'object' && detectInjections.analyzers) {
+      externalAnalyzers.push(...detectInjections.analyzers);
+  }
 
   // 1. Check for trap URL access
   if (trapUrls.some(trap => context.path.startsWith(trap))) {
@@ -480,6 +488,17 @@ function getHoneypotScore(context, honeypotConfig = {}) {
     ) {
       return { honeypotScore: 100 }; // A bot fell into the trap, maximum score.
     }
+  }
+
+  // 3. (NOUVEAU) Utiliser les analyseurs externes
+  const allData = { ...queryData, ...bodyData };
+  if (externalAnalyzers.length > 0) {
+      for (const analyzer of externalAnalyzers) {
+          // On passe à l'analyseur l'ensemble des données de la requête.
+          if (analyzer(allData)) {
+              return { honeypotScore: 100 };
+          }
+      }
   }
 
   // 3. Check for injection attempts in values
