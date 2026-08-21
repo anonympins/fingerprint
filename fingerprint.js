@@ -437,16 +437,20 @@ function getHoneypotScore(context, honeypotConfig = {}) {
   // 3. Check for injection attempts in values
   if (detectInjections) {
     // Regex for common SQL injection patterns
+    // WARNING: These are generic and may cause false positives.
+    // Consider using a dedicated WAF library or more specific regex for your application.
     const sqlRegex = new RegExp(
-      "('|\"|;|--|#|/\\*.*\\*/)|\\b(union|select|insert|update|delete|drop|truncate)\\b",
+      "('|\"|;|--|#|/\\*.*\\*/)|\\b(union|select|insert|update|delete|drop|truncate|from|where|and|or)\\b",
       "i"
     );
     // Regex for common NoSQL (MongoDB) injection patterns (e.g., keys starting with '$')
-    const nosqlKeyRegex = /"\$[^"]*":/;
+    // This looks for keys like "$where", "$ne", etc. in a stringified JSON.
+    const nosqlKeyRegex = /"\$(where|ne|gt|lt|in|nin)":/;
     // Regex for common Remote Code Execution (RCE) patterns
     const rceRegex = new RegExp(
       // File traversal, command execution functions, and shell commands
-      "(\\.\\./|\\.\\.\\\\)|\\b(exec|system|shell_exec|passthru|popen|proc_open|eval|assert|require|include)(_once)?\\s*\\(|\\b(wget|curl|bash|sh|powershell)\\b",
+      // Added process, child_process to catch Node.js specific RCE.
+      "(\\.\\./|\\.\\.\\\\)|\\b(exec|system|shell_exec|passthru|popen|proc_open|eval|assert|require|include|process|child_process)(_once)?\\s*\\(|\\b(wget|curl|bash|sh|powershell|php)\\b",
       "i"
     );
 
@@ -512,7 +516,13 @@ function generateTrapUrl(nonce) {
  */
 function verifyTrapUrl(path, signature, nonce) {
     const expectedSignature = crypto.createHmac('sha256', getPowSecret()).update(nonce + path).digest('hex').substring(0, 16);
-    return signature === expectedSignature;
+    try {
+        // Use timingSafeEqual to prevent timing attacks where an attacker could guess the signature byte by byte.
+        return crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expectedSignature, 'hex'));
+    } catch {
+        // This will catch errors if buffers have different lengths or contain invalid hex characters, which is a failure case.
+        return false;
+    }
 }
 /**
  * @typedef {object} IStore
