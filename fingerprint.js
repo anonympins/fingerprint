@@ -399,6 +399,28 @@ function getHeaderAnomalies(context) {
 }
 
 /**
+ * Checks for submitted honeypot fields to detect bots.
+ * @param {object} context - The request context.
+ * @param {object} honeypotConfig - The honeypot configuration.
+ * @returns {{honeypotScore: number}}
+ */
+function getHoneypotScore(context, honeypotConfig) {
+    if (!honeypotConfig || !honeypotConfig.fields || honeypotConfig.fields.length === 0) {
+    return { honeypotScore: 0 };
+  }
+
+  // Convert URLSearchParams to a plain object if necessary
+  const queryData = context.query instanceof URLSearchParams ? Object.fromEntries(context.query.entries()) : context.query;
+  const requestData = { ...queryData, ...context.body };
+  for (const field of honeypotConfig.fields) {
+    if (requestData[field]) {
+      return { honeypotScore: 100 }; // A bot fell into the trap, maximum score.
+    }
+  }
+  return { honeypotScore: 0 };
+}
+
+/**
  * @typedef {object} IStore
  * @property {(key: string) => Promise<any>} get
  * @property {(key: string, value: any) => Promise<void>} set
@@ -443,7 +465,6 @@ async function resolveRequestIdentity(context) {
   let consistencyScore = 1.0; // 1.0 = perfectly consistent
   let deviceData = null;
   let newCookie = null;
-
   if (deviceId) {
     deviceData = await store.get(`device:${deviceId}`);
   }
@@ -545,10 +566,10 @@ async function getBehavioralIndicators(context, deviceData) {
 /**
  * Returns a vector of raw (unweighted) suspicion scores.
  * @param {object} context - The request context object.
- * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number}>}
+ * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number, honeypotScore: number}>}
  */
-export const getSuspicionVector = async (context) => {
-  const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context);
+export const getSuspicionVector = async (context, securityConfig) => {
+    const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context);
 
   const clientIp = context.clientIp;
 
@@ -595,17 +616,20 @@ const MAX_RAPID_CHANGES_PER_DEVICE = 3; // Number of rapid fingerprint changes a
  * Uses FingerprintBuilder to create a fingerprint based on headers
  * and IP, making spoofing more complex (requires changing the entire stack).
  */
-export const identifyRequest = async (req, res) => {
+export const identifyRequest = (securityConfig) => async (req, res) => {
   // This function now acts as a lightweight wrapper around the engine's identifyRequest method.
   // It requires a default configuration to work.
-  const defaultConfig = {
-    weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8 },
-    thresholds: { low: 20, medium: 40, high: 75 }
+  const config = securityConfig || {
+    weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8, honeypotScore: 1.0 },
+    thresholds: { low: 20, medium: 40, high: 75 },
+    honeypot: { fields: [] } // Ensure honeypot config exists to prevent errors
   };
-  const engine = new FingerprintEngine(defaultConfig);
+  const engine = new FingerprintEngine(config);
 
   const requestContext = {
       clientIp: req.ip || req.socket?.remoteAddress || "unknown",
+      query: req.query,
+      body: req.body,
       cookies: req.cookies,
       headers: req.headers,
       rawHeaders: req.rawHeaders,
@@ -744,9 +768,9 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
             await new Promise(r => setTimeout(r, 10)); // Yield to update UI
 
             let memSolution = 0;
-            const iterations = size / 16;
             try {
                 const size = ${memoryDifficulty} * 1024 * 1024;
+                const iterations = size / 16;
                 const buffer = new Uint32Array(size / 4);
                 const seed = nonce + ":" + clientSecret;
                 let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
@@ -823,15 +847,24 @@ class FingerprintEngine {
     }
 
     // The engine now works with the context directly, no more rawReq dependency here.
-    const suspicionVector = await __internal.getSuspicionVector(requestContext);
-
+    const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
+    suspicionVector.honeypotScore = getHoneypotScore(requestContext, this.securityConfig?.honeypot).honeypotScore;
+    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig?.honeypot);
     const finalScore =
       suspicionVector.historyScore * (weights.historyScore || 0) +
       suspicionVector.rotationScore * (weights.rotationScore || 0) +
       suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) +
-      suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0);
+      suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0) +
+      honeypotScore * (weights.honeypotScore || 0);
 
-    const isSuspiciousHigh = finalScore >= thresholds.high;
+    const isBlocked = finalScore >= (thresholds.block || 95);
+
+    // If the action is to block, we should still include the score and vector for logging/testing.
+    if (isBlocked) {
+      return { action: 'block', status: 403, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+    }
+
+    const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
     const isSuspicious = finalScore >= thresholds.low;
 
@@ -992,12 +1025,14 @@ class FingerprintEngine {
     }
     await store.set(`ip:${clientIp}`, ipProfile);
 
-    const vector = await __internal.getSuspicionVector(requestContext);
+    const vector = await __internal.getSuspicionVector(requestContext, this.securityConfig); // Pass the config
+    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig?.honeypot);
     const score =
       vector.historyScore * (this.securityConfig.weights.historyScore || 0.3) +
       vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
       vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
-      vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8);
+      vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
+      honeypotScore * (this.securityConfig.weights.honeypotScore || 0);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
     if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
@@ -1028,6 +1063,7 @@ export const powMiddleware = (securityConfig) => {
       path: req.path,
       cookies: req.cookies,
       query: req.query,
+      body: req.body,
       headers: req.headers,
       isStatic: isStaticResource(req.path),
       // Add the newly required properties for full decoupling

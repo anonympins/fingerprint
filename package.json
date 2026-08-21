@@ -40,6 +40,7 @@
   },
   "homepage": "https://github.com/anonympins/fingerprint#readme",
   "devDependencies": {
+    "body-parser": "^1.20.2",
     "cookie-parser": "^1.4.6",
     "express": "^4.18.2",
     "vitest": "^4.1.11"

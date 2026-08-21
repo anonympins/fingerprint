@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import crypto from 'node:crypto';
-import * as fingerprint from './fingerprint.js';
-import { FingerprintBuilder, cyrb53 } from './fingerprint.builder.js';
+import * as fingerprint from '../fingerprint.js';
+import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
 
 const {
   isTicketValid,
@@ -259,8 +259,10 @@ describe('Fingerprint & PoW Security Suite', () => {
     };
 
     test('should call next() for a non-suspicious request', async () => {
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-        historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
+      const getSuspicionVectorSpy = vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+        return {
+          historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+        };
       });
 
       const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
@@ -268,15 +270,20 @@ describe('Fingerprint & PoW Security Suite', () => {
       const next = vi.fn();
 
       req.fingerprint = {}; // Middleware would initialize this
-      await powMiddleware(securityConfig)(req, res, next);
+      const middleware = powMiddleware(securityConfig);
+      await middleware(req, res, next);
 
       expect(next, 'next() should have been called').toHaveBeenCalled();
     });
 
-    test('should issue a CPU challenge for a suspicious request', async () => {
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-        historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      }); // finalScore = 25
+    test('should issue a challenge for a suspicious request', async () => {
+      const getSuspicionVectorSpy = vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async (requestContext, securityConfig) => {
+        // The securityConfig is passed as the second argument
+        expect(securityConfig).toBeDefined();
+        return {
+          historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+        };
+      });
 
       const req = {
         path: '/',
@@ -294,7 +301,8 @@ describe('Fingerprint & PoW Security Suite', () => {
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
       req.fingerprint = {};
-      await powMiddleware(securityConfig)(req, res, next);
+      const middleware = powMiddleware(securityConfig);
+      await middleware(req, res, next);
 
       assert.strictEqual(sentStatus, 429, 'Status should be 429');
       assert.ok(sentBody.includes('Enhanced Verification'), 'Should send a combined challenge page even for low suspicion');
@@ -302,9 +310,11 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
 
     test('should issue a Memory challenge for a medium-suspicious request', async () => {
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-        historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      }); // finalScore = 50
+      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+        return {
+          historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+        };
+      });
 
       const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
       let sentStatus, sentBody;
@@ -324,9 +334,11 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
 
     test('should issue a high-difficulty combined challenge for a high-suspicion request', async () => {
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-        historyScore: 80, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
-      }); // finalScore = 80
+      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+        return {
+          historyScore: 80, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+        };
+      });
 
       const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
       let sentStatus, sentBody;
@@ -345,8 +357,10 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
 
     test('should call next() for a suspicious request with a valid ticket', async () => {
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-        historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0
+      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+        return {
+          historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+        };
       });
 
       const ip = '127.0.0.1';
@@ -380,7 +394,11 @@ describe('Fingerprint & PoW Security Suite', () => {
       // The middleware stores the secret upon challenge issuance
       await inMemoryStore.set(`secret:${nonce}`, clientSecret);
 
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({ historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0 });
+      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+        return {
+          historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+        };
+      });
       // The request comes back with the solution
       const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
       let redirectedTo, cookieName, cookieValue;
@@ -414,7 +432,11 @@ describe('Fingerprint & PoW Security Suite', () => {
       // 2. Le serveur, pour une raison quelconque (corruption, attaque), a un mauvais secret stocké
       await inMemoryStore.set(`secret:${nonce}`, wrongClientSecretOnServer);
 
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({ historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0 });
+      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+        return {
+          historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+        };
+      });
 
       const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
       
@@ -461,8 +483,47 @@ describe('Fingerprint & PoW Security Suite', () => {
       await inMemoryStore.set('device:test-device-id', deviceData);
       req.cookies.device_id = 'test-device-id';
 
-      const vector = await __internal.getSuspicionVector(req, res);
+      // We need an engine instance to hold the security config for the context
+      const securityConfig = {
+        weights: { historyScore: 1.0 },
+        thresholds: { low: 20 },
+      };
+      const engine = new __internal.FingerprintEngine(securityConfig);
+
+      const vector = await __internal.getSuspicionVector(req, securityConfig);
       expect(vector.historyScore).toBeGreaterThan(20);
+    });
+
+    test('should produce a high honeypotScore for a trapped URL parameter', async () => {
+      // Configure the honeypot to trap the 'debug' parameter
+      const securityConfigWithHoneypot = {
+        weights: { honeypotScore: 1.0 },
+        thresholds: { low: 20 },
+        honeypot: {
+          fields: ['email_confirm', 'debug']
+        }
+      };
+      const engine = new __internal.FingerprintEngine(securityConfigWithHoneypot);
+
+      const requestContext = {
+        clientIp: '1.1.1.1',
+        path: '/',
+        cookies: {},
+        query: { user_id: '123', debug: 'true' }, // Bot is probing with a 'debug' parameter
+        body: {},
+        headers: { 'User-agent': 'test' },
+        rawHeaders: ['User-Agent', 'test'],
+        httpVersion: '1.1',
+        isStatic: false
+      };
+
+      // Call the main engine processing method to get the full decision object
+      const decision = await engine.processRequest(requestContext);
+     console.log({decision})
+
+      // The honeypotScore should be 100 because the 'debug' parameter was found
+      expect(decision.vector.honeypotScore).toBe(100);
+      expect(decision.score).toBe(100); // With weight 1.0, the final score should also be 100
     });
 
   });
@@ -542,9 +603,9 @@ describe('Fingerprint & PoW Security Suite', () => {
       vi.stubGlobal('navigator', mockWindow.navigator);
       vi.stubGlobal('screen', mockWindow.screen);
       vi.stubGlobal('Intl', mockWindow.Intl);
-      (await import('./fingerprint.client.js'))._resetCache();
+      (await import('../fingerprint.client.js'))._resetCache();
       // Dynamically import client functions to use the mocked environment
-      clientFunctions = await import('./fingerprint.client.js');
+      clientFunctions = await import('../fingerprint.client.js');
     });
 
     afterEach(() => {
