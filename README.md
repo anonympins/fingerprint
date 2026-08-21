@@ -19,6 +19,7 @@ The process unfolds in three steps:
     *   **Device Behavior**: Rapid fingerprint changes (User-Agent rotation).
     *   **IP Behavior**: An excessive number of different devices seen from the same IP, or a single device using a large number of IPs (proxy rotation).
     *   **Inconsistency**: A low similarity score between the current fingerprint and the initial one associated with the `device_id` (cookie theft detection).
+    *   **Request Patterns**: Repetitive, rapid-fire, or sequential requests typical of scraping bots. The parameters for detecting these patterns (e.g., request velocity, burst detection) are dynamically adjusted by the auto-tuner for optimal performance.
     *   **Honeypot Trap**: Detection of bots that automatically fill hidden form fields or probe for common but unused URL parameters (e.g., `?debug=true`).
 3.  **Dynamic Challenge**: If the suspicion score exceeds a certain threshold, a challenge is presented to the user. The difficulty and type of challenge depend on the score:
     *   **Low to Medium Suspicion**: A combined CPU and Memory Proof-of-Work (PoW) challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
@@ -33,7 +34,7 @@ Once the challenge is solved, a clearance "ticket" is issued via a secure cookie
 -   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
 -   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`. The datastore must support setting a Time-To-Live (TTL) for challenge secrets.
 -   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure ticket validation.
--   **Automatic Threshold Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust suspicion thresholds (`low`, `medium`, `high`), improving bot detection accuracy and reducing false positives over time.
+-   **Automatic Parameter Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust not only suspicion thresholds (`low`, `medium`, `high`) but also the parameters for behavioral pattern detection, improving accuracy and reducing false positives over time.
 
 ## Installation and Usage
 
@@ -73,6 +74,7 @@ const securityConfig = {
         historyScore: 0.3,       // Penalizes IP rotation (proxy)
         rotationScore: 0.5,      // Penalizes rapid fingerprint changes (user-agent, etc.)
         headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
+        requestPatternScore: 0.6,// Penalizes bot-like request sequences (scraping, etc.)
         inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
         honeypotScore: 1.0       // Strongly penalizes bots filling hidden form fields
     },
@@ -82,6 +84,13 @@ const securityConfig = {
         high: 75,   // Score for a very difficult challenge
         block: 95,  // Score above which the request is blocked outright (HTTP 403)
         isStaticResource: (req) => req.path.startsWith('/static/') // Optional: Custom function to identify static resources
+    },
+    patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
+        velocityThreshold: 200, // ms between requests to be considered "fast"
+        burstThreshold: 500,    // ms for identical requests to be a "burst"
+        scrapeThreshold: 1000,  // ms for sequential requests to be "scraping"
+        historySize: 10,        // Number of requests to keep for pattern analysis
+        decayFactor: 0.9,       // How quickly the pattern score decays over time
     },
     honeypot: {
         // List of field names that are traps for bots.
@@ -270,7 +279,7 @@ server.listen(3000, () => console.log('Server with manual fingerprint engine sta
 
 ### Automatic Threshold Tuning
 
-Manually setting the `low`, `medium`, and `high` thresholds can be challenging. This library provides a powerful tool to automate this process based on real traffic data. It uses a genetic algorithm to find the optimal thresholds that maximize bot detection while minimizing the impact on legitimate users.
+Manually setting the `low`, `medium`, and `high` thresholds, along with behavioral pattern parameters, can be challenging. This library provides a powerful tool to automate this process based on real traffic data. It uses a genetic algorithm to find the optimal set of parameters that maximize bot detection while minimizing the impact on legitimate users.
 
 #### How to use it:
 

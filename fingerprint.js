@@ -482,6 +482,94 @@ function getHoneypotScore(context, honeypotConfig = {}) {
   return { honeypotScore: 0 };
 }
 
+/**
+ * Analyzes server-side request patterns for a given device to detect bot-like behavior.
+ * This is a stateful check that looks for repetitive or unnaturally fast requests.
+ * @param {object} context - The request context.
+ * @param {object} deviceData - The device's activity data from the store.
+ * @returns {{requestPatternScore: number}}
+ */
+function getRequestPatternScore(context, deviceData, patternConfig = {}) {
+    if (!deviceData) return { requestPatternScore: 0 };
+
+    // Default values for the pattern detection logic, which can be overridden by the auto-tuner.
+    const {
+        velocityThreshold = 200, velocityWeight = 30,
+        burstThreshold = 500, burstWeight = 50,
+        scrapeThreshold = 1000, scrapeWeight = 20, scrapeBurstWeight = 40,
+        historySize = 10,
+        decayFactor = 0.9,
+        inactivityReset = 30000
+    } = patternConfig;
+
+    const now = Date.now();
+    const currentPath = context.path;
+    // Make the function robust to handle both URLSearchParams and plain objects for query.
+    // Ensure query parameters are consistently handled, whether they come from a URLSearchParams object or a plain object.
+    const params = context.query instanceof URLSearchParams ? context.query : new URLSearchParams(context.query);
+    params.sort(); // Sort for deterministic order
+    const currentQueryString = params.toString();
+
+    // Initialize request history if it doesn't exist
+    if (!deviceData.requestHistory) {
+        deviceData.requestHistory = [];
+    }
+
+    const history = deviceData.requestHistory;
+    let score = 0;
+
+    // --- Analyze patterns based on the last few requests ---
+    if (history.length > 0) {
+        const lastRequest = history[history.length - 1];
+        const timeSinceLast = now - lastRequest.timestamp; // 150
+
+        // 1. Velocity Check: Penalize requests that are too fast to be human.
+        if (timeSinceLast < velocityThreshold) { // 150 < 200 -> true
+            score += velocityWeight; // score = 30
+        }
+
+        console.log(currentPath, lastRequest.path,currentQueryString, lastRequest.queryString, timeSinceLast, burstThreshold)
+        // 2. Burst Check: Add additional penalty for identical requests in a very short time frame.
+        if (currentPath === lastRequest.path && currentQueryString === lastRequest.queryString && timeSinceLast < burstThreshold) { // 150 < 500 -> true
+            score += burstWeight; // score = 30 + 50 = 80
+        }
+
+        // 3. Sequential Scraping Check: Add additional penalty for same path with different query params (potential scraping).
+        // This is a simplified check, now independent of the burst check.
+        if (currentPath === lastRequest.path && currentQueryString !== lastRequest.queryString && timeSinceLast < scrapeThreshold) {
+            const previousRequest = history.length > 2 ? history[history.length - 2] : null;
+            if (previousRequest && previousRequest.path === currentPath) {
+                score += scrapeBurstWeight; // This is at least the 3rd request in a sequence to the same path.
+            } else {
+                score += scrapeWeight; // First sign of a potential scraping pattern
+            }
+        }
+    }
+
+    // --- Update history ---
+    history.push({
+        timestamp: now,
+        path: currentPath,
+        queryString: currentQueryString,
+    });
+
+    // Keep history to a reasonable size (e.g., last 10 requests)
+    if (history.length > historySize) {
+        history.shift();
+    }
+
+    // Decay the score over time if behavior becomes normal again.
+    // We can store the score in deviceData and decay it.
+    deviceData.lastPatternScore = (deviceData.lastPatternScore || 0) * decayFactor + score; // Decay old score and add new
+
+    // If there hasn't been a request in a while, reset the pattern score.
+    if (history.length > 1 && (now - history[history.length - 2].timestamp > inactivityReset)) { // X ms inactivity
+        deviceData.lastPatternScore = 0;
+    }
+
+    return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
+}
+
 const trapUrlTemplates = [
     '/includes/config-{RANDOM}.php',          // Classic PHP config file
     '/.env.{RANDOM}',                         // Environment file
@@ -599,6 +687,7 @@ async function resolveRequestIdentity(context) {
     deviceData = {
       initialDeviceHash: currentDeviceHash, // Anchor the initial fingerprint.
       ips: new Set(),
+      requestHistory: [], // Initialize state for the new pattern score
       lastUpdate: Date.now(),
       lastFpHash: currentDeviceHash,
       lastChangeTimestamp: 0,
@@ -951,6 +1040,19 @@ class FingerprintEngine {
       return { action: 'next', score: 0, vector: {} };
     }
 
+    const { pow_nonce } = query;
+
+    // Honeypot: Direct probing of challenge endpoints is highly suspicious.
+    // A legitimate user only hits these endpoints via the challenge page itself, which is only served to suspicious users.
+    // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot.
+    // We check this early, before the main suspicion calculation.
+    if (pow_nonce) {
+        const powCookie = cookies?.pow_clearance;
+        if (!isTicketValid(clientIp, powCookie)) { // Only check if there's no valid ticket
+            // This is a potential probe. We'll let the main logic confirm if it's not a legitimate challenge response.
+        }
+    }
+
     // Check for persisted "condemned" status early.
     const { deviceData } = await resolveRequestIdentity(requestContext);
     if (deviceData?.condemned) {
@@ -963,12 +1065,14 @@ class FingerprintEngine {
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
+    const { requestPatternScore } = getRequestPatternScore(requestContext, deviceData, this.securityConfig.patterns);
     suspicionVector.honeypotScore = honeypotScore;
+    suspicionVector.requestPatternScore = requestPatternScore;
 
     const finalScore =
       suspicionVector.historyScore * (weights.historyScore || 0) +
       suspicionVector.rotationScore * (weights.rotationScore || 0) +
-      suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) +
+      suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) + suspicionVector.requestPatternScore * (weights.requestPatternScore || 0) +
       suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0) +
       honeypotScore * (weights.honeypotScore || 0);
 
@@ -986,7 +1090,7 @@ class FingerprintEngine {
         )
         : 0;
     const powCookie = cookies?.pow_clearance;
-    const { pow_type, pow_nonce, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
+    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
 
     // Honeypot: Direct probing of challenge endpoints is highly suspicious.
     // A legitimate user only hits these endpoints via the challenge page itself.
@@ -996,7 +1100,7 @@ class FingerprintEngine {
       }
       suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
       // Recalculate score and block immediately.
-      const newFinalScore = finalScore + (100 * (weights.honeypotScore || 0));
+      const newFinalScore = finalScore - (honeypotScore * (weights.honeypotScore || 0)) + (100 * (weights.honeypotScore || 0));
       return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
     }
 
@@ -1182,12 +1286,14 @@ class FingerprintEngine {
 
     const vector = await __internal.getSuspicionVector(requestContext, this.securityConfig); // Pass the config
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
+    const { requestPatternScore } = getRequestPatternScore(requestContext, (await store.get(`device:${requestContext.cookies?.device_id}`)), this.securityConfig.patterns);
     const score =
       vector.historyScore * (this.securityConfig.weights.historyScore || 0.3) +
       vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
       vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
-      honeypotScore * (this.securityConfig.weights.honeypotScore || 0);
+      honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +      
+      requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
     if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
@@ -1271,6 +1377,7 @@ export const __internal = {
     FingerprintBuilder, // Export for testing
     calculateTarget,
     FingerprintEngine, // Expose for advanced testing
+    getRequestPatternScore, // Expose for testing
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
@@ -1305,9 +1412,11 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
     // The "fitness" function evaluates the quality of a set of thresholds.
     // A lower score is better.
     const fitnessFunction = (solution) => {
-        const [low, medium, high] = solution;
+        const [low, medium, high, velocityThreshold, burstThreshold, scrapeThreshold] = solution;
         // Constraints: thresholds must be ordered and within a reasonable range.
-        if (low >= medium || medium >= high || low <= 10 || high >= 90) return Infinity;
+        if (low >= medium || medium >= high || low < 10 || high > 90) return Infinity;
+        // Constraints for pattern thresholds
+        if (velocityThreshold < 50 || velocityThreshold > burstThreshold || burstThreshold > scrapeThreshold) return Infinity;
 
         let falsePositives = 0; // Humans challenged unnecessarily.
         let falseNegatives = 0; // Undetected bots.
@@ -1324,12 +1433,21 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
     };
 
     // Functions for the genetic algorithm.
-    const createIndividual = () => [10 + Math.random() * 20, 30 + Math.random() * 30, 60 + Math.random() * 30];
-    const crossover = (p1, p2) => [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2];
+    const createIndividual = () => [
+        10 + Math.random() * 20, // low
+        30 + Math.random() * 30, // medium
+        60 + Math.random() * 30, // high
+        100 + Math.random() * 150, // velocityThreshold (100-250ms)
+        300 + Math.random() * 400, // burstThreshold (300-700ms)
+        800 + Math.random() * 700, // scrapeThreshold (800-1500ms)
+    ];
+    const crossover = (p1, p2) => p1.map((val, i) => (val + p2[i]) / 2);
     const mutate = (s) => {
         const n = [...s];
-        const i = Math.floor(Math.random() * 3);
-        n[i] += (Math.random() - 0.5) * 5;
+        const i = Math.floor(Math.random() * n.length);
+        // Adjust mutation range based on parameter
+        const mutationRange = i < 3 ? 5 : 50;
+        n[i] += (Math.random() - 0.5) * mutationRange;
         return n;
     };
 
@@ -1339,16 +1457,26 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
         populationSize: 40
     });
 
-    const [newLow, newMedium, newHigh] = result.solution;
+    const [newLow, newMedium, newHigh, newVelocity, newBurst, newScrape] = result.solution;
 
     // Update the configuration live.
-    securityConfig.thresholds = {
-        low: Math.round(newLow),
-        medium: Math.round(newMedium),
-        high: Math.round(newHigh)
-    };
+    // Ensure thresholds object exists
+    if (!securityConfig.thresholds) securityConfig.thresholds = {};
+    securityConfig.thresholds.low = Math.round(newLow);
+    securityConfig.thresholds.medium = Math.round(newMedium);
+    securityConfig.thresholds.high = Math.round(newHigh);
+
+    // Update pattern detection parameters
+    if (!securityConfig.patterns) securityConfig.patterns = {};
+    securityConfig.patterns.velocityThreshold = Math.round(newVelocity);
+    securityConfig.patterns.burstThreshold = Math.round(newBurst);
+    securityConfig.patterns.scrapeThreshold = Math.round(newScrape);
+    // Weights could also be optimized, but let's keep it to thresholds for now for simplicity.
 
     console.log("[AutoTuning] Nouveaux seuils optimisés appliqués :", securityConfig.thresholds);
+    if (securityConfig.patterns) {
+        console.log("[AutoTuning] Nouveaux paramètres de pattern appliqués :", securityConfig.patterns);
+    }
 }
 
 /**

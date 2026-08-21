@@ -1,5 +1,5 @@
 import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
-import crypto from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import * as fingerprint from '../fingerprint.js';
 import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
 
@@ -16,8 +16,7 @@ const {
   startThresholdAutoTuning,
   stopThresholdAutoTuning,
 } = fingerprint;
-
-const { getParamAnomalyScore } = __internal;
+const { getRequestPatternScore } = __internal;
 
 describe('Fingerprint & PoW Security Suite', () => {
   test('cyrb53 should be deterministic', () => {
@@ -60,7 +59,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       let solution = 0;
       const target = __internal.calculateTarget(suspicionFactor);
       while (true) {
-        const hash = crypto.createHash('sha256').update(`${ip}:${nonce}:${solution}`).digest('hex');
+        const hash = createHash('sha256').update(`${ip}:${nonce}:${solution}`).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
@@ -76,7 +75,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const message = `${ip}:${nonce}:${solution}:${clientSecret}`;
       while (true) {
         const currentMessage = `${ip}:${nonce}:${solution}:${clientSecret}`;
-        const hash = crypto.createHash('sha256').update(currentMessage).digest('hex');
+        const hash = createHash('sha256').update(currentMessage).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
@@ -99,7 +98,7 @@ describe('Fingerprint & PoW Security Suite', () => {
     const ip = '127.0.0.1';
     // Simulate an expired ticket by manipulating the string (for testing)
     const expiredTimestamp = Date.now() - 1000;
-    const signature = crypto.createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiredTimestamp}`).digest("hex");
+    const signature = createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiredTimestamp}`).digest("hex");
     const ticket = `${expiredTimestamp}:${signature}`;
     expect(isTicketValid(ip, ticket), "An expired ticket should be rejected").toBe(false);
   });
@@ -194,13 +193,14 @@ describe('Fingerprint & PoW Security Suite', () => {
       const requestContext = {
         clientIp: '127.0.0.1',
         cookies: {},
-        headers: {
+        headers: { // Minimal headers
           'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
           'accept-language': 'en-US,en;q=0.9',
           'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
         },
         rawHeaders: ['User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', 'Accept-Language', 'en-US,en;q=0.9', 'Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'],
-        httpVersion: '1.1' };
+        httpVersion: '1.1',
+        query: new URLSearchParams() };
       const key = await engine.identifyRequest(requestContext);
       expect(key).toMatch(/^device:/);
     });
@@ -212,7 +212,8 @@ describe('Fingerprint & PoW Security Suite', () => {
         cookies: {},
         headers: {}, // Simulate completely missing headers
         rawHeaders: [],
-        httpVersion: '1.1'
+        httpVersion: '1.1',
+        query: new URLSearchParams()
       };
       const key = await engine.identifyRequest(requestContext);
       // Missing accept/accept-language headers should trigger a medium suspicion score.
@@ -253,13 +254,16 @@ describe('Fingerprint & PoW Security Suite', () => {
     beforeEach(() => {
       inMemoryStore._map.clear();
       configureStore(inMemoryStore);
-      vi.restoreAllMocks();
     });
 
     const securityConfig = {
       weights: { historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 1 },
       thresholds: { low: 20, medium: 45, high: 75 }
     };
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
 
     test('should call next() for a non-suspicious request', async () => {
       const getSuspicionVectorSpy = vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
@@ -368,7 +372,7 @@ describe('Fingerprint & PoW Security Suite', () => {
 
       const ip = '127.0.0.1';
       const expiry = Date.now() + 3600000;
-      const signature = crypto.createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiry}`).digest("hex");
+      const signature = createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiry}`).digest("hex");
       const validTicket = `${expiry}:${signature}`;
 
       const req = { path: '/', ip, cookies: { pow_clearance: validTicket }, query: {}, headers: { 'user-agent': 'test-ua' } };
@@ -389,7 +393,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const target = __internal.calculateTarget(suspicionFactor);
       let solution = 0;
       while (true) {
-        const hash = crypto.createHash('sha256').update(`${ip}:${nonce}:${solution}:${clientSecret}`).digest('hex');
+        const hash = createHash('sha256').update(`${ip}:${nonce}:${solution}:${clientSecret}`).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
@@ -427,7 +431,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       // 1. Le client résout le challenge avec le secret qu'il a reçu (le bon)
       let solution = 0;
       while (true) {
-        const hash = crypto.createHash('sha256').update(`${ip}:${nonce}:${solution}:${correctClientSecret}`).digest('hex');
+        const hash = createHash('sha256').update(`${ip}:${nonce}:${solution}:${correctClientSecret}`).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
@@ -512,7 +516,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         clientIp: '1.1.1.1',
         path: '/',
         cookies: {},
-        query: { user_id: '123', debug: 'true' }, // Bot is probing with a 'debug' parameter
+        query: new URLSearchParams({ user_id: '123', debug: 'true' }), // Bot is probing with a 'debug' parameter
         body: {},
         headers: { 'User-agent': 'test' },
         rawHeaders: ['User-Agent', 'test'],
@@ -537,9 +541,9 @@ describe('Fingerprint & PoW Security Suite', () => {
       };
       const engine = new __internal.FingerprintEngine(securityConfig);
       const requestContext = {
-        query: { id: "1' OR 1=1 --" },
+        query: new URLSearchParams({ id: "1' OR 1=1 --" }),
         body: {},
-        headers: {},
+        headers: { 'user-agent': 'test' },
         // ... autres propriétés du contexte
       };
 
@@ -557,8 +561,9 @@ describe('Fingerprint & PoW Security Suite', () => {
       const engine = new __internal.FingerprintEngine(securityConfig);
       const requestContext = {
         query: {},
+        path: '/',
         body: { filename: "../../../etc/passwd" },
-        headers: {},
+        headers: { 'user-agent': 'test' },
         // ... autres propriétés du contexte
       };
 
@@ -576,8 +581,9 @@ describe('Fingerprint & PoW Security Suite', () => {
       const engine = new __internal.FingerprintEngine(securityConfig);
       const requestContext = {
         query: {},
+        path: '/',
         body: { "username": { "$ne": null }, "password": { "$ne": null } },
-        headers: {},
+        headers: { 'user-agent': 'test' },
         // ... autres propriétés du contexte
       };
 
@@ -594,9 +600,10 @@ describe('Fingerprint & PoW Security Suite', () => {
       };
       const engine = new __internal.FingerprintEngine(securityConfig);
       const requestContext = {
-        query: { id: "123" },
+        query: new URLSearchParams({ id: "123" }),
         body: { comment: "This is a normal comment." },
-        headers: {},
+        headers: { 'user-agent': 'test' },
+        path: '/'
       };
       const decision = await engine.processRequest(requestContext);
       expect(decision.vector.honeypotScore).toBe(0);
@@ -803,6 +810,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 path: '/',
                 query: {},
                 cookies: {},
+                headers: { 'user-agent': 'test' },
                 ...context, // Spread the test-specific context (body, headers)
             };
             const engine = new __internal.FingerprintEngine(securityConfig);
@@ -885,6 +893,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 query: {},
                 body: {},
                 headers: { 'user-agent': 'A regular browser' },
+                rawHeaders: ['user-agent', 'A regular browser'],
                 isStatic: false,
             };
 
@@ -910,6 +919,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 query: { pow_nonce: 'some-nonce-the-bot-is-testing' }, // ...but it's probing a challenge endpoint.
                 body: {},
                 headers: { 'user-agent': 'A regular browser' },
+                rawHeaders: ['user-agent', 'A regular browser'],
                 isStatic: false,
             };
 
@@ -927,7 +937,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             const deviceId = 'condemned-device-123';
 
             // Step 1: The device hits a trap URL and gets condemned.
-            const trapRequestContext = {
+            const trapRequestContext = { // This context is for conceptual setup, not direct processing in this test
                 clientIp: '1.1.1.1',
                 path: '/.env', // Trap URL
                 cookies: { device_id: deviceId },
@@ -950,7 +960,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 clientIp: '1.1.1.1',
                 path: '/legitimate-page', // Normal URL
                 cookies: { device_id: deviceId }, // Same device ID
-                query: {}, body: {}, headers: { 'user-agent': 'A regular browser' }, isStatic: false,
+                query: new URLSearchParams(), body: {}, headers: { 'user-agent': 'A regular browser' }, rawHeaders: ['user-agent', 'A regular browser'], isStatic: false,
             };
 
             const decision = await engine.processRequest(innocentRequestContext);
@@ -959,5 +969,111 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(decision.vector.honeypotScore).toBe(100);
             expect(decision.action).toBe('block');
         });
+    });
+});
+
+describe('getRequestPatternScore', () => {
+    const patternConfig = {
+        velocityThreshold: 200, velocityWeight: 30,
+        burstThreshold: 500, burstWeight: 50,
+        scrapeThreshold: 1000, scrapeWeight: 20, scrapeBurstWeight: 40,
+        historySize: 10,
+        decayFactor: 0.9,
+        inactivityReset: 5000 // 5 seconds for easier testing
+    };
+
+    let dateNowSpy;
+
+    afterEach(() => {
+        if (dateNowSpy) {
+            dateNowSpy.mockRestore();
+        }
+    });
+
+    test('should return zero score for the first request', () => {
+        const deviceData = { requestHistory: [] };
+        const context = { path: '/home', query: {} };
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
+        expect(requestPatternScore).toBe(0);
+    });
+
+    test('should detect high velocity requests', () => {
+        const deviceData = { requestHistory: [{ timestamp: 10000, path: '/home', queryKeys: '' }] };
+        const context = { path: '/about', query: {} };
+
+        // Simulate a request 100ms after the last one
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10100);
+
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
+        expect(requestPatternScore).toBe(patternConfig.velocityWeight); // 30
+    });
+
+    test('should detect a burst of identical requests', () => {
+        // 1. On simule l'historique contenant la première requête.
+        const firstRequest = { timestamp: 10000, path: '/products', queryString: 'id=1' };
+        const deviceData = { requestHistory: [firstRequest] };
+
+        // 2. On simule la deuxième requête, identique à la première.
+        const secondRequestContext = { path: '/products', query: { id: '1' } };
+
+        // Simulate an identical request 150ms later (triggers both velocity and burst)
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10150);
+
+        // 3. On analyse la deuxième requête par rapport à l'historique.
+        const { requestPatternScore } = getRequestPatternScore(secondRequestContext, deviceData, patternConfig);
+        const expectedScore = patternConfig.velocityWeight + patternConfig.burstWeight; // 30 + 50 = 80
+
+        expect(requestPatternScore).toBe(expectedScore);
+    });
+
+    test('should detect a scraping pattern', () => {
+        const deviceData = { requestHistory: [{ timestamp: 10000, path: '/api/items', queryString: 'page=1' }] };
+        const context = { path: '/api/items', query: { page: '2' } }; // Same path, different query
+
+        // Simulate a request 300ms later (triggers velocity and scrape)
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10300);
+
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
+        const expectedScore = patternConfig.velocityWeight + patternConfig.scrapeWeight; // 30 + 20 = 50
+        expect(requestPatternScore).toBe(expectedScore);
+    });
+
+    test('should apply decay factor to the score over time', () => {
+        const deviceData = {
+            requestHistory: [{ timestamp: 10000, path: '/home', queryString: '' }],
+            lastPatternScore: 50 // Previous score
+        };
+        const context = { path: '/contact', query: {} };
+
+        // Simulate a fast request that adds 30 points
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10100);
+
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
+
+        // Expected: (previous score * decay) + new score
+        const expectedScore = (50 * patternConfig.decayFactor) + patternConfig.velocityWeight; // (50 * 0.9) + 30 = 45 + 30 = 75
+        expect(requestPatternScore).toBe(expectedScore);
+    });
+
+    test('should reset score after a period of inactivity', () => {
+        const deviceData = {
+            requestHistory: [
+                { timestamp: 10000, path: '/first', queryString: '' },
+                { timestamp: 10100, path: '/second', queryString: '' } // Last request was at 10100
+            ],
+            lastPatternScore: 80
+        };
+        const context = { path: '/third', query: {} };
+
+        // Simulate a new request long after the inactivity threshold (10100 + 5001)
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(16000);
+
+        getRequestPatternScore(context, deviceData, patternConfig);
+
+        // The score from this new request should be calculated from a base of 0, not 80.
+        // The time between 16000 and 10100 is > inactivityReset, so lastPatternScore is reset to 0.
+        // The time between 16000 and 10100 is also > velocityThreshold, so the new score is 0.
+        // Final score = (0 * 0.9) + 0 = 0.
+        expect(deviceData.lastPatternScore).toBe(0);
     });
 });
