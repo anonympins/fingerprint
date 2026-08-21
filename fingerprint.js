@@ -499,7 +499,9 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         scrapeThreshold = 1000, scrapeWeight = 20, scrapeBurstWeight = 40,
         historySize = 10,
         decayFactor = 0.9,
-        inactivityReset = 30000
+        inactivityReset = 30000,
+        // Nouveau paramètre pour la détection de séquences
+        sequenceLength = 3, sequenceWeight = 60
     } = patternConfig;
 
     const now = Date.now();
@@ -542,6 +544,17 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
             } else {
                 score += scrapeWeight; // First sign of a potential scraping pattern
             }
+        }
+
+        // 4. (NOUVEAU) Détection de séquences répétitives (ex: A -> B -> C -> A -> B -> C)
+        if (history.length >= sequenceLength * 2) {
+            const lastSequence = history.slice(-sequenceLength);
+            const previousSequence = history.slice(-sequenceLength * 2, -sequenceLength);
+            
+            const isRepeating = lastSequence.every((req, i) => 
+                req.path === previousSequence[i].path && req.queryString === previousSequence[i].queryString
+            );
+            if (isRepeating) score += sequenceWeight;
         }
     }
 
