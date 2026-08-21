@@ -678,7 +678,7 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  * @param {string} clientIp - The client's IP address.
  * @returns {string} HTML content.
  */
-function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp) {
+function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret) {
     const { nonce, target, path } = cpuChallengeDetails;
     return `
       <html><head><title>Advanced Security Check</title></head>
@@ -690,13 +690,14 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
           async function solve() {
             const nonce = "${nonce}";
             const path = "${path}";
+            const clientSecret = "${clientSecret}"; // Secret is now available to the client
 
             // --- CPU Challenge ---
             document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
             const cpuTarget = BigInt("0x${target}");
             let cpuSolution = 0;
             while (true) {
-              const msg = "${clientIp}:${nonce}:" + cpuSolution;
+              const msg = "${clientIp}:${nonce}:" + cpuSolution + ":" + clientSecret;
               const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
               const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
               if (BigInt('0x' + hashHex) < cpuTarget) break;
@@ -712,7 +713,8 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
             try {
                 const size = ${memoryDifficulty} * 1024 * 1024;
                 const buffer = new Uint32Array(size / 4);
-                let h = new TextEncoder().encode(nonce).reduce((acc, v) => acc + v, 0);
+                const seed = nonce + ":" + clientSecret;
+                let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
                 for (let i = 0; i < buffer.length; i++) {
                     buffer[i] = (h = Math.imul(h ^ i, 1597334677));
                 }
@@ -914,7 +916,7 @@ class FingerprintEngine {
             const maxMemDifficulty = 48; // 48Mo
             const memDifficulty = Math.round(minMemDifficulty + suspicionFactor * (maxMemDifficulty - minMemDifficulty));
 
-            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp);
+            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret);
             return {
                 action: 'challenge', score: finalScore, vector: suspicionVector,
                 status: 429, body: page
@@ -934,7 +936,7 @@ class FingerprintEngine {
             const memDifficulty = Math.round(minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty));
 
             // On utilise toujours la page combinée, même si la difficulté mémoire est 0 (le calcul sera quasi instantané).
-            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp);
+            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret);
             return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
         }
     }

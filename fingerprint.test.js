@@ -383,13 +383,53 @@ describe('Fingerprint & PoW Security Suite', () => {
       let redirectedTo, cookieName, cookieValue;
       const res = { cookie: (n, v) => { cookieName = n; cookieValue = v; }, redirect: (p) => { redirectedTo = p; } };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
-
+      
       req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(redirectedTo, 'Should redirect to the original path').toBe('/protected');
       expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
       expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
+    });
+
+    test('should NOT redirect if PoW solution is valid but clientSecret is wrong', async () => {
+      const ip = '127.0.0.1';
+      const nonce = 'test-nonce-wrong-secret';
+      const correctClientSecret = 'the-correct-secret';
+      const wrongClientSecretOnServer = 'the-wrong-secret';
+      const suspicionFactor = 0.1;
+      const target = __internal.calculateTarget(suspicionFactor);
+
+      // 1. Le client résout le challenge avec le secret qu'il a reçu (le bon)
+      let solution = 0;
+      while (true) {
+        const hash = crypto.createHash('sha256').update(`${ip}:${nonce}:${solution}:${correctClientSecret}`).digest('hex');
+        if (BigInt('0x' + hash) < target) break;
+        solution++;
+      }
+
+      // 2. Le serveur, pour une raison quelconque (corruption, attaque), a un mauvais secret stocké
+      await inMemoryStore.set(`secret:${nonce}`, wrongClientSecretOnServer);
+
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({ historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0 });
+
+      const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
+      
+      let sentStatus, sentBody;
+      const res = {
+        status: (s) => { sentStatus = s; return res; },
+        send: (b) => { sentBody = b; },
+        redirect: vi.fn(), // On s'attend à ce que cette fonction ne soit PAS appelée
+        cookie: vi.fn()
+      };
+      const next = vi.fn();
+
+      req.fingerprint = {};
+      await powMiddleware(securityConfig)(req, res, next);
+
+      expect(res.redirect).not.toHaveBeenCalled();
+      expect(sentStatus, 'Should return status 429 to re-issue a challenge').toBe(429);
+      expect(sentBody, 'Should send a new challenge page').toContain('Enhanced Verification');
     });
   });
 
