@@ -1030,8 +1030,8 @@ describe('getRequestPatternScore', () => {
         const deviceData = { requestHistory: [{ timestamp: 10000, path: '/api/items', queryString: 'page=1' }] };
         const context = { path: '/api/items', query: { page: '2' } }; // Same path, different query
 
-        // Simulate a request 300ms later (triggers velocity and scrape)
-        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10300);
+        // Simulate a request 150ms later (triggers velocity and scrape)
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10150);
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
         const expectedScore = patternConfig.velocityWeight + patternConfig.scrapeWeight; // 30 + 20 = 50
