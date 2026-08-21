@@ -67,6 +67,10 @@ app.use(cookieParser());
 app.use(bodyParser.json()); // For parsing application/json
 app.use(bodyParser.urlencoded({ extended: true })); // For parsing application/x-www-form-urlencoded
 
+// Array to store traffic analysis data for the auto-tuner.
+// In a real application, this could be a more robust logging system (e.g., writing to a file or a database).
+const trafficData = [];
+
 // Configuration of weights and thresholds for calculating the suspicion score.
 // These values should be adjusted based on traffic and expected user behavior.
 const securityConfig = {
@@ -101,7 +105,15 @@ const securityConfig = {
         trapUrls: ['/wp-admin', '/.env', '/admin.php', '/phpmyadmin'], // (Optional)
         // Automatically detect common SQL/NoSQL injection and RCE patterns in request values. (Optional, default: true)
         detectInjections: true
-    }
+    },
+    // The logger is required for auto-tuning. It collects data on requests.
+    logger: (log) => trafficData.push(log),
+    // (Optional) Configuration for the automatic threshold and pattern tuning.
+    autotuning: {
+        trafficData: trafficData,       // The data source for the genetic algorithm.
+        interval: 1800000,              // Optimization cycle every 30 minutes (in ms).
+        minDataPoints: 200              // Minimum requests before starting an optimization cycle.
+    },
 };
 
 // Create an instance of the middleware with your security configuration.
