@@ -478,6 +478,42 @@ function getHoneypotScore(context, honeypotConfig = {}) {
   return { honeypotScore: 0 };
 }
 
+const trapUrlTemplates = [
+    '/includes/config-{RANDOM}.php',          // Classic PHP config file
+    '/.env.{RANDOM}',                         // Environment file
+    '/backups/db_backup_{RANDOM}.sql.gz',     // Database backup
+    '/api/v1/internal/status?trace={RANDOM}', // Internal API endpoint
+    '/_private/deploy_key_{RANDOM}.pem',      // Private key file
+    '/logs/app_error_{RANDOM}.log',           // Log file
+    '/.git/config_{RANDOM}'                   // Exposed git config variant
+];
+
+/**
+ * Generates a signed trap URL.
+ * @param {string} nonce - The nonce to sign the URL with.
+ * @returns {string} The trap URL.
+ */
+function generateTrapUrl(nonce) {
+    // Pick a random template to diversify the traps
+    const template = trapUrlTemplates[Math.floor(Math.random() * trapUrlTemplates.length)];
+    const randomPart = crypto.randomBytes(8).toString('hex');
+    const path = template.replace('{RANDOM}', randomPart);
+
+    const signature = crypto.createHmac('sha256', getPowSecret()).update(nonce + path).digest('hex').substring(0, 16);
+    return `${path}?sig=${signature}`;
+}
+
+/**
+ * Verifies if a given path is a valid trap URL for a given nonce.
+ * @param {string} path - The request path.
+ * @param {string} signature - The signature from the query.
+ * @param {string} nonce - The nonce to verify against.
+ * @returns {boolean}
+ */
+function verifyTrapUrl(path, signature, nonce) {
+    const expectedSignature = crypto.createHmac('sha256', getPowSecret()).update(nonce + path).digest('hex').substring(0, 16);
+    return signature === expectedSignature;
+}
 /**
  * @typedef {object} IStore
  * @property {(key: string) => Promise<any>} get
@@ -956,6 +992,15 @@ class FingerprintEngine {
       return { action: 'block', status: 403, body: 'Forbidden', score: finalScore, vector: suspicionVector };
     }
 
+    // Honeypot: Check if the request is for a trap URL generated in a previous challenge.
+    // This requires a nonce from a *previous* challenge, which we can look up via the device ID.
+    const lastNonce = deviceData?.lastChallengeNonce;
+    if (lastNonce && query.sig && verifyTrapUrl(path, query.sig, lastNonce)) {
+        deviceData.condemned = true; // This device is a bot. Condemn it.
+        await store.set(`device:${cookies.device_id}`, deviceData);
+        return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+    }
+
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
         // --- CHALLENGE SOLUTION HANDLING ---
         if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
@@ -1036,6 +1081,12 @@ class FingerprintEngine {
         // Store the secret with a short TTL (e.g., 5 minutes)
         await store.set(`secret:${nonce}`, clientSecret, 300);
 
+        // Associate the current challenge nonce with the device for trap URL verification later.
+        if (deviceData) {
+            deviceData.lastChallengeNonce = nonce;
+            await store.set(`device:${cookies.device_id}`, deviceData);
+        }
+
         if (logger) {
             logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
         }
@@ -1047,6 +1098,12 @@ class FingerprintEngine {
 
         // UNIFIED CHALLENGE LOGIC for all suspicion levels (low, medium, high)
         if (isSuspicious) { // Couvre à la fois low et medium
+            // Generate some trap URLs to embed in the challenge page.
+            // These links are visually hidden but present in the DOM to trap bots.
+            const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce));
+            const trapLinksHtml = trapUrls.map(url => `<a href="${url}" tabindex="-1">config</a>`).join(' ');
+
+
             const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path);
 
             // La difficulté mémoire démarre à 0 et augmente seulement après un certain seuil de suspicion.
@@ -1058,7 +1115,8 @@ class FingerprintEngine {
             const memDifficulty = Math.round(minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty));
 
             // Always use the combined page, even if memory difficulty is 0 (it will be almost instant).
-            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret);
+            const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
+            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret).replace('</body>', `${trapContainer}</body>`);
             return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
         }
     }
