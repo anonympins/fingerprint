@@ -86,7 +86,9 @@ const securityConfig = {
     honeypot: {
         // List of field names that are traps for bots.
         // These should be hidden in forms for humans, or be URL parameters your app never uses.
-        fields: ['email_confirm', 'user_nickname', 'debug', 'test_mode', 'admin']
+        fields: ['email_confirm', 'user_nickname', 'debug', 'test_mode', 'admin'], // (Optional)
+        // Automatically detect common SQL/NoSQL injection and RCE patterns in request values.
+        detectInjections: true // (Optional, default: true)
     }
 };
 

@@ -529,6 +529,75 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(decision.score).toBe(100); // With weight 1.0, the final score should also be 100
     });
 
+    test('should produce a high honeypotScore for SQL injection attempt in query', async () => {
+      const securityConfig = {
+        weights: { honeypotScore: 1.0 },
+        thresholds: { low: 20 },
+        honeypot: { detectInjections: true }
+      };
+      const engine = new __internal.FingerprintEngine(securityConfig);
+      const requestContext = {
+        query: { id: "1' OR 1=1 --" },
+        body: {},
+        // ... autres propriétés du contexte
+      };
+
+      const decision = await engine.processRequest(requestContext);
+      expect(decision.vector.honeypotScore).toBe(100);
+      expect(decision.score).toBe(100);
+    });
+
+    test('should produce a high honeypotScore for RCE attempt in body', async () => {
+      const securityConfig = {
+        weights: { honeypotScore: 1.0 },
+        thresholds: { low: 20 },
+        honeypot: { detectInjections: true }
+      };
+      const engine = new __internal.FingerprintEngine(securityConfig);
+      const requestContext = {
+        query: {},
+        body: { filename: "../../../etc/passwd" },
+        // ... autres propriétés du contexte
+      };
+
+      const decision = await engine.processRequest(requestContext);
+      expect(decision.vector.honeypotScore).toBe(100);
+      expect(decision.score).toBe(100);
+    });
+
+    test('should produce a high honeypotScore for NoSQL injection attempt in body', async () => {
+      const securityConfig = {
+        weights: { honeypotScore: 1.0 },
+        thresholds: { low: 20 },
+        honeypot: { detectInjections: true }
+      };
+      const engine = new __internal.FingerprintEngine(securityConfig);
+      const requestContext = {
+        query: {},
+        body: { "username": { "$ne": null }, "password": { "$ne": null } },
+        // ... autres propriétés du contexte
+      };
+
+      const decision = await engine.processRequest(requestContext);
+      expect(decision.vector.honeypotScore).toBe(100);
+      expect(decision.score).toBe(100);
+    });
+
+    test('should produce a zero honeypotScore for a normal request', async () => {
+      const securityConfig = {
+        weights: { honeypotScore: 1.0 },
+        thresholds: { low: 20 },
+        honeypot: { detectInjections: true }
+      };
+      const engine = new __internal.FingerprintEngine(securityConfig);
+      const requestContext = {
+        query: { id: "123" },
+        body: { comment: "This is a normal comment." },
+      };
+      const decision = await engine.processRequest(requestContext);
+      expect(decision.vector.honeypotScore).toBe(0);
+      expect(decision.score).toBe(0);
+    });
   });
 
   describe('Client-Side Functions', () => {
@@ -715,96 +784,4 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
   });
 
-
-    describe('getParamAnomalyScore', () => {
-
-        // Définir une configuration de test réutilisable
-        const testConfig = {
-            paramSchemas: [
-                {
-                    path: '/api/search',
-                    allowed: ['q', 'page', 'sort'],
-                    maxUnknown: 1 // Tolère 1 paramètre inconnu
-                },
-                {
-                    path: '/user/profile',
-                    allowed: ['id'],
-                    maxUnknown: 0 // Très strict, aucun paramètre inconnu n'est permis
-                }
-            ]
-        };
-
-        it('should return a score of 0 if no schemas are configured', () => {
-            const context = { path: '/api/search', query: { q: 'test', debug: 'true' } };
-            const config = {}; // Pas de paramSchemas
-            const { paramAnomalyScore } = getParamAnomalyScore(context, config);
-            expect(paramAnomalyScore).toBe(0);
-        });
-
-        it('should return a score of 0 if the path does not match any schema', () => {
-            const context = { path: '/api/unknown', query: { param1: 'value1' } };
-            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
-            expect(paramAnomalyScore).toBe(0);
-        });
-
-        it('should return a score of 0 for a request with only allowed parameters', () => {
-            const context = { path: '/api/search', query: { q: 'books', page: '2' } };
-            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
-            expect(paramAnomalyScore).toBe(0);
-        });
-
-        it('should return a score of 0 when the number of unknown params is within the maxUnknown limit', () => {
-            // /api/search autorise 1 paramètre inconnu. On en passe un seul : 'limit'.
-            const context = { path: '/api/search', query: { q: 'movies', limit: '10' } };
-            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
-            expect(paramAnomalyScore).toBe(0);
-        });
-
-        it('should return a significant score when unknown params exceed the maxUnknown limit', () => {
-            // /api/search autorise 1 paramètre inconnu. On en passe deux : 'limit' et 'debug'.
-            const context = { path: '/api/search', query: { q: 'games', limit: '25', debug: 'true' } };
-            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
-            // unknownCount = 2, maxUnknown = 1.
-            // score = 50 + (2 - 1) * 25 = 75
-            expect(paramAnomalyScore).toBe(75);
-        });
-
-        it('should return a significant score for a strict path with one unknown parameter', () => {
-            // /user/profile autorise 0 paramètre inconnu. On en passe un : 'mode'.
-            const context = { path: '/user/profile', query: { id: '123', mode: 'edit' } };
-            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
-            // unknownCount = 1, maxUnknown = 0.
-            // score = 50 + (1 - 0) * 25 = 75
-            expect(paramAnomalyScore).toBe(75);
-        });
-
-        it('should cap the score at 100 for a large number of unknown parameters', () => {
-            // /user/profile autorise 0 paramètre inconnu. On en passe trois.
-            const context = { path: '/user/profile', query: { id: '123', a: '1', b: '2', c: '3' } };
-            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
-            // unknownCount = 3, maxUnknown = 0.
-            // score = 50 + (3 - 0) * 25 = 125. Capped at 100.
-            expect(paramAnomalyScore).toBe(100);
-        });
-
-        it('should correctly handle query as a URLSearchParams object', () => {
-            const query = new URLSearchParams();
-            query.append('id', '456');
-            query.append('token', 'xyz'); // Paramètre inconnu
-            query.append('session', 'abc'); // Paramètre inconnu
-
-            const context = { path: '/user/profile', query };
-            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
-            // unknownCount = 2, maxUnknown = 0.
-            // score = 50 + (2 - 0) * 25 = 100.
-            expect(paramAnomalyScore).toBe(100);
-        });
-
-        it('should return a score of 0 if the query is empty', () => {
-            const context = { path: '/api/search', query: {} };
-            const { paramAnomalyScore } = getParamAnomalyScore(context, testConfig);
-            expect(paramAnomalyScore).toBe(0);
-        });
-
-    });
 });

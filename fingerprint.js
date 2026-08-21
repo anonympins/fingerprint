@@ -404,66 +404,72 @@ function getHeaderAnomalies(context) {
  * @param {object} honeypotConfig - The honeypot configuration.
  * @returns {{honeypotScore: number}}
  */
-function getHoneypotScore(context, honeypotConfig) {
-    if (!honeypotConfig || !honeypotConfig.fields || honeypotConfig.fields.length === 0) {
+function getHoneypotScore(context, honeypotConfig = {}) {
+  const { fields = [], detectInjections = true } = honeypotConfig; // Enable by default
+  if (fields.length === 0 && !detectInjections) {
     return { honeypotScore: 0 };
   }
 
-  // Check both query parameters and the request body for honeypot fields.
-  // This prevents a value in the body from overwriting and hiding a honeypot field from the query.
-  const queryData = context.query instanceof URLSearchParams ? Object.fromEntries(context.query.entries()) : (context.query || {});
+  // Check both query parameters (for URL probing) and the request body (for hidden form fields).
+  const queryData =
+    context.query instanceof URLSearchParams
+      ? Object.fromEntries(context.query.entries())
+      : context.query || {};
   const bodyData = context.body || {};
 
-  for (const field of honeypotConfig.fields) {
+  // 1. Check for honeypot field names (existing logic)
+  for (const field of fields) {
     // A bot is trapped if the field exists in either the query OR the body.
-    // Using `Object.prototype.hasOwnProperty.call` is safer than `requestData[field]`.
-    if (Object.prototype.hasOwnProperty.call(queryData, field) || 
-        Object.prototype.hasOwnProperty.call(bodyData, field)) {
+    if (
+      Object.prototype.hasOwnProperty.call(queryData, field) ||
+      Object.prototype.hasOwnProperty.call(bodyData, field)
+    ) {
       return { honeypotScore: 100 }; // A bot fell into the trap, maximum score.
     }
   }
-  return { honeypotScore: 0 };
-}
 
-/**
- * Calculates a score based on URL parameter anomalies against defined schemas.
- * This helps detect bots probing endpoints with unexpected query parameters.
- * @param {object} context - The request context.
- * @param {object} honeypotConfig - The honeypot configuration.
- * @returns {{paramAnomalyScore: number}}
- */
-function getParamAnomalyScore(context, honeypotConfig) {
-  if (!honeypotConfig?.paramSchemas) {
-    return { paramAnomalyScore: 0 };
-  }
+  // 2. Check for injection attempts in values (new logic)
+  if (detectInjections) {
+    // Regex for common SQL injection patterns
+    const sqlRegex = new RegExp(
+      "('|\"|;|--|#|/\\*)|\\b(union|select|insert|update|delete|drop|truncate)\\b",
+      "i"
+    );
+    // Regex for common NoSQL (MongoDB) injection patterns (e.g., keys starting with '$')
+    const nosqlKeyRegex = /"\$[^"]*":/;
+    // Regex for common Remote Code Execution (RCE) patterns
+    const rceRegex = new RegExp(
+      // File traversal, command execution functions, and shell commands
+      "(\\.\\./|\\.\\.\\\\)|\\b(exec|system|shell_exec|passthru|popen|proc_open|eval|assert|require|include)(_once)?\\s*\\(|\\b(wget|curl|bash|sh|powershell)\\b",
+      "i"
+    );
 
-  const relevantSchema = honeypotConfig.paramSchemas.find(s => context.path.startsWith(s.path));
+    const inspect = (obj) => {
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                const value = obj[key];
+                if (typeof value === 'string') {
+                    if (rceRegex.test(value) || sqlRegex.test(value)) return true;
+                } else if (typeof value === 'object' && value !== null) {
+                    // For NoSQL, we check the stringified version of the object to find keys like "$gt"
+                    // This is more accurate when done on the object itself.
+                    if (nosqlKeyRegex.test(JSON.stringify(value))) return true;
+                    if (inspect(value)) return true;
+                }
+            }
+        }
+        return false;
+    };
 
-  // If no schema matches this path, there's no anomaly.
-  if (!relevantSchema) {
-    return { paramAnomalyScore: 0 };
-  }
-
-  const allowedParams = new Set(relevantSchema.allowed || []);
-  const maxUnknown = relevantSchema.maxUnknown ?? 1; // Default to allowing 1 unknown param
-
-  const queryKeys = Object.keys(context.query instanceof URLSearchParams ? Object.fromEntries(context.query.entries()) : context.query);
-
-  let unknownCount = 0;
-  for (const key of queryKeys) {
-    if (!allowedParams.has(key)) {
-      unknownCount++;
+    if (inspect(queryData)) {
+        return { honeypotScore: 100 };
+    }
+    if (inspect(bodyData)) {
+        return { honeypotScore: 100 };
     }
   }
 
-  if (unknownCount > maxUnknown) {
-    // The score is proportional to how many extra parameters were provided.
-    // Using a base of 50 and adding to it makes it significant.
-    const score = Math.min(100, 50 + (unknownCount - maxUnknown) * 25);
-    return { paramAnomalyScore: score };
-  }
-
-  return { paramAnomalyScore: 0 };
+  return { honeypotScore: 0 };
 }
 
 /**
@@ -895,16 +901,14 @@ class FingerprintEngine {
 
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
-    suspicionVector.honeypotScore = getHoneypotScore(requestContext, this.securityConfig?.honeypot).honeypotScore;
-    suspicionVector.paramAnomalyScore = getParamAnomalyScore(requestContext, this.securityConfig?.honeypot).paramAnomalyScore;
+    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
+    suspicionVector.honeypotScore = honeypotScore;
 
-    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig?.honeypot);
     const finalScore =
       suspicionVector.historyScore * (weights.historyScore || 0) +
       suspicionVector.rotationScore * (weights.rotationScore || 0) +
       suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) +
       suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0) +
-      suspicionVector.paramAnomalyScore * (weights.paramAnomalyScore || 0) +
       honeypotScore * (weights.honeypotScore || 0);
 
     const isBlocked = finalScore >= (thresholds.block || 95);
@@ -1076,14 +1080,12 @@ class FingerprintEngine {
     await store.set(`ip:${clientIp}`, ipProfile);
 
     const vector = await __internal.getSuspicionVector(requestContext, this.securityConfig); // Pass the config
-    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig?.honeypot);
-    const { paramAnomalyScore } = getParamAnomalyScore(requestContext, this.securityConfig?.honeypot);
+    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
     const score =
       vector.historyScore * (this.securityConfig.weights.historyScore || 0.3) +
       vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
       vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
-      paramAnomalyScore * (this.securityConfig.weights.paramAnomalyScore || 0) +
       honeypotScore * (this.securityConfig.weights.honeypotScore || 0);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
@@ -1163,7 +1165,6 @@ export const powMiddleware = (securityConfig) => {
  */
 export const __internal = {
     getDeviceHash,
-    getParamAnomalyScore, // Exporter pour les tests
     getSuspicionVector,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
