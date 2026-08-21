@@ -19,6 +19,7 @@ The process unfolds in three steps:
     *   **Device Behavior**: Rapid fingerprint changes (User-Agent rotation).
     *   **IP Behavior**: An excessive number of different devices seen from the same IP, or a single device using a large number of IPs (proxy rotation).
     *   **Inconsistency**: A low similarity score between the current fingerprint and the initial one associated with the `device_id` (cookie theft detection).
+    *   **Honeypot Trap**: Detection of bots that automatically fill hidden form fields or probe for common but unused URL parameters (e.g., `?debug=true`).
 3.  **Dynamic Challenge**: If the suspicion score exceeds a certain threshold, a challenge is presented to the user. The difficulty and type of challenge depend on the score:
     *   **Low to Medium Suspicion**: A combined CPU and Memory Proof-of-Work (PoW) challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
     *   **High Suspicion**: For the most suspicious requests, the system issues a high-difficulty combined CPU/Memory challenge. The architecture allows for plugging in more complex challenges like CAPTCHAs if needed.
@@ -40,7 +41,7 @@ This module is designed for a Node.js environment.
 
 ### Prerequisites
 
-Ensure you have a cookie-parser middleware (like `cookie-parser`) set up in your Express application.
+Ensure you have middleware for parsing cookies (like `cookie-parser`) and request bodies (like `express.json` and `express.urlencoded`) set up in your Express application *before* the `powMiddleware`.
 
 ### Configuration
 
@@ -56,11 +57,14 @@ The `powMiddleware` requires a configuration object defining the weights of susp
 
 ```javascript
 import express from 'express';
+import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
 import { powMiddleware /*, configurePow */ } from './fingerprint.js'; // Adjust the path
 
 const app = express();
 app.use(cookieParser());
+app.use(bodyParser.json()); // For parsing application/json
+app.use(bodyParser.urlencoded({ extended: true })); // For parsing application/x-www-form-urlencoded
 
 // Configuration of weights and thresholds for calculating the suspicion score.
 // These values should be adjusted based on traffic and expected user behavior.
@@ -69,7 +73,8 @@ const securityConfig = {
         historyScore: 0.3,       // Penalizes IP rotation (proxy)
         rotationScore: 0.5,      // Penalizes rapid fingerprint changes (user-agent, etc.)
         headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
-        inconsistencyScore: 0.8  // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
+        inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
+        honeypotScore: 1.0       // Strongly penalizes bots filling hidden form fields
     },
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued
@@ -77,6 +82,16 @@ const securityConfig = {
         high: 75,   // Score for a very difficult challenge
         block: 95,  // Score above which the request is blocked outright (HTTP 403)
         isStaticResource: (req) => req.path.startsWith('/static/') // Optional: Custom function to identify static resources
+    },
+    honeypot: {
+        // List of field names that are traps for bots.
+        // These should be hidden in forms for humans, or be URL parameters your app never uses.
+        fields: ['email_confirm', 'user_nickname', 'debug', 'test_mode', 'admin'], // (Optional)
+        // List of URL paths that should never be accessed by a legitimate user.
+        // A request to one of these paths will immediately flag the device as malicious.
+        trapUrls: ['/wp-admin', '/.env', '/admin.php', '/phpmyadmin'], // (Optional)
+        // Automatically detect common SQL/NoSQL injection and RCE patterns in request values. (Optional, default: true)
+        detectInjections: true
     }
 };
 
