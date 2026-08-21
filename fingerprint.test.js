@@ -115,9 +115,13 @@ describe('Fingerprint & PoW Security Suite', () => {
           buffer[i] = (h = Math.imul(h ^ i, 1597334677));
       }
       let clientSolution = 0;
-      for(let i = 0; i < (size / 16); i++) {
-          const addr = (buffer[i % buffer.length] & 0x7FFFFFFF) % buffer.length;
-          clientSolution ^= buffer[addr];
+      const iterations = size / 16;
+      // Align the test solver with the actual implementation in fingerprint.js
+      // This uses a data-dependent memory access pattern, which is more secure.
+      let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+      for (let i = 0; i < iterations; i++) {
+        addr = buffer[addr] % buffer.length;
+        clientSolution ^= addr;
       }
       return clientSolution;
     };
