@@ -562,6 +562,28 @@ function getHoneypotScore(context, honeypotConfig = {}) {
 }
 
 /**
+ * Calcule un score basé sur les métriques comportementales envoyées par le client.
+ * @param {object} context - Le contexte de la requête, contenant les en-têtes.
+ * @returns {{behaviorScore: number}}
+ */
+function getBehaviorScore(context) {
+    const behaviorHeader = context.headers['x-behavior-metrics'];
+    if (!behaviorHeader) {
+        return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
+    }
+
+    try {
+        const metrics = JSON.parse(behaviorHeader);
+        let score = 0;
+        if (metrics.honeypotInteraction) score = 100; // Interaction avec un honeypot client = bot.
+        if (metrics.mouseEntropy === 0 && metrics.keystrokeLatency === 0) score += 40; // Aucune interaction = suspect.
+        return { behaviorScore: Math.min(100, score) };
+    } catch (e) {
+        return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
+    }
+}
+
+/**
  * Analyzes server-side request patterns for a given device to detect bot-like behavior.
  * This is a stateful check that looks for repetitive or unnaturally fast requests.
  * @param {object} context - The request context.
@@ -661,27 +683,6 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
 }
 
-/**
- * Calcule un score basé sur les métriques comportementales envoyées par le client.
- * @param {object} context - Le contexte de la requête, contenant les en-têtes.
- * @returns {{behaviorScore: number}}
- */
-function getBehaviorScore(context) {
-    const behaviorHeader = context.headers['x-behavior-metrics'];
-    if (!behaviorHeader) {
-        return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
-    }
-
-    try {
-        const metrics = JSON.parse(behaviorHeader);
-        let score = 0;
-        if (metrics.honeypotInteraction) score = 100; // Interaction avec un honeypot client = bot.
-        if (metrics.mouseEntropy === 0 && metrics.keystrokeLatency === 0) score += 40; // Aucune interaction = suspect.
-        return { behaviorScore: Math.min(100, score) };
-    } catch (e) {
-        return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
-    }
-}
 const trapUrlTemplates = [
     '/includes/config-{RANDOM}.php',          // Classic PHP config file
     '/.env.{RANDOM}',                         // Environment file
@@ -920,7 +921,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
       inconsistencyScore = 100;
   }
 
-  const { behaviorScore } = getBehaviorScore(context);
+  const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
+
+  const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -931,7 +934,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Array.isArray(deviceData.ips)) {
       deviceData.ips = new Set(deviceData.ips);
   }
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore };
+  // Correction : Ajouter behaviorScore à l'objet retourné
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, requestPatternScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1166,6 +1170,7 @@ const staticExtensions = new RegExp(
   "i",
 );
 const isStaticResource = (path) => staticExtensions.test(path);
+
 
 /**
  * Détermine le TTL optimal pour un ticket en utilisant un algorithme génétique multi-objectifs.
@@ -1459,9 +1464,7 @@ export class FingerprintEngine {
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
-    const { requestPatternScore } = getRequestPatternScore(requestContext, deviceData, this.securityConfig.patterns);
     suspicionVector.honeypotScore = honeypotScore;
-    suspicionVector.requestPatternScore = requestPatternScore;
     // Le behaviorScore est déjà dans le vecteur de suspicion via getSuspicionVector
 
     let finalScore = this.calculateFinalScore(suspicionVector);
@@ -1844,6 +1847,7 @@ export const __internal = {
     calculateTarget,
     determineOptimalTicketTtl,
     getRequestPatternScore, // Expose for testing
+    getBehaviorScore, // Expose for testing
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---

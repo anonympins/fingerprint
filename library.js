@@ -1475,4 +1475,103 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
   );
 };
 
+/**
+ * Crée un évaluateur multi-objectifs pour l'auto-tuning complet de la configuration de sécurité.
+ * Optimise à la fois les seuils, les poids de suspicion et les paramètres de détection de patterns.
+ * @param {object} config - L'objet de configuration.
+ * @param {Array<object>} config.trafficData - Données de trafic collectées.
+ * @returns {function(object): number[]} Une fonction de fitness qui prend une configuration complète et retourne les scores [taux de faux positifs, taux de faux négatifs].
+ */
+Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => {
+  // Un "individu" est un objet de configuration complet
+  // { thresholds: { low, medium, high }, weights: { historyScore, ... }, patterns: { velocityThreshold, ... } }
+
+  return function fullConfigFitness(config) {
+    let falsePositives = 0; // Humains légitimes challengés ou bloqués
+    let falseNegatives = 0; // Bots qui sont passés
+    let totalHumans = 0;
+    let totalBots = 0;
+
+    // Simule le calcul du score pour chaque point de données avec la configuration testée
+    const calculateScore = (log) => {
+      // Cette fonction interne devrait répliquer la logique de `getSuspicionVector`
+      // en utilisant les poids et les paramètres de `config`.
+      // Pour cet exemple, nous utilisons une version simplifiée.
+      let score = 0;
+      for (const key in config.weights) {
+        score += (log.vector[key] || 0) * config.weights[key];
+      }
+      return score;
+    };
+
+    for (const log of trafficData) {
+      // On se base sur le comportement observé pour déterminer la nature "réelle" de la requête
+      const isLikelyBot = log.type === 'challenge_issued' || log.type === 'request_blocked';
+      const isLikelyHuman = log.type === 'request_passed' || log.type === 'challenge_solved';
+
+      if (isLikelyBot) {
+        totalBots++;
+        const score = calculateScore(log);
+        // Faux négatif : un bot qui aurait dû être challengé mais ne l'a pas été
+        if (score < config.thresholds.low) {
+          falseNegatives++;
+        }
+      } else if (isLikelyHuman) {
+        totalHumans++;
+        const score = calculateScore(log);
+        // Faux positif : un humain qui a été challengé inutilement
+        if (score >= config.thresholds.low) {
+          falsePositives++;
+        }
+      }
+    }
+
+    const falsePositiveRate = totalHumans > 0 ? falsePositives / totalHumans : 0;
+    const falseNegativeRate = totalBots > 0 ? falseNegatives / totalBots : 0;
+
+    // L'algorithme doit minimiser ces deux objectifs
+    return [falsePositiveRate, falseNegativeRate];
+  };
+};
+
+/**
+ * Résout le problème de l'auto-tuning complet de la configuration de sécurité.
+ * @param {object} context - Le contexte contenant les données de trafic.
+ * @param {object} [options] - Options pour l'algorithme génétique.
+ * @returns {Array<{solution: object, objectives: number[]}>} Le front de Pareto des configurations optimales.
+ */
+Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
+    const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator(context);
+
+    // Un "individu" est un objet de configuration complet
+    const createIndividual = () => ({
+        thresholds: {
+            low: 10 + Math.random() * 30, // 10-40
+            medium: 40 + Math.random() * 30, // 40-70
+            high: 70 + Math.random() * 25, // 70-95
+        },
+        weights: {
+            historyScore: Math.random(),
+            rotationScore: Math.random(),
+            headerAnomalyScore: Math.random(),
+            requestPatternScore: Math.random(),
+            inconsistencyScore: Math.random(),
+            honeypotScore: 1.0, // Garder le honeypot à 1.0 est une bonne pratique
+        },
+        // On pourrait aussi faire muter les `patterns` ici
+    });
+
+    // Le crossover et la mutation doivent maintenant opérer sur des objets complexes
+    const crossover = (c1, c2) => { /* ... logique de croisement pour les objets de config ... */ return c1; };
+    const mutate = (c) => { /* ... logique de mutation pour les objets de config ... */ return c; };
+
+    return Optimization.geneticAlgorithmMultiObjective(
+        createIndividual,
+        fitnessFunction,
+        crossover,
+        mutate,
+        { generations: 50, populationSize: 50, ...options }
+    );
+};
+
 export { Optimization };

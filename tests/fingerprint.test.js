@@ -20,7 +20,7 @@ const {
   stopThresholdAutoTuning,
 } = fingerprint;
 const { getRequestPatternScore, getDeviceHash } = __internal;
-
+let getBehaviorScore; // Sera initialisé après l'import
 // Mock the entire dns/promises module
 vi.mock('node:dns/promises');
 
@@ -1285,6 +1285,47 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(decisionClean.vector.honeypotScore).toBe(0);
         });
     });
+
+  describe('getBehaviorScore', () => {
+    // La fonction est privée, on la récupère via l'export __internal
+    beforeEach(() => {
+        getBehaviorScore = fingerprint.__internal.getBehaviorScore;
+    });
+
+    it('should return a score of 0 when x-behavior-metrics header is missing', () => {
+        const context = { headers: {} };
+        const { behaviorScore } = getBehaviorScore(context);
+        expect(behaviorScore).toBe(0);
+    });
+
+    it('should return a score of 100 for honeypot interaction', () => {
+        const metrics = { honeypotInteraction: true, mouseEntropy: 50, keystrokeLatency: 120 };
+        const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+        const { behaviorScore } = getBehaviorScore(context);
+        expect(behaviorScore).toBe(100);
+    });
+
+    it('should return a score of 40 for no mouse or keyboard activity', () => {
+        const metrics = { honeypotInteraction: false, mouseEntropy: 0, keystrokeLatency: 0 };
+        const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+        const { behaviorScore } = getBehaviorScore(context);
+        expect(behaviorScore).toBe(40);
+    });
+
+    it('should return a score of 0 for normal user activity', () => {
+        const metrics = { honeypotInteraction: false, mouseEntropy: 150.5, keystrokeLatency: 88.2 };
+        const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+        const { behaviorScore } = getBehaviorScore(context);
+        expect(behaviorScore).toBe(0);
+    });
+
+    it('should return a score of 10 for a malformed header', () => {
+        const context = { headers: { 'x-behavior-metrics': 'this is not json' } };
+        const { behaviorScore } = getBehaviorScore(context);
+        expect(behaviorScore).toBe(10);
+    });
+});
+
 
     describe('Bot Whitelisting', () => {
         const inMemoryStore = {

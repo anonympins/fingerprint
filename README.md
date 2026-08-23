@@ -81,6 +81,7 @@ const securityConfig = {
         headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
         requestPatternScore: 0.6,// Penalizes bot-like request sequences (scraping, etc.)
         inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
+        behaviorScore: 0.7,    // Penalizes non-human interactions (no mouse/keyboard activity)
         honeypotScore: 1.0       // Strongly penalizes bots filling hidden form fields
     },
     // A new, non-suspicious device will always have its score adjusted to a minimum of 1, ensuring it receives a minimal, almost imperceptible challenge on its first visit.
