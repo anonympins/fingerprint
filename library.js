@@ -498,8 +498,8 @@ Optimization.geneticAlgorithmMultiObjective = function (
   options = {},
 ) {
   const {
-    generations = 100,
-    populationSize = 50,
+    generations = 150, // Augmenté pour une meilleure convergence
+    populationSize = 60, // Augmenté pour plus de diversité
     mutationRate = 0.1,
   } = options;
 
