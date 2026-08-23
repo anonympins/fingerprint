@@ -1432,9 +1432,14 @@ export class FingerprintEngine {
             // Par exemple, elle ne commence à augmenter qu'à partir de 25% du chemin entre 'low' et 'high'.
             const memActivationFactor = Math.max(0, (suspicionFactor - 0.25) / 0.75);
 
+            // NOUVEAU : On applique une courbe de puissance pour que la difficulté augmente de façon exponentielle.
+            // Un utilisateur à 50% de suspicion n'aura qu'une petite fraction de la difficulté maximale,
+            // tandis qu'un bot à 95% de suspicion subira une pénalité quasi maximale.
+            const curvedFactor = Math.pow(memActivationFactor, 3); // La puissance 3 crée une courbe très agressive à la fin.
+
             const minMemDifficulty = 0;   // Peut être 0 Mo !
             const maxMemDifficulty = 48;  // 48Mo pour les plus suspects
-            const memDifficulty = Math.round(minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty));
+            const memDifficulty = Math.round(minMemDifficulty + curvedFactor * (maxMemDifficulty - minMemDifficulty));
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
             await store.set(`secret:${nonce}`, {
