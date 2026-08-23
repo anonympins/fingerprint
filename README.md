@@ -95,12 +95,21 @@ const securityConfig = {
     // Set this to `true` to enable a baseline challenge for all new visitors, which can deter simple bots that just clear cookies.
     challengeNewDevices: false, // Default: false
     },
+    // (Optional) Configure the duration (in milliseconds) for various temporary data.
+    ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
+    challengeTtl: 300000, // 5 minutes. Time during which a challenge nonce is valid.
+    deviceIdCookieMaxAge: undefined, // By default, it's a session cookie. Set a value in ms for a persistent cookie.
+
     patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
-        velocityThreshold: 200, // ms between requests to be considered "fast"
-        burstThreshold: 500,    // ms for identical requests to be a "burst"
-        scrapeThreshold: 1000,  // ms for sequential requests to be "scraping"
-        historySize: 10,        // Number of requests to keep for pattern analysis
-        decayFactor: 0.9,       // How quickly the pattern score decays over time
+        velocityThreshold: 200,   // ms between requests to be considered "fast"
+        burstThreshold: 500,      // ms for identical requests to be a "burst"
+        scrapeThreshold: 1000,    // ms for sequential requests to be "scraping"
+        scrapeBurstWeight: 40,    // Additional weight for repeated scraping patterns
+        sequenceLength: 3,        // Length of a request sequence to detect (e.g., A->B->C)
+        sequenceWeight: 60,       // Penalty for repeating a sequence
+        historySize: 10,          // Number of requests to keep for pattern analysis
+        decayFactor: 0.9,         // How quickly the pattern score decays over time
+        inactivityReset: 30000,   // ms of inactivity after which the pattern score is reset
     },
     honeypot: {
         // List of field names that are traps for bots.
