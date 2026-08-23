@@ -1,5 +1,6 @@
 // C:/Dev/games.primals.net/src/utils/fingerprint.js
 import crypto from "node:crypto";
+import { parse } from "node:net";
 import dns from "node:dns/promises";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
@@ -1126,6 +1127,58 @@ export class FingerprintEngine {
   }
 
   /**
+   * Checks if an IP address is in the static allowlist (IPs or CIDR ranges).
+   * This is the fastest check and should be performed first.
+   * @private
+   * @param {string} clientIp - The IP address of the client.
+   * @returns {boolean} True if the IP is in the allowlist.
+   */
+  _isIpInAllowlist(clientIp) {
+    const { whitelist = [] } = this.securityConfig;
+    const allowlistRule = whitelist.find(rule => rule.type === 'allowlist');
+
+    if (!allowlistRule || !allowlistRule.entries || allowlistRule.entries.length === 0) {
+      return false;
+    }
+
+    const ip = parse(clientIp);
+    const ipVersion = ip.family;
+
+    for (const entry of allowlistRule.entries) {
+      if (entry.includes('/')) { // CIDR range
+        try {
+          const [range, prefixStr] = entry.split('/');
+          const prefix = parseInt(prefixStr, 10);
+          const rangeIp = parse(range);
+
+          if (rangeIp.family !== ipVersion) continue;
+
+          const ipBytes = ip.toBuffer();
+          const rangeBytes = rangeIp.toBuffer();
+          const mask = Buffer.alloc(ipBytes.length, 0xff);
+
+          for (let i = 0; i < Math.floor(prefix / 8); i++) {
+            if (ipBytes[i] !== rangeBytes[i]) {
+              break; // Mismatch in full byte, move to next entry
+            }
+          }
+          const remainingBits = prefix % 8;
+          if (remainingBits > 0) {
+            const byteIndex = Math.floor(prefix / 8);
+            const bitmask = (0xff << (8 - remainingBits)) & 0xff;
+            if ((ipBytes[byteIndex] & bitmask) !== (rangeBytes[byteIndex] & bitmask)) {
+              continue; // Mismatch in partial byte
+            }
+          }
+          return true; // IP is in CIDR range
+        } catch (e) { continue; /* Ignore invalid CIDR entries */ }
+      } else if (entry === clientIp) { // Direct IP match
+        return true;
+      }
+    }
+    return false;
+  }
+  /**
    * Verifies if a request comes from a legitimate, whitelisted bot (e.g., Googlebot)
    * using reverse and forward DNS lookups. The result is cached.
    * @private
@@ -1134,15 +1187,15 @@ export class FingerprintEngine {
    */
   async _verifyWhitelistedBot(requestContext) {
     const { whitelist = [] } = this.securityConfig;
-    if (whitelist.length === 0) {
+    const botRules = whitelist.filter(rule => rule.hostnameSuffix);
+    if (botRules.length === 0) {
       return false;
     }
 
     const { clientIp, headers } = requestContext;
     const userAgent = headers['user-agent'] || '';
 
-    // Find a rule where the userAgent string matches the provided pattern (string or regex).
-    const matchedRule = whitelist.find(rule => {
+    const matchedRule = botRules.find(rule => {
       if (!rule.userAgent) return false;
       try {
         return new RegExp(rule.userAgent).test(userAgent);
@@ -1196,6 +1249,11 @@ export class FingerprintEngine {
       return { action: 'next', score: 0, vector: {} };
     }
 
+    // 1. Check static IP allowlist first for maximum performance.
+    if (this._isIpInAllowlist(clientIp)) {
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'allowlist' } };
+    }
+
     const { pow_nonce } = query;
 
     // Honeypot: Direct probing of challenge endpoints is highly suspicious.
@@ -1211,7 +1269,7 @@ export class FingerprintEngine {
 
     // Check if the request is from a verified, whitelisted bot (e.g., Googlebot)
     if (await this._verifyWhitelistedBot(requestContext)) {
-      return { action: 'next', score: 0, vector: { whitelisted: 100 } };
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
 
     // Check for persisted "condemned" status early.

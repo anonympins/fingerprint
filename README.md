@@ -133,15 +133,23 @@ const securityConfig = {
             }
         ]
     },
-    // (Optional) Whitelist for legitimate bots (e.g., search engine crawlers).
-    // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
-    // The result is cached per IP to avoid repeated DNS lookups.
-    // You can use the provided default list, which contains over 50 common and legitimate bots,
-    // and extend it with your own rules.
+    // (Optional) Whitelisting configuration.
     whitelist: [
-        ...default_whitelist(),
-        // Example of adding a custom bot specific to your industry:
-        { userAgent: 'MyIndustrySpecificBot', hostnameSuffix: '.my-bot-verifier.com' },
+        // Option 1: Static IP Allowlist.
+        // A simple array of IPs or CIDR ranges that are always allowed, bypassing all checks.
+        // Useful for internal tools, trusted partners, or monitoring services.
+        // This check is performed first for maximum efficiency.
+        { type: 'allowlist', entries: [
+            '192.168.1.100',      // A specific internal IP
+            '203.0.113.0/24',     // A partner's network range
+            '2001:db8::/32'       // An IPv6 range
+        ]},
+        // Option 2: DNS-verified bots (e.g., search engine crawlers).
+        // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
+        // The result is cached per IP to avoid repeated DNS lookups.
+        // You can use the provided default list, which contains over 50 common bots, and extend it.
+        ...default_whitelist(), // Use the defaults
+        { userAgent: 'MyIndustrySpecificBot', hostnameSuffix: '.my-bot-verifier.com' }, // Add a custom bot
     ],
     // Or, if you only want the defaults:
     // whitelist: default_whitelist(),
@@ -258,6 +266,117 @@ const signature = generateRequestSignature({ action: 'update', id: 123 });
 **Security Note:** This function is powerful but should be used with caution. The `secret` must be managed securely. It is typically used with a temporary, single-use secret provided by the server for a specific action, rather than a long-lived shared secret embedded in the client-side code.
 
 ---
+
+## Why Use the Client-Side Library? The Client + Server Synergy
+
+At first glance, client-side checks might seem redundant with server-side honeypots and analysis. In reality, they form two complementary and synergistic lines of defense.
+
+Imagine your server is a fortified castle:
+
+-   **Server-Side Defense (the guards on the walls):** They inspect anyone who knocks on the gate. They are effective, but this means the enemy is already at your door, and your resources (guards) are mobilized for every interaction, legitimate or not.
+-   **Client-Side Defense (scouts and traps in the forest):** They detect suspicious movements and neutralize threats *before* they even reach the castle walls. This saves the castle's resources for genuine visitors.
+
+The client-side library (`fingerprint.client.js`) gives your server "eyes and ears" where it was previously blind, offering three major advantages:
+
+1.  **Early Detection & Resource Savings:** A bot filling a client-side honeypot is flagged in its own browser. The server can then immediately block it based on the `X-Behavior-Metrics` header, saving CPU, memory, and bandwidth that would have been wasted processing a malicious request.
+2.  **Richer Behavioral Data:** The server cannot see how a user interacts with a page. The client-side library can detect non-human behavior (no mouse movement, instant form fills) that is impossible to spot from the server alone.
+3.  **More Robust Fingerprinting:** Server-side signals (IP, User-Agent) are easy to spoof. Client-side fingerprinting adds much stronger, hardware-based signals (Canvas, WebGL, CPU cores) that are significantly harder for bots to fake consistently.
+
+### Strengths at a Glance
+
+| Feature                 | Server-Side Only Approach                               | Client + Server Approach (with the library)                                |
+| :---------------------- | :------------------------------------------------------ | :------------------------------------------------------------------------- |
+| **Detection Point**     | **Reactive** (after the request is received)            | **Proactive** (before or during the request)                               |
+| **Resource Usage**      | Server is engaged for every request, good or bad.       | Client-side pre-filtering saves significant server resources.              |
+| **Behavioral Analysis** | Limited to request velocity and sequence.               | Rich data: mouse movement, typing rhythm, interaction with hidden elements. |
+| **Fingerprint Evasion** | **Easy** for bots to spoof headers and rotate IPs.      | **Hard** for bots to fake hardware-level fingerprints (Canvas/WebGL).      |
+| **Overall Strategy**    | Guards at the gate.                                     | Scouts in the field + Guards at the gate.                                  |
+
+In short, the client-side library is not an alternative, but a **force multiplier** for the server-side defenses.
+
+### Client-Side Integration: The `initializeClient` function
+
+To simplify setup, all client-side features can be enabled and configured through a single, unified function: `initializeClient(config)`. This is the recommended approach.
+
+```javascript
+import { initializeClient } from './path/to/fingerprint.client.js';
+
+// --- EXAMPLES ---
+
+// Example 1: Enable all default protections and protect same-origin fetch requests.
+initializeClient({
+  honeypots: ['email_confirm', 'user_nickname'], // Your honeypot field names
+  fetch: {} // An empty object enables fetch protection for same-origin
+});
+
+// Example 2: Enable everything and protect a specific API domain.
+initializeClient({
+  honeypots: ['email_confirm'],
+  fetch: {
+    targetDomains: ['api.yourdomain.com']
+  }
+});
+
+// Example 3: Enable only mouse and keystroke tracking, without patching fetch.
+initializeClient({
+  mouse: true,
+  keystrokes: true
+});
+
+// Example 4: Disable keystroke tracking but keep other defaults.
+initializeClient({
+  keystrokes: false,
+  fetch: {}
+});
+```
+
+### Client-Side Behavioral Analysis
+
+The following functions, available in `fingerprint.client.js`, allow for proactive, client-side detection of bot-like behavior. They collect metrics on user interaction which can be sent to the server for more accurate suspicion scoring. The server-side logic to interpret these metrics (via the `X-Behavior-Metrics` header) would need to be implemented as part of a custom scoring extension.
+
+#### `startKeystrokeDynamicsTracker()`
+*Client-side function only.* Starts tracking the timing between keystrokes. The average latency between key presses is a strong behavioral indicator. Humans have a natural, somewhat variable typing rhythm, whereas bots often simulate keystrokes with a fixed, unnaturally consistent delay, or paste text instantly (zero latency).
+
+#### `startMouseEntropyTracker()`
+*Client-side function only.* Starts tracking mouse movements on the page. It calculates a simple entropy score based on movement patterns. Human mouse movements are typically chaotic, whereas bots often have linear or no movement at all. This should be called once when your application's main component mounts.
+
+#### `initializeHoneypots(fieldNames)`
+*Client-side function only.* Sets up "traps" on hidden form fields. If a script automatically fills one of these fields, it's immediately flagged as a bot on the client side.
+
+This provides a proactive, first-line defense against simple bots. By setting up traps directly in the browser, you can detect a bot the moment it interacts with a hidden field, rather than waiting for it to submit a form and consume server resources. This detection is then reported to the server via the `X-Behavior-Metrics` header, allowing for an immediate and efficient block.
+
+- `fieldNames`: An array of strings corresponding to the `name` attributes of the honeypot input fields in your HTML.
+
+### Advanced: Manual Wrapping with `protectedFetch`
+
+If you prefer not to modify global functions or need fine-grained control over which requests are protected, you can use the `protectedFetch` wrapper. You must use this function instead of the standard `fetch` for your API calls.
+
+- **`protectedFetch(resource, options)`**: A wrapper around the native `fetch` API that automatically enriches requests with security headers. It adds:
+  - `X-Device-Fingerprint`: The client's device fingerprint.
+  - `X-Behavior-Metrics`: A JSON string containing the metrics collected by the behavioral trackers (e.g., mouse entropy, honeypot interaction).
+
+**Example:**
+
+```javascript
+import { 
+  initializeClient,
+  protectedFetch 
+} from './path/to/fingerprint.client.js';
+
+// Start tracking user behavior as soon as the app loads.
+// Note: You still need to initialize the trackers even if you use protectedFetch manually.
+initializeClient({ fetch: false }); // Disables automatic fetch patching
+
+// Now, use protectedFetch for your specific API calls.
+async function submitForm(data) {
+    const response = await protectedFetch('/api/submit-data', {
+        method: 'POST',
+        body: JSON.stringify(data),
+        headers: {'Content-Type': 'application/json'}
+    });
+}
+```
+
 ## Advanced Features
 
 ### Architecture: `FingerprintEngine`
