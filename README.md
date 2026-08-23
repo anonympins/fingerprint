@@ -226,6 +226,11 @@ await mongoClient.connect();
 
 const mongoStore = createMongoDbStore(mongoClient.db('your-db-name'), 'sessions'); // 'sessions' is the collection name
 configureStore(mongoStore);
+
+// IMPORTANT: For automatic expiration of challenges and other temporary data to work,
+// you must create a TTL index on the `expiresAt` field in your MongoDB collection.
+// Run this command in the mongo shell:
+// db.sessions.createIndex({ "expiresAt": 1 }, { expireAfterSeconds: 0 })
 ```
 
 #### `identifyRequest(req, res)`
