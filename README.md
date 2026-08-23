@@ -319,33 +319,30 @@ To simplify setup, all client-side features can be enabled and configured throug
 
 ```javascript
 import { initializeClient } from './path/to/fingerprint.client.js';
-
-// --- EXAMPLES ---
-
-// Example 1: Enable all default protections and protect same-origin fetch requests.
+ 
+/**
+ * Initializes all client-side protections.
+ * This is the recommended way to set up the client-side library.
+ */
 initializeClient({
-    honeypots: ['email_confirm', 'user_nickname'], // Your honeypot field names
-    fetch: {} // An empty object enables fetch protection for same-origin
-});
-
-// Example 2: Enable everything and protect a specific API domain.
-initializeClient({
-    honeypots: ['email_confirm'],
-    fetch: {
-        targetDomains: ['api.yourdomain.com']
-    }
-});
-
-// Example 3: Enable only mouse and keystroke tracking, without patching fetch.
-initializeClient({
-    mouse: true,
-    keystrokes: true
-});
-
-// Example 4: Disable keystroke tracking but keep other defaults.
-initializeClient({
-    keystrokes: false,
-    fetch: {}
+  // (Optional, default: true) Enable mouse movement tracking to detect non-human patterns.
+  // Set to `false` to disable.
+  mouse: true,
+ 
+  // (Optional, default: true) Enable keystroke dynamics tracking (timing between key presses).
+  // Set to `false` to disable.
+  keystrokes: true,
+ 
+  // (Optional) An array of `name` attributes for hidden form fields that act as bot traps.
+  honeypots: ['email_confirm', 'user_nickname', 'website_url'],
+ 
+  // (Optional) Enables automatic protection for `fetch` requests.
+  // If the `fetch` object is present, the protection is active.
+  fetch: {
+    // (Optional) An array of domains to protect. If empty or not provided,
+    // it protects same-origin requests by default.
+    targetDomains: ['api.yourdomain.com', 'auth.yourdomain.com']
+  }
 });
 ```
 
