@@ -31,7 +31,8 @@
     "pow",
     "rate-limiting",
     "mitigation",
-    "captcha"
+    "captcha",
+    "dns"
   ],
   "author": "anonympins",
   "license": "MIT",

@@ -34,6 +34,7 @@ Once the challenge is solved, a clearance "ticket" is issued via a secure cookie
 -   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
 -   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`. The datastore must support setting a Time-To-Live (TTL) for challenge secrets.
 -   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure ticket validation.
+-   **Bot Whitelisting**: Includes a DNS-based verification mechanism to reliably identify and whitelist legitimate crawlers like Googlebot and Bingbot, preventing them from being challenged. The results are cached for optimal performance.
 -   **Automatic Parameter Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust not only suspicion thresholds (`low`, `medium`, `high`) but also the parameters for behavioral pattern detection, improving accuracy and reducing false positives over time.
 
 ## Installation and Usage
@@ -60,7 +61,7 @@ The `powMiddleware` requires a configuration object defining the weights of susp
 import express from 'express';
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
-import { powMiddleware /*, configurePow */ } from './fingerprint.js'; // Adjust the path
+import { powMiddleware, default_whitelist } from './fingerprint.js'; // Adjust the path
 
 const app = express();
 app.use(cookieParser());
@@ -132,6 +133,18 @@ const securityConfig = {
             }
         ]
     },
+    // (Optional) Whitelist for legitimate bots (e.g., search engine crawlers).
+    // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
+    // The result is cached per IP to avoid repeated DNS lookups.
+    // You can use the provided default list, which contains over 50 common and legitimate bots,
+    // and extend it with your own rules.
+    whitelist: [
+        ...default_whitelist(),
+        // Example of adding a custom bot specific to your industry:
+        { userAgent: 'MyIndustrySpecificBot', hostnameSuffix: '.my-bot-verifier.com' },
+    ],
+    // Or, if you only want the defaults:
+    // whitelist: default_whitelist(),
     // The logger is required for auto-tuning. It collects data on requests.
     logger: (log) => trafficData.push(log),
     // (Optional) Configuration for the automatic threshold and pattern tuning.
