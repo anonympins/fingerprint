@@ -1278,6 +1278,38 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
 };
 
 /**
+ * Crée un évaluateur multi-objectifs pour trouver le TTL (Time-To-Live) optimal pour un ticket de sécurité.
+ * @param {object} context - L'objet de configuration.
+ * @param {number} context.suspicionScore - Le score de suspicion de l'utilisateur (0-100).
+ * @returns {function(number): number[]} Une fonction de fitness qui prend un TTL (en ms) et retourne les scores des objectifs [risque, friction].
+ */
+Optimization.Operators.createOptimalTtlEvaluator = ({ suspicionScore }) => {
+  // On normalise le score pour qu'il soit plus impactant dans le calcul du risque.
+  const normalizedScore = Math.max(1, suspicionScore);
+
+  return function ttlFitness(ttl) {
+    // Contraintes : un TTL doit être dans une plage raisonnable (ex: 5min à 24h)
+    if (ttl < 300000 || ttl > 86400000) return [Infinity, Infinity];
+
+    // Objectif 1 : Minimiser le Risque.
+    // Le risque est le produit du score et de la durée de la session.
+    // Pour un score élevé, l'algo doit choisir un TTL faible pour minimiser ce produit.
+    const risk = normalizedScore * ttl;
+
+    // Objectif 2 : Minimiser la Friction UX.
+    // La friction est l'inverse du TTL. On la pénalise d'autant plus que le score est FAIBLE.
+    // (101 - score) assure que pour un score de 1, la pénalité d'un TTL court est maximale.
+    // Pour un score de 100, cette pénalité est quasi nulle.
+    const friction = (1 / ttl) * (101 - normalizedScore);
+
+    // On retourne 2 objectifs avec des facteurs de mise à l'échelle pour les équilibrer.
+    return [risk / 1e7, friction * 1e9];
+  };
+};
+
+
+
+/**
  * Crée un évaluateur multi-objectifs pour trouver les seuils de détection de fraude optimaux.
  * @param {object} config - L'objet de configuration.
  * @param {Array<object>} config.legitimateClicks - Un échantillon de clics considérés comme légitimes.

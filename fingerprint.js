@@ -661,6 +661,27 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
 }
 
+/**
+ * Calcule un score basé sur les métriques comportementales envoyées par le client.
+ * @param {object} context - Le contexte de la requête, contenant les en-têtes.
+ * @returns {{behaviorScore: number}}
+ */
+function getBehaviorScore(context) {
+    const behaviorHeader = context.headers['x-behavior-metrics'];
+    if (!behaviorHeader) {
+        return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
+    }
+
+    try {
+        const metrics = JSON.parse(behaviorHeader);
+        let score = 0;
+        if (metrics.honeypotInteraction) score = 100; // Interaction avec un honeypot client = bot.
+        if (metrics.mouseEntropy === 0 && metrics.keystrokeLatency === 0) score += 40; // Aucune interaction = suspect.
+        return { behaviorScore: Math.min(100, score) };
+    } catch (e) {
+        return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
+    }
+}
 const trapUrlTemplates = [
     '/includes/config-{RANDOM}.php',          // Classic PHP config file
     '/.env.{RANDOM}',                         // Environment file
@@ -892,8 +913,14 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const behavioral = await getBehavioralIndicators(context, deviceData);
   const { headerAnomalyScore } = getHeaderAnomalies(context);
   // Calculate the inconsistency score here, separately.
-  const inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
+  let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
 
+  // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
+  if (consistencyScore < 0.7) { // Seuil de rupture
+      inconsistencyScore = 100;
+  }
+
+  const { behaviorScore } = getBehaviorScore(context);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -904,7 +931,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Array.isArray(deviceData.ips)) {
       deviceData.ips = new Set(deviceData.ips);
   }
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1123,8 +1150,8 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   if (hashAsInt < target) {
     // The comparison is direct with native BigInts
     // The proof is valid, generate the ticket
-    const expiry = Date.now() + (ticketMaxAge || 3600000); // 1 heure par défaut
-    const signature = crypto
+      const expiry = Date.now() + (ticketMaxAge || 3600000); // Utilise la durée passée ou un fallback.
+      const signature = crypto
       .createHmac("sha256", getPowSecret())
       .update(`${clientIp}:${expiry}`)
       .digest("hex");
@@ -1140,6 +1167,71 @@ const staticExtensions = new RegExp(
 );
 const isStaticResource = (path) => staticExtensions.test(path);
 
+/**
+ * Détermine le TTL optimal pour un ticket en utilisant un algorithme génétique multi-objectifs.
+ * @param {number} suspicionScore - Le score de suspicion de la requête.
+ * @returns {number} Le TTL optimal calculé en millisecondes.
+ */
+function determineOptimalTicketTtl(suspicionScore) {
+    // Définir les bornes pour la durée de vie du ticket (5 minutes à 24 heures)
+    const MIN_TTL = 300000;
+    const MAX_TTL = 86400000;
+
+    const solverFunction = () => {
+        const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
+
+        // Un "individu" est simplement une valeur de TTL en millisecondes.
+        const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
+        const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
+        const mutate = (ttl) => {
+            const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1; // Mutation de +/- 10% max
+            return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
+        };
+
+        const paretoFront = Optimization.geneticAlgorithmMultiObjective(
+            createIndividual,
+            fitnessFunction,
+            crossover,
+            mutate,
+            {
+                generations: 40,
+                populationSize: 30,
+            }
+        );
+
+        // Pour runMultiple, on doit retourner un objet avec une propriété "fitness" ou "energy".
+        // Pour un front de Pareto, il n'y a pas de score unique. On choisit la meilleure solution
+        // en fonction du score de suspicion et on lui assigne un score de 0 pour que runMultiple la sélectionne.
+        if (!paretoFront || paretoFront.length === 0) {
+            return { solution: null, fitness: Infinity };
+        }
+
+        // Stratégie de sélection :
+        // Pour un score faible (< 50), on privilégie la solution avec le plus grand TTL (minimise la friction).
+        // Pour un score élevé (>= 50), on privilégie la solution avec le plus petit TTL (minimise le risque).
+        let bestSolutionInFront;
+        if (suspicionScore < 50) {
+            bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
+        } else {
+            bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
+        }
+        return { solution: bestSolutionInFront, fitness: 0 }; // fitness=0 car on a déjà la meilleure solution du cycle.
+    };
+
+    // On exécute le solveur 20 fois pour trouver une solution plus stable et robuste.
+    const { bestResult } = Optimization.runMultiple(solverFunction, 20);
+
+    if (!bestResult || !bestResult.solution || bestResult.solution === Infinity) {
+        // Fallback : si l'algo ne retourne rien, on applique une règle simple et sûre.
+        return Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL);
+    }
+
+    // runMultiple choisit le meilleur résultat sur la base du score (ici, 0).
+    // La "meilleure" solution dépendra du cycle qui a trouvé le meilleur compromis.
+    return bestResult.solution;
+}
+
+
 // --- Middleware Proof-of-Work (Le péage) ---
 export class FingerprintEngine {
   constructor(securityConfig) {
@@ -1148,7 +1240,21 @@ export class FingerprintEngine {
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();
   }
+    calculateFinalScore = function(suspicionVector) {
+        const { weights } = this.securityConfig;
+        if (!weights) return 0;
 
+        const score =
+            (suspicionVector.historyScore || 0) * (weights.historyScore || 0) +
+            (suspicionVector.rotationScore || 0) * (weights.rotationScore || 0) +
+            (suspicionVector.headerAnomalyScore || 0) * (weights.headerAnomalyScore || 0) +
+            (suspicionVector.requestPatternScore || 0) * (weights.requestPatternScore || 0) +
+            (suspicionVector.inconsistencyScore || 0) * (weights.inconsistencyScore || 0) +
+            (suspicionVector.honeypotScore || 0) * (weights.honeypotScore || 0) +
+            (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0);
+
+        return Math.min(100, score);
+    }
   /**
    * Checks if an IP address is in the static allowlist (IPs or CIDR ranges).
    * This is the fastest check and should be performed first.
@@ -1282,17 +1388,22 @@ export class FingerprintEngine {
     // avant même de recalculer le score de suspicion.
     const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
     if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
+        // On doit calculer le score de suspicion *avant* de valider le ticket,
+        // car le TTL optimal en dépend.
+        const preliminaryVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
+        const preliminaryScore = this.calculateFinalScore(preliminaryVector);
         let isValid = false;
         const challengeContext = await store.get(`secret:${pow_nonce}`);
         let ticket = null;
 
         if (challengeContext) {
+            const optimalTtl = determineOptimalTicketTtl(preliminaryScore);
             if (pow_type === "cpu_target") {
                 // On passe la durée de vie du ticket configurée
-                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, this.securityConfig.ticketMaxAge, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
                 isValid = ticket !== null;
             } else if (pow_type === "cpu_mem") {
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, this.securityConfig.ticketMaxAge, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
                 const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
                 isValid = cpuTicket !== null && isMemValid;
                 if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
@@ -1304,7 +1415,7 @@ export class FingerprintEngine {
             await store.delete(`secret:${pow_nonce}`);
 
             if (logger) {
-                logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: 'N/A (prioritized)', challengeType: pow_type, timestamp: Date.now() });
+                logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now() });
             }
 
             return {
@@ -1351,13 +1462,9 @@ export class FingerprintEngine {
     const { requestPatternScore } = getRequestPatternScore(requestContext, deviceData, this.securityConfig.patterns);
     suspicionVector.honeypotScore = honeypotScore;
     suspicionVector.requestPatternScore = requestPatternScore;
+    // Le behaviorScore est déjà dans le vecteur de suspicion via getSuspicionVector
 
-    let finalScore =
-      suspicionVector.historyScore * (weights.historyScore || 0) +
-      suspicionVector.rotationScore * (weights.rotationScore || 0) +
-      suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) + suspicionVector.requestPatternScore * (weights.requestPatternScore || 0) +
-      suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0) +
-      honeypotScore * (weights.honeypotScore || 0);
+    let finalScore = this.calculateFinalScore(suspicionVector);
 
     // Si c'est un nouvel appareil, on lui impose un challenge de base, même si son score est bas.
     // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
@@ -1383,7 +1490,7 @@ export class FingerprintEngine {
         : 0;
 
     const powCookie = cookies?.pow_clearance;
-    
+
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
       if (onDeviceCompromised) {
@@ -1538,8 +1645,9 @@ export class FingerprintEngine {
       vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
       vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
-      honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +      
-      requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0);
+      honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +
+      requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0) +
+      vector.behaviorScore * (this.securityConfig.weights.behaviorScore || 0);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
     if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
@@ -1734,6 +1842,7 @@ export const __internal = {
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
     calculateTarget,
+    determineOptimalTicketTtl,
     getRequestPatternScore, // Expose for testing
 };
 

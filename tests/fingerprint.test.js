@@ -16,6 +16,7 @@ const {
   verifyMemoryPoW,
   verifyTspChallenge,
   startThresholdAutoTuning,
+  default_whitelist,
   stopThresholdAutoTuning,
 } = fingerprint;
 const { getRequestPatternScore, getDeviceHash } = __internal;
@@ -575,7 +576,12 @@ describe('Fingerprint & PoW Security Suite', () => {
       // The request comes back with the solution
       const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
       let redirectedTo, cookieName, cookieValue;
-      // The mock `res` object needs to support the .status().send() chain for failure cases,
+      
+      // On attache le score de suspicion à la requête, comme le ferait le middleware dans un vrai scénario.
+      // C'est nécessaire pour que la fonction dynamique `ticketMaxAge` puisse fonctionner.
+      req.fingerprint = { score: 25 };
+
+      // L'objet `res` mocké doit supporter la chaîne .status().send() pour les cas d'échec,
       // and we'll spy on them to ensure they are NOT called on success.
       const res = {
         cookie: (n, v) => { cookieName = n; cookieValue = v; },
@@ -585,8 +591,13 @@ describe('Fingerprint & PoW Security Suite', () => {
       };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
-      req.fingerprint = {};
-      await powMiddleware(securityConfig)(req, res, next);
+      // Utilisons une configuration avec une fonction ticketMaxAge pour ce test
+      const dynamicTtlConfig = {
+        ...securityConfig,
+        ticketMaxAge: (score) => 3600000 - score * 1000 // Exemple de fonction dynamique
+      };
+
+      await powMiddleware(dynamicTtlConfig)(req, res, next);
 
       expect(res.status).not.toHaveBeenCalled();
       expect(res.send).not.toHaveBeenCalled();
@@ -1487,4 +1498,42 @@ describe('getRequestPatternScore', () => {
         // Final score = (0 * 0.9) + 0 = 0.
         expect(deviceData.lastPatternScore).toBe(0);
     });
+});
+
+describe('determineOptimalTicketTtl', () => {
+    const { determineOptimalTicketTtl } = __internal;
+
+    // Les bornes définies dans la fonction (5min et 24h)
+    const MIN_TTL = 300000;
+    const MAX_TTL = 86400000;
+
+    test('should return a long TTL for a very low suspicion score', () => {
+        const score = 5; // Très peu suspect
+        const ttl = determineOptimalTicketTtl(score);
+
+        // On s'attend à un TTL de plusieurs heures.
+        // On ne peut pas prédire la valeur exacte, mais on peut vérifier qu'elle est dans la bonne plage.
+        expect(ttl).toBeGreaterThan(2 * 3600 * 1000); // > 2 heures
+        expect(ttl).toBeLessThanOrEqual(MAX_TTL);
+    });
+
+    test('should return a short TTL for a very high suspicion score', () => {
+        const score = 95; // Très suspect
+        const ttl = determineOptimalTicketTtl(score);
+
+        // On s'attend à un TTL très court, de l'ordre de quelques minutes.
+        expect(ttl).toBeLessThan(30 * 60 * 1000); // < 30 minutes
+        expect(ttl).toBeGreaterThanOrEqual(MIN_TTL);
+    });
+
+    test('should return a TTL within the valid range for a medium score', () => {
+        const score = 50; // Moyennement suspect
+        const ttl = determineOptimalTicketTtl(score);
+
+        expect(ttl).toBeGreaterThanOrEqual(MIN_TTL);
+        expect(ttl).toBeLessThanOrEqual(MAX_TTL);
+    });
+
+    // Ce test est plus difficile à déclencher, mais il valide la robustesse de la fonction.
+    // On peut le simuler en forçant l'algorithme génétique à retourner un tableau vide.
 });
