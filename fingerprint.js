@@ -869,6 +869,9 @@ async function getBehavioralIndicators(context, deviceData) {
  * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number, honeypotScore: number}>}
  */
 export const getSuspicionVector = async (context, securityConfig) => {
+    // On récupère la configuration du honeypot pour l'utiliser ici.
+    const honeypotConfig = securityConfig.honeypot || {};
+
     const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context, securityConfig);
 
   const clientIp = context.clientIp;
@@ -900,6 +903,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
   const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
 
+  // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
+  const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
+
   const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
@@ -911,8 +917,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Array.isArray(deviceData.ips)) {
       deviceData.ips = new Set(deviceData.ips);
   }
-  // Correction : Ajouter behaviorScore à l'objet retourné
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, requestPatternScore };
+  // Le vecteur de suspicion est maintenant complet.
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, requestPatternScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1461,9 +1467,7 @@ export class FingerprintEngine {
 
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
-    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
-    suspicionVector.honeypotScore = honeypotScore;
-    // Le behaviorScore est déjà dans le vecteur de suspicion via getSuspicionVector
+    // honeypotScore et behaviorScore sont maintenant inclus directement dans le vecteur de suspicion.
 
     let finalScore = this.calculateFinalScore(suspicionVector);
 
@@ -1526,8 +1530,9 @@ export class FingerprintEngine {
                 logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now() });
             }
             suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
-            const newFinalScore = finalScore - (honeypotScore * (weights.honeypotScore || 0)) + (100 * (weights.honeypotScore || 0));
-            return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
+            // Recalculate the final score with the updated vector.
+            const newFinalScore = this.calculateFinalScore(suspicionVector);
+            return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector, status: 403, body: 'Forbidden' };
         }
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---

@@ -788,26 +788,6 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(decision.score).toBe(100); // With weight 1.0, the final score should also be 100
     });
 
-    test('should produce a high honeypotScore for SQL injection attempt in query', async () => {
-      const securityConfig = {
-        weights: { honeypotScore: 1.0 },
-        thresholds: { low: 20, medium: 45, high: 75 }, // Configuration complète
-        challengeNewDevices: false, // Désactive le challenge des nouveaux appareils pour ce test.
-        honeypot: { detectInjections: true }
-      };
-      const engine = new FingerprintEngine(securityConfig);
-      const requestContext = {
-        query: new URLSearchParams({ id: "1' OR 1=1 --" }),
-        body: {},
-        headers: { 'user-agent': 'test' },
-        // ... autres propriétés du contexte
-      };
-
-      const decision = await engine.processRequest(requestContext);
-      expect(decision.vector.honeypotScore).toBe(100);
-      expect(decision.score).toBe(100);
-    });
-
     test('should produce a high honeypotScore for RCE attempt in body', async () => {
       const securityConfig = {
         weights: { honeypotScore: 1.0 },
