@@ -1335,8 +1335,8 @@ export class FingerprintEngine {
     // --- FIN DE LA LOGIQUE DE PRIORITÉ ---
 
     // Resolve identity and check for persisted "condemned" status early.
-    const { deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
-    const isNewDevice = !!newCookie; // Un appareil est nouveau si un cookie a été généré pour lui.
+    const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
+    const isNewDevice = !!newCookie;
 
     if (deviceData?.condemned) {
         if (onDeviceCompromised) {
@@ -1363,11 +1363,11 @@ export class FingerprintEngine {
     // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
     // NOUVEAU : Cette logique est maintenant configurable.
     const challengeNewDevices = this.securityConfig.challengeNewDevices === true;
+    if (isNewDevice && finalScore < thresholds.low) {
       finalScore = thresholds.low;
     }
 
-    // Si l'option est activée, on s'assure que le score est juste assez élevé pour déclencher le challenge 'low'.
-      const isBlocked = finalScore >= (thresholds.block || 95);
+    const isBlocked = finalScore >= (thresholds.block || 95);
 
 
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
@@ -1384,18 +1384,6 @@ export class FingerprintEngine {
 
     const powCookie = cookies?.pow_clearance;
     
-    // Honeypot: Direct probing of challenge endpoints is highly suspicious.
-    // A legitimate user only hits these endpoints via the challenge page itself.
-    if (pow_nonce && !isSuspicious) {
-      if (logger) {
-          logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now() });
-      }
-      suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
-      // Recalculate score and block immediately.
-      const newFinalScore = finalScore - (honeypotScore * (weights.honeypotScore || 0)) + (100 * (weights.honeypotScore || 0));
-      return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
-    }
-
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
       if (onDeviceCompromised) {
@@ -1420,6 +1408,20 @@ export class FingerprintEngine {
     }
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
+        // Honeypot: Direct probing of challenge endpoints is highly suspicious.
+        // A legitimate user only hits these endpoints via the challenge page itself.
+        // If we see a pow_nonce on a request that IS suspicious but has no valid ticket,
+        // AND it's not a legitimate response to a challenge we issued, it's a probe.
+        const isChallengeResponse = query.pow_solution || (query.pow_solution_cpu && query.pow_solution_mem);
+        if (pow_nonce && !isChallengeResponse) {
+            if (logger) {
+                logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now() });
+            }
+            suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
+            const newFinalScore = finalScore - (honeypotScore * (weights.honeypotScore || 0)) + (100 * (weights.honeypotScore || 0));
+            return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
+        }
+
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
         const clientSecret = crypto.randomBytes(16).toString("hex");
@@ -1456,8 +1458,8 @@ export class FingerprintEngine {
 
             // Associate the current challenge nonce with the device for trap URL verification later.
             if (deviceData) {
-                deviceData.lastChallengeNonce = nonce; // No TTL, part of the main device object
-                await store.set(`device:${cookies.device_id}`, deviceData);
+                deviceData.lastChallengeNonce = nonce;
+                await store.set(`device:${deviceId}`, deviceData); // Utiliser le deviceId résolu, pas celui des cookies
             }
 
             if (logger) {
