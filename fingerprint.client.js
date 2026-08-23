@@ -1,4 +1,5 @@
 import { cyrb53, FingerprintBuilder } from './fingerprint.builder.js';
+import { solveChallenge } from './pow.solver.js';
 
 const ClientLibrary = {
     // Cache pour éviter de recalculer les constantes (Hardware, etc.)
@@ -320,6 +321,44 @@ const ClientLibrary = {
     this.addFetchInterceptor(fingerprintInterceptor);
   },
   
+  /**
+   * Intercepte une réponse de challenge JSON, le résout, et réessaie la requête.
+   * @param {Response} response - La réponse initiale (potentiellement 429).
+   * @param {RequestInfo} resource - La ressource de la requête originale.
+   * @param {RequestInit} options - Les options de la requête originale.
+   * @returns {Promise<Response>} - La réponse de la requête réessayée.
+   * @private
+   */
+  async solveChallengeAndRetry(response, resource, options) {
+    if (response.status !== 429) {
+      return response;
+    }
+
+    try {
+      const challengeData = await response.json();
+      if (!challengeData.challenge || !challengeData.challenge.type) {
+        return response; // Pas un challenge JSON valide
+      }
+
+      console.log(`[Fingerprint] Received a '${challengeData.challenge.type}' challenge. Solving...`);
+      const solution = await solveChallenge(challengeData.challenge);
+      console.log('[Fingerprint] Challenge solved. Retrying original request.');
+
+      // Ajouter la solution aux paramètres de la requête pour le nouvel essai
+      const url = new URL((resource instanceof Request) ? resource.url : String(resource), window.location.origin);
+      url.searchParams.set('pow_type', challengeData.challenge.type);
+      url.searchParams.set('pow_nonce', challengeData.challenge.nonce);
+      // La solution peut être un objet (pour les challenges combinés) ou une valeur simple
+      Object.entries(solution).forEach(([key, value]) => {
+        url.searchParams.set(`pow_solution_${key}`, value);
+      });
+
+      return this._originalFetch(url.toString(), options);
+    } catch (e) {
+      console.error('[Fingerprint] Failed to solve or retry challenge:', e);
+      return response; // Retourne la réponse 429 originale en cas d'échec
+    }
+  },
 /**
  * @typedef {object} ClientConfig
  * @property {boolean} [mouse=true] - Activer le suivi de l'entropie de la souris.
@@ -339,7 +378,7 @@ const ClientLibrary = {
         mouse = true,
         keystrokes = true,
         honeypots = [],
-        fetch: fetchConfig,
+        fetch: fetchConfig = {},
     } = config;
 
     if (mouse) {
@@ -351,8 +390,17 @@ const ClientLibrary = {
     if (honeypots.length > 0) {
         this.initializeHoneypots(honeypots);
     }
-    if (fetchConfig !== undefined) {
+    // On vérifie si l'objet fetch est présent pour activer l'interception
+    if (Object.keys(fetchConfig).length > 0 || config.fetch) {
         this.initializeFetch(fetchConfig.targetDomains);
+
+        // Ajoute l'intercepteur pour la résolution de challenge
+        if (fetchConfig.handleChallenges !== false) {
+          this.addFetchInterceptor(async (resource, options, next) => {
+            const response = await next(resource, options);
+            return this.solveChallengeAndRetry(response, resource, options);
+          });
+        }
     }
   }
 };
@@ -394,6 +442,7 @@ export const addFetchInterceptor = ClientLibrary.addFetchInterceptor.bind(Client
 export const patchGlobalFetch = ClientLibrary.patchGlobalFetch.bind(ClientLibrary);
 export const initializeFetch = ClientLibrary.initializeFetch.bind(ClientLibrary);
 export const initializeClient = ClientLibrary.initializeClient.bind(ClientLibrary);
+export const solveChallengeAndRetry = ClientLibrary.solveChallengeAndRetry.bind(ClientLibrary);
 
 // Export the internal object for testing purposes
 export default ClientLibrary;

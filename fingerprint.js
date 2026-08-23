@@ -383,6 +383,8 @@ export const verifyPoWAndGenerateTicket = (
   return `${expiry}:${signature}`;
 };
 
+
+
 /**
  * Verifies a memory PoW solution.
  * The server performs the same calculation to validate.
@@ -1458,10 +1460,27 @@ export class FingerprintEngine {
                 logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
             }
 
-            // Always use the combined page, even if memory difficulty is 0 (it will be almost instant).
-            const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
-            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret).replace('</body>', `${trapContainer}</body>`);
-            return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
+            // Check if the request is an API request to return a JSON challenge
+            const isApi = this.securityConfig.thresholds?.isApiRequest?.(requestContext);
+
+            if (isApi) {
+                // For API clients, send a JSON response with challenge details.
+                const challengePayload = {
+                    challenge: {
+                        type: 'cpu_mem',
+                        nonce: nonce,
+                        clientSecret: clientSecret, // The client needs this to solve the challenge
+                        cpuTarget: cpuChallengeDetails.target,
+                        memDifficulty: memDifficulty,
+                    }
+                };
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: challengePayload };
+            } else {
+                // For browsers, send the HTML page.
+                const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
+                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret).replace('</body>', `${trapContainer}</body>`);
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
+            }
         }
     }
 
@@ -1653,10 +1672,11 @@ export const powMiddleware = (securityConfig) => {
       body: req.body,
       headers: req.headers,
       isStatic: isStaticResource(req.path),
+      // Pass the original request object for the isApiRequest function
+      rawReq: req,
       // Add the newly required properties for full decoupling
       rawHeaders: req.rawHeaders,
       // Pass the raw request object for advanced inspection (e.g., JA3)
-      rawReq: req,
       httpVersion: req.httpVersion,
     };
 
@@ -1677,7 +1697,11 @@ export const powMiddleware = (securityConfig) => {
       case 'block':
         return res.status(decision.status).send(decision.body);
 
-      case 'challenge':
+      case 'challenge': // Gère à la fois les réponses HTML et JSON
+        if (typeof decision.body === 'object' && decision.body !== null) {
+          return res.status(decision.status).json(decision.body);
+        }
+        // Par défaut, envoie du HTML
         return res.status(decision.status).send(decision.body);
 
       case 'redirect':

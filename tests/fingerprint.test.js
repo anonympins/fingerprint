@@ -122,7 +122,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
-      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor, undefined);
+      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, undefined);
       expect(ticket, "Ticket should be generated for a valid solution without secret").toBeTruthy();
       expect(isTicketValid(ip, ticket), "Ticket should be valid").toBe(true);
     });
@@ -140,15 +140,15 @@ describe('Fingerprint & PoW Security Suite', () => {
       }
 
       // Server-side verification includes the secret
-      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor, clientSecret);
+      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, clientSecret);
       expect(ticket, "Ticket should be generated for a valid solution with secret").toBeTruthy();
       expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
       expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
 
       // Verification should fail if the secret is wrong or missing
-      const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor, 'wrong-secret');
+      const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, 'wrong-secret');
       expect(badTicket1, "Ticket should not be generated with wrong secret").toBeNull();
-      const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, nonce, solution, suspicionFactor, undefined);
+      const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, undefined);
       expect(badTicket2, "Ticket should not be generated when secret is expected but missing").toBeNull();
     });
   });
@@ -420,6 +420,44 @@ describe('Fingerprint & PoW Security Suite', () => {
 
       expect(sentStatus, 'Status should be 429').toBe(429);
       expect(sentBody, 'Should send a combined challenge page for high suspicion').toContain('Enhanced Verification');
+    });
+
+    test('should issue a JSON challenge for an API request', async () => {
+      // 1. Configurer le middleware pour identifier les requêtes API
+      const apiSecurityConfig = {
+        ...securityConfig,
+        thresholds: {
+          ...securityConfig.thresholds,
+          // Identifie toute requête acceptant du JSON comme une requête API
+          isApiRequest: (req) => req.headers.accept?.includes('application/json'),
+        }
+      };
+
+      // 2. Simuler un score de suspicion
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+        historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+      });
+
+      // 3. Simuler une requête API (avec le header 'Accept')
+      const req = {
+        path: '/api/data', ip: '127.0.0.1', cookies: {}, query: {},
+        headers: { 'user-agent': 'test-ua', 'accept': 'application/json' },
+        rawHeaders: ['User-Agent', 'test-ua', 'Accept', 'application/json'], httpVersion: '1.1'
+      };
+      let sentStatus, sentBody;
+      const res = {
+        status: (s) => { sentStatus = s; return res; },
+        json: (b) => { sentBody = b; }, // Utiliser .json() pour les réponses API
+        cookie: vi.fn()
+      };
+      const next = vi.fn();
+
+      await powMiddleware(apiSecurityConfig)(req, res, next);
+
+      expect(sentStatus).toBe(429);
+      expect(sentBody.challenge.type).toBe('cpu_mem');
+      expect(sentBody.challenge).toHaveProperty('nonce');
+      expect(sentBody.challenge).toHaveProperty('cpuTarget');
     });
 
     test('should call next() for a suspicious request with a valid ticket', async () => {

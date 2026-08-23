@@ -25,7 +25,7 @@ The process unfolds in three steps:
     *   **Low to Medium Suspicion**: A combined CPU and Memory Proof-of-Work (PoW) challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
     *   **High Suspicion**: For the most suspicious requests, the system issues a high-difficulty combined CPU/Memory challenge. The architecture allows for plugging in more complex challenges like CAPTCHAs if needed.
 
-Once the challenge is solved, a clearance "ticket" is issued via a secure cookie, exempting the user from new challenges for a set period.
+Once the challenge is solved, a clearance "ticket" is issued via a secure cookie, exempting the user from new challenges for a set period. For API clients, the challenge is delivered as a `429` JSON response, and the client is expected to solve it and retry the request.
 
 ## Features
 
@@ -88,7 +88,8 @@ const securityConfig = {
         medium: 45, // Score for a more difficult combined CPU/Memory challenge
         high: 75,   // Score for a very difficult challenge
         block: 95,  // Score above which the request is blocked outright (HTTP 403)
-        isStaticResource: (req) => req.path.startsWith('/static/') // Optional: Custom function to identify static resources
+        isStaticResource: (req) => req.path.startsWith('/static/'), // Optional: Custom function to identify static resources
+        isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json') // Optional: Custom function to identify API requests
     },
     // (Optional) By default, new devices are NOT challenged if their score is low.
     // Set this to `true` to enable a baseline challenge for all new visitors, which can deter simple bots that just clear cookies.
@@ -348,9 +349,13 @@ initializeClient({
   // (Optional) Enables automatic protection for `fetch` requests.
   // If the `fetch` object is present, the protection is active.
   fetch: {
-    // (Optional) An array of domains to protect. If empty or not provided,
-    // it protects same-origin requests by default.
-    targetDomains: ['api.yourdomain.com', 'auth.yourdomain.com']
+    // (Optional) An array of domains to protect. If empty or not provided, it protects same-origin requests by default.
+    targetDomains: ['api.yourdomain.com', 'auth.yourdomain.com'],
+    
+    // (Optional, default: true) If enabled, the client will automatically intercept 429 challenge responses,
+    // solve the PoW in the background, and retry the original request with the solution.
+    // This makes the protection seamless for API clients that use this library.
+    handleChallenges: true
   }
 });
 ```
