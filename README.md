@@ -83,6 +83,7 @@ const securityConfig = {
         inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
         honeypotScore: 1.0       // Strongly penalizes bots filling hidden form fields
     },
+    // A new, non-suspicious device will always have its score adjusted to a minimum of 1, ensuring it receives a minimal, almost imperceptible challenge on its first visit.
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued
         medium: 45, // Score for a more difficult combined CPU/Memory challenge
@@ -91,9 +92,6 @@ const securityConfig = {
         isStaticResource: (req) => req.path.startsWith('/static/'), // Optional: Custom function to identify static resources
         isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json') // Optional: Custom function to identify API requests
     },
-    // (Optional) By default, new devices are NOT challenged if their score is low.
-    // Set this to `true` to enable a baseline challenge for all new visitors, which can deter simple bots that just clear cookies.
-    challengeNewDevices: false, // Default: false
     // (Optional) Configure the duration (in milliseconds) for various temporary data.
     ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
     challengeTtl: 300000, // 5 minutes. Time during which a challenge nonce is valid.

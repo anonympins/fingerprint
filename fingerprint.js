@@ -1247,6 +1247,7 @@ export class FingerprintEngine {
   }
 
   async processRequest(requestContext) {
+
     const { clientIp = "unknown", path, cookies, query, isStatic } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     if (isStatic) {
@@ -1333,17 +1334,16 @@ export class FingerprintEngine {
     }
     // --- FIN DE LA LOGIQUE DE PRIORITÉ ---
 
-    // Check for persisted "condemned" status early.
-    const { deviceData } = await resolveRequestIdentity(requestContext);
+    // Resolve identity and check for persisted "condemned" status early.
+    const { deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
+    const isNewDevice = !!newCookie; // Un appareil est nouveau si un cookie a été généré pour lui.
+
     if (deviceData?.condemned) {
         if (onDeviceCompromised) {
             onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
         }
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
-
-    // (NOUVEAU) Vérifier si un nouveau device_id a été créé lors de cette requête
-    const isNewDevice = requestContext._newCookies?.some(c => c.name === 'device_id');
 
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
@@ -1352,7 +1352,7 @@ export class FingerprintEngine {
     suspicionVector.honeypotScore = honeypotScore;
     suspicionVector.requestPatternScore = requestPatternScore;
 
-    const finalScore =
+    let finalScore =
       suspicionVector.historyScore * (weights.historyScore || 0) +
       suspicionVector.rotationScore * (weights.rotationScore || 0) +
       suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) + suspicionVector.requestPatternScore * (weights.requestPatternScore || 0) +
@@ -1362,10 +1362,13 @@ export class FingerprintEngine {
     // Si c'est un nouvel appareil, on lui impose un challenge de base, même si son score est bas.
     // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
     // NOUVEAU : Cette logique est maintenant configurable.
-    const challengeNewDevices = this.securityConfig.challengeNewDevices === true; // false par défaut
-    const requiresChallengeForNewDevice = challengeNewDevices && isNewDevice && finalScore < (thresholds.low || 0);
+    const challengeNewDevices = this.securityConfig.challengeNewDevices === true;
+      finalScore = thresholds.low;
+    }
 
-    const isBlocked = finalScore >= (thresholds.block || 95);
+    // Si l'option est activée, on s'assure que le score est juste assez élevé pour déclencher le challenge 'low'.
+      const isBlocked = finalScore >= (thresholds.block || 95);
+
 
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
@@ -1378,8 +1381,9 @@ export class FingerprintEngine {
             (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
         )
         : 0;
-    const powCookie = cookies?.pow_clearance;
 
+    const powCookie = cookies?.pow_clearance;
+    
     // Honeypot: Direct probing of challenge endpoints is highly suspicious.
     // A legitimate user only hits these endpoints via the challenge page itself.
     if (pow_nonce && !isSuspicious) {
@@ -1415,7 +1419,7 @@ export class FingerprintEngine {
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
-    if ((isSuspicious || requiresChallengeForNewDevice) && !isTicketValid(clientIp, powCookie)) {
+    if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
         const clientSecret = crypto.randomBytes(16).toString("hex");
@@ -1426,7 +1430,7 @@ export class FingerprintEngine {
         }
 
         // UNIFIED CHALLENGE LOGIC for all suspicion levels (low, medium, high)
-        if (isSuspicious || requiresChallengeForNewDevice) { // Couvre à la fois low et medium
+        if (isSuspicious) { // Couvre à la fois low et medium
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce));

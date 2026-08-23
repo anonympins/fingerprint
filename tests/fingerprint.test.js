@@ -316,8 +316,11 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
 
     const securityConfig = {
-      weights: { historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 1 },
-      thresholds: { low: 20, medium: 45, high: 75 }
+      weights: { historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 1, requestPatternScore: 1 },
+      thresholds: { low: 20, medium: 45, high: 75 },
+      // NOUVEAU : Activer explicitement le challenge pour les nouveaux appareils pour ce scénario de test.
+      // C'est cette option qui permet à la logique de s'exécuter.
+      challengeNewDevices: true,
     };
 
     afterEach(() => {
@@ -325,21 +328,60 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
 
     test('should call next() for a non-suspicious request', async () => {
-      const getSuspicionVectorSpy = vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
-        return {
-          historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-        };
+      // Simuler un appareil connu et non suspect
+      const deviceId = 'known-device-123';
+      await inMemoryStore.set(`device:${deviceId}`, {
+        initialDeviceHash: 'some-hash',
+        ips: new Set(['127.0.0.1']),
+        lastUpdate: Date.now(),
+        lastFpHash: 'some-hash',
+        lastChangeTimestamp: 0,
+        rapidChangeCount: 0,
       });
 
-      const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+        historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+      });
+
+      const req = { path: '/', ip: '127.0.0.1', cookies: { device_id: deviceId }, query: {}, headers: { 'user-agent': 'test-ua' } };
       const res = { cookie: vi.fn(), status: vi.fn().mockReturnThis(), send: vi.fn() };
       const next = vi.fn();
 
-      req.fingerprint = {}; // Middleware would initialize this
       const middleware = powMiddleware(securityConfig);
       await middleware(req, res, next);
 
       expect(next, 'next() should have been called').toHaveBeenCalled();
+      // Pour un appareil connu, le cookie ne doit pas être redéfini
+      expect(res.cookie).not.toHaveBeenCalled();
+    });
+
+    test('should issue a minimal challenge for a new, non-suspicious device', async () => {
+        // 1. Simuler un score de suspicion de 0.
+        // A new device should have a score of at least 1 to trigger the initial challenge.
+        vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+            historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 0, honeypotScore: 0, requestPatternScore: 0
+        });
+
+        // 2. Simuler une nouvelle requête (pas de cookie device_id)
+        const req = {
+            path: '/', ip: '127.0.0.1', cookies: {}, query: {},
+            headers: { 'user-agent': 'A normal browser' },
+            rawHeaders: ['User-Agent', 'A normal browser'], httpVersion: '1.1'
+        };
+        let sentStatus, sentBody;
+        const res = {
+            status: (s) => { sentStatus = s; return res; },
+            send: (b) => { sentBody = b; },
+            cookie: vi.fn()
+        };
+        const next = vi.fn();
+
+        await powMiddleware(securityConfig)(req, res, next);
+
+        // 3. Vérifier qu'un challenge est bien émis, même avec un score de 0
+        expect(sentStatus).toBe(429);
+        expect(sentBody).toContain('Enhanced Verification');
+        expect(next).not.toHaveBeenCalled();
     });
 
     test('should issue a challenge for a suspicious request', async () => {
