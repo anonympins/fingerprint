@@ -224,7 +224,7 @@ const mongoClient = new MongoClient(process.env.MONGODB_URL);
 // It's recommended to connect before your application starts listening.
 await mongoClient.connect(); 
 
-const mongoStore = createMongoDbStore(mongoClient.db('your-db-name'));
+const mongoStore = createMongoDbStore(mongoClient.db('your-db-name'), 'sessions'); // 'sessions' is the collection name
 configureStore(mongoStore);
 ```
 

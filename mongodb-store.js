@@ -6,15 +6,19 @@
 
 /**
  * Creates a store adapter for a MongoDB collection.
+ * It's recommended to pass the `db` object and let the adapter handle the collection.
  *
  * **Note:** For TTL to work, you must create a TTL index on the `expiresAt` field in your collection.
  * In the mongo shell, run:
  * `db.yourCollectionName.createIndex({ "expiresAt": 1 }, { expireAfterSeconds: 0 })`
  *
- * @param {import('mongodb').Collection} collection - An instance of a MongoDB collection.
+ * @param {import('mongodb').Db} db - An instance of a MongoDB Db object.
+ * @param {string} [collectionName='fingerprint_store'] - The name of the collection to use.
  * @returns {import('./fingerprint.js').IStore} An object that complies with the IStore interface.
  */
-export function createMongoDbStore(collection) {
+export function createMongoDbStore(db, collectionName = 'fingerprint_store') {
+  const collection = db.collection(collectionName);
+
   return {
     async get(key) {
       const doc = await collection.findOne({ _id: key });
