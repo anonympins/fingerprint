@@ -507,42 +507,19 @@ function getHoneypotScore(context, honeypotConfig = {}) {
       }
   }
 
-  // 3. Check for injection attempts in values
   if (detectInjections) {
-    // Regex for common SQL injection patterns
-    // WARNING: These are generic and may cause false positives.
-    // Consider using a dedicated WAF library or more specific regex for your application.
-    const sqlRegex = new RegExp(
-      "('|\"|;|--|#|/\\*.*\\*/)|\\b(union|select|insert|update|delete|drop|truncate|from|where|and|or)\\b",
-      "i"
-    );
-    // Regex for common NoSQL (MongoDB) injection patterns (e.g., keys starting with '$')
-    // This looks for keys like "$where", "$ne", etc. in a stringified JSON.
-    const nosqlKeyRegex = /"\$(where|ne|gt|lt|in|nin)":/;
-    // Regex for common Remote Code Execution (RCE) patterns
-    const rceRegex = new RegExp(
-      // File traversal, command execution functions, and shell commands
-      // Added process, child_process to catch Node.js specific RCE.
-      "(\\.\\./|\\.\\.\\\\)|\\b(exec|system|shell_exec|passthru|popen|proc_open|eval|assert|require|include|process|child_process)(_once)?\\s*\\(|\\b(wget|curl|bash|sh|powershell|php)\\b",
-      "i"
-    );
-    // Regex for Log4Shell (JNDI injection)
-    const log4shellRegex = new RegExp("\\$\\{jndi:", "i");
-    // Regex for Server-Side Template Injection (SSTI)
-    const sstiRegex = new RegExp(
-      "(\\{\\{|\\{%|#\\{)[^}]+(config|settings|self|class|application|request|session|process|env)", "i"
-    );
-
+    // 3. Check for injection attempts in values using the centralized isMalicious function.
     const inspect = (obj) => {
         for (const key in obj) {
             if (Object.prototype.hasOwnProperty.call(obj, key)) {
                 const value = obj[key];
                 if (typeof value === 'string') {
-                    if (rceRegex.test(value) || sqlRegex.test(value) || log4shellRegex.test(value) || sstiRegex.test(value)) return true;
+                    if (isMalicious(value)) return true;
                 } else if (typeof value === 'object' && value !== null) {
-                    // For NoSQL, we check the stringified version of the object to find keys like "$gt"
-                    // This is more accurate when done on the object itself.
-                    if (nosqlKeyRegex.test(JSON.stringify(value))) return true;
+                    // For nested objects (like in NoSQL injections), we stringify them once
+                    // to check for malicious patterns within their structure or values.
+                    if (isMalicious(JSON.stringify(value))) return true;
+                    // Then, we recurse to check individual string values inside.
                     if (inspect(value)) return true;
                 }
             }
@@ -1236,6 +1213,27 @@ function determineOptimalTicketTtl(suspicionScore) {
     return bestResult.solution;
 }
 
+/**
+ * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
+ * @param {string} str - La chaîne à vérifier.
+ * @returns {boolean} - True si un pattern malveillant est détecté.
+ * @private
+ */
+function isMalicious(str) {
+    // Regex pour les injections SQL et NoSQL de base
+    // Ajout de la détection des injections basées sur le temps (SLEEP, BENCHMARK, WAITFOR) et d'autres commandes dangereuses.
+    const injectionRegex = /(\$ne|' OR '1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i;
+    // Regex pour les injections plus avancées
+    const log4ShellRegex = /\$\{jndi:(ldap|rmi|dns):/i;
+    const sstiRegex = /\{\{.*\}\}|\{%.*%\}/; // Détecte les syntaxes de type Jinja2, Twig, etc.
+    const xxeRegex = /<!ENTITY\s+.*SYSTEM/i;
+    const pathTraversalRegex = /(\.\.\/|\.\.\\)/;
+    // NOUVEAU : Regex pour les injections de commandes basiques.
+    // Cible les séparateurs de commandes et les backticks d'exécution.
+    const commandInjectionRegex = /(&&|\|\||;|\n|`)/;
+
+    return injectionRegex.test(str) || log4ShellRegex.test(str) || sstiRegex.test(str) || xxeRegex.test(str) || pathTraversalRegex.test(str) || commandInjectionRegex.test(str);
+}
 
 // --- Middleware Proof-of-Work (Le péage) ---
 export class FingerprintEngine {
@@ -1841,6 +1839,7 @@ export const powMiddleware = (securityConfig) => {
  */
 export const __internal = {
     getDeviceHash,
+    isMalicious,
     getSuspicionVector,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
