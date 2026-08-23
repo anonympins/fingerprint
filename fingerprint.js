@@ -1106,6 +1106,9 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   clientSecret, // Le secret est maintenant requis
 ) {
   const target = calculateTarget(suspicionFactor);
+  const message = clientSecret
+    ? `${clientIp}:${nonce}:${solution}:${clientSecret}`
+    : `${clientIp}:${nonce}:${solution}`;
   const hash = crypto
     .createHash("sha256")
     .update(message)
@@ -1239,7 +1242,7 @@ export class FingerprintEngine {
   }
 
   async processRequest(requestContext) {
-    const { clientIp, path, cookies, query, isStatic } = requestContext;
+    const { clientIp = "unknown", path, cookies, query, isStatic } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     if (isStatic) {
       return { action: 'next', score: 0, vector: {} };
