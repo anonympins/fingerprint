@@ -1271,6 +1271,62 @@ export class FingerprintEngine {
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
 
+    // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
+    // Si une solution de challenge est soumise, on la traite en priorité absolue,
+    // avant même de recalculer le score de suspicion.
+    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
+    if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
+        let isValid = false;
+        const challengeContext = await store.get(`secret:${pow_nonce}`);
+        let ticket = null;
+
+        if (challengeContext) {
+            if (pow_type === "cpu_target") {
+                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                isValid = ticket !== null;
+            } else if (pow_type === "cpu_mem") {
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
+                isValid = cpuTicket !== null && isMemValid;
+                if (isValid) ticket = cpuTicket;
+            }
+        }
+
+        if (isValid) {
+            // La solution est valide. On supprime le secret et on redirige.
+            await store.delete(`secret:${pow_nonce}`);
+
+            if (logger) {
+                logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: 'N/A (prioritized)', challengeType: pow_type, timestamp: Date.now() });
+            }
+
+            return {
+              action: 'redirect',
+              path: path,
+              score: 0, // Le score n'est pas pertinent ici, on a passé le test.
+              vector: { challenge_solved: 100 },
+              cookie: {
+                name: 'pow_clearance',
+                value: ticket,
+                options: {
+                  httpOnly: true,
+                  secure: this.isProduction,
+                  maxAge: 3600000,
+                }
+              }
+            };
+        }
+        // Si la solution est INVALIDE, on ne fait rien ici. La requête continuera son cours normal,
+        // sera recalculée comme suspecte, et probablement bloquée ou re-challengée, ce qui est le comportement souhaité.
+        // On pourrait même ajouter une pénalité ici si on le voulait.
+        if (logger && challengeContext) {
+            logger({ type: 'challenge_failed', deviceId: cookies?.device_id, reason: 'Invalid PoW solution', timestamp: Date.now() });
+        } else if (logger && !challengeContext) {
+            logger({ type: 'challenge_failed', deviceId: cookies?.device_id, reason: 'Nonce not found or expired', timestamp: Date.now() });
+        }
+    }
+    // --- FIN DE LA LOGIQUE DE PRIORITÉ ---
+
     // Check for persisted "condemned" status early.
     const { deviceData } = await resolveRequestIdentity(requestContext);
     if (deviceData?.condemned) {
@@ -1316,7 +1372,6 @@ export class FingerprintEngine {
         )
         : 0;
     const powCookie = cookies?.pow_clearance;
-    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
 
     // Honeypot: Direct probing of challenge endpoints is highly suspicious.
     // A legitimate user only hits these endpoints via the challenge page itself.
@@ -1354,75 +1409,6 @@ export class FingerprintEngine {
     }
 
     if ((isSuspicious || requiresChallengeForNewDevice) && !isTicketValid(clientIp, powCookie)) {
-        // --- CHALLENGE SOLUTION HANDLING ---
-        if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
-            let isValid = false,
-                // Retrieve the full challenge context associated with this nonce
-                challengeContext = await store.get(`secret:${pow_nonce}`),
-                ticket = null;
-            if (challengeContext && pow_type === "cpu_target") {
-                // Verify the new type
-                ticket = verifyCpuTargetPoWAndGenerateTicket(
-                    clientIp,
-                    pow_nonce,
-                    pow_solution,
-                    suspicionFactor, // Pass the analog factor
-                    challengeContext.clientSecret,
-                );
-                isValid = ticket !== null;            } else if (challengeContext && pow_type === "cpu_mem") {
-                // Verify combined challenge
-                // Use the stored target and difficulty, not recalculated values
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(
-                    clientIp, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget
-                );
-                const isMemValid = verifyMemoryPoW(
-                    pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret
-                );
-
-                isValid = cpuTicket !== null && isMemValid;
-                if (isValid) ticket = cpuTicket; // Reuse the ticket generated by the CPU verification
-            } else if (pow_type === "tsp") {
-                // Logic for TSP remains the same
-                // ...
-            }
-
-            if (isValid) {
-                // The secret has been used, delete it to prevent replay.
-                // The entire challenge context is deleted.
-                await store.delete(`secret:${pow_nonce}`);
-
-                if (!ticket) {
-                    // If the ticket has not already been generated (CPU case)
-                    const expiry = Date.now() + 3600000; // 1 heure
-                    const signature = crypto
-                        .createHmac("sha256", getPowSecret())
-                        .update(`${clientIp}:${expiry}`)
-                        .digest("hex");
-                    ticket = `${expiry}:${signature}`;
-                }
-
-                if (logger) {
-                    logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: finalScore, challengeType: pow_type, timestamp: Date.now() });
-                }
-
-                return {
-                  action: 'redirect',
-                  path: path,
-                  score: finalScore,
-                  vector: suspicionVector,
-                  cookie: {
-                    name: 'pow_clearance',
-                    value: ticket,
-                    options: {
-                      httpOnly: true,
-                      secure: this.isProduction,
-                      maxAge: 3600000,
-                    }
-                  }
-                };
-            }
-        }
-
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
         const clientSecret = crypto.randomBytes(16).toString("hex");
