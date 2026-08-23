@@ -1152,8 +1152,8 @@ const BASE_CLICK_COST = 1;
  * @param {number} config.estimatedImpressions - Le nombre d'impressions quotidiennes estimées pour ce contexte.
  */
 Optimization.Operators.createOptimalCPCEvaluator = (context) => {
-  const { optimalBaseCommission, optimalBonusFactor } = platformParams;
-  const websiteQualityScore = (website?.relevanceScore || 50) / 100;
+  const { optimalBaseCommission, optimalBonusFactor } = context.platformParams;
+  const websiteQualityScore = (context.website?.relevanceScore || 50) / 100;
 
   // Le taux de commission effectif pour ce site
   const effectiveCommissionRate = Math.max(
@@ -1164,7 +1164,7 @@ Optimization.Operators.createOptimalCPCEvaluator = (context) => {
   // Modèle de la demande : combien de clics l'annonceur peut-il s'offrir ?
   const advertiserDemand = (cpc) => {
     if (cpc <= 0) return Infinity;
-    return (advertiser.credits || 0) / cpc;
+    return (context.advertiser.credits || 0) / cpc;
   };
 
   // --- SOLUTION : Utiliser l'offre réelle et la concurrence ---

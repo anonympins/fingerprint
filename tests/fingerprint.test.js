@@ -458,7 +458,12 @@ describe('Fingerprint & PoW Security Suite', () => {
       }
 
       // The middleware stores the secret upon challenge issuance
-      await inMemoryStore.set(`secret:${nonce}`, clientSecret);
+      // The secret is now stored as a context object
+      await inMemoryStore.set(`secret:${nonce}`, {
+        clientSecret: clientSecret,
+        cpuTarget: target.toString(16), // The target must also be stored for verification
+        memDifficulty: 0 // Not a memory challenge
+      });
 
       vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
         return {
@@ -468,7 +473,13 @@ describe('Fingerprint & PoW Security Suite', () => {
       // The request comes back with the solution
       const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
       let redirectedTo, cookieName, cookieValue;
-      const res = { cookie: (n, v) => { cookieName = n; cookieValue = v; }, redirect: (p) => { redirectedTo = p; } };
+      // The mock `res` object needs to support the .status().send() chain for the failure case.
+      const res = {
+        cookie: (n, v) => { cookieName = n; cookieValue = v; },
+        redirect: (p) => { redirectedTo = p; },
+        status: function() { return this; }, // Add status and send to the mock
+        send: function() {}
+      };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
       req.fingerprint = {};
@@ -521,6 +532,75 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(res.redirect).not.toHaveBeenCalled();
       expect(sentStatus, 'Should return status 429 to re-issue a challenge').toBe(429);
       expect(sentBody, 'Should send a new challenge page').toContain('Enhanced Verification');
+    });
+
+    test('should redirect after a valid COMBINED (CPU+Mem) PoW solution is provided', async () => {
+      const ip = '127.0.0.1';
+      const nonce = 'test-nonce-combined';
+      const clientSecret = 'a-secret-for-combined';
+      const suspicionFactor = 0.5; // Medium suspicion to trigger combined challenge
+      const memDifficulty = 1; // 1MB
+
+      // 1. Le client simule la résolution des deux challenges
+      // --- Résolution CPU ---
+      const target = __internal.calculateTarget(suspicionFactor);
+      let cpuSolution = 0;
+      while (true) {
+        const hash = createHash('sha256').update(`${ip}:${nonce}:${cpuSolution}:${clientSecret}`).digest('hex');
+        if (BigInt('0x' + hash) < target) break;
+        cpuSolution++;
+      }
+
+      // --- Résolution Mémoire ---
+      const memSeed = `${nonce}:${clientSecret}`;
+      const size = memDifficulty * 1024 * 1024;
+      const buffer = new Uint32Array(size / 4);
+      let h = new TextEncoder().encode(memSeed).reduce((acc, v) => acc + v, 0);
+      for (let i = 0; i < buffer.length; i++) {
+          buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+      }
+      let memSolution = 0;
+      let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+      for (let i = 0; i < size / 16; i++) {
+        addr = buffer[addr] % buffer.length;
+        memSolution ^= addr;
+      }
+
+      // 2. Le serveur a stocké le secret lors de l'émission du challenge
+      // The secret is now stored as a context object
+      await inMemoryStore.set(`secret:${nonce}`, {
+        clientSecret: clientSecret,
+        cpuTarget: target.toString(16),
+        memDifficulty: memDifficulty,
+      });
+
+      // Simule un score de suspicion moyen
+      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+        historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+      });
+
+      // 3. La requête de l'utilisateur revient avec les deux solutions
+      const req = {
+        path: '/protected-resource', ip, cookies: {},
+        query: { pow_type: 'cpu_mem', pow_nonce: nonce, pow_solution_cpu: cpuSolution, pow_solution_mem: memSolution },
+        headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1'
+      };
+      let redirectedTo, cookieName, cookieValue;
+      let sentStatus, sentBody;
+      const res = {
+        cookie: (n, v) => { cookieName = n; cookieValue = v; },
+        redirect: (p) => { redirectedTo = p; },
+        status: (s) => { sentStatus = s; return res; },
+        send: (b) => { sentBody = b; },
+      };
+      const next = vi.fn(() => { throw new Error('next() should not be called'); });
+
+      req.fingerprint = {};
+      await powMiddleware(securityConfig)(req, res, next);
+
+      expect(redirectedTo, 'Should redirect to the original path after combined solution').toBe('/protected-resource');
+      expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
+      expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
     });
   });
 
