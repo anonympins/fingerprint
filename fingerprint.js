@@ -1,6 +1,6 @@
 // C:/Dev/games.primals.net/src/utils/fingerprint.js
 import crypto from "node:crypto";
-import { parse } from "node:net";
+import { BlockList } from "node:net";
 import dns from "node:dns/promises";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
@@ -1099,14 +1099,13 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
  * Verifies a PoW solution based on a target and generates a ticket.
  */
 export function verifyCpuTargetPoWAndGenerateTicket(
-  clientIp,
+  clientIp, // This parameter is crucial and must be the actual client IP
   nonce,
   solution,
   suspicionFactor,
   clientSecret, // Le secret est maintenant requis
 ) {
   const target = calculateTarget(suspicionFactor);
-  const message = clientSecret ? `${clientIp}:${nonce}:${solution}:${clientSecret}` : `${clientIp}:${nonce}:${solution}`;
   const hash = crypto
     .createHash("sha256")
     .update(message)
@@ -1139,6 +1138,7 @@ export class FingerprintEngine {
     const isProduction = process.env.NODE_ENV === 'production';
     this.securityConfig = securityConfig;
     this.isProduction = isProduction;
+    this._allowlist = this._buildAllowlist();
   }
 
   /**
@@ -1148,50 +1148,31 @@ export class FingerprintEngine {
    * @param {string} clientIp - The IP address of the client.
    * @returns {boolean} True if the IP is in the allowlist.
    */
-  _isIpInAllowlist(clientIp) {
+  _buildAllowlist() {
+    const blockList = new BlockList();
     const { whitelist = [] } = this.securityConfig;
     const allowlistRule = whitelist.find(rule => rule.type === 'allowlist');
 
     if (!allowlistRule || !allowlistRule.entries || allowlistRule.entries.length === 0) {
-      return false;
+      return blockList; // Retourne une liste vide
     }
-
-    const ip = parse(clientIp);
-    const ipVersion = ip.family;
 
     for (const entry of allowlistRule.entries) {
       if (entry.includes('/')) { // CIDR range
         try {
-          const [range, prefixStr] = entry.split('/');
-          const prefix = parseInt(prefixStr, 10);
-          const rangeIp = parse(range);
-
-          if (rangeIp.family !== ipVersion) continue;
-
-          const ipBytes = ip.toBuffer();
-          const rangeBytes = rangeIp.toBuffer();
-          const mask = Buffer.alloc(ipBytes.length, 0xff);
-
-          for (let i = 0; i < Math.floor(prefix / 8); i++) {
-            if (ipBytes[i] !== rangeBytes[i]) {
-              break; // Mismatch in full byte, move to next entry
-            }
-          }
-          const remainingBits = prefix % 8;
-          if (remainingBits > 0) {
-            const byteIndex = Math.floor(prefix / 8);
-            const bitmask = (0xff << (8 - remainingBits)) & 0xff;
-            if ((ipBytes[byteIndex] & bitmask) !== (rangeBytes[byteIndex] & bitmask)) {
-              continue; // Mismatch in partial byte
-            }
-          }
-          return true; // IP is in CIDR range
-        } catch (e) { continue; /* Ignore invalid CIDR entries */ }
-      } else if (entry === clientIp) { // Direct IP match
-        return true;
+          const [address, prefix] = entry.split('/');
+          blockList.addSubnet(address, parseInt(prefix, 10));
+        } catch (e) {
+          // Ignore les entrées CIDR invalides
+        }
+      } else { // Direct IP match
+        blockList.addAddress(entry);
       }
     }
-    return false;
+    return blockList;
+  }
+  _isIpInAllowlist(clientIp) {
+    return this._allowlist.check(clientIp);
   }
   /**
    * Verifies if a request comes from a legitimate, whitelisted bot (e.g., Googlebot)

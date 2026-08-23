@@ -49,19 +49,27 @@
     "body-parser": "^1.20.2",
     "cookie-parser": "^1.4.6",
     "express": "^4.18.2",
-    "vitest": "^4.1.11",
-    "prom-client": "^15.1.2"
+    "prom-client": "^15.1.2",
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "ioredis": "^5.3.2",
-    "mongodb": "^6.3.0",
     "knex": ">=3.0.0",
+    "mongodb": "^6.3.0",
     "sqlite3": "^5.1.7"
   },
   "peerDependenciesMeta": {
-    "ioredis": { "optional": true },
-    "mongodb": { "optional": true },
-    "knex": { "optional": true },
-    "sqlite3": { "optional": true }
+    "ioredis": {
+      "optional": true
+    },
+    "mongodb": {
+      "optional": true
+    },
+    "knex": {
+      "optional": true
+    },
+    "sqlite3": {
+      "optional": true
+    }
   }
 }
