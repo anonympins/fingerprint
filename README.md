@@ -94,7 +94,6 @@ const securityConfig = {
     // (Optional) By default, new devices are NOT challenged if their score is low.
     // Set this to `true` to enable a baseline challenge for all new visitors, which can deter simple bots that just clear cookies.
     challengeNewDevices: false, // Default: false
-    },
     // (Optional) Configure the duration (in milliseconds) for various temporary data.
     ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
     challengeTtl: 300000, // 5 minutes. Time during which a challenge nonce is valid.
