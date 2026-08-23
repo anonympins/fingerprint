@@ -151,6 +151,28 @@ describe('Fingerprint & PoW Security Suite', () => {
       const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, undefined);
       expect(badTicket2, "Ticket should not be generated when secret is expected but missing").toBeNull();
     });
+
+    test('should solve a medium-difficulty challenge within a reasonable time', async () => {
+      const ip = '127.0.0.1';
+      const nonce = 'test-nonce-perf';
+      const suspicionFactor = 0.5; // "Niveau 2"
+      const clientSecret = 'perf-secret';
+
+      // Calcule la cible comme le ferait le serveur
+      const target = __internal.calculateTarget(suspicionFactor);
+
+      // Simule la résolution du challenge
+      let solution = 0;
+      const message = `${ip}:${nonce}:${solution}:${clientSecret}`;
+      while (true) {
+        const currentMessage = `${ip}:${nonce}:${solution}:${clientSecret}`;
+        const hash = createHash('sha256').update(currentMessage).digest('hex');
+        if (BigInt('0x' + hash) < target) break;
+        solution++;
+      }
+
+      expect(solution).toBeGreaterThan(0); // Vérifie que le challenge a bien été résolu
+    }, 8000); // Timeout de 8 secondes pour ce test
   });
 
   test('PoW Ticket Expiration', () => {
@@ -553,18 +575,21 @@ describe('Fingerprint & PoW Security Suite', () => {
       // The request comes back with the solution
       const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
       let redirectedTo, cookieName, cookieValue;
-      // The mock `res` object needs to support the .status().send() chain for the failure case.
+      // The mock `res` object needs to support the .status().send() chain for failure cases,
+      // and we'll spy on them to ensure they are NOT called on success.
       const res = {
         cookie: (n, v) => { cookieName = n; cookieValue = v; },
         redirect: (p) => { redirectedTo = p; },
-        status: function() { return this; }, // Add status and send to the mock
-        send: function() {}
+        status: vi.fn(function() { return this; }),
+        send: vi.fn()
       };
       const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
       req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.send).not.toHaveBeenCalled();
       expect(redirectedTo, 'Should redirect to the original path').toBe('/protected');
       expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
       expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);

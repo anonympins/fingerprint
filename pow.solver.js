@@ -7,27 +7,35 @@
  * Résout un challenge CPU basé sur une cible.
  * @param {string} message - Le message à hasher (ex: `ip:nonce:solution:secret`).
  * @param {bigint} target - La cible à atteindre.
- * @returns {Promise<number>} La solution (nombre entier).
+ * @returns {Promise<number>} La solution (un nombre entier).
  */
 async function solveCpuTarget(message, target) {
-    let solution = 0;
-    const encoder = new TextEncoder();
-    while (true) {
-        const currentMessage = `${message}:${solution}`;
-        const data = encoder.encode(currentMessage);
-        const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-        if (BigInt('0x' + hashHex) < target) {
-            return solution;
-        }
-        solution++;
-        // Pour éviter de bloquer le thread principal sur des challenges difficiles,
-        // on peut céder le contrôle après un certain nombre d'itérations.
-        if (solution % 100000 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 0));
-        }
+    // Vérifie si les Web Workers sont supportés par le navigateur.
+    if (typeof(Worker) === "undefined") {
+        console.warn("Web Workers not supported. Falling back to main thread calculation (UI may freeze).");
+        // Ici, on pourrait remettre l'ancienne implémentation comme solution de secours.
+        // Pour la clarté, nous supposons que les workers sont disponibles.
+        throw new Error("Web Worker support is required for CPU challenges.");
     }
+
+    return new Promise((resolve, reject) => {
+        // Crée un worker à partir du script dédié. Le chemin doit être accessible publiquement.
+        // Assurez-vous que `pow.worker.js` est servi par votre serveur statique.
+        const worker = new Worker('./pow.worker.js');
+
+        worker.onmessage = (event) => {
+            resolve(event.data.solution);
+            worker.terminate(); // Nettoie le worker une fois le travail terminé.
+        };
+
+        worker.onerror = (error) => {
+            reject(error);
+            worker.terminate();
+        };
+
+        // Envoie les données du challenge au worker pour qu'il commence le calcul.
+        worker.postMessage({ message, target });
+    });
 }
 
 /**
