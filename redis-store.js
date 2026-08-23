@@ -1,45 +1,43 @@
-import Redis from 'ioredis';
-
 /**
- * @typedef {object} IStore
- * @property {(key: string) => Promise<any>} get
- * @property {(key: string, value: any, ttl?: number) => Promise<void>} set
- * @property {(key: string) => Promise<boolean>} has
- * @property {(key: string) => Promise<void>} delete
+ * @file Creates a store adapter for ioredis.
+ * This adapter handles the serialization and deserialization of complex objects,
+ * including the conversion of Set objects to arrays for storage in Redis.
  */
 
 /**
- * Creates a Redis-based store implementation for the fingerprint library.
- * Requires the `ioredis` package.
- *
- * @param {string} redisUrl - The Redis connection URL (e.g., 'redis://localhost:6379').
- * @returns {IStore} An object implementing the IStore interface.
+ * Creates a store adapter for an ioredis client.
+ * @param {import('ioredis').Redis} redisClient - An instance of the ioredis client.
+ * @returns {import('./fingerprint.js').IStore} An object that complies with the IStore interface.
  */
-export const createRedisStore = (redisUrl) => {
-  const redis = new Redis(redisUrl);
-
-  redis.on('error', (err) => {
-    console.error('Redis Store Error:', err);
-  });
-
+export function createRedisStore(redisClient) {
   return {
     async get(key) {
-      const data = await redis.get(key);
-      return data ? JSON.parse(data) : null;
+      const value = await redisClient.get(key);
+      if (!value) return null;
+      // Use a reviver to convert arrays back to Sets for specific keys like 'ips'.
+      return JSON.parse(value, (k, v) => {
+        if (k === 'ips' && Array.isArray(v)) {
+          return new Set(v);
+        }
+        return v;
+      });
     },
     async set(key, value, ttl) {
-      const serializedValue = JSON.stringify(value);
-      if (ttl) {
-        await redis.setex(key, ttl, serializedValue);
+      // Use a replacer to convert Set objects into arrays before serialization.
+      const stringValue = JSON.stringify(value, (k, v) => {
+        if (v instanceof Set) {
+          return Array.from(v);
+        }
+        return v;
+      });
+
+      if (ttl && ttl > 0) {
+        await redisClient.set(key, stringValue, 'EX', ttl);
       } else {
-        await redis.set(key, serializedValue);
+        await redisClient.set(key, stringValue);
       }
     },
-    async has(key) {
-      return (await redis.exists(key)) === 1;
-    },
-    async delete(key) {
-      await redis.del(key);
-    },
+    async has(key) { return (await redisClient.exists(key)) === 1; },
+    async delete(key) { await redisClient.del(key); },
   };
-};
+}

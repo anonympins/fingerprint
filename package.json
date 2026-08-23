@@ -14,6 +14,8 @@
     "fingerprint.js",
     "fingerprint.client.js",
     "library.js",
+    "redis-store.js",
+    "mongodb-store.js",
     "README.md",
     "LICENSE"
   ],

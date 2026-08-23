@@ -4,6 +4,8 @@ import { parse } from "node:net";
 import dns from "node:dns/promises";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
+export { createRedisStore } from "./redis-store.js";
+export { createMongoDbStore } from "./mongodb-store.js";
 
 /**
  * Retrieves the POW_SECRET from environment variables with appropriate checks.
@@ -702,7 +704,7 @@ function verifyTrapUrl(path, signature, nonce) {
 /**
  * @typedef {object} IStore
  * @property {(key: string) => Promise<any>} get
- * @property {(key: string, value: any) => Promise<void>} set
+ * @property {(key: string, value: any, ttl?: number) => Promise<void>} set
  * @property {(key: string) => Promise<boolean>} has
  * @property {(key: string) => Promise<void>} delete
  */
@@ -713,8 +715,21 @@ function verifyTrapUrl(path, signature, nonce) {
  */
 const inMemoryStore = {
   _map: new Map(),
+  _timeouts: new Map(),
   async get(key) { return this._map.get(key); },
-  async set(key, value) { this._map.set(key, value); },
+  async set(key, value, ttl) {
+    this._map.set(key, value);
+    // If a timeout already exists for this key, clear it.
+    if (this._timeouts.has(key)) {
+        clearTimeout(this._timeouts.get(key));
+        this._timeouts.delete(key);
+    }
+    // If a TTL is provided, set a timeout to delete the key.
+    if (ttl && ttl > 0) {
+        const timeoutId = setTimeout(() => this._map.delete(key), ttl * 1000);
+        this._timeouts.set(key, timeoutId);
+    }
+  },
   async has(key) { return this._map.has(key); },
   async delete(key) { this._map.delete(key); },
 };
@@ -861,7 +876,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
     context._newCookies = context._newCookies || [];
     context._newCookies.push(newCookie);
   }
-  await store.set(`ip-device:${clientIp}`, deviceId); // Link the IP to the device
+  await store.set(`ip-device:${clientIp}`, deviceId, 600); // Link the IP to the device for 10 minutes
 
   // Periodically clean up device data
   if (Date.now() - deviceData.lastUpdate > 10 * 60 * 1000) { // 10 minutes
@@ -1224,21 +1239,21 @@ export class FingerprintEngine {
       const validHostname = hostnames.find(h => h.endsWith(matchedRule.hostnameSuffix));
 
       if (!validHostname) {
-        await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h
+        await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h (TTL in seconds)
         return false;
       }
 
       // 2. Forward DNS lookup
       const addresses = await dns.resolve(validHostname);
       if (addresses.includes(clientIp)) {
-        await store.set(cacheKey, 'verified', 86400); // Cache success for 24h
+        await store.set(cacheKey, 'verified', 86400); // Cache success for 24h (TTL in seconds)
         return true;
       }
     } catch (error) {
       // DNS errors are common (e.g., for IPs with no rDNS record), treat as failure.
     }
 
-    await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h
+    await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h (TTL in seconds)
     return false;
   }
 
@@ -1350,7 +1365,7 @@ export class FingerprintEngine {
         if (logger) {
             logger({ type: 'trap_triggered', deviceId: cookies?.device_id, score: 100, path: path, timestamp: Date.now() });
         }
-        await store.set(`device:${cookies.device_id}`, deviceData);
+        await store.set(`device:${cookies.device_id}`, deviceData); // No TTL for condemned status
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
@@ -1436,7 +1451,7 @@ export class FingerprintEngine {
 
         // Associate the current challenge nonce with the device for trap URL verification later.
         if (deviceData) {
-            deviceData.lastChallengeNonce = nonce;
+            deviceData.lastChallengeNonce = nonce; // No TTL, part of the main device object
             await store.set(`device:${cookies.device_id}`, deviceData);
         }
 
@@ -1512,7 +1527,7 @@ export class FingerprintEngine {
     if (ipProfile.statelessCount > statelessLimit) {
       return `suspicious_high:${clientIp}`;
     }
-    await store.set(`ip:${clientIp}`, ipProfile);
+    await store.set(`ip:${clientIp}`, ipProfile, 600); // Keep IP profile for 10 minutes
 
     const vector = await __internal.getSuspicionVector(requestContext, this.securityConfig); // Pass the config
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);

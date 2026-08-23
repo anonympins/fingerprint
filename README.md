@@ -140,10 +140,10 @@ const securityConfig = {
         // Useful for internal tools, trusted partners, or monitoring services.
         // This check is performed first for maximum efficiency.
         { type: 'allowlist', entries: [
-            '192.168.1.100',      // A specific internal IP
-            '203.0.113.0/24',     // A partner's network range
-            '2001:db8::/32'       // An IPv6 range
-        ]},
+                '192.168.1.100',      // A specific internal IP
+                '203.0.113.0/24',     // A partner's network range
+                '2001:db8::/32'       // An IPv6 range
+            ]},
         // Option 2: DNS-verified bots (e.g., search engine crawlers).
         // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
         // The result is cached per IP to avoid repeated DNS lookups.
@@ -198,15 +198,34 @@ The main Express middleware. It orchestrates identification, suspicion calculati
 
 #### `configureStore(store)`
 Allows replacing the in-memory store with an external datastore (like Redis) for persistence and scaling.
+The library provides ready-to-use adapters for popular datastores like Redis and MongoDB, which automatically handle the Time-To-Live (TTL) required for temporary data like challenge secrets.
 
-See the Datastore Integration Guide for a complete example of creating a Redis store.
+**Redis Example:**
 
 ```javascript
 import { configureStore } from './fingerprint.js';
-import { createRedisStore } from './redis-store.js'; // Assuming a redis store implementation exists
+import { createRedisStore } from './redis-store.js';
+import Redis from 'ioredis';
 
-const redisStore = createRedisStore(process.env.REDIS_URL);
+const redisClient = new Redis(process.env.REDIS_URL);
+const redisStore = createRedisStore(redisClient);
 configureStore(redisStore);
+```
+
+**MongoDB Example:**
+
+```javascript
+import { configureStore } from './fingerprint.js';
+import { createMongoDbStore } from './mongodb-store.js';
+import { MongoClient } from 'mongodb';
+
+const mongoClient = new MongoClient(process.env.MONGODB_URL);
+
+// It's recommended to connect before your application starts listening.
+await mongoClient.connect(); 
+
+const mongoStore = createMongoDbStore(mongoClient.db('your-db-name'));
+configureStore(mongoStore);
 ```
 
 #### `identifyRequest(req, res)`
@@ -305,28 +324,28 @@ import { initializeClient } from './path/to/fingerprint.client.js';
 
 // Example 1: Enable all default protections and protect same-origin fetch requests.
 initializeClient({
-  honeypots: ['email_confirm', 'user_nickname'], // Your honeypot field names
-  fetch: {} // An empty object enables fetch protection for same-origin
+    honeypots: ['email_confirm', 'user_nickname'], // Your honeypot field names
+    fetch: {} // An empty object enables fetch protection for same-origin
 });
 
 // Example 2: Enable everything and protect a specific API domain.
 initializeClient({
-  honeypots: ['email_confirm'],
-  fetch: {
-    targetDomains: ['api.yourdomain.com']
-  }
+    honeypots: ['email_confirm'],
+    fetch: {
+        targetDomains: ['api.yourdomain.com']
+    }
 });
 
 // Example 3: Enable only mouse and keystroke tracking, without patching fetch.
 initializeClient({
-  mouse: true,
-  keystrokes: true
+    mouse: true,
+    keystrokes: true
 });
 
 // Example 4: Disable keystroke tracking but keep other defaults.
 initializeClient({
-  keystrokes: false,
-  fetch: {}
+    keystrokes: false,
+    fetch: {}
 });
 ```
 
@@ -352,15 +371,15 @@ This provides a proactive, first-line defense against simple bots. By setting up
 If you prefer not to modify global functions or need fine-grained control over which requests are protected, you can use the `protectedFetch` wrapper. You must use this function instead of the standard `fetch` for your API calls.
 
 - **`protectedFetch(resource, options)`**: A wrapper around the native `fetch` API that automatically enriches requests with security headers. It adds:
-  - `X-Device-Fingerprint`: The client's device fingerprint.
-  - `X-Behavior-Metrics`: A JSON string containing the metrics collected by the behavioral trackers (e.g., mouse entropy, honeypot interaction).
+    - `X-Device-Fingerprint`: The client's device fingerprint.
+    - `X-Behavior-Metrics`: A JSON string containing the metrics collected by the behavioral trackers (e.g., mouse entropy, honeypot interaction).
 
 **Example:**
 
 ```javascript
-import { 
-  initializeClient,
-  protectedFetch 
+import {
+    initializeClient,
+    protectedFetch
 } from './path/to/fingerprint.client.js';
 
 // Start tracking user behavior as soon as the app loads.
