@@ -13,6 +13,7 @@
   "files": [
     "fingerprint.js",
     "fingerprint.client.js",
+    "fingerprint.builder.js",
     "library.js",
     "redis-store.js",
     "mongodb-store.js",
