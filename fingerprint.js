@@ -752,7 +752,7 @@ export const configureStore = (externalStore) => {
  * @param {object} context - The request context.
  * @returns {Promise<{deviceId: string, deviceData: object, consistencyScore: number, newCookie: object|null}>}
  */
-async function resolveRequestIdentity(context) {
+async function resolveRequestIdentity(context, securityConfig = {}) {
   const existingDeviceId = context.cookies?.device_id;
   const currentDeviceHash = getDeviceHash(context);
   let deviceId = existingDeviceId;
@@ -781,7 +781,9 @@ async function resolveRequestIdentity(context) {
       name: "device_id",
       value: deviceId,
       options: {
-        httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: 31536000000, // 1 year
+        httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
+        // Le maxAge est maintenant configurable. Par défaut, c'est un cookie de session.
+        ...(securityConfig.deviceIdCookieMaxAge && { maxAge: securityConfig.deviceIdCookieMaxAge }),
       }
     };
 
@@ -866,7 +868,7 @@ async function getBehavioralIndicators(context, deviceData) {
  * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number, honeypotScore: number}>}
  */
 export const getSuspicionVector = async (context, securityConfig) => {
-    const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context);
+    const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context, securityConfig);
 
   const clientIp = context.clientIp;
 
@@ -1100,6 +1102,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
  */
 export function verifyCpuTargetPoWAndGenerateTicket(
   clientIp, // This parameter is crucial and must be the actual client IP
+  ticketMaxAge, // NOUVEAU: Durée de validité du ticket configurable
   nonce,
   solution,
   suspicionFactor,
@@ -1118,7 +1121,7 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   if (hashAsInt < target) {
     // The comparison is direct with native BigInts
     // The proof is valid, generate the ticket
-    const expiry = Date.now() + 3600000; // 1 heure
+    const expiry = Date.now() + (ticketMaxAge || 3600000); // 1 heure par défaut
     const signature = crypto
       .createHmac("sha256", getPowSecret())
       .update(`${clientIp}:${expiry}`)
@@ -1256,13 +1259,13 @@ export class FingerprintEngine {
     const { pow_nonce } = query;
 
     // Honeypot: Direct probing of challenge endpoints is highly suspicious.
-    // A legitimate user only hits these endpoints via the challenge page itself, which is only served to suspicious users.
-    // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot.
-    // We check this early, before the main suspicion calculation.
+    // A legitimate user only hits these endpoints via the challenge page itself.
+    // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot probe.
     if (pow_nonce) {
         const powCookie = cookies?.pow_clearance;
         if (!isTicketValid(clientIp, powCookie)) { // Only check if there's no valid ticket
             // This is a potential probe. We'll let the main logic confirm if it's not a legitimate challenge response.
+            // The final decision is made later, after calculating the score.
         }
     }
 
@@ -1282,13 +1285,14 @@ export class FingerprintEngine {
 
         if (challengeContext) {
             if (pow_type === "cpu_target") {
-                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                // On passe la durée de vie du ticket configurée
+                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, this.securityConfig.ticketMaxAge, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
                 isValid = ticket !== null;
             } else if (pow_type === "cpu_mem") {
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, this.securityConfig.ticketMaxAge, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
                 const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
                 isValid = cpuTicket !== null && isMemValid;
-                if (isValid) ticket = cpuTicket;
+                if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
             }
         }
 
@@ -1310,8 +1314,8 @@ export class FingerprintEngine {
                 value: ticket,
                 options: {
                   httpOnly: true,
-                  secure: this.isProduction,
-                  maxAge: 3600000,
+                  secure: this.isProduction, // Le maxAge est déjà inclus dans le ticket, mais on le met aussi sur le cookie
+                  maxAge: this.securityConfig.ticketMaxAge || 3600000,
                 }
               }
             };
@@ -1355,8 +1359,9 @@ export class FingerprintEngine {
 
     // Si c'est un nouvel appareil, on lui impose un challenge de base, même si son score est bas.
     // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
-    const requiresChallengeForNewDevice = isNewDevice && finalScore < thresholds.low;
-
+    // NOUVEAU : Cette logique est maintenant configurable.
+    const challengeNewDevices = this.securityConfig.challengeNewDevices === true; // false par défaut
+    const requiresChallengeForNewDevice = challengeNewDevices && isNewDevice && finalScore < (thresholds.low || 0);
 
     const isBlocked = finalScore >= (thresholds.block || 95);
 
@@ -1367,7 +1372,7 @@ export class FingerprintEngine {
     // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
     const suspicionFactor = isSuspicious
         ? Math.min(
-            1,
+            1.5, // On autorise un dépassement pour rendre les challenges très difficiles si le score est très élevé
             (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
         )
         : 0;
@@ -1441,7 +1446,7 @@ export class FingerprintEngine {
                 clientSecret,
                 cpuTarget: cpuChallengeDetails.target,
                 memDifficulty: memDifficulty
-            }, 300);
+            }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
 
             // Associate the current challenge nonce with the device for trap URL verification later.
             if (deviceData) {

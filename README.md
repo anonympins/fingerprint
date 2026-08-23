@@ -90,6 +90,10 @@ const securityConfig = {
         block: 95,  // Score above which the request is blocked outright (HTTP 403)
         isStaticResource: (req) => req.path.startsWith('/static/') // Optional: Custom function to identify static resources
     },
+    // (Optional) By default, new devices are NOT challenged if their score is low.
+    // Set this to `true` to enable a baseline challenge for all new visitors, which can deter simple bots that just clear cookies.
+    challengeNewDevices: false, // Default: false
+    },
     patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
         velocityThreshold: 200, // ms between requests to be considered "fast"
         burstThreshold: 500,    // ms for identical requests to be a "burst"
