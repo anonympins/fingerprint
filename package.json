@@ -1,6 +1,6 @@
 {
   "name": "@anonympins/fingerprint",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.",
   "main": "fingerprint.js",
   "type": "module",
@@ -12,6 +12,7 @@
   },
   "files": [
     "fingerprint.js",
+    "fingerprint.client.js",
     "library.js",
     "README.md",
     "LICENSE"
@@ -31,7 +32,8 @@
     "pow",
     "rate-limiting",
     "mitigation",
-    "captcha"
+    "captcha",
+    "dns"
   ],
   "author": "anonympins",
   "license": "MIT",
@@ -43,6 +45,17 @@
     "body-parser": "^1.20.2",
     "cookie-parser": "^1.4.6",
     "express": "^4.18.2",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "ioredis": "^5.3.2",
+    "mongodb": "^6.3.0",
+    "prom-client": "^15.1.2"
+  },
+  "peerDependencies": {
+    "ioredis": "^5.3.2",
+    "mongodb": "^6.3.0"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": { "optional": true },
+    "mongodb": { "optional": true }
   }
 }

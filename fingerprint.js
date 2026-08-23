@@ -1,5 +1,7 @@
 // C:/Dev/games.primals.net/src/utils/fingerprint.js
 import crypto from "node:crypto";
+import { parse } from "node:net";
+import dns from "node:dns/promises";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
 
@@ -1124,12 +1126,132 @@ export class FingerprintEngine {
     this.isProduction = isProduction;
   }
 
+  /**
+   * Checks if an IP address is in the static allowlist (IPs or CIDR ranges).
+   * This is the fastest check and should be performed first.
+   * @private
+   * @param {string} clientIp - The IP address of the client.
+   * @returns {boolean} True if the IP is in the allowlist.
+   */
+  _isIpInAllowlist(clientIp) {
+    const { whitelist = [] } = this.securityConfig;
+    const allowlistRule = whitelist.find(rule => rule.type === 'allowlist');
+
+    if (!allowlistRule || !allowlistRule.entries || allowlistRule.entries.length === 0) {
+      return false;
+    }
+
+    const ip = parse(clientIp);
+    const ipVersion = ip.family;
+
+    for (const entry of allowlistRule.entries) {
+      if (entry.includes('/')) { // CIDR range
+        try {
+          const [range, prefixStr] = entry.split('/');
+          const prefix = parseInt(prefixStr, 10);
+          const rangeIp = parse(range);
+
+          if (rangeIp.family !== ipVersion) continue;
+
+          const ipBytes = ip.toBuffer();
+          const rangeBytes = rangeIp.toBuffer();
+          const mask = Buffer.alloc(ipBytes.length, 0xff);
+
+          for (let i = 0; i < Math.floor(prefix / 8); i++) {
+            if (ipBytes[i] !== rangeBytes[i]) {
+              break; // Mismatch in full byte, move to next entry
+            }
+          }
+          const remainingBits = prefix % 8;
+          if (remainingBits > 0) {
+            const byteIndex = Math.floor(prefix / 8);
+            const bitmask = (0xff << (8 - remainingBits)) & 0xff;
+            if ((ipBytes[byteIndex] & bitmask) !== (rangeBytes[byteIndex] & bitmask)) {
+              continue; // Mismatch in partial byte
+            }
+          }
+          return true; // IP is in CIDR range
+        } catch (e) { continue; /* Ignore invalid CIDR entries */ }
+      } else if (entry === clientIp) { // Direct IP match
+        return true;
+      }
+    }
+    return false;
+  }
+  /**
+   * Verifies if a request comes from a legitimate, whitelisted bot (e.g., Googlebot)
+   * using reverse and forward DNS lookups. The result is cached.
+   * @private
+   * @param {object} requestContext - The request context.
+   * @returns {Promise<boolean>} True if the request is from a verified whitelisted bot.
+   */
+  async _verifyWhitelistedBot(requestContext) {
+    const { whitelist = [] } = this.securityConfig;
+    const botRules = whitelist.filter(rule => rule.hostnameSuffix);
+    if (botRules.length === 0) {
+      return false;
+    }
+
+    const { clientIp, headers } = requestContext;
+    const userAgent = headers['user-agent'] || '';
+
+    const matchedRule = botRules.find(rule => {
+      if (!rule.userAgent) return false;
+      try {
+        return new RegExp(rule.userAgent).test(userAgent);
+      } catch (e) {
+        console.error(`[Fingerprint] Invalid regex in whitelist rule: ${rule.userAgent}`);
+        return false;
+      }
+    });
+    if (!matchedRule) {
+      return false;
+    }
+
+    const cacheKey = `ip-whitelist:${clientIp}`;
+    const cachedStatus = await store.get(cacheKey);
+
+    if (cachedStatus === 'verified') {
+      return true;
+    }
+    if (cachedStatus === 'failed') {
+      return false;
+    }
+
+    try {
+      // 1. Reverse DNS lookup
+      const hostnames = await dns.reverse(clientIp);
+      const validHostname = hostnames.find(h => h.endsWith(matchedRule.hostnameSuffix));
+
+      if (!validHostname) {
+        await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h
+        return false;
+      }
+
+      // 2. Forward DNS lookup
+      const addresses = await dns.resolve(validHostname);
+      if (addresses.includes(clientIp)) {
+        await store.set(cacheKey, 'verified', 86400); // Cache success for 24h
+        return true;
+      }
+    } catch (error) {
+      // DNS errors are common (e.g., for IPs with no rDNS record), treat as failure.
+    }
+
+    await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h
+    return false;
+  }
+
   async processRequest(requestContext) {
     const { clientIp, path, cookies, query, isStatic } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
-
     if (isStatic) {
       return { action: 'next', score: 0, vector: {} };
+    }
+
+    // 1. Check static IP allowlist first for maximum performance.
+    if (this._isIpInAllowlist(clientIp)) {
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'allowlist' } };
     }
 
     const { pow_nonce } = query;
@@ -1143,6 +1265,11 @@ export class FingerprintEngine {
         if (!isTicketValid(clientIp, powCookie)) { // Only check if there's no valid ticket
             // This is a potential probe. We'll let the main logic confirm if it's not a legitimate challenge response.
         }
+    }
+
+    // Check if the request is from a verified, whitelisted bot (e.g., Googlebot)
+    if (await this._verifyWhitelistedBot(requestContext)) {
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
 
     // Check for persisted "condemned" status early.
@@ -1409,6 +1536,111 @@ export class FingerprintEngine {
     return `device:${finalDeviceId}`;
   }
 }
+
+/**
+ * Returns a default list of whitelisting rules for common and legitimate web crawlers.
+ * This list can be used as a base and extended with custom rules.
+ * @returns {Array<{userAgent: string, hostnameSuffix: string}>}
+ */
+export const default_whitelist = () => [
+    // === Moteurs de recherche majeurs ===
+    { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' },
+    { userAgent: 'Google-Extended', hostnameSuffix: '.google.com' },
+    { userAgent: 'AdsBot-Google', hostnameSuffix: '.googlebot.com' },
+    { userAgent: 'Mediapartners-Google', hostnameSuffix: '.google.com' },
+    { userAgent: 'Google-InspectionTool', hostnameSuffix: '.google.com' },
+    { userAgent: '(bingbot|adidxbot)', hostnameSuffix: '.search.msn.com' },
+    { userAgent: 'DuckDuckBot', hostnameSuffix: '.duckduckgo.com' },
+    { userAgent: 'YandexBot', hostnameSuffix: '.yandex.com' },
+    { userAgent: 'YandexImages', hostnameSuffix: '.yandex.com' },
+    { userAgent: 'Baiduspider', hostnameSuffix: '.crawl.baidu.com' },
+    { userAgent: 'Slurp', hostnameSuffix: '.crawl.yahoo.net' },
+    { userAgent: 'Sogou web spider', hostnameSuffix: '.sogou.com' },
+    { userAgent: 'Exabot', hostnameSuffix: '.exabot.com' },
+    { userAgent: 'ia_archiver', hostnameSuffix: '.alexa.com' },
+    { userAgent: 'SeznamBot', hostnameSuffix: '.seznam.cz' },
+    { userAgent: 'Mail.RU_Bot', hostnameSuffix: '.mail.ru' },
+    { userAgent: 'Yeti', hostnameSuffix: '.naver.com' }, // Naver
+
+    // === Outils SEO et d'analyse ===
+    { userAgent: 'AhrefsBot', hostnameSuffix: '.ahrefs.com' },
+    { userAgent: 'SemrushBot', hostnameSuffix: '.semrush.com' },
+    { userAgent: 'MJ12bot', hostnameSuffix: '.mj12bot.com' }, // Majestic
+    { userAgent: 'rogerbot', hostnameSuffix: '.moz.com' }, // Moz
+    { userAgent: 'DotBot', hostnameSuffix: '.moz.com' }, // Moz (anciennement opensiteexplorer.org)
+    { userAgent: 'Screaming Frog SEO Spider', hostnameSuffix: '.screamingfrog.co.uk' },
+    { userAgent: 'cognitiveseo', hostnameSuffix: '.cognitiveseo.com' },
+    { userAgent: 'SEOkicks', hostnameSuffix: '.seokicks.com' },
+    { userAgent: 'serpstatbot', hostnameSuffix: '.serpstatbot.com' },
+    { userAgent: 'MegaIndex', hostnameSuffix: '.megaindex.com' },
+    { userAgent: 'LinkpadBot', hostnameSuffix: '.linkpad.ru' },
+    { userAgent: 'Sistrix', hostnameSuffix: '.sistrix.com' },
+    { userAgent: 'RyteBot', hostnameSuffix: '.ryte.com' },
+    { userAgent: 'linkfluence', hostnameSuffix: '.linkfluence.com' },
+    { userAgent: 'TurnitinBot', hostnameSuffix: '.turnitin.com' },
+    { userAgent: 'GrapeshotCrawler', hostnameSuffix: '.grapeshot.co.uk' },
+
+    // === Robots d'IA et de données ===
+    { userAgent: 'GPTBot', hostnameSuffix: '.openai.com' },
+    { userAgent: 'ChatGPT-User', hostnameSuffix: '.openai.com' },
+    { userAgent: 'Applebot', hostnameSuffix: '.applebot.apple.com' },
+    { userAgent: 'CCBot', hostnameSuffix: '.commoncrawl.org' },
+    { userAgent: 'Bytespider', hostnameSuffix: '.bytespider.com' }, // ByteDance (TikTok)
+    { userAgent: 'Diffbot', hostnameSuffix: '.diffbot.com' },
+    { userAgent: 'PerplexityBot', hostnameSuffix: '.perplexity.ai' },
+    { userAgent: 'ClaudeBot', hostnameSuffix: '.anthropic.com' },
+    { userAgent: 'cohere.io', hostnameSuffix: '.cohere.io' },
+    { userAgent: 'DataForSeoBot', hostnameSuffix: '.dataforseo.com' },
+    { userAgent: 'YouBot', hostnameSuffix: '.you.com' },
+    { userAgent: 'omgili', hostnameSuffix: '.omgili.com' },
+
+    // === Réseaux sociaux et partage ===
+    { userAgent: 'facebookexternalhit', hostnameSuffix: '.facebook.com' },
+    { userAgent: 'facebot', hostnameSuffix: '.facebook.com' },
+    { userAgent: 'Twitterbot', hostnameSuffix: '.twttr.com' },
+    { userAgent: 'Pinterestbot', hostnameSuffix: '.pinterest.com' },
+    { userAgent: 'LinkedInBot', hostnameSuffix: '.linkedin.com' },
+    { userAgent: 'Slackbot', hostnameSuffix: '.slack.com' },
+    { userAgent: 'Discordbot', hostnameSuffix: '.discord.com' },
+    { userAgent: 'TelegramBot', hostnameSuffix: '.telegram.org' },
+    { userAgent: 'WhatsApp', hostnameSuffix: '.wa.me' },
+    { userAgent: 'SkypeUriPreview', hostnameSuffix: '.skype.com' },
+    { userAgent: 'redditbot', hostnameSuffix: '.reddit.com' },
+
+    // === Services de monitoring et d'uptime ===
+    { userAgent: 'UptimeRobot', hostnameSuffix: '.uptimerobot.com' },
+    { userAgent: 'Pingdom', hostnameSuffix: '.pingdom.com' },
+    { userAgent: 'StatusCake', hostnameSuffix: '.statuscake.com' },
+    { userAgent: 'Site24x7', hostnameSuffix: '.site24x7.com' },
+    { userAgent: 'Freshping', hostnameSuffix: '.freshping.io' },
+    { userAgent: 'Better Uptime', hostnameSuffix: '.betteruptime.com' },
+    { userAgent: 'Checkly', hostnameSuffix: '.checkly-infra.com' },
+    { userAgent: 'Datadog', hostnameSuffix: '.datadoghq.com' },
+    { userAgent: 'NewRelicPinger', hostnameSuffix: '.newrelic.com' },
+
+    // === Archives et agrégateurs de contenu ===
+    { userAgent: 'archive.org_bot', hostnameSuffix: '.archive.org' },
+    { userAgent: 'Feedly', hostnameSuffix: '.feedly.com' },
+    { userAgent: 'FeedFetcher-Google', hostnameSuffix: '.google.com' },
+    { userAgent: 'TheOldReader', hostnameSuffix: '.theoldreader.com' },
+    { userAgent: 'Inoreader', hostnameSuffix: '.inoreader.com' },
+    { userAgent: 'FlipboardProxy', hostnameSuffix: '.flipboard.com' },
+    { userAgent: 'PaperLiBot', hostnameSuffix: '.paper.li' },
+
+    // === Services Cloud et Plateformes ===
+    { userAgent: 'Amazon Route 53 Health Check', hostnameSuffix: '.amazonaws.com' },
+    { userAgent: 'Google-Cloud-Scheduler', hostnameSuffix: '.google.com' },
+    { userAgent: 'APIs-Google', hostnameSuffix: '.google.com' },
+
+    // === Divers ===
+    { userAgent: 'W3C_Validator', hostnameSuffix: '.w3.org' },
+    { userAgent: 'GTmetrix', hostnameSuffix: '.gtmetrix.com' },
+    { userAgent: 'WebPageTest', hostnameSuffix: '.webpagetest.org' },
+    { userAgent: 'Google-Site-Verification', hostnameSuffix: '.google.com' },
+    { userAgent: 'KeyCDN', hostnameSuffix: '.keycdn.com' },
+];
+
+
 
 // --- Proof-of-Work Middleware (The Tollbooth) ---
 export const powMiddleware = (securityConfig) => {

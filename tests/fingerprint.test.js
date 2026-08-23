@@ -1,5 +1,6 @@
 import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
+import dns from 'node:dns/promises';
 import * as fingerprint from '../fingerprint.js';
 import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
 
@@ -18,6 +19,9 @@ const {
   stopThresholdAutoTuning,
 } = fingerprint;
 const { getRequestPatternScore, getDeviceHash } = __internal;
+
+// Mock the entire dns/promises module
+vi.mock('node:dns/promises');
 
 describe('Fingerprint & PoW Security Suite', () => {
   test('cyrb53 should be deterministic', () => {
@@ -1077,6 +1081,113 @@ describe('Fingerprint & PoW Security Suite', () => {
             // The honeypot score should be 0 as no other traps were triggered
             expect(decisionClean.vector.honeypotScore).toBe(0);
             expect(decisionClean.action).toBe('next');
+        });
+    });
+
+    describe('Bot Whitelisting', () => {
+        const inMemoryStore = {
+            _map: new Map(),
+            get: async (key) => inMemoryStore._map.get(key),
+            set: async (key, value) => inMemoryStore._map.set(key, value),
+            has: async (key) => inMemoryStore._map.has(key),
+            delete: async (key) => inMemoryStore._map.delete(key),
+        };
+
+        const securityConfig = {
+            whitelist: [
+                { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' },
+                { userAgent: 'TestBot', hostnameSuffix: '.test-verifier.com' },
+                { userAgent: 'MalformedRegexBot(]', hostnameSuffix: '.invalid.com' } // Invalid regex
+            ]
+        };
+
+        let engine;
+
+        beforeEach(() => {
+            inMemoryStore._map.clear();
+            configureStore(inMemoryStore);
+            vi.resetAllMocks(); // Reset mocks before each test
+            engine = new FingerprintEngine(securityConfig);
+        });
+
+        test('should verify a legitimate Googlebot', async () => {
+            const googleIp = '66.249.66.1';
+            const googleHostname = 'crawl-66-249-66-1.googlebot.com';
+
+            dns.reverse.mockResolvedValue([googleHostname]);
+            dns.resolve.mockResolvedValue([googleIp]);
+
+            const requestContext = {
+                clientIp: googleIp,
+                headers: { 'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' }
+            };
+
+            const isVerified = await engine._verifyWhitelistedBot(requestContext);
+            expect(isVerified).toBe(true);
+            expect(dns.reverse).toHaveBeenCalledWith(googleIp);
+            expect(dns.resolve).toHaveBeenCalledWith(googleHostname);
+        });
+
+        test('should reject a fake Googlebot with non-matching IP', async () => {
+            const fakeGoogleIp = '1.2.3.4';
+            const fakeHostname = 'not-google.com';
+
+            dns.reverse.mockResolvedValue([fakeHostname]);
+
+            const requestContext = {
+                clientIp: fakeGoogleIp,
+                headers: { 'user-agent': 'Googlebot' }
+            };
+
+            const isVerified = await engine._verifyWhitelistedBot(requestContext);
+            expect(isVerified).toBe(false);
+            expect(dns.reverse).toHaveBeenCalledWith(fakeGoogleIp);
+            expect(dns.resolve).not.toHaveBeenCalled(); // Should fail at reverse lookup
+        });
+
+        test('should reject a bot if forward DNS does not match back to original IP', async () => {
+            const ip = '66.249.66.1';
+            const hostname = 'crawl-66-249-66-1.googlebot.com';
+
+            dns.reverse.mockResolvedValue([hostname]);
+            dns.resolve.mockResolvedValue(['66.249.66.2']); // Different IP
+
+            const requestContext = { clientIp: ip, headers: { 'user-agent': 'Googlebot' } };
+            const isVerified = await engine._verifyWhitelistedBot(requestContext);
+            expect(isVerified).toBe(false);
+        });
+
+        test('should use cache for subsequent requests from a verified IP', async () => {
+            const googleIp = '66.249.66.1';
+            const googleHostname = 'crawl-66-249-66-1.googlebot.com';
+            const requestContext = { clientIp: googleIp, headers: { 'user-agent': 'Googlebot' } };
+
+            // First call: perform DNS lookups and cache the result
+            dns.reverse.mockResolvedValue([googleHostname]);
+            dns.resolve.mockResolvedValue([googleIp]);
+            await engine._verifyWhitelistedBot(requestContext);
+            expect(dns.reverse).toHaveBeenCalledTimes(1);
+            expect(dns.resolve).toHaveBeenCalledTimes(1);
+
+            // Second call: should use the cache
+            const isVerified = await engine._verifyWhitelistedBot(requestContext);
+            expect(isVerified).toBe(true);
+            // DNS functions should not be called again
+            expect(dns.reverse).toHaveBeenCalledTimes(1);
+            expect(dns.resolve).toHaveBeenCalledTimes(1);
+        });
+
+        test('should handle invalid regex in whitelist rules gracefully', async () => {
+            const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+            const requestContext = {
+                clientIp: '1.2.3.4',
+                headers: { 'user-agent': 'MalformedRegexBot(]' }
+            };
+
+            const isVerified = await engine._verifyWhitelistedBot(requestContext);
+            expect(isVerified).toBe(false);
+            expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[Fingerprint] Invalid regex in whitelist rule'));
+            consoleErrorSpy.mockRestore();
         });
     });
 });
