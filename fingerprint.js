@@ -383,6 +383,8 @@ export const verifyPoWAndGenerateTicket = (
   return `${expiry}:${signature}`;
 };
 
+
+
 /**
  * Verifies a memory PoW solution.
  * The server performs the same calculation to validate.
@@ -557,6 +559,28 @@ function getHoneypotScore(context, honeypotConfig = {}) {
   }
 
   return { honeypotScore: 0 };
+}
+
+/**
+ * Calcule un score basé sur les métriques comportementales envoyées par le client.
+ * @param {object} context - Le contexte de la requête, contenant les en-têtes.
+ * @returns {{behaviorScore: number}}
+ */
+function getBehaviorScore(context) {
+    const behaviorHeader = context.headers['x-behavior-metrics'];
+    if (!behaviorHeader) {
+        return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
+    }
+
+    try {
+        const metrics = JSON.parse(behaviorHeader);
+        let score = 0;
+        if (metrics.honeypotInteraction) score = 100; // Interaction avec un honeypot client = bot.
+        if (metrics.mouseEntropy === 0 && metrics.keystrokeLatency === 0) score += 40; // Aucune interaction = suspect.
+        return { behaviorScore: Math.min(100, score) };
+    } catch (e) {
+        return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
+    }
 }
 
 /**
@@ -752,7 +776,7 @@ export const configureStore = (externalStore) => {
  * @param {object} context - The request context.
  * @returns {Promise<{deviceId: string, deviceData: object, consistencyScore: number, newCookie: object|null}>}
  */
-async function resolveRequestIdentity(context) {
+async function resolveRequestIdentity(context, securityConfig = {}) {
   const existingDeviceId = context.cookies?.device_id;
   const currentDeviceHash = getDeviceHash(context);
   let deviceId = existingDeviceId;
@@ -781,7 +805,9 @@ async function resolveRequestIdentity(context) {
       name: "device_id",
       value: deviceId,
       options: {
-        httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: 31536000000, // 1 year
+        httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
+        // Le maxAge est maintenant configurable. Par défaut, c'est un cookie de session.
+        ...(securityConfig.deviceIdCookieMaxAge && { maxAge: securityConfig.deviceIdCookieMaxAge }),
       }
     };
 
@@ -866,7 +892,7 @@ async function getBehavioralIndicators(context, deviceData) {
  * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number, honeypotScore: number}>}
  */
 export const getSuspicionVector = async (context, securityConfig) => {
-    const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context);
+    const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context, securityConfig);
 
   const clientIp = context.clientIp;
 
@@ -888,8 +914,16 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const behavioral = await getBehavioralIndicators(context, deviceData);
   const { headerAnomalyScore } = getHeaderAnomalies(context);
   // Calculate the inconsistency score here, separately.
-  const inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
+  let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
 
+  // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
+  if (consistencyScore < 0.7) { // Seuil de rupture
+      inconsistencyScore = 100;
+  }
+
+  const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
+
+  const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -900,7 +934,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Array.isArray(deviceData.ips)) {
       deviceData.ips = new Set(deviceData.ips);
   }
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore };
+  // Correction : Ajouter behaviorScore à l'objet retourné
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, requestPatternScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1100,6 +1135,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
  */
 export function verifyCpuTargetPoWAndGenerateTicket(
   clientIp, // This parameter is crucial and must be the actual client IP
+  ticketMaxAge, // NOUVEAU: Durée de validité du ticket configurable
   nonce,
   solution,
   suspicionFactor,
@@ -1118,8 +1154,8 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   if (hashAsInt < target) {
     // The comparison is direct with native BigInts
     // The proof is valid, generate the ticket
-    const expiry = Date.now() + 3600000; // 1 heure
-    const signature = crypto
+      const expiry = Date.now() + (ticketMaxAge || 3600000); // Utilise la durée passée ou un fallback.
+      const signature = crypto
       .createHmac("sha256", getPowSecret())
       .update(`${clientIp}:${expiry}`)
       .digest("hex");
@@ -1135,6 +1171,72 @@ const staticExtensions = new RegExp(
 );
 const isStaticResource = (path) => staticExtensions.test(path);
 
+
+/**
+ * Détermine le TTL optimal pour un ticket en utilisant un algorithme génétique multi-objectifs.
+ * @param {number} suspicionScore - Le score de suspicion de la requête.
+ * @returns {number} Le TTL optimal calculé en millisecondes.
+ */
+function determineOptimalTicketTtl(suspicionScore) {
+    // Définir les bornes pour la durée de vie du ticket (5 minutes à 24 heures)
+    const MIN_TTL = 300000;
+    const MAX_TTL = 86400000;
+
+    const solverFunction = () => {
+        const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
+
+        // Un "individu" est simplement une valeur de TTL en millisecondes.
+        const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
+        const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
+        const mutate = (ttl) => {
+            const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1; // Mutation de +/- 10% max
+            return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
+        };
+
+        const paretoFront = Optimization.geneticAlgorithmMultiObjective(
+            createIndividual,
+            fitnessFunction,
+            crossover,
+            mutate,
+            {
+                generations: 40,
+                populationSize: 30,
+            }
+        );
+
+        // Pour runMultiple, on doit retourner un objet avec une propriété "fitness" ou "energy".
+        // Pour un front de Pareto, il n'y a pas de score unique. On choisit la meilleure solution
+        // en fonction du score de suspicion et on lui assigne un score de 0 pour que runMultiple la sélectionne.
+        if (!paretoFront || paretoFront.length === 0) {
+            return { solution: null, fitness: Infinity };
+        }
+
+        // Stratégie de sélection :
+        // Pour un score faible (< 50), on privilégie la solution avec le plus grand TTL (minimise la friction).
+        // Pour un score élevé (>= 50), on privilégie la solution avec le plus petit TTL (minimise le risque).
+        let bestSolutionInFront;
+        if (suspicionScore < 50) {
+            bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
+        } else {
+            bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
+        }
+        return { solution: bestSolutionInFront, fitness: 0 }; // fitness=0 car on a déjà la meilleure solution du cycle.
+    };
+
+    // On exécute le solveur 20 fois pour trouver une solution plus stable et robuste.
+    const { bestResult } = Optimization.runMultiple(solverFunction, 20);
+
+    if (!bestResult || !bestResult.solution || bestResult.solution === Infinity) {
+        // Fallback : si l'algo ne retourne rien, on applique une règle simple et sûre.
+        return Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL);
+    }
+
+    // runMultiple choisit le meilleur résultat sur la base du score (ici, 0).
+    // La "meilleure" solution dépendra du cycle qui a trouvé le meilleur compromis.
+    return bestResult.solution;
+}
+
+
 // --- Middleware Proof-of-Work (Le péage) ---
 export class FingerprintEngine {
   constructor(securityConfig) {
@@ -1143,7 +1245,21 @@ export class FingerprintEngine {
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();
   }
+    calculateFinalScore = function(suspicionVector) {
+        const { weights } = this.securityConfig;
+        if (!weights) return 0;
 
+        const score =
+            (suspicionVector.historyScore || 0) * (weights.historyScore || 0) +
+            (suspicionVector.rotationScore || 0) * (weights.rotationScore || 0) +
+            (suspicionVector.headerAnomalyScore || 0) * (weights.headerAnomalyScore || 0) +
+            (suspicionVector.requestPatternScore || 0) * (weights.requestPatternScore || 0) +
+            (suspicionVector.inconsistencyScore || 0) * (weights.inconsistencyScore || 0) +
+            (suspicionVector.honeypotScore || 0) * (weights.honeypotScore || 0) +
+            (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0);
+
+        return Math.min(100, score);
+    }
   /**
    * Checks if an IP address is in the static allowlist (IPs or CIDR ranges).
    * This is the fastest check and should be performed first.
@@ -1242,6 +1358,7 @@ export class FingerprintEngine {
   }
 
   async processRequest(requestContext) {
+
     const { clientIp = "unknown", path, cookies, query, isStatic } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     if (isStatic) {
@@ -1256,13 +1373,13 @@ export class FingerprintEngine {
     const { pow_nonce } = query;
 
     // Honeypot: Direct probing of challenge endpoints is highly suspicious.
-    // A legitimate user only hits these endpoints via the challenge page itself, which is only served to suspicious users.
-    // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot.
-    // We check this early, before the main suspicion calculation.
+    // A legitimate user only hits these endpoints via the challenge page itself.
+    // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot probe.
     if (pow_nonce) {
         const powCookie = cookies?.pow_clearance;
         if (!isTicketValid(clientIp, powCookie)) { // Only check if there's no valid ticket
             // This is a potential probe. We'll let the main logic confirm if it's not a legitimate challenge response.
+            // The final decision is made later, after calculating the score.
         }
     }
 
@@ -1271,8 +1388,72 @@ export class FingerprintEngine {
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
 
-    // Check for persisted "condemned" status early.
-    const { deviceData } = await resolveRequestIdentity(requestContext);
+    // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
+    // Si une solution de challenge est soumise, on la traite en priorité absolue,
+    // avant même de recalculer le score de suspicion.
+    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
+    if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
+        // On doit calculer le score de suspicion *avant* de valider le ticket,
+        // car le TTL optimal en dépend.
+        const preliminaryVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
+        const preliminaryScore = this.calculateFinalScore(preliminaryVector);
+        let isValid = false;
+        const challengeContext = await store.get(`secret:${pow_nonce}`);
+        let ticket = null;
+
+        if (challengeContext) {
+            const optimalTtl = determineOptimalTicketTtl(preliminaryScore);
+            if (pow_type === "cpu_target") {
+                // On passe la durée de vie du ticket configurée
+                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                isValid = ticket !== null;
+            } else if (pow_type === "cpu_mem") {
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
+                isValid = cpuTicket !== null && isMemValid;
+                if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
+            }
+        }
+
+        if (isValid) {
+            // La solution est valide. On supprime le secret et on redirige.
+            await store.delete(`secret:${pow_nonce}`);
+
+            if (logger) {
+                logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now() });
+            }
+
+            return {
+              action: 'redirect',
+              path: path,
+              score: 0, // Le score n'est pas pertinent ici, on a passé le test.
+              vector: { challenge_solved: 100 },
+              cookie: {
+                name: 'pow_clearance',
+                value: ticket,
+                options: {
+                  httpOnly: true,
+                  secure: this.isProduction, // Le maxAge est déjà inclus dans le ticket, mais on le met aussi sur le cookie
+                  maxAge: this.securityConfig.ticketMaxAge || 3600000,
+                }
+              }
+            };
+        }
+        // Si la solution est INVALIDE, on ne fait rien ici. La requête continuera son cours normal,
+        // sera recalculée comme suspecte, et probablement bloquée ou re-challengée, ce qui est le comportement souhaité.
+        // On pourrait même ajouter une pénalité ici si on le voulait.
+        if (logger && challengeContext) {
+            logger({ type: 'challenge_failed', deviceId: cookies?.device_id, reason: 'Invalid PoW solution', timestamp: Date.now() });
+        } else if (logger && !challengeContext) {
+            logger({ type: 'challenge_failed', deviceId: cookies?.device_id, reason: 'Nonce not found or expired', timestamp: Date.now() });
+        }
+    }
+    // --- FIN DE LA LOGIQUE DE PRIORITÉ ---
+
+    // Resolve identity and check for persisted "condemned" status early.
+    const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
+    const isNewDevice = !!newCookie;
+
     if (deviceData?.condemned) {
         if (onDeviceCompromised) {
             onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
@@ -1280,29 +1461,24 @@ export class FingerprintEngine {
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
-    // (NOUVEAU) Vérifier si un nouveau device_id a été créé lors de cette requête
-    const isNewDevice = requestContext._newCookies?.some(c => c.name === 'device_id');
-
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
     const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
-    const { requestPatternScore } = getRequestPatternScore(requestContext, deviceData, this.securityConfig.patterns);
     suspicionVector.honeypotScore = honeypotScore;
-    suspicionVector.requestPatternScore = requestPatternScore;
+    // Le behaviorScore est déjà dans le vecteur de suspicion via getSuspicionVector
 
-    const finalScore =
-      suspicionVector.historyScore * (weights.historyScore || 0) +
-      suspicionVector.rotationScore * (weights.rotationScore || 0) +
-      suspicionVector.headerAnomalyScore * (weights.headerAnomalyScore || 0) + suspicionVector.requestPatternScore * (weights.requestPatternScore || 0) +
-      suspicionVector.inconsistencyScore * (weights.inconsistencyScore || 0) +
-      honeypotScore * (weights.honeypotScore || 0);
+    let finalScore = this.calculateFinalScore(suspicionVector);
 
     // Si c'est un nouvel appareil, on lui impose un challenge de base, même si son score est bas.
     // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
-    const requiresChallengeForNewDevice = isNewDevice && finalScore < thresholds.low;
-
+    // NOUVEAU : Cette logique est maintenant configurable.
+    const challengeNewDevices = this.securityConfig.challengeNewDevices === true;
+    if (isNewDevice && finalScore < thresholds.low) {
+      finalScore = thresholds.low;
+    }
 
     const isBlocked = finalScore >= (thresholds.block || 95);
+
 
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
@@ -1311,24 +1487,12 @@ export class FingerprintEngine {
     // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
     const suspicionFactor = isSuspicious
         ? Math.min(
-            1,
+            1.5, // On autorise un dépassement pour rendre les challenges très difficiles si le score est très élevé
             (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
         )
         : 0;
-    const powCookie = cookies?.pow_clearance;
-    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
 
-    // Honeypot: Direct probing of challenge endpoints is highly suspicious.
-    // A legitimate user only hits these endpoints via the challenge page itself.
-    if (pow_nonce && !isSuspicious) {
-      if (logger) {
-          logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now() });
-      }
-      suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
-      // Recalculate score and block immediately.
-      const newFinalScore = finalScore - (honeypotScore * (weights.honeypotScore || 0)) + (100 * (weights.honeypotScore || 0));
-      return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
-    }
+    const powCookie = cookies?.pow_clearance;
 
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
@@ -1353,95 +1517,24 @@ export class FingerprintEngine {
         return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
-    if ((isSuspicious || requiresChallengeForNewDevice) && !isTicketValid(clientIp, powCookie)) {
-        // --- CHALLENGE SOLUTION HANDLING ---
-        if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
-            let isValid = false,
-                // Retrieve the client-side secret associated with this nonce
-                clientSecret = await store.get(`secret:${pow_nonce}`),
-                ticket = null;
-            if (pow_type === "cpu_target") {
-                // Verify the new type
-                ticket = verifyCpuTargetPoWAndGenerateTicket(
-                    clientIp,
-                    pow_nonce,
-                    pow_solution,
-                    suspicionFactor, // Pass the analog factor
-                    clientSecret,
-                );
-                isValid = ticket !== null;            } else if (pow_type === "cpu_mem") {
-                // Verify combined challenge
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(
-                    clientIp, pow_nonce, pow_solution_cpu, suspicionFactor, clientSecret
-                );
-                const minDifficulty = 16; // 16Mo
-                const maxDifficulty = 48; // 48Mo
-                const memActivationFactor = Math.max(0, (suspicionFactor - 0.25) / 0.75);
-                const memDifficulty = Math.round(minDifficulty + memActivationFactor * (maxDifficulty - minDifficulty));
-
-                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, memDifficulty, clientSecret);
-
-                isValid = cpuTicket !== null && isMemValid;
-                if (isValid) ticket = cpuTicket; // Reuse the ticket generated by the CPU verification
-            } else if (pow_type === "tsp") {
-                // Logic for TSP remains the same
-                // ...
+    if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
+        // Honeypot: Direct probing of challenge endpoints is highly suspicious.
+        // A legitimate user only hits these endpoints via the challenge page itself.
+        // If we see a pow_nonce on a request that IS suspicious but has no valid ticket,
+        // AND it's not a legitimate response to a challenge we issued, it's a probe.
+        const isChallengeResponse = query.pow_solution || (query.pow_solution_cpu && query.pow_solution_mem);
+        if (pow_nonce && !isChallengeResponse) {
+            if (logger) {
+                logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now() });
             }
-
-            if (isValid) {
-                // The secret has been used, delete it to prevent replay.
-                if (clientSecret) {
-                    await store.delete(`secret:${pow_nonce}`);
-                }
-
-                if (!ticket) {
-                    // If the ticket has not already been generated (CPU case)
-                    const expiry = Date.now() + 3600000; // 1 heure
-                    const signature = crypto
-                        .createHmac("sha256", getPowSecret())
-                        .update(`${clientIp}:${expiry}`)
-                        .digest("hex");
-                    ticket = `${expiry}:${signature}`;
-                }
-
-                if (logger) {
-                    logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: finalScore, challengeType: pow_type, timestamp: Date.now() });
-                }
-
-                return {
-                  action: 'redirect',
-                  path: path,
-                  score: finalScore,
-                  vector: suspicionVector,
-                  cookie: {
-                    name: 'pow_clearance',
-                    value: ticket,
-                    options: {
-                      httpOnly: true,
-                      secure: this.isProduction,
-                      maxAge: 3600000,
-                    }
-                  }
-                };
-            }
+            suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
+            const newFinalScore = finalScore - (honeypotScore * (weights.honeypotScore || 0)) + (100 * (weights.honeypotScore || 0));
+            return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
         }
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
         const clientSecret = crypto.randomBytes(16).toString("hex");
-
-        // Store the secret with a short TTL (e.g., 5 minutes)
-        await store.set(`secret:${nonce}`, clientSecret, 300);
-
-        // Associate the current challenge nonce with the device for trap URL verification later.
-        if (deviceData) {
-            deviceData.lastChallengeNonce = nonce; // No TTL, part of the main device object
-            await store.set(`device:${cookies.device_id}`, deviceData);
-        }
-
-        if (logger) {
-            logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
-        }
 
         // LEVEL 3: CAPTCHA (the highest)
         if (isSuspiciousHigh) {
@@ -1449,7 +1542,7 @@ export class FingerprintEngine {
         }
 
         // UNIFIED CHALLENGE LOGIC for all suspicion levels (low, medium, high)
-        if (isSuspicious || requiresChallengeForNewDevice) { // Couvre à la fois low et medium
+        if (isSuspicious) { // Couvre à la fois low et medium
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce));
@@ -1466,10 +1559,44 @@ export class FingerprintEngine {
             const maxMemDifficulty = 48;  // 48Mo pour les plus suspects
             const memDifficulty = Math.round(minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty));
 
-            // Always use the combined page, even if memory difficulty is 0 (it will be almost instant).
-            const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
-            const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret).replace('</body>', `${trapContainer}</body>`);
-            return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
+            // Store the entire challenge context with a short TTL (e.g., 5 minutes)
+            await store.set(`secret:${nonce}`, {
+                clientSecret,
+                cpuTarget: cpuChallengeDetails.target,
+                memDifficulty: memDifficulty
+            }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
+
+            // Associate the current challenge nonce with the device for trap URL verification later.
+            if (deviceData) {
+                deviceData.lastChallengeNonce = nonce;
+                await store.set(`device:${deviceId}`, deviceData); // Utiliser le deviceId résolu, pas celui des cookies
+            }
+
+            if (logger) {
+                logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
+            }
+
+            // Check if the request is an API request to return a JSON challenge
+            const isApi = this.securityConfig.thresholds?.isApiRequest?.(requestContext);
+
+            if (isApi) {
+                // For API clients, send a JSON response with challenge details.
+                const challengePayload = {
+                    challenge: {
+                        type: 'cpu_mem',
+                        nonce: nonce,
+                        clientSecret: clientSecret, // The client needs this to solve the challenge
+                        cpuTarget: cpuChallengeDetails.target,
+                        memDifficulty: memDifficulty,
+                    }
+                };
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: challengePayload };
+            } else {
+                // For browsers, send the HTML page.
+                const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
+                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret).replace('</body>', `${trapContainer}</body>`);
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
+            }
         }
     }
 
@@ -1521,8 +1648,9 @@ export class FingerprintEngine {
       vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
       vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
-      honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +      
-      requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0);
+      honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +
+      requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0) +
+      vector.behaviorScore * (this.securityConfig.weights.behaviorScore || 0);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
     if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
@@ -1661,10 +1789,11 @@ export const powMiddleware = (securityConfig) => {
       body: req.body,
       headers: req.headers,
       isStatic: isStaticResource(req.path),
+      // Pass the original request object for the isApiRequest function
+      rawReq: req,
       // Add the newly required properties for full decoupling
       rawHeaders: req.rawHeaders,
       // Pass the raw request object for advanced inspection (e.g., JA3)
-      rawReq: req,
       httpVersion: req.httpVersion,
     };
 
@@ -1685,7 +1814,11 @@ export const powMiddleware = (securityConfig) => {
       case 'block':
         return res.status(decision.status).send(decision.body);
 
-      case 'challenge':
+      case 'challenge': // Gère à la fois les réponses HTML et JSON
+        if (typeof decision.body === 'object' && decision.body !== null) {
+          return res.status(decision.status).json(decision.body);
+        }
+        // Par défaut, envoie du HTML
         return res.status(decision.status).send(decision.body);
 
       case 'redirect':
@@ -1712,7 +1845,9 @@ export const __internal = {
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
     calculateTarget,
+    determineOptimalTicketTtl,
     getRequestPatternScore, // Expose for testing
+    getBehaviorScore, // Expose for testing
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---

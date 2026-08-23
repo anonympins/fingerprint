@@ -8,7 +8,7 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run --reporter=verbose"
   },
   "files": [
     "fingerprint.js",

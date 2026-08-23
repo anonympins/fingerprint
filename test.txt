@@ -1,0 +1,28 @@
+Release Notes - v0.0.9
+
+Cette version introduit des fonctionnalités majeures pour la scalabilité, la sécurité et la facilité d'utilisation, ainsi que des améliorations significatives de la documentation.
+
+### ✨ Nouvelles Fonctionnalités
+
+*   **Adaptateurs de Stockage Externes (c88af59, 99ca8ee)** :
+    *   Introduction de la prise en charge des datastores externes pour permettre la persistance et la scalabilité sur plusieurs instances de serveur.
+    *   Ajout d'adaptateurs prêts à l'emploi pour **Redis** (`redis-store.js`), **MongoDB** (`mongodb-store.js`) et les bases de données **SQL** via Knex (`sql-store.js`).
+    *   Ces adaptateurs gèrent automatiquement l'expiration des données temporaires (TTL), comme les secrets des challenges PoW.
+
+*   **Liste Blanche (Whitelist) d'IP et de Réseaux (33142b3)** :
+    *   Une nouvelle option de configuration `whitelist` a été ajoutée pour permettre de contourner toutes les vérifications de sécurité pour des adresses IP ou des plages CIDR de confiance.
+    *   Ceci est utile pour les outils internes, les partenaires de confiance ou les services de monitoring.
+
+### 🚀 Améliorations
+
+*   **Initialisation Unifiée Côté Client (75f16b5)** :
+    *   Ajout de la fonction `initializeClient` dans la bibliothèque client (`fingerprint.client.js`) pour configurer toutes les protections (suivi de la souris, des frappes, honeypots, interception de fetch) via un seul objet de configuration simple.
+
+*   **Documentation Améliorée (811036e)** :
+    *   Le fichier `README.md` a été entièrement revu pour inclure des explications détaillées sur les nouveaux adaptateurs de stockage, la configuration de la liste blanche, et la nouvelle fonction d'initialisation `initializeClient`.
+
+### 🐛 Corrections
+
+*   **Dépendances et Tests (e246a39, dc80343)** :
+    *   Correction des dépendances `peerDependencies` dans `package.json` pour les rendre optionnelles, évitant des installations inutiles.
+    *   Mise à jour et correction des tests unitaires pour assurer la stabilité et la compatibilité avec les nouvelles fonctionnalités.

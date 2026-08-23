@@ -25,7 +25,7 @@ The process unfolds in three steps:
     *   **Low to Medium Suspicion**: A combined CPU and Memory Proof-of-Work (PoW) challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
     *   **High Suspicion**: For the most suspicious requests, the system issues a high-difficulty combined CPU/Memory challenge. The architecture allows for plugging in more complex challenges like CAPTCHAs if needed.
 
-Once the challenge is solved, a clearance "ticket" is issued via a secure cookie, exempting the user from new challenges for a set period.
+Once the challenge is solved, a clearance "ticket" is issued via a secure cookie, exempting the user from new challenges for a set period. For API clients, the challenge is delivered as a `429` JSON response, and the client is expected to solve it and retry the request.
 
 ## Features
 
@@ -81,21 +81,33 @@ const securityConfig = {
         headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
         requestPatternScore: 0.6,// Penalizes bot-like request sequences (scraping, etc.)
         inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
+        behaviorScore: 0.7,    // Penalizes non-human interactions (no mouse/keyboard activity)
         honeypotScore: 1.0       // Strongly penalizes bots filling hidden form fields
     },
+    // A new, non-suspicious device will always have its score adjusted to a minimum of 1, ensuring it receives a minimal, almost imperceptible challenge on its first visit.
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued
         medium: 45, // Score for a more difficult combined CPU/Memory challenge
         high: 75,   // Score for a very difficult challenge
         block: 95,  // Score above which the request is blocked outright (HTTP 403)
-        isStaticResource: (req) => req.path.startsWith('/static/') // Optional: Custom function to identify static resources
+        isStaticResource: (req) => req.path.startsWith('/static/'), // Optional: Custom function to identify static resources
+        isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json') // Optional: Custom function to identify API requests
     },
+    // (Optional) Configure the duration (in milliseconds) for various temporary data.
+    ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
+    challengeTtl: 300000, // 5 minutes. Time during which a challenge nonce is valid.
+    deviceIdCookieMaxAge: undefined, // By default, it's a session cookie. Set a value in ms for a persistent cookie.
+
     patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
-        velocityThreshold: 200, // ms between requests to be considered "fast"
-        burstThreshold: 500,    // ms for identical requests to be a "burst"
-        scrapeThreshold: 1000,  // ms for sequential requests to be "scraping"
-        historySize: 10,        // Number of requests to keep for pattern analysis
-        decayFactor: 0.9,       // How quickly the pattern score decays over time
+        velocityThreshold: 200,   // ms between requests to be considered "fast"
+        burstThreshold: 500,      // ms for identical requests to be a "burst"
+        scrapeThreshold: 1000,    // ms for sequential requests to be "scraping"
+        scrapeBurstWeight: 40,    // Additional weight for repeated scraping patterns
+        sequenceLength: 3,        // Length of a request sequence to detect (e.g., A->B->C)
+        sequenceWeight: 60,       // Penalty for repeating a sequence
+        historySize: 10,          // Number of requests to keep for pattern analysis
+        decayFactor: 0.9,         // How quickly the pattern score decays over time
+        inactivityReset: 30000,   // ms of inactivity after which the pattern score is reset
     },
     honeypot: {
         // List of field names that are traps for bots.
@@ -344,9 +356,13 @@ initializeClient({
   // (Optional) Enables automatic protection for `fetch` requests.
   // If the `fetch` object is present, the protection is active.
   fetch: {
-    // (Optional) An array of domains to protect. If empty or not provided,
-    // it protects same-origin requests by default.
-    targetDomains: ['api.yourdomain.com', 'auth.yourdomain.com']
+    // (Optional) An array of domains to protect. If empty or not provided, it protects same-origin requests by default.
+    targetDomains: ['api.yourdomain.com', 'auth.yourdomain.com'],
+    
+    // (Optional, default: true) If enabled, the client will automatically intercept 429 challenge responses,
+    // solve the PoW in the background, and retry the original request with the solution.
+    // This makes the protection seamless for API clients that use this library.
+    handleChallenges: true
   }
 });
 ```
