@@ -4,6 +4,9 @@ import { BlockList } from "node:net";
 import dns from "node:dns/promises";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
@@ -17,6 +20,86 @@ const getPowSecret = () => {
     throw new Error('POW_SECRET environment variable is not set. This is required for production.');
   }
   return secret || "fallback-dev-secret-32-chars-minimum";
+};
+
+/**
+ * Loads the pow.solver.js content for inlining in HTML pages.
+ * @returns {string} The solver JavaScript code.
+ */
+const getPowSolverCode = () => {
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const solverPath = join(__dirname, 'pow.solver.js');
+    return readFileSync(solverPath, 'utf-8');
+  } catch (error) {
+    console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
+    // Fallback inline code if file cannot be loaded
+    return `(function(global){
+        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){
+            const cpuTarget = BigInt(target);
+            let cpuSolution = 0;
+            while(true){
+                const msg = clientSecret ? clientIp+':'+nonce+':'+cpuSolution+':'+clientSecret : clientIp+':'+nonce+':'+cpuSolution;
+                const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
+                const hashHex = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+                if(BigInt('0x'+hashHex) < cpuTarget) break;
+                cpuSolution++;
+                if(cpuSolution % 100000 === 0) await new Promise(r=>setTimeout(r,0));
+            }
+            return cpuSolution;
+        }
+        async function solveMemory(seed, difficulty){
+            const size = difficulty * 1024 * 1024;
+            const buffer = new Uint32Array(size / 4);
+            let h = new TextEncoder().encode(seed).reduce((acc,v)=>acc+v,0);
+            for(let i=0;i<buffer.length;i++) buffer[i] = h = Math.imul(h^i,1597334677);
+            let solution = 0;
+            const iterations = size / 16;
+            let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+            for(let i=0;i<iterations;i++){
+                addr = buffer[addr] % buffer.length;
+                solution ^= addr;
+            }
+            return solution;
+        }
+        async function solveTsp(cities, targetMaxDistance){
+            function distance(c1,c2){return Math.sqrt(Math.pow(c1.x-c2.x,2)+Math.pow(c1.y-c2.y,2));}
+            function evaluatePathDistance(cities,path){
+                let total=0;
+                for(let i=0;i<path.length-1;i++) total+=distance(cities[path[i]],cities[path[i+1]]);
+                total+=distance(cities[path[path.length-1]],cities[path[0]]);
+                return total;
+            }
+            function solveTspNearestNeighbor(cities){
+                const n=cities.length;
+                if(n===0)return[];
+                let path=[0];
+                let visited=new Array(n).fill(false);
+                visited[0]=true;
+                for(let i=1;i<n;i++){
+                    let nearest=-1, minDist=Infinity;
+                    for(let j=0;j<n;j++){
+                        if(!visited[j]){
+                            const d=distance(cities[path[i-1]],cities[j]);
+                            if(d<minDist){minDist=d;nearest=j;}
+                        }
+                    }
+                    path.push(nearest);
+                    visited[nearest]=true;
+                }
+                return path;
+            }
+            await new Promise(r=>setTimeout(r,10));
+            const solutionPath=solveTspNearestNeighbor(cities);
+            const solutionDistance=evaluatePathDistance(cities,solutionPath);
+            return{path:solutionPath,distance:solutionDistance};
+        }
+        global.solveCpuChallengeInline=solveCpuTargetInline;
+        global.solveMemoryChallenge=solveMemory;
+        global.solveTspChallenge=solveTsp;
+    })(typeof window!=='undefined'?window:global);`;
+  }
 };
 
 /**
@@ -116,6 +199,7 @@ const generateTspChallenge = (
   path = "",
 ) => {
   const citiesJson = JSON.stringify(cities);
+  const solverCode = getPowSolverCode();
   return `
       <html>
         <head><title>Advanced Security Check (Level 3)</title></head>
@@ -123,66 +207,17 @@ const generateTspChallenge = (
           <h1>Ultimate Verification (Level 3)</h1>
           <p>Please solve this small optimization problem to prove you are human.</p>
           <div id="loader" style="margin:20px;">⚙️ Calculating route... (${numCities} cities)</div>
+          <script>${solverCode}</script>
           <script>
             const cities = ${citiesJson};
             const nonce = "${nonce}";
             const targetMaxDistance = ${targetMaxDistance};
 
-            // Utility function to calculate the distance between two cities
-            function distance(city1, city2) {
-                return Math.sqrt(Math.pow(city1.x - city2.x, 2) + Math.pow(city1.y - city2.y, 2));
-            }
-
-            // Utility function to evaluate the total distance of a path
-            function evaluatePathDistance(cities, path) {
-                let totalDistance = 0;
-                for (let i = 0; i < path.length - 1; i++) {
-                    totalDistance += distance(cities[path[i]], cities[path[i + 1]]);
-                }
-                totalDistance += distance(cities[path[path.length - 1]], cities[path[0]]); // Return to start
-                return totalDistance;
-            }
-
-            // Solveur simple du TSP (heuristique du plus proche voisin)
-            function solveTspNearestNeighbor(cities) {
-                const numCities = cities.length;
-                if (numCities === 0) return [];
-
-                let currentPath = [];
-                let visited = new Array(numCities).fill(false);
-
-                let currentCityIndex = 0; // Always start with the first city for reproducibility
-                currentPath.push(currentCityIndex);
-                visited[currentCityIndex] = true;
-
-                for (let i = 1; i < numCities; i++) {
-                    let nearestCityIndex = -1;
-                    let minDistance = Infinity;
-
-                    for (let j = 0; j < numCities; j++) {
-                        if (!visited[j]) {
-                            const dist = distance(cities[currentCityIndex], cities[j]);
-                            if (dist < minDistance) {
-                                minDistance = dist;
-                                nearestCityIndex = j;
-                            }
-                        }
-                    }
-                    currentCityIndex = nearestCityIndex;
-                    currentPath.push(currentCityIndex);
-                    visited[currentCityIndex] = true;
-                }
-                return currentPath;
-            }
-
             async function solve() {
-              // To avoid freezing the browser, yield the thread from time to time
-              await new Promise(resolve => setTimeout(resolve, 10));
-              const solutionPath = solveTspNearestNeighbor(cities);
-              const solutionDistance = evaluatePathDistance(cities, solutionPath);
-
-              if (solutionDistance <= targetMaxDistance) {
-                window.location.href = "${path}" + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(solutionPath);
+              const result = await window.solveTspChallenge(cities, targetMaxDistance);
+              
+              if (result.distance <= targetMaxDistance) {
+                window.location.href = "${path}" + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(result.path);
               } else {
                 document.getElementById('loader').innerText = "Error: Could not find a sufficient solution. Please try again.";
               }
@@ -1023,27 +1058,23 @@ export function generateCpuTargetChallenge(
  */
 function generateCpuTargetChallengePage(challengeDetails, clientIp) {
     const { nonce, target, path } = challengeDetails;
+    const solverCode = getPowSolverCode();
     return `
       <html><head><title>Security Check</title></head>
       <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
         <h1>Please wait... (Level 1)</h1>
         <p>We are verifying that you are not a bot. This may take a few seconds.</p>
         <div id="loader" style="margin:20px;">⚙️ Performing CPU security calculation...</div>
+        <script>${solverCode}</script>
         <script>
           async function solve() {
-            const target = BigInt("0x${target}");
-            let solution = 0;
-            while (true) {
-              const msg = "${clientIp}:${nonce}:" + solution;
-              const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-              const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-              if (BigInt('0x' + hashHex) < target) {
-                window.location.href = "${path}?pow_type=cpu_target&pow_nonce=${nonce}&pow_solution=" + solution;
-                break;
-              }
-              solution++;
-              if (solution % 100000 === 0) await new Promise(r => setTimeout(r, 0));
-            }
+            const clientIp = "${clientIp}";
+            const nonce = "${nonce}";
+            const cpuTarget = BigInt("0x${target}");
+            const solution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, null, (progress) => {
+                // Optional progress callback
+            });
+            window.location.href = "${path}?pow_type=cpu_target&pow_nonce=${nonce}&pow_solution=" + solution;
           }
           solve();
         </script>
@@ -1059,49 +1090,37 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  */
 function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret) {
     const { nonce, target, path } = cpuChallengeDetails;
+    const solverCode = getPowSolverCode();
     return `
       <html><head><title>Advanced Security Check</title></head>
       <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
         <h1>Enhanced Verification... (Level 2)</h1>
         <p>Your activity requires an additional security check. This may take a few moments.</p>
         <div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div>
+        <script>${solverCode}</script>
         <script>
           async function solve() {
             const nonce = "${nonce}";
             const path = "${path}";
-            const clientSecret = "${clientSecret}"; // Secret is now available to the client
+            const clientSecret = "${clientSecret}";
+            const clientIp = "${clientIp}";
+            const cpuTarget = BigInt("0x${target}");
+            const memDifficulty = ${memoryDifficulty};
 
             // --- CPU Challenge ---
             document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
-            const cpuTarget = BigInt("0x${target}");
-            let cpuSolution = 0;
-            while (true) {
-              const msg = "${clientIp}:${nonce}:" + cpuSolution + ":" + clientSecret;
-              const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-              const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-              if (BigInt('0x' + hashHex) < cpuTarget) break;
-              cpuSolution++;
-              if (cpuSolution % 100000 === 0) await new Promise(r => setTimeout(r, 0));
-            }
+            const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {
+                // Optional progress callback
+            });
 
             // --- Memory Challenge ---
-            document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (${memoryDifficulty} MB)';
+            document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
             await new Promise(r => setTimeout(r, 10)); // Yield to update UI
 
             let memSolution = 0;
             try {
-                const size = ${memoryDifficulty} * 1024 * 1024;
-                const iterations = size / 16;
-                const buffer = new Uint32Array(size / 4);
-                const seed = nonce + ":" + clientSecret;
-                let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
-                for (let i = 0; i < buffer.length; i++) {
-                    buffer[i] = h = Math.imul(h ^ i, 1597334677);
-                }
-                for(let i = 0; i < iterations; i++) {
-                    const addr = buffer[i % buffer.length] % buffer.length;
-                    memSolution ^= buffer[addr];
-                }
+                const memSeed = nonce + ":" + clientSecret;
+                memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);
             } catch(e) {
                 document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
                 return;
