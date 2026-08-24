@@ -177,6 +177,9 @@ export function getDeviceHash(context) {
     // Add JA3 hash if available. This is a very strong signal.
     const ja3 = getJa3Hash(context);
     if (ja3) srv.add("ja3", ja3);
+    srv.add("al", context.headers["accept-language"] || "missing");
+    srv.add("ae", context.headers["accept-encoding"] || "missing");
+    srv.add("con", context.headers["connection"] || "missing");
 
     srv.add("h_ord", getHeaderSignature(context));
     return srv.toString();
