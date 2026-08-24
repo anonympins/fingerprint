@@ -212,35 +212,6 @@ export function getDeviceHash(context) {
         srv.add("upgrade", context.headers["upgrade-insecure-requests"]);
     }
 
-    // 5. SIGNAL MOYEN: Accept headers
-    srv.add("al", context.headers["accept-language"] || "missing");
-    srv.add("ae", context.headers["accept-encoding"] || "missing");
-    srv.add("accept", context.headers["accept"] || "missing");
-
-    // 6. SIGNAL FAIBLE: Connection headers
-    srv.add("con", context.headers["connection"] || "missing");
-    if (context.headers["keep-alive"]) {
-        srv.add("keep_alive", context.headers["keep-alive"]);
-    }
-
-    // 7. SIGNAL FAIBLE: Cache et compression
-    if (context.headers["cache-control"]) {
-        srv.add("cache", context.headers["cache-control"]);
-    }
-    if (context.headers["pragma"]) {
-        srv.add("pragma", context.headers["pragma"]);
-    }
-
-    // 8. SIGNAL SPÉCIFIQUE: DNT (Do Not Track)
-    if (context.headers["dnt"]) {
-        srv.add("dnt", context.headers["dnt"]);
-    }
-
-    // 9. SIGNAL SPÉCIFIQUE: Referer Policy
-    if (context.headers["referer"]) {
-        srv.add("ref", normalizeReferer(context.headers["referer"]));
-    }
-
     // 10. SIGNAL FORT: Ordonnancement des headers
     srv.add("h_ord", getHeaderSignature(context));
 
