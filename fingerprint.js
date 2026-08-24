@@ -1112,7 +1112,7 @@ export const identifyRequest = (securityConfig) => async (req, res) => {
   // This function now acts as a lightweight wrapper around the engine's identifyRequest method.
   // It requires a default configuration to work.
   const config = securityConfig || {
-    weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8, honeypotScore: 1.0 },
+    weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.25, inconsistencyScore: 0.8, honeypotScore: 1.0 },
     thresholds: { low: 20, medium: 40, high: 75 },
     honeypot: { fields: [] } // Ensure honeypot config exists to prevent errors
   };
@@ -1886,7 +1886,7 @@ export class FingerprintEngine {
     const score =
       vector.historyScore * (this.securityConfig.weights.historyScore || 0.3) +
       vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
-      vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
+      vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.25) +
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
       honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +
       requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0) +

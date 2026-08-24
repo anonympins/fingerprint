@@ -1112,7 +1112,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
 
         const baseSecurityConfig = {
-            weights: { historyScore: 0.1, rotationScore: 0.1, headerAnomalyScore: 0.1, inconsistencyScore: 0.1, honeypotScore: 1.0 },
+            weights: { historyScore: 0.1, rotationScore: 0.1, headerAnomalyScore: 0.25, inconsistencyScore: 0.1, honeypotScore: 1.0 },
             thresholds: { low: 20, medium: 45, high: 75, block: 95 },
             honeypot: {
                 fields: ['email_confirm'],

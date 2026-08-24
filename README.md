@@ -78,7 +78,7 @@ const securityConfig = {
     weights: {
         historyScore: 0.3,       // Penalizes IP rotation (proxy)
         rotationScore: 0.5,      // Penalizes rapid fingerprint changes (user-agent, etc.)
-        headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
+        headerAnomalyScore: 0.25, // Penalizes abnormal headers (missing UA, etc.)
         requestPatternScore: 0.6,// Penalizes bot-like request sequences (scraping, etc.)
         inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
         behaviorScore: 0.7,    // Penalizes non-human interactions (no mouse/keyboard activity)
