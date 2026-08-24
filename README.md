@@ -97,7 +97,7 @@ const securityConfig = {
     ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
     challengeTtl: 300000, // 5 minutes. Time during which a challenge nonce is valid.
     deviceIdCookieMaxAge: undefined, // By default, it's a session cookie. Set a value in ms for a persistent cookie.
-
+    verbose: true, // set to true to log for fingerprint detection output
     patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
         velocityThreshold: 200,   // ms between requests to be considered "fast"
         burstThreshold: 500,      // ms for identical requests to be a "burst"
