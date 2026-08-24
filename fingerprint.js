@@ -1824,7 +1824,7 @@ export class FingerprintEngine {
                     }
                 };
                 this._log('API challenge response generated', { challengePayload });
-                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: challengePayload };
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
                 // For browsers, send the HTML page.
                 const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
@@ -1833,7 +1833,7 @@ export class FingerprintEngine {
                     pageLength: page.length, 
                     hasTrapContainer: true 
                 });
-                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: page };
             }
         }
     }

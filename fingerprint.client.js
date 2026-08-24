@@ -330,7 +330,7 @@ const ClientLibrary = {
    * @private
    */
   async solveChallengeAndRetry(response, resource, options) {
-    if (response.status !== 429) {
+    if (response.status !== 404) {
       return response;
     }
 

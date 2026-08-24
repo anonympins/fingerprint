@@ -402,7 +402,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         await powMiddleware(securityConfig)(req, res, next);
 
         // 3. Vérifier qu'un challenge est bien émis, même avec un score de 0
-        expect(sentStatus).toBe(429);
+        expect(sentStatus).toBe(404);
         expect(sentBody).toContain('Enhanced Verification');
         expect(next).not.toHaveBeenCalled();
     });
@@ -435,7 +435,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const middleware = powMiddleware(securityConfig);
       await middleware(req, res, next);
 
-      assert.strictEqual(sentStatus, 429, 'Status should be 429');
+      assert.strictEqual(sentStatus, 404, 'Status should be 404');
       assert.ok(sentBody.includes('Enhanced Verification'), 'Should send a combined challenge page even for low suspicion');
       assert.ok(sentBody.includes('Initializing combined verification...'), 'Challenge should always be the combined CPU+Mem type');
     });
@@ -459,7 +459,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
-      expect(sentStatus, 'Status should be 429').toBe(429);
+      expect(sentStatus, 'Status should be 404').toBe(404);
       expect(sentBody, 'Should send a combined challenge page for medium suspicion').toContain('Enhanced Verification');
       expect(sentBody, 'Challenge should be the combined CPU+Mem type').toContain('Initializing combined verification...');
     });
@@ -483,7 +483,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
-      expect(sentStatus, 'Status should be 429').toBe(429);
+      expect(sentStatus, 'Status should be 404').toBe(404);
       expect(sentBody, 'Should send a combined challenge page for high suspicion').toContain('Enhanced Verification');
     });
 
@@ -519,7 +519,7 @@ describe('Fingerprint & PoW Security Suite', () => {
 
       await powMiddleware(apiSecurityConfig)(req, res, next);
 
-      expect(sentStatus).toBe(429);
+      expect(sentStatus).toBe(404);
       expect(sentBody.challenge.type).toBe('cpu_mem');
       expect(sentBody.challenge).toHaveProperty('nonce');
       expect(sentBody.challenge).toHaveProperty('cpuTarget');
@@ -646,7 +646,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(res.redirect).not.toHaveBeenCalled();
-      expect(sentStatus, 'Should return status 429 to re-issue a challenge').toBe(429);
+      expect(sentStatus, 'Should return status 404 to re-issue a challenge').toBe(404);
       expect(sentBody, 'Should send a new challenge page').toContain('Enhanced Verification');
     });
 
