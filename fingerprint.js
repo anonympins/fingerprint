@@ -4,6 +4,9 @@ import { BlockList } from "node:net";
 import dns from "node:dns/promises";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
@@ -17,6 +20,86 @@ const getPowSecret = () => {
     throw new Error('POW_SECRET environment variable is not set. This is required for production.');
   }
   return secret || "fallback-dev-secret-32-chars-minimum";
+};
+
+/**
+ * Loads the pow.solver.js content for inlining in HTML pages.
+ * @returns {string} The solver JavaScript code.
+ */
+const getPowSolverCode = () => {
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    const solverPath = join(__dirname, 'pow.solver.js');
+    return readFileSync(solverPath, 'utf-8');
+  } catch (error) {
+    console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
+    // Fallback inline code if file cannot be loaded
+    return `(function(global){
+        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){
+            const cpuTarget = BigInt(target);
+            let cpuSolution = 0;
+            while(true){
+                const msg = clientSecret ? clientIp+':'+nonce+':'+cpuSolution+':'+clientSecret : clientIp+':'+nonce+':'+cpuSolution;
+                const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
+                const hashHex = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+                if(BigInt('0x'+hashHex) < cpuTarget) break;
+                cpuSolution++;
+                if(cpuSolution % 100000 === 0) await new Promise(r=>setTimeout(r,0));
+            }
+            return cpuSolution;
+        }
+        async function solveMemory(seed, difficulty){
+            const size = difficulty * 1024 * 1024;
+            const buffer = new Uint32Array(size / 4);
+            let h = new TextEncoder().encode(seed).reduce((acc,v)=>acc+v,0);
+            for(let i=0;i<buffer.length;i++) buffer[i] = h = Math.imul(h^i,1597334677);
+            let solution = 0;
+            const iterations = size / 16;
+            let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+            for(let i=0;i<iterations;i++){
+                addr = buffer[addr] % buffer.length;
+                solution ^= addr;
+            }
+            return solution;
+        }
+        async function solveTsp(cities, targetMaxDistance){
+            function distance(c1,c2){return Math.sqrt(Math.pow(c1.x-c2.x,2)+Math.pow(c1.y-c2.y,2));}
+            function evaluatePathDistance(cities,path){
+                let total=0;
+                for(let i=0;i<path.length-1;i++) total+=distance(cities[path[i]],cities[path[i+1]]);
+                total+=distance(cities[path[path.length-1]],cities[path[0]]);
+                return total;
+            }
+            function solveTspNearestNeighbor(cities){
+                const n=cities.length;
+                if(n===0)return[];
+                let path=[0];
+                let visited=new Array(n).fill(false);
+                visited[0]=true;
+                for(let i=1;i<n;i++){
+                    let nearest=-1, minDist=Infinity;
+                    for(let j=0;j<n;j++){
+                        if(!visited[j]){
+                            const d=distance(cities[path[i-1]],cities[j]);
+                            if(d<minDist){minDist=d;nearest=j;}
+                        }
+                    }
+                    path.push(nearest);
+                    visited[nearest]=true;
+                }
+                return path;
+            }
+            await new Promise(r=>setTimeout(r,10));
+            const solutionPath=solveTspNearestNeighbor(cities);
+            const solutionDistance=evaluatePathDistance(cities,solutionPath);
+            return{path:solutionPath,distance:solutionDistance};
+        }
+        global.solveCpuChallengeInline=solveCpuTargetInline;
+        global.solveMemoryChallenge=solveMemory;
+        global.solveTspChallenge=solveTsp;
+    })(typeof window!=='undefined'?window:global);`;
+  }
 };
 
 /**
@@ -116,6 +199,7 @@ const generateTspChallenge = (
   path = "",
 ) => {
   const citiesJson = JSON.stringify(cities);
+  const solverCode = getPowSolverCode();
   return `
       <html>
         <head><title>Advanced Security Check (Level 3)</title></head>
@@ -123,66 +207,17 @@ const generateTspChallenge = (
           <h1>Ultimate Verification (Level 3)</h1>
           <p>Please solve this small optimization problem to prove you are human.</p>
           <div id="loader" style="margin:20px;">⚙️ Calculating route... (${numCities} cities)</div>
+          <script>${solverCode}</script>
           <script>
             const cities = ${citiesJson};
             const nonce = "${nonce}";
             const targetMaxDistance = ${targetMaxDistance};
 
-            // Utility function to calculate the distance between two cities
-            function distance(city1, city2) {
-                return Math.sqrt(Math.pow(city1.x - city2.x, 2) + Math.pow(city1.y - city2.y, 2));
-            }
-
-            // Utility function to evaluate the total distance of a path
-            function evaluatePathDistance(cities, path) {
-                let totalDistance = 0;
-                for (let i = 0; i < path.length - 1; i++) {
-                    totalDistance += distance(cities[path[i]], cities[path[i + 1]]);
-                }
-                totalDistance += distance(cities[path[path.length - 1]], cities[path[0]]); // Return to start
-                return totalDistance;
-            }
-
-            // Solveur simple du TSP (heuristique du plus proche voisin)
-            function solveTspNearestNeighbor(cities) {
-                const numCities = cities.length;
-                if (numCities === 0) return [];
-
-                let currentPath = [];
-                let visited = new Array(numCities).fill(false);
-
-                let currentCityIndex = 0; // Always start with the first city for reproducibility
-                currentPath.push(currentCityIndex);
-                visited[currentCityIndex] = true;
-
-                for (let i = 1; i < numCities; i++) {
-                    let nearestCityIndex = -1;
-                    let minDistance = Infinity;
-
-                    for (let j = 0; j < numCities; j++) {
-                        if (!visited[j]) {
-                            const dist = distance(cities[currentCityIndex], cities[j]);
-                            if (dist < minDistance) {
-                                minDistance = dist;
-                                nearestCityIndex = j;
-                            }
-                        }
-                    }
-                    currentCityIndex = nearestCityIndex;
-                    currentPath.push(currentCityIndex);
-                    visited[currentCityIndex] = true;
-                }
-                return currentPath;
-            }
-
             async function solve() {
-              // To avoid freezing the browser, yield the thread from time to time
-              await new Promise(resolve => setTimeout(resolve, 10));
-              const solutionPath = solveTspNearestNeighbor(cities);
-              const solutionDistance = evaluatePathDistance(cities, solutionPath);
-
-              if (solutionDistance <= targetMaxDistance) {
-                window.location.href = "${path}" + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(solutionPath);
+              const result = await window.solveTspChallenge(cities, targetMaxDistance);
+              
+              if (result.distance <= targetMaxDistance) {
+                window.location.href = "${path}" + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(result.path);
               } else {
                 document.getElementById('loader').innerText = "Error: Could not find a sufficient solution. Please try again.";
               }
@@ -507,42 +542,19 @@ function getHoneypotScore(context, honeypotConfig = {}) {
       }
   }
 
-  // 3. Check for injection attempts in values
   if (detectInjections) {
-    // Regex for common SQL injection patterns
-    // WARNING: These are generic and may cause false positives.
-    // Consider using a dedicated WAF library or more specific regex for your application.
-    const sqlRegex = new RegExp(
-      "('|\"|;|--|#|/\\*.*\\*/)|\\b(union|select|insert|update|delete|drop|truncate|from|where|and|or)\\b",
-      "i"
-    );
-    // Regex for common NoSQL (MongoDB) injection patterns (e.g., keys starting with '$')
-    // This looks for keys like "$where", "$ne", etc. in a stringified JSON.
-    const nosqlKeyRegex = /"\$(where|ne|gt|lt|in|nin)":/;
-    // Regex for common Remote Code Execution (RCE) patterns
-    const rceRegex = new RegExp(
-      // File traversal, command execution functions, and shell commands
-      // Added process, child_process to catch Node.js specific RCE.
-      "(\\.\\./|\\.\\.\\\\)|\\b(exec|system|shell_exec|passthru|popen|proc_open|eval|assert|require|include|process|child_process)(_once)?\\s*\\(|\\b(wget|curl|bash|sh|powershell|php)\\b",
-      "i"
-    );
-    // Regex for Log4Shell (JNDI injection)
-    const log4shellRegex = new RegExp("\\$\\{jndi:", "i");
-    // Regex for Server-Side Template Injection (SSTI)
-    const sstiRegex = new RegExp(
-      "(\\{\\{|\\{%|#\\{)[^}]+(config|settings|self|class|application|request|session|process|env)", "i"
-    );
-
+    // 3. Check for injection attempts in values using the centralized isMalicious function.
     const inspect = (obj) => {
         for (const key in obj) {
             if (Object.prototype.hasOwnProperty.call(obj, key)) {
                 const value = obj[key];
                 if (typeof value === 'string') {
-                    if (rceRegex.test(value) || sqlRegex.test(value) || log4shellRegex.test(value) || sstiRegex.test(value)) return true;
+                    if (isMalicious(value)) return true;
                 } else if (typeof value === 'object' && value !== null) {
-                    // For NoSQL, we check the stringified version of the object to find keys like "$gt"
-                    // This is more accurate when done on the object itself.
-                    if (nosqlKeyRegex.test(JSON.stringify(value))) return true;
+                    // For nested objects (like in NoSQL injections), we stringify them once
+                    // to check for malicious patterns within their structure or values.
+                    if (isMalicious(JSON.stringify(value))) return true;
+                    // Then, we recurse to check individual string values inside.
                     if (inspect(value)) return true;
                 }
             }
@@ -892,6 +904,9 @@ async function getBehavioralIndicators(context, deviceData) {
  * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number, honeypotScore: number}>}
  */
 export const getSuspicionVector = async (context, securityConfig) => {
+    // On récupère la configuration du honeypot pour l'utiliser ici.
+    const honeypotConfig = securityConfig.honeypot || {};
+
     const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context, securityConfig);
 
   const clientIp = context.clientIp;
@@ -923,6 +938,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
   const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
 
+  // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
+  const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
+
   const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
@@ -934,8 +952,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Array.isArray(deviceData.ips)) {
       deviceData.ips = new Set(deviceData.ips);
   }
-  // Correction : Ajouter behaviorScore à l'objet retourné
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, requestPatternScore };
+  // Le vecteur de suspicion est maintenant complet.
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, requestPatternScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1040,27 +1058,23 @@ export function generateCpuTargetChallenge(
  */
 function generateCpuTargetChallengePage(challengeDetails, clientIp) {
     const { nonce, target, path } = challengeDetails;
+    const solverCode = getPowSolverCode();
     return `
       <html><head><title>Security Check</title></head>
       <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
         <h1>Please wait... (Level 1)</h1>
         <p>We are verifying that you are not a bot. This may take a few seconds.</p>
         <div id="loader" style="margin:20px;">⚙️ Performing CPU security calculation...</div>
+        <script>${solverCode}</script>
         <script>
           async function solve() {
-            const target = BigInt("0x${target}");
-            let solution = 0;
-            while (true) {
-              const msg = "${clientIp}:${nonce}:" + solution;
-              const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-              const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-              if (BigInt('0x' + hashHex) < target) {
-                window.location.href = "${path}?pow_type=cpu_target&pow_nonce=${nonce}&pow_solution=" + solution;
-                break;
-              }
-              solution++;
-              if (solution % 100000 === 0) await new Promise(r => setTimeout(r, 0));
-            }
+            const clientIp = "${clientIp}";
+            const nonce = "${nonce}";
+            const cpuTarget = BigInt("0x${target}");
+            const solution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, null, (progress) => {
+                // Optional progress callback
+            });
+            window.location.href = "${path}?pow_type=cpu_target&pow_nonce=${nonce}&pow_solution=" + solution;
           }
           solve();
         </script>
@@ -1076,49 +1090,37 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  */
 function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret) {
     const { nonce, target, path } = cpuChallengeDetails;
+    const solverCode = getPowSolverCode();
     return `
       <html><head><title>Advanced Security Check</title></head>
       <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
         <h1>Enhanced Verification... (Level 2)</h1>
         <p>Your activity requires an additional security check. This may take a few moments.</p>
         <div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div>
+        <script>${solverCode}</script>
         <script>
           async function solve() {
             const nonce = "${nonce}";
             const path = "${path}";
-            const clientSecret = "${clientSecret}"; // Secret is now available to the client
+            const clientSecret = "${clientSecret}";
+            const clientIp = "${clientIp}";
+            const cpuTarget = BigInt("0x${target}");
+            const memDifficulty = ${memoryDifficulty};
 
             // --- CPU Challenge ---
             document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
-            const cpuTarget = BigInt("0x${target}");
-            let cpuSolution = 0;
-            while (true) {
-              const msg = "${clientIp}:${nonce}:" + cpuSolution + ":" + clientSecret;
-              const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-              const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-              if (BigInt('0x' + hashHex) < cpuTarget) break;
-              cpuSolution++;
-              if (cpuSolution % 100000 === 0) await new Promise(r => setTimeout(r, 0));
-            }
+            const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {
+                // Optional progress callback
+            });
 
             // --- Memory Challenge ---
-            document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (${memoryDifficulty} MB)';
+            document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
             await new Promise(r => setTimeout(r, 10)); // Yield to update UI
 
             let memSolution = 0;
             try {
-                const size = ${memoryDifficulty} * 1024 * 1024;
-                const iterations = size / 16;
-                const buffer = new Uint32Array(size / 4);
-                const seed = nonce + ":" + clientSecret;
-                let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
-                for (let i = 0; i < buffer.length; i++) {
-                    buffer[i] = h = Math.imul(h ^ i, 1597334677);
-                }
-                for(let i = 0; i < iterations; i++) {
-                    const addr = buffer[i % buffer.length] % buffer.length;
-                    memSolution ^= buffer[addr];
-                }
+                const memSeed = nonce + ":" + clientSecret;
+                memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);
             } catch(e) {
                 document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
                 return;
@@ -1236,6 +1238,27 @@ function determineOptimalTicketTtl(suspicionScore) {
     return bestResult.solution;
 }
 
+/**
+ * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
+ * @param {string} str - La chaîne à vérifier.
+ * @returns {boolean} - True si un pattern malveillant est détecté.
+ * @private
+ */
+function isMalicious(str) {
+    // Regex pour les injections SQL et NoSQL de base
+    // Ajout de la détection des injections basées sur le temps (SLEEP, BENCHMARK, WAITFOR) et d'autres commandes dangereuses.
+    const injectionRegex = /(\$ne|' OR '1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i;
+    // Regex pour les injections plus avancées
+    const log4ShellRegex = /\$\{jndi:(ldap|rmi|dns):/i;
+    const sstiRegex = /\{\{.*\}\}|\{%.*%\}/; // Détecte les syntaxes de type Jinja2, Twig, etc.
+    const xxeRegex = /<!ENTITY\s+.*SYSTEM/i;
+    const pathTraversalRegex = /(\.\.\/|\.\.\\)/;
+    // NOUVEAU : Regex pour les injections de commandes basiques.
+    // Cible les séparateurs de commandes et les backticks d'exécution.
+    const commandInjectionRegex = /(&&|\|\||;|\n|`)/;
+
+    return injectionRegex.test(str) || log4ShellRegex.test(str) || sstiRegex.test(str) || xxeRegex.test(str) || pathTraversalRegex.test(str) || commandInjectionRegex.test(str);
+}
 
 // --- Middleware Proof-of-Work (Le péage) ---
 export class FingerprintEngine {
@@ -1244,6 +1267,13 @@ export class FingerprintEngine {
     this.securityConfig = securityConfig;
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();
+    this.verbose = securityConfig.verbose || false;
+  }
+
+  _log(message, data = {}) {
+    if (this.verbose) {
+      console.log(`[FingerprintEngine] ${message}`, data);
+    }
   }
     calculateFinalScore = function(suspicionVector) {
         const { weights } = this.securityConfig;
@@ -1361,12 +1391,17 @@ export class FingerprintEngine {
 
     const { clientIp = "unknown", path, cookies, query, isStatic } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
+    
+    this._log('Processing request', { clientIp, path, isStatic });
+    
     if (isStatic) {
+      this._log('Static resource - skipping checks');
       return { action: 'next', score: 0, vector: {} };
     }
 
     // 1. Check static IP allowlist first for maximum performance.
     if (this._isIpInAllowlist(clientIp)) {
+      this._log('IP in allowlist - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'allowlist' } };
     }
 
@@ -1385,6 +1420,7 @@ export class FingerprintEngine {
 
     // Check if the request is from a verified, whitelisted bot (e.g., Googlebot)
     if (await this._verifyWhitelistedBot(requestContext)) {
+      this._log('Whitelisted bot verified - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
 
@@ -1393,31 +1429,50 @@ export class FingerprintEngine {
     // avant même de recalculer le score de suspicion.
     const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
     if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
+        this._log('Challenge solution submitted', { pow_type, pow_nonce });
+        
         // On doit calculer le score de suspicion *avant* de valider le ticket,
         // car le TTL optimal en dépend.
         const preliminaryVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
         const preliminaryScore = this.calculateFinalScore(preliminaryVector);
+        
+        this._log('Preliminary suspicion vector calculated', { 
+            vector: preliminaryVector, 
+            score: preliminaryScore 
+        });
+        
         let isValid = false;
         const challengeContext = await store.get(`secret:${pow_nonce}`);
         let ticket = null;
 
         if (challengeContext) {
             const optimalTtl = determineOptimalTicketTtl(preliminaryScore);
+            this._log('Challenge context found, verifying solution', { optimalTtl });
+            
             if (pow_type === "cpu_target") {
                 // On passe la durée de vie du ticket configurée
                 ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
                 isValid = ticket !== null;
+                this._log('CPU target challenge verification', { isValid });
             } else if (pow_type === "cpu_mem") {
                 const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
                 const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
                 isValid = cpuTicket !== null && isMemValid;
                 if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
+                this._log('Combined CPU+Memory challenge verification', { 
+                    cpuValid: cpuTicket !== null, 
+                    memValid: isMemValid, 
+                    isValid 
+                });
             }
+        } else {
+            this._log('Challenge context not found or expired', { pow_nonce });
         }
 
         if (isValid) {
             // La solution est valide. On supprime le secret et on redirige.
             await store.delete(`secret:${pow_nonce}`);
+            this._log('Challenge solution valid - issuing ticket', { ticketMaxAge: this.securityConfig.ticketMaxAge || 3600000 });
 
             if (logger) {
                 logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now() });
@@ -1442,6 +1497,8 @@ export class FingerprintEngine {
         // Si la solution est INVALIDE, on ne fait rien ici. La requête continuera son cours normal,
         // sera recalculée comme suspecte, et probablement bloquée ou re-challengée, ce qui est le comportement souhaité.
         // On pourrait même ajouter une pénalité ici si on le voulait.
+        this._log('Challenge solution invalid', { reason: challengeContext ? 'Invalid solution' : 'Nonce not found or expired' });
+        
         if (logger && challengeContext) {
             logger({ type: 'challenge_failed', deviceId: cookies?.device_id, reason: 'Invalid PoW solution', timestamp: Date.now() });
         } else if (logger && !challengeContext) {
@@ -1453,8 +1510,11 @@ export class FingerprintEngine {
     // Resolve identity and check for persisted "condemned" status early.
     const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
     const isNewDevice = !!newCookie;
+    
+    this._log('Identity resolved', { deviceId, isNewDevice, hasDeviceData: !!deviceData });
 
     if (deviceData?.condemned) {
+        this._log('Device condemned - blocking request', { deviceId });
         if (onDeviceCompromised) {
             onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
         }
@@ -1463,22 +1523,30 @@ export class FingerprintEngine {
 
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
-    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
-    suspicionVector.honeypotScore = honeypotScore;
-    // Le behaviorScore est déjà dans le vecteur de suspicion via getSuspicionVector
+    // honeypotScore et behaviorScore sont maintenant inclus directement dans le vecteur de suspicion.
+
+    this._log('Suspicion vector calculated', { 
+        vector: suspicionVector,
+        weights: this.securityConfig.weights 
+    });
 
     let finalScore = this.calculateFinalScore(suspicionVector);
+    
+    this._log('Final score calculated', { finalScore });
 
     // Si c'est un nouvel appareil, on lui impose un challenge de base, même si son score est bas.
     // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
     // NOUVEAU : Cette logique est maintenant configurable.
     const challengeNewDevices = this.securityConfig.challengeNewDevices === true;
     if (isNewDevice && finalScore < thresholds.low) {
+      this._log('New device - enforcing minimum challenge score', { 
+          originalScore: finalScore, 
+          enforcedScore: thresholds.low 
+      });
       finalScore = thresholds.low;
     }
 
     const isBlocked = finalScore >= (thresholds.block || 95);
-
 
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
@@ -1492,10 +1560,21 @@ export class FingerprintEngine {
         )
         : 0;
 
+    this._log('Suspicion levels evaluated', { 
+        finalScore, 
+        isBlocked, 
+        isSuspiciousHigh, 
+        isSuspiciousMedium, 
+        isSuspicious, 
+        suspicionFactor,
+        thresholds: { low: thresholds.low, medium: thresholds.medium, high: thresholds.high, block: thresholds.block }
+    });
+
     const powCookie = cookies?.pow_clearance;
 
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
+      this._log('Request blocked - score exceeded block threshold', { finalScore, blockThreshold: thresholds.block });
       if (onDeviceCompromised) {
         onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Score exceeded block threshold', score: finalScore, vector: suspicionVector });
       }
@@ -1506,6 +1585,7 @@ export class FingerprintEngine {
     // This requires a nonce from a *previous* challenge, which we can look up via the device ID.
     const lastNonce = deviceData?.lastChallengeNonce;
     if (lastNonce && query.sig && verifyTrapUrl(path, query.sig, lastNonce)) {
+        this._log('Honeypot trap URL triggered - condemning device', { path, deviceId });
         deviceData.condemned = true; // This device is a bot. Condemn it.
         if (onDeviceCompromised) {
             onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Triggered signed honeypot trap URL', score: 100, vector: { honeypotScore: 100 } });
@@ -1518,18 +1598,22 @@ export class FingerprintEngine {
     }
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
+        this._log('Suspicious request without valid ticket - issuing challenge', { finalScore, hasPowCookie: !!powCookie });
+        
         // Honeypot: Direct probing of challenge endpoints is highly suspicious.
         // A legitimate user only hits these endpoints via the challenge page itself.
         // If we see a pow_nonce on a request that IS suspicious but has no valid ticket,
         // AND it's not a legitimate response to a challenge we issued, it's a probe.
         const isChallengeResponse = query.pow_solution || (query.pow_solution_cpu && query.pow_solution_mem);
         if (pow_nonce && !isChallengeResponse) {
+            this._log('Honeypot probe detected - blocking request', { path, pow_nonce });
             if (logger) {
                 logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now() });
             }
             suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
-            const newFinalScore = finalScore - (honeypotScore * (weights.honeypotScore || 0)) + (100 * (weights.honeypotScore || 0));
-            return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
+            // Recalculate the final score with the updated vector.
+            const newFinalScore = this.calculateFinalScore(suspicionVector);
+            return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector, status: 403, body: 'Forbidden' };
         }
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
@@ -1559,6 +1643,13 @@ export class FingerprintEngine {
             const maxMemDifficulty = 48;  // 48Mo pour les plus suspects
             const memDifficulty = Math.round(minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty));
 
+            this._log('Challenge parameters calculated', { 
+                suspicionFactor, 
+                memActivationFactor, 
+                memDifficulty, 
+                cpuTarget: cpuChallengeDetails.target 
+            });
+
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
             await store.set(`secret:${nonce}`, {
                 clientSecret,
@@ -1571,6 +1662,12 @@ export class FingerprintEngine {
                 deviceData.lastChallengeNonce = nonce;
                 await store.set(`device:${deviceId}`, deviceData); // Utiliser le deviceId résolu, pas celui des cookies
             }
+
+            this._log('Challenge issued', { 
+                nonce, 
+                challengeTtl: this.securityConfig.challengeTtl || 300,
+                trapUrlsCount: trapUrls.length 
+            });
 
             if (logger) {
                 logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
@@ -1590,17 +1687,24 @@ export class FingerprintEngine {
                         memDifficulty: memDifficulty,
                     }
                 };
+                this._log('API challenge response generated', { challengePayload });
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: challengePayload };
             } else {
                 // For browsers, send the HTML page.
                 const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
                 const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret).replace('</body>', `${trapContainer}</body>`);
+                this._log('Browser challenge page generated', { 
+                    pageLength: page.length, 
+                    hasTrapContainer: true 
+                });
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
             }
         }
     }
 
     // Basic log for each non-static request that passed without a challenge
+    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie) });
+    
     if (logger) {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
     }
@@ -1841,6 +1945,7 @@ export const powMiddleware = (securityConfig) => {
  */
 export const __internal = {
     getDeviceHash,
+    isMalicious,
     getSuspicionVector,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
