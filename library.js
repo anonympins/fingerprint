@@ -1313,15 +1313,21 @@ Optimization.Operators.createOptimalTtlEvaluator = ({ suspicionScore }) => {
  * @param {string} numberString - Une chaîne de chiffres (ex: "123456789").
  * @returns {number} Un score de déviation (0 = parfait, > 0.15 = suspect).
  */
-Optimization.Operators.benfordTest = (numberString) => {
-    const firstDigits = numberString.replace(/[^1-9]/g, ''); // Garde uniquement les chiffres de 1 à 9
-    if (firstDigits.length < 10) {
+Optimization.Operators.benfordTest = (numbers) => {
+    if (!Array.isArray(numbers)) {
+        // Si l'entrée n'est pas un tableau, on ne peut pas l'analyser.
+        return 0;
+    }
+    const leadingDigits = numbers.map(n => String(n).trim().charAt(0))
+                                 .filter(d => d >= '1' && d <= '9'); // On ne garde que les chiffres de 1 à 9.
+
+    if (leadingDigits.length < 10) {
         return 0; // Pas assez de données pour un test fiable
     }
 
     const counts = Array(10).fill(0);
-    for (let i = 0; i < firstDigits.length; i++) {
-        counts[parseInt(firstDigits[i], 10)]++;
+    for (let i = 0; i < leadingDigits.length; i++) {
+        counts[parseInt(leadingDigits[i], 10)]++;
     }
 
     // Distribution attendue selon la loi de Benford pour le premier chiffre
@@ -1332,7 +1338,7 @@ Optimization.Operators.benfordTest = (numberString) => {
 
     let totalDeviation = 0;
     for (let i = 1; i <= 9; i++) {
-        const observedFrequency = (counts[i] / firstDigits.length) * 100;
+        const observedFrequency = (counts[i] / leadingDigits.length) * 100;
         const expectedFrequency = benfordDistribution[i];
         totalDeviation += Math.pow(observedFrequency - expectedFrequency, 2);
     }

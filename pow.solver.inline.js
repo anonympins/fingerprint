@@ -15,15 +15,17 @@
  * @param {Function} progressCallback - Callback pour les mises à jour de progression.
  * @returns {Promise<number>} La solution (un nombre entier).
  */
-async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null, progressCallback) {
+async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null, fingerprint = '', progressCallback) {
     // Le 'target' est déjà un BigInt lorsqu'il est appelé depuis la page de challenge.
     // On s'assure juste qu'il est bien de ce type.
     const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
     let cpuSolution = 0;
     const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
     while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
+        // The message format must be consistent. When a clientSecret is present,
+        // the IP is omitted, and the fingerprint of the solving machine is included.
         const msg = clientSecret ?
-            `${nonce}:${cpuSolution}:${clientSecret}` :
+            `${nonce}:${cpuSolution}:${clientSecret}:${fingerprint}` :
             `${ipPart}:${nonce}:${cpuSolution}`;
         const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
         const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');

@@ -979,8 +979,7 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         // 5. (NOUVEAU) Analyse de la distribution des délais avec la loi de Benford
         if (deviceData.timingHistory.length >= benfordMinSamples) {
             // On concatène tous les délais en une seule chaîne de chiffres.
-            const timingString = deviceData.timingHistory.join('');
-            const benfordDeviation = Optimization.Operators.benfordTest(timingString);
+            const benfordDeviation = Optimization.Operators.benfordTest(deviceData.timingHistory);
 
             // Une déviation > 0.15 est suspecte. On peut pondérer la pénalité.
             // Une déviation de 0.3 (très suspecte) donnerait un score de 100 (0.3 / 0.3 * 100).
@@ -1423,17 +1422,20 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         const clientIp = ${JSON.stringify(clientIp)};
         const cpuTarget = BigInt("0x${target}");
         const memDifficulty = ${memoryDifficulty};
+        // The client-side fingerprint library must be available to generate the fingerprint
+        // of the machine solving the challenge. This assumes a client library is loaded.
+        // We need a function to get the client fingerprint. Let's assume it's available on window.
+        const getClientFingerprint = () => (window.ClientLibrary && typeof window.ClientLibrary.getDeviceFingerprint === 'function') ? window.ClientLibrary.getDeviceFingerprint() : '';
+        const fingerprint = getClientFingerprint();
 
         // --- CPU Challenge ---
         document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
-        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {
+        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, fingerprint, (progress) => {
             // Optional progress callback
         });
-
         // --- Memory Challenge ---
         document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
         await new Promise(r => setTimeout(r, 10)); // Yield to update UI
-
         let memSolution = 0;
         try {
             const memSeed = nonce + ":" + clientSecret;
@@ -1442,7 +1444,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
             document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
             return;
         }
-        window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
+        window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution + "&pow_fp=" + encodeURIComponent(fingerprint);
       }
       solve();
     `;
@@ -1477,10 +1479,11 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   nonce,
   solution,
   clientSecret, // Le secret est maintenant requis
-  target, // La cible est maintenant passée directement en hexadécimal
+  target, // La cible est maintenant passée directement en hexadécimal,
+  fingerprint, // Le fingerprint du SOLVER, soumis par le client
 ) {
   const message = clientSecret
-    ? `${nonce}:${solution}:${clientSecret}` // FIX: Ne pas inclure l'IP si un secret client est utilisé
+    ? `${nonce}:${solution}:${clientSecret}:${fingerprint}`
     : `${clientIp}:${nonce}:${solution}`; // L'IP est utilisée uniquement pour les challenges sans secret (plus anciens/simples)
   const hash = crypto
     .createHash("sha256")
@@ -1501,100 +1504,6 @@ export function verifyCpuTargetPoWAndGenerateTicket(
 
   return null;
 }
-
-const staticExtensions = new RegExp(
-  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest|webmanifest)$",
-  "i",
-);
-const isStaticResource = (path) => staticExtensions.test(path);
-
-
-/**
- * Détermine le TTL optimal pour un ticket en utilisant un algorithme génétique multi-objectifs.
- * @param {number} suspicionScore - Le score de suspicion de la requête.
- * @returns {number} Le TTL optimal calculé en millisecondes.
-*/
-function determineOptimalTicketTtl(suspicionScore) {
-    // Définir les bornes pour la durée de vie du ticket (5 minutes à 24 heures)
-    const MIN_TTL = 300000;
-    const MAX_TTL = 86400000;
-
-    const solverFunction = () => {
-        const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
-
-        // Un "individu" est simplement une valeur de TTL en millisecondes.
-        const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
-        const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
-        const mutate = (ttl) => {
-            const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1; // Mutation de +/- 10% max
-            return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
-        };
-
-        const paretoFront = Optimization.geneticAlgorithmMultiObjective(
-            createIndividual,
-            fitnessFunction,
-            crossover,
-            mutate,
-            {
-                generations: 40,
-                populationSize: 30,
-            }
-        );
-
-        // Pour runMultiple, on doit retourner un objet avec une propriété "fitness" ou "energy".
-        // Pour un front de Pareto, il n'y a pas de score unique. On choisit la meilleure solution
-        // en fonction du score de suspicion et on lui assigne un score de 0 pour que runMultiple la sélectionne.
-        if (!paretoFront || paretoFront.length === 0) {
-            return { solution: null, fitness: Infinity };
-        }
-
-        // Stratégie de sélection :
-        // Pour un score faible (< 50), on privilégie la solution avec le plus grand TTL (minimise la friction).
-        // Pour un score élevé (>= 50), on privilégie la solution avec le plus petit TTL (minimise le risque).
-        let bestSolutionInFront;
-        if (suspicionScore < 50) {
-            bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
-        } else {
-            bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
-        }
-        return { solution: bestSolutionInFront, fitness: 0 }; // fitness=0 car on a déjà la meilleure solution du cycle.
-    };
-
-    // On exécute le solveur 20 fois pour trouver une solution plus stable et robuste.
-    const { bestResult } = Optimization.runMultiple(solverFunction, 20);
-
-    if (!bestResult || !bestResult.solution || bestResult.solution === Infinity) {
-        // Fallback : si l'algo ne retourne rien, on applique une règle simple et sûre.
-        return Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL);
-    }
-
-    // runMultiple choisit le meilleur résultat sur la base du score (ici, 0).
-    // La "meilleure" solution dépendra du cycle qui a trouvé le meilleur compromis.
-    return Math.round(bestResult.solution);
-}
-
-/**
- * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
- * @private
- * @param {string} str - La chaîne à vérifier.
- * @param {string[]} [typesToDetect=['sql', 'log4shell', 'ssti', 'xxe', 'traversal', 'rce']] - Les types d'injections à détecter.
- * @returns {boolean} - True si un pattern malveillant est détecté.
- */
-function isMalicious(str, typesToDetect = Object.keys(injectionPatterns)) {
-    if (typeof str !== 'string') return false;
-
-    for (const type of typesToDetect) {
-        const regex = injectionPatterns[type];
-        if (regex && regex.test(str)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// --- Middleware Proof-of-Work (Le péage) ---
-export { isMalicious };
 
 export class FingerprintEngine {
   constructor(securityConfig) {
@@ -1759,7 +1668,7 @@ export class FingerprintEngine {
       this._log('Whitelisted bot verified - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
-
+    
     // Resolve identity and check for persisted "condemned" status early.
     const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
     const isNewDevice = !!newCookie;
@@ -1829,10 +1738,10 @@ export class FingerprintEngine {
     // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
     // Si une solution de challenge est soumise, on la traite en priorité absolue,
     // avant même de recalculer le score de suspicion.
-    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
+    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp } = query;
     if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
         this._log('Challenge solution submitted', { pow_type, pow_nonce });
-        
+
         // On doit calculer le score de suspicion *avant* de valider le ticket,
         // car le TTL optimal en dépend.
         const preliminaryVector = suspicionVector; // Use the already calculated vector
@@ -1855,27 +1764,38 @@ export class FingerprintEngine {
         const probationaryTtl = 30000; // 30 secondes
 
         if (challengeContext) {
-            optimalTtl = determineOptimalTicketTtl(preliminaryScore);
-            finalTtl = isProbationary ? probationaryTtl : optimalTtl;
-            this._log('Challenge context found, verifying solution', { optimalTtl, finalTtl });
+            // *** NOUVELLE VÉRIFICATION CRUCIALE ***
+            // On compare le fingerprint soumis par le solver (`pow_fp`) avec celui stocké
+            // lors de l'émission du challenge (`challengeContext.fingerprint`).
+            const solverFingerprint = pow_fp;
+            const originalFingerprint = challengeContext.fingerprint;
 
-            if (pow_type === "cpu_target" && pow_solution) {
-                // On passe la durée de vie du ticket configurée
-                console.log("ticket");
-                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget);
-                console.log(ticket !== null)
-                isValid = ticket !== null;
-                this._log('CPU target challenge verification', { isValid });
-            } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget);
-                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
-                isValid = cpuTicket !== null && isMemValid;
-                if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
-                this._log('Combined CPU+Memory challenge verification', {
-                    cpuValid: cpuTicket !== null,
-                    memValid: isMemValid,
-                    isValid
+            if (solverFingerprint !== originalFingerprint) {
+                this._log('Fingerprint mismatch - challenge solved on a different machine!', {
+                    original: originalFingerprint,
+                    solver: solverFingerprint,
                 });
+                isValid = false;
+            } else {
+                optimalTtl = determineOptimalTicketTtl(preliminaryScore);
+                finalTtl = isProbationary ? probationaryTtl : optimalTtl;
+                this._log('Challenge context found, verifying solution', { optimalTtl, finalTtl });
+
+                if (pow_type === "cpu_target" && pow_solution) {
+                    ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget, solverFingerprint);
+                    isValid = ticket !== null;
+                    this._log('CPU target challenge verification', { isValid });
+                } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
+                    const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget, solverFingerprint);
+                    const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
+                    isValid = cpuTicket !== null && isMemValid;
+                    if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
+                    this._log('Combined CPU+Memory challenge verification', {
+                        cpuValid: cpuTicket !== null,
+                        memValid: isMemValid,
+                        isValid
+                    });
+                }
             }
         } else {
             this._log('Challenge context not found or expired', { pow_nonce });
@@ -1901,11 +1821,12 @@ export class FingerprintEngine {
             finalSearchParams.delete('pow_solution');
             finalSearchParams.delete('pow_solution_cpu');
             finalSearchParams.delete('pow_solution_mem');
+            finalSearchParams.delete('pow_fp'); // Ne pas oublier de nettoyer le fingerprint
 
             // 4. On reconstruit le chemin final.
             const finalQueryString = finalSearchParams.toString();
             const finalRedirectPath = finalQueryString ? `${originalUrl.pathname}?${finalQueryString}` : originalUrl.pathname;
-            this._log('Redirecting to clean path', { finalRedirectPath });
+            this._log('Redirecting to clean path', { finalRedirectPath, cookieMaxAge: finalTtl });
             return {
               action: 'redirect',
               path: finalRedirectPath,
@@ -1913,8 +1834,8 @@ export class FingerprintEngine {
               vector: { challenge_solved: 100 },
               cookie: {
                 name: 'pow_clearance',
-                value: ticket,
-                options: { httpOnly: true, secure: this.isProduction, maxAge: finalTtl }
+                value: ticket, // The ticket itself
+                options: { httpOnly: true, secure: this.isProduction, maxAge: finalTtl } // Options for setting the cookie
               }
             };
         } else {
@@ -2003,12 +1924,15 @@ export class FingerprintEngine {
                 memDifficulty,
                 cpuTarget: cpuChallengeDetails.target
             });
+            // (NOUVEAU) On stocke le fingerprint de la requête qui a déclenché le challenge.
+            const originalFingerprint = requestContext.headers['x-device-fingerprint'] || getCompositeDeviceHash(requestContext);
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
             await store.set(`secret:${nonce}`, {
                 clientSecret,
                 cpuTarget: cpuChallengeDetails.target,
                 suspicionScore: finalScore, // *** FIX: Store the score that triggered the challenge ***
+                fingerprint: originalFingerprint, // *** NOUVEAU ***
                 memDifficulty: memDifficulty,
                 originalPath: path, // *** FIX: Store the original path ***
             }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
@@ -2122,6 +2046,100 @@ export class FingerprintEngine {
     return `device:${finalDeviceId}`;
   }
 }
+
+const staticExtensions = new RegExp(
+  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest|webmanifest)$",
+  "i",
+);
+const isStaticResource = (path) => staticExtensions.test(path);
+
+
+/**
+ * Détermine le TTL optimal pour un ticket en utilisant un algorithme génétique multi-objectifs.
+ * @param {number} suspicionScore - Le score de suspicion de la requête.
+ * @returns {number} Le TTL optimal calculé en millisecondes.
+*/
+function determineOptimalTicketTtl(suspicionScore) {
+    // Définir les bornes pour la durée de vie du ticket (5 minutes à 24 heures)
+    const MIN_TTL = 300000;
+    const MAX_TTL = 86400000;
+
+    const solverFunction = () => {
+        const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
+
+        // Un "individu" est simplement une valeur de TTL en millisecondes.
+        const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
+        const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
+        const mutate = (ttl) => {
+            const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1; // Mutation de +/- 10% max
+            return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
+        };
+
+        const paretoFront = Optimization.geneticAlgorithmMultiObjective(
+            createIndividual,
+            fitnessFunction,
+            crossover,
+            mutate,
+            {
+                generations: 40,
+                populationSize: 30,
+            }
+        );
+
+        // Pour runMultiple, on doit retourner un objet avec une propriété "fitness" ou "energy".
+        // Pour un front de Pareto, il n'y a pas de score unique. On choisit la meilleure solution
+        // en fonction du score de suspicion et on lui assigne un score de 0 pour que runMultiple la sélectionne.
+        if (!paretoFront || paretoFront.length === 0) {
+            return { solution: null, fitness: Infinity };
+        }
+
+        // Stratégie de sélection :
+        // Pour un score faible (< 50), on privilégie la solution avec le plus grand TTL (minimise la friction).
+        // Pour un score élevé (>= 50), on privilégie la solution avec le plus petit TTL (minimise le risque).
+        let bestSolutionInFront;
+        if (suspicionScore < 50) {
+            bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
+        } else {
+            bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
+        }
+        return { solution: bestSolutionInFront, fitness: 0 }; // fitness=0 car on a déjà la meilleure solution du cycle.
+    };
+
+    // On exécute le solveur 20 fois pour trouver une solution plus stable et robuste.
+    const { bestResult } = Optimization.runMultiple(solverFunction, 20);
+
+    if (!bestResult || !bestResult.solution || bestResult.solution === Infinity) {
+        // Fallback : si l'algo ne retourne rien, on applique une règle simple et sûre.
+        return Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL);
+    }
+
+    // runMultiple choisit le meilleur résultat sur la base du score (ici, 0).
+    // La "meilleure" solution dépendra du cycle qui a trouvé le meilleur compromis.
+    return Math.round(bestResult.solution);
+}
+
+/**
+ * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
+ * @private
+ * @param {string} str - La chaîne à vérifier.
+ * @param {string[]} [typesToDetect=['sql', 'log4shell', 'ssti', 'xxe', 'traversal', 'rce']] - Les types d'injections à détecter.
+ * @returns {boolean} - True si un pattern malveillant est détecté.
+ */
+function isMalicious(str, typesToDetect = Object.keys(injectionPatterns)) {
+    if (typeof str !== 'string') return false;
+
+    for (const type of typesToDetect) {
+        const regex = injectionPatterns[type];
+        if (regex && regex.test(str)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// --- Middleware Proof-of-Work (Le péage) ---
+export { isMalicious };
 
 /**
  * Returns a default list of security analyzers for honeypot detection.
