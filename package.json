@@ -14,6 +14,7 @@
     "fingerprint.js",
     "fingerprint.client.js",
     "fingerprint.builder.js",
+    "pow.solver.js",
     "library.js",
     "redis-store.js",
     "mongodb-store.js",

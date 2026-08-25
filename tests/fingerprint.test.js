@@ -1139,7 +1139,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(decision.vector.honeypotScore).toBe(100);
             expect(decision.score).toBeGreaterThanOrEqual(100);
             expect(decision.action).toBe('block');
-            expect(decision.status).toBe(403);
+            expect(decision.status).toBe(404);
         });
 
         it('should penalize direct challenge probing', async () => {
@@ -1417,8 +1417,8 @@ describe('Fingerprint & PoW Security Suite', () => {
 
 describe('getRequestPatternScore', () => {
     const patternConfig = {
-        velocityThreshold: 200, velocityWeight: 30,
-        burstThreshold: 500, burstWeight: 50,
+        velocityThreshold: 800, velocityWeight: 30,
+        burstThreshold: 1500, burstWeight: 50,
         scrapeThreshold: 1000, scrapeWeight: 20, scrapeBurstWeight: 40,
         historySize: 10,
         decayFactor: 0.9,

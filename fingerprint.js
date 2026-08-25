@@ -743,8 +743,8 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
 
     // Default values for the pattern detection logic, which can be overridden by the auto-tuner.
     const {
-        velocityThreshold = 200, velocityWeight = 30,
-        burstThreshold = 500, burstWeight = 50,
+        velocityThreshold = 800, velocityWeight = 30,
+        burstThreshold = 1500, burstWeight = 50,
         scrapeThreshold = 1000, scrapeWeight = 20, scrapeBurstWeight = 40,
         historySize = 10,
         decayFactor = 0.9,
@@ -1304,7 +1304,7 @@ export function verifyCpuTargetPoWAndGenerateTicket(
 }
 
 const staticExtensions = new RegExp(
-  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map)$",
+  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest)$",
   "i",
 );
 const isStaticResource = (path) => staticExtensions.test(path);
@@ -1654,7 +1654,7 @@ export class FingerprintEngine {
         if (onDeviceCompromised) {
             onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
         }
-        return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+        return { action: 'block', status: 404, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
     // The engine now works with the context directly, no more rawReq dependency here.
@@ -1682,7 +1682,8 @@ export class FingerprintEngine {
       finalScore = thresholds.low;
     }
 
-    const isBlocked = finalScore >= (thresholds.block || 95);
+    const blockThreshold = thresholds.block ?? 95;
+    const isBlocked = finalScore >= blockThreshold;
 
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
@@ -1703,18 +1704,18 @@ export class FingerprintEngine {
         isSuspiciousMedium, 
         isSuspicious, 
         suspicionFactor,
-        thresholds: { low: thresholds.low, medium: thresholds.medium, high: thresholds.high, block: thresholds.block }
+        thresholds: { low: thresholds.low, medium: thresholds.medium, high: thresholds.high, block: blockThreshold }
     });
 
     const powCookie = cookies?.pow_clearance;
 
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
-      this._log('Request blocked - score exceeded block threshold', { finalScore, blockThreshold: thresholds.block });
+      this._log('Request blocked - score exceeded block threshold', { finalScore, blockThreshold });
       if (onDeviceCompromised) {
         onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Score exceeded block threshold', score: finalScore, vector: suspicionVector });
       }
-      return { action: 'block', status: 403, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+      return { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
     }
 
     // Honeypot: Check if the request is for a trap URL generated in a previous challenge.
@@ -1730,7 +1731,7 @@ export class FingerprintEngine {
             logger({ type: 'trap_triggered', deviceId: cookies?.device_id, score: 100, path: path, timestamp: Date.now() });
         }
         await store.set(`device:${cookies.device_id}`, deviceData); // No TTL for condemned status
-        return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+        return { action: 'block', status: 404, score: 100, vector: { honeypotScore: 100 } };
     }
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
@@ -1749,7 +1750,7 @@ export class FingerprintEngine {
             suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
             // Recalculate the final score with the updated vector.
             const newFinalScore = this.calculateFinalScore(suspicionVector);
-            return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector, status: 403, body: 'Forbidden' };
+            return { action: 'block', status: 404, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
         }
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
@@ -2018,6 +2019,14 @@ export const powMiddleware = (securityConfig) => {
       securityConfig: securityConfig,
       ...securityConfig.autotuning,
     });
+  }
+
+  // Provide a default for isApiRequest if not specified by the user.
+  // This makes API challenge handling work more seamlessly out-of-the-box.
+  if (!securityConfig.thresholds?.isApiRequest) {
+    if (!securityConfig.thresholds) securityConfig.thresholds = {};
+    securityConfig.thresholds.isApiRequest = (req) => 
+      req.headers?.accept?.includes('application/json');
   }
 
   return async (req, res, next) => {

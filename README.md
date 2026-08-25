@@ -99,12 +99,13 @@ const securityConfig = {
     deviceIdCookieMaxAge: undefined, // By default, it's a session cookie. Set a value in ms for a persistent cookie.
     verbose: true, // set to true to log for fingerprint detection output
     patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
-        velocityThreshold: 200,   // ms between requests to be considered "fast"
-        burstThreshold: 500,      // ms for identical requests to be a "burst"
+        velocityThreshold: 800,   // ms between requests to be considered "fast"
+        burstThreshold: 1500,      // ms for identical requests to be a "burst"
         scrapeThreshold: 1000,    // ms for sequential requests to be "scraping"
         scrapeBurstWeight: 40,    // Additional weight for repeated scraping patterns
         sequenceLength: 3,        // Length of a request sequence to detect (e.g., A->B->C)
         sequenceWeight: 60,       // Penalty for repeating a sequence
+        sequenceMinTimeSpan: 2000, // Sequence min time span
         historySize: 10,          // Number of requests to keep for pattern analysis
         decayFactor: 0.9,         // How quickly the pattern score decays over time
         inactivityReset: 30000,   // ms of inactivity after which the pattern score is reset

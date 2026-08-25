@@ -238,7 +238,9 @@ const ClientLibrary = {
 
     _isFetchPatched: false,
     _interceptorChain: [],
-    _originalFetch: (typeof window !== 'undefined') ? window.fetch : () => Promise.reject(new Error('fetch is not available')),
+    // On "lie" (bind) la fonction fetch à son contexte d'origine (window) pour éviter les erreurs "Illegal invocation".
+    // C'est la correction clé pour le problème que vous rencontrez.
+    _originalFetch: (typeof window !== 'undefined') ? window.fetch.bind(window) : () => Promise.reject(new Error('fetch is not available')),
 
 /**
  * Adds an interceptor function to the `fetch` chain.
@@ -330,10 +332,10 @@ const ClientLibrary = {
    * @private
    */
   async solveChallengeAndRetry(response, resource, options) {
-    if (response.status !== 404) {
+    if (response.status !== 404 || !response.headers.get('content-type')?.includes('application/json')) {
       return response;
     }
-
+    
     try {
       const challengeData = await response.json();
       if (!challengeData.challenge || !challengeData.challenge.type) {
@@ -346,14 +348,23 @@ const ClientLibrary = {
 
       // Ajouter la solution aux paramètres de la requête pour le nouvel essai
       const url = new URL((resource instanceof Request) ? resource.url : String(resource), window.location.origin);
-      url.searchParams.set('pow_type', challengeData.challenge.type);
+      // Le type de challenge est maintenant `cpu_mem` pour les API
+      url.searchParams.set('pow_type', 'cpu_mem');
       url.searchParams.set('pow_nonce', challengeData.challenge.nonce);
+
       // La solution peut être un objet (pour les challenges combinés) ou une valeur simple
       Object.entries(solution).forEach(([key, value]) => {
-        url.searchParams.set(`pow_solution_${key}`, value);
+        // Le serveur attend pow_solution_cpu et pow_solution_mem
+        // On s'assure que la clé est bien 'cpu' ou 'mem' avant de l'ajouter
+        if (key === 'cpu' || key === 'mem') {
+          url.searchParams.set(`pow_solution_${key}`, String(value));
+        }
       });
 
-      return this._originalFetch(url.toString(), options);
+      // On utilise la chaîne d'intercepteurs pour la requête réessayée,
+      // ce qui garantit que le fetch original est appelé avec le bon contexte.
+      // Cela évite de réintroduire l'erreur "Illegal invocation".
+      return window.fetch(url.toString(), options);
     } catch (e) {
       console.error('[Fingerprint] Failed to solve or retry challenge:', e);
       return response; // Retourne la réponse 429 originale en cas d'échec
@@ -390,8 +401,8 @@ const ClientLibrary = {
     if (honeypots.length > 0) {
         this.initializeHoneypots(honeypots);
     }
-    // On vérifie si l'objet fetch est présent pour activer l'interception
-    if (Object.keys(fetchConfig).length > 0 || config.fetch) {
+    // On active l'interception si `fetch` est configuré, même avec un objet vide.
+    if (config.fetch) {
         this.initializeFetch(fetchConfig.targetDomains);
 
         // Ajoute l'intercepteur pour la résolution de challenge
