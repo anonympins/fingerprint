@@ -123,12 +123,12 @@ describe('Fingerprint & PoW Security Suite', () => {
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
-      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, undefined);
+      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, undefined, target.toString(16));
       expect(ticket, "Ticket should be generated for a valid solution without secret").toBeTruthy();
       expect(isTicketValid(ip, ticket), "Ticket should be valid").toBe(true);
     });
 
-    test('should solve and verify correctly WITH a clientSecret', () => {
+    test('should solve and verify correctly WITH a clientSecret', async () => {
       let solution = 0;
       const target = __internal.calculateTarget(suspicionFactor);
       // Client-side simulation now includes the secret
@@ -141,15 +141,15 @@ describe('Fingerprint & PoW Security Suite', () => {
       }
 
       // Server-side verification includes the secret
-      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, clientSecret);
+      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, clientSecret, target.toString(16));
       expect(ticket, "Ticket should be generated for a valid solution with secret").toBeTruthy();
       expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
       expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
 
       // Verification should fail if the secret is wrong or missing
-      const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, 'wrong-secret');
+      const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, 'wrong-secret', target.toString(16));
       expect(badTicket1, "Ticket should not be generated with wrong secret").toBeNull();
-      const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, undefined);
+      const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, undefined, target.toString(16));
       expect(badTicket2, "Ticket should not be generated when secret is expected but missing").toBeNull();
     });
 
@@ -623,7 +623,11 @@ describe('Fingerprint & PoW Security Suite', () => {
       }
 
       // 2. Le serveur, pour une raison quelconque (corruption, attaque), a un mauvais secret stocké
-      await inMemoryStore.set(`secret:${nonce}`, wrongClientSecretOnServer);
+      await inMemoryStore.set(`secret:${nonce}`, {
+        clientSecret: wrongClientSecretOnServer, // The secret is wrong
+        cpuTarget: target.toString(16), // But the target is correct
+        memDifficulty: 0
+      });
 
       vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
         return {
