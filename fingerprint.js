@@ -763,6 +763,25 @@ function getHoneypotScore(context, honeypotConfig = {}) {
 }
 
 /**
+ * @private
+ * Map of malicious patterns grouped by type.
+ */
+const injectionPatterns = {
+    // SQL/NoSQL injections, including time-based attacks
+    sql: /(\$ne|' *OR *'1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i,
+    // Log4Shell (JNDI injection)
+    log4shell: /\$\{jndi:(ldap|rmi|dns):/i,
+    // Server-Side Template Injection (SSTI) for engines like Jinja2, Twig, etc.
+    ssti: /\{\{.*\}\}|\{%.*%\}/,
+    // XML External Entity (XXE) injection
+    xxe: /<!ENTITY\s+.*SYSTEM/i,
+    // Path Traversal
+    traversal: /(\.\.\/|\.\.\\)/,
+    // Remote Command Execution (RCE)
+    rce: /`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i,
+};
+
+/**
  * Calcule un score basé sur les métriques comportementales envoyées par le client.
  * @param {object} context - Le contexte de la requête, contenant les en-têtes.
  * @returns {{behaviorScore: number}}
@@ -1556,28 +1575,22 @@ function determineOptimalTicketTtl(suspicionScore) {
 
 /**
  * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
- * @param {string} str - La chaîne à vérifier.
- * @returns {boolean} - True si un pattern malveillant est détecté.
  * @private
+ * @param {string} str - La chaîne à vérifier.
+ * @param {string[]} [typesToDetect=['sql', 'log4shell', 'ssti', 'xxe', 'traversal', 'rce']] - Les types d'injections à détecter.
+ * @returns {boolean} - True si un pattern malveillant est détecté.
  */
-function isMalicious(str) {
+function isMalicious(str, typesToDetect = Object.keys(injectionPatterns)) {
     if (typeof str !== 'string') return false;
-    // Regex pour les injections SQL et NoSQL de base
-    // Ajout de la détection des injections basées sur le temps (SLEEP, BENCHMARK, WAITFOR) et d'autres commandes dangereuses.
-    const injectionRegex = /(\$ne|' *OR *'1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i;
-    // Regex pour les injections plus avancées
-    const log4ShellRegex = /\$\{jndi:(ldap|rmi|dns):/i;
-    const sstiRegex = /\{\{.*\}\}|\{%.*%\}/; // Détecte les syntaxes de type Jinja2, Twig, etc.
-    const xxeRegex = /<!ENTITY\s+.*SYSTEM/i;
-    const pathTraversalRegex = /(\.\.\/|\.\.\\)/;
-    // Regex pour les injections de commandes.
-    // Elle détecte :
-    // 1. L'utilisation de backticks ``.
-    // 2. Des commandes dangereuses (rm, whoami...) qui sont soit au début de la chaîne,
-    //    soit précédées par un séparateur de commande (;, &&, ||, |) suivi d'espaces.
-    const commandInjectionRegex = /`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i;
 
-    return injectionRegex.test(str) || log4ShellRegex.test(str) || sstiRegex.test(str) || xxeRegex.test(str) || pathTraversalRegex.test(str) || commandInjectionRegex.test(str);
+    for (const type of typesToDetect) {
+        const regex = injectionPatterns[type];
+        if (regex && regex.test(str)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // --- Middleware Proof-of-Work (Le péage) ---
