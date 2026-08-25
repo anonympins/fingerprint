@@ -35,8 +35,8 @@ const getPowSolverCode = () => {
     console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
     // Fallback inline code if file cannot be loaded
     return `(function(global){
-        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){ const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
-            const cpuTarget = BigInt(target);
+        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){
+            const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
             let cpuSolution = 0;
             const ipPart = clientIp || '';
             while(true){
@@ -1434,11 +1434,11 @@ function isMalicious(str) {
     const xxeRegex = /<!ENTITY\s+.*SYSTEM/i;
     const pathTraversalRegex = /(\.\.\/|\.\.\\)/;
     // Regex pour les injections de commandes.
-    // Elle détecte deux cas :
-    // 1. L'utilisation de backticks `` pour l'exécution de commandes.
-    // 2. Des commandes dangereuses (comme rm, whoami) précédées par un séparateur de commande (;, &&, ||, |)
-    //    pour éviter les faux positifs sur des phrases comme "A normal command like ls -la".
-    const commandInjectionRegex = /`.*`|[\n;&|]\s*(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i;
+    // Elle détecte :
+    // 1. L'utilisation de backticks ``.
+    // 2. Des commandes dangereuses (rm, whoami...) qui sont soit au début de la chaîne,
+    //    soit précédées par un séparateur de commande (;, &&, ||, |) suivi d'espaces.
+    const commandInjectionRegex = /`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i;
 
     return injectionRegex.test(str) || log4ShellRegex.test(str) || sstiRegex.test(str) || xxeRegex.test(str) || pathTraversalRegex.test(str) || commandInjectionRegex.test(str);
 }

@@ -352,13 +352,9 @@ const ClientLibrary = {
       url.searchParams.set('pow_type', 'cpu_mem');
       url.searchParams.set('pow_nonce', challengeData.challenge.nonce);
 
-      // La solution peut être un objet (pour les challenges combinés) ou une valeur simple
+      // La solution est un objet { cpu: ..., mem: ... }. Le serveur attend pow_solution_cpu et pow_solution_mem.
       Object.entries(solution).forEach(([key, value]) => {
-        // Le serveur attend pow_solution_cpu et pow_solution_mem
-        // On s'assure que la clé est bien 'cpu' ou 'mem' avant de l'ajouter
-        if (key === 'cpu' || key === 'mem') {
-          url.searchParams.set(`pow_solution_${key}`, String(value));
-        }
+        url.searchParams.set(`pow_solution_${key}`, String(value));
       });
 
       // On utilise la chaîne d'intercepteurs pour la requête réessayée,
