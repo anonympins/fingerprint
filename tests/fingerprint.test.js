@@ -1358,18 +1358,15 @@ describe('getRequestPatternScore', () => {
     });
 
     test('should detect a burst of identical requests', () => {
-        // 1. On simule l'historique contenant la première requête.
-        const firstRequest = { timestamp: 10000, path: '/products', queryString: 'id=1' };
-        const deviceData = { requestHistory: [firstRequest] };
-
-        // 2. On simule la deuxième requête, identique à la première.
-        const secondRequestContext = { path: '/products', query: { id: '1' } };
+        const deviceData = {
+            requestHistory: [{ timestamp: 10000, path: '/products', queryString: 'id=1' }]
+        };
+        const context = { path: '/products', query: { id: '1' } };
 
         // Simulate an identical request 150ms later (triggers both velocity and burst)
         dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10150);
 
-        // 3. On analyse la deuxième requête par rapport à l'historique.
-        const { requestPatternScore } = getRequestPatternScore(secondRequestContext, deviceData, patternConfig);
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
         const expectedScore = patternConfig.velocityWeight + patternConfig.burstWeight; // 30 + 50 = 80
 
         expect(requestPatternScore).toBe(expectedScore);

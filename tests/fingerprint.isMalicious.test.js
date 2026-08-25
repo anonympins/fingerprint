@@ -99,10 +99,11 @@ describe('isMalicious Unit Tests', () => {
 
     describe('Command Injection', () => {
         it.each([
-            ["/path/to/script.sh; ls -la"],
-            ["127.0.0.1 && whoami"],
+            ["/path/to/script.sh; ls -la "],
+            ["127.0.0.1 && whoami "],
             ["`reboot`"],
-            ["filename.txt\ncat /etc/passwd"],
+            ["filename.txt\ncat /etc/passwd "],
+            [" | rm -rf /"], // Pipe before a dangerous command
         ])('should detect Command Injection pattern: %s', (payload) => {
             expect(isMalicious(payload)).toBe(true);
         });
@@ -111,7 +112,7 @@ describe('isMalicious Unit Tests', () => {
             ["A normal command like ls -la /tmp"],
             ["Use the pipe | for output redirection."],
         ])('should NOT detect legitimate command-like string: %s', (payload) => {
-            expect(isMalicious(payload)).toBe(false);
+            expect(isMalicious(payload)).toBe(false); // This will fail with the old regex
         });
     });
 });

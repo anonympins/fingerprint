@@ -1383,15 +1383,18 @@ function determineOptimalTicketTtl(suspicionScore) {
 function isMalicious(str) {
     // Regex pour les injections SQL et NoSQL de base
     // Ajout de la détection des injections basées sur le temps (SLEEP, BENCHMARK, WAITFOR) et d'autres commandes dangereuses.
-    const injectionRegex = /(\$ne|' OR '1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i;
+    const injectionRegex = /(\$ne|' *OR *'1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i;
     // Regex pour les injections plus avancées
     const log4ShellRegex = /\$\{jndi:(ldap|rmi|dns):/i;
     const sstiRegex = /\{\{.*\}\}|\{%.*%\}/; // Détecte les syntaxes de type Jinja2, Twig, etc.
     const xxeRegex = /<!ENTITY\s+.*SYSTEM/i;
     const pathTraversalRegex = /(\.\.\/|\.\.\\)/;
-    // NOUVEAU : Regex pour les injections de commandes basiques.
-    // Cible les séparateurs de commandes et les backticks d'exécution.
-    const commandInjectionRegex = /(&&|\|\||;|\n|`)/;
+    // Regex pour les injections de commandes.
+    // Elle détecte deux cas :
+    // 1. L'utilisation de backticks `` pour l'exécution de commandes.
+    // 2. Des commandes dangereuses (comme rm, whoami) précédées par un séparateur de commande (;, &&, ||, |)
+    //    pour éviter les faux positifs sur des phrases comme "A normal command like ls -la".
+    const commandInjectionRegex = /`.*`|[\n;&|]\s*(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i;
 
     return injectionRegex.test(str) || log4ShellRegex.test(str) || sstiRegex.test(str) || xxeRegex.test(str) || pathTraversalRegex.test(str) || commandInjectionRegex.test(str);
 }

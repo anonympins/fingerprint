@@ -238,9 +238,9 @@ const ClientLibrary = {
 
     _isFetchPatched: false,
     _interceptorChain: [],
-    // On "lie" (bind) la fonction fetch à son contexte d'origine (window) pour éviter les erreurs "Illegal invocation".
-    // C'est la correction clé pour le problème que vous rencontrez.
-    _originalFetch: (typeof window !== 'undefined') ? window.fetch.bind(window) : () => Promise.reject(new Error('fetch is not available')),
+    // On stocke la fonction fetch originale et on la lie à son contexte (window)
+    // pour éviter les erreurs "Illegal invocation" si une autre lib la modifie.
+    _originalFetch: (typeof window !== 'undefined') ? window.fetch.bind(window) : null,
 
 /**
  * Adds an interceptor function to the `fetch` chain.
@@ -256,7 +256,7 @@ const ClientLibrary = {
   },
 
   patchGlobalFetch() {
-    if (this._isFetchPatched || typeof window === 'undefined') return;
+    if (this._isFetchPatched || !this._originalFetch) return;
 
     this._isFetchPatched = true;
     window.fetch = (resource, options) => {
