@@ -19,10 +19,10 @@ export async function solveCpuTargetInline(clientIp, nonce, target, clientSecret
     const cpuTarget = BigInt('0x' + target);
     let cpuSolution = 0;
     const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
-    while (true) {
-        const msg = clientSecret
-            ? `${ipPart}:${nonce}:${cpuSolution}:${clientSecret}`
-            : `${ipPart}:${nonce}:${cpuSolution}`;
+    while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
+        const msg = clientSecret ?
+            `${nonce}:${cpuSolution}:${clientSecret}` :
+            `${ipPart}:${nonce}:${cpuSolution}`;
         const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
         const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         if (BigInt('0x' + hashHex) < cpuTarget) break;
