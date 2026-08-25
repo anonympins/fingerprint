@@ -979,8 +979,7 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         // 5. (NOUVEAU) Analyse de la distribution des délais avec la loi de Benford
         if (deviceData.timingHistory.length >= benfordMinSamples) {
             // On concatène tous les délais en une seule chaîne de chiffres.
-            const timingString = deviceData.timingHistory.join('');
-            const benfordDeviation = Optimization.Operators.benfordTest(timingString);
+            const benfordDeviation = Optimization.Operators.benfordTest(deviceData.timingHistory);
 
             // Une déviation > 0.15 est suspecte. On peut pondérer la pénalité.
             // Une déviation de 0.3 (très suspecte) donnerait un score de 100 (0.3 / 0.3 * 100).
@@ -1759,7 +1758,7 @@ export class FingerprintEngine {
       this._log('Whitelisted bot verified - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
-
+    
     // Resolve identity and check for persisted "condemned" status early.
     const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
     const isNewDevice = !!newCookie;
@@ -1832,7 +1831,7 @@ export class FingerprintEngine {
     const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
     if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
         this._log('Challenge solution submitted', { pow_type, pow_nonce });
-        
+
         // On doit calculer le score de suspicion *avant* de valider le ticket,
         // car le TTL optimal en dépend.
         const preliminaryVector = suspicionVector; // Use the already calculated vector
@@ -1861,9 +1860,7 @@ export class FingerprintEngine {
 
             if (pow_type === "cpu_target" && pow_solution) {
                 // On passe la durée de vie du ticket configurée
-                console.log("ticket");
                 ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget);
-                console.log(ticket !== null)
                 isValid = ticket !== null;
                 this._log('CPU target challenge verification', { isValid });
             } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
