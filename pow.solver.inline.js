@@ -22,10 +22,10 @@ async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null
     let cpuSolution = 0;
     const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
     while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
-        // FIX: The message format must be consistent. When a clientSecret is present,
-        // the IP is always omitted, and the fingerprint is always included.
+        // The message format must be consistent. When a clientSecret is present,
+        // the IP is omitted, and the fingerprint of the solving machine is included.
         const msg = clientSecret ?
-            `${nonce}:${cpuSolution}:${clientSecret}` :
+            `${nonce}:${cpuSolution}:${clientSecret}:${fingerprint}` :
             `${ipPart}:${nonce}:${cpuSolution}`;
         const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
         const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');

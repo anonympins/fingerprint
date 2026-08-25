@@ -143,16 +143,17 @@ describe('Fingerprint & PoW Security Suite', () => {
             let solution = 0;
             const target = __internal.calculateTarget(suspicionFactor);
             // Client-side simulation now includes the secret
+            const solverFingerprint = ''; // In this test, the solver has no specific fingerprint.
             while (true) {
                 // The client-side logic omits the IP when a clientSecret is present.
-                const msg = `${nonce}:${solution}:${clientSecret}`;
+                const msg = `${nonce}:${solution}:${clientSecret}:${solverFingerprint}`;
                 const hash = createHash('sha256').update(msg).digest('hex');
                 if (BigInt('0x' + hash) < target) break;
                 solution++;
             }
 
             // Server-side verification includes the secret
-            const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, clientSecret, target.toString(16));
+            const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, clientSecret, target.toString(16), solverFingerprint);
             expect(ticket, "Ticket should be generated for a valid solution with secret").toBeTruthy();
             expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
             expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
@@ -610,20 +611,23 @@ describe('Fingerprint & PoW Security Suite', () => {
             const clientSecret = 'a-secret-for-redirect';
             const suspicionFactor = 0.1;
             const target = __internal.calculateTarget(suspicionFactor);
+            const solverFingerprint = 'test-fp-string'; // The fingerprint of the "solving" machine
             let solution = 0;
             // Client-side simulation: hash does NOT include IP when clientSecret is used.
             while (true) {
-                const hash = createHash('sha256').update(`${nonce}:${solution}:${clientSecret}`).digest('hex');
+                const hash = createHash('sha256').update(`${nonce}:${solution}:${clientSecret}:${solverFingerprint}`).digest('hex');
                 if (BigInt('0x' + hash) < target) break;
                 solution++;
             }
 
             // The middleware stores the secret upon challenge issuance
             // The secret is now stored as a context object
+            // CRUCIAL: The context must now store the fingerprint of the *requesting* client.
             await inMemoryStore.set(`secret:${nonce}`, {
                 clientSecret: clientSecret,
                 cpuTarget: target.toString(16), // The target must also be stored for verification
-                memDifficulty: 0 // Not a memory challenge
+                memDifficulty: 0, // Not a memory challenge
+                fingerprint: solverFingerprint, // The server stores the fingerprint of the original requester.
             });
 
             vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
@@ -632,7 +636,12 @@ describe('Fingerprint & PoW Security Suite', () => {
                 };
             });
             // The request comes back with the solution
-            const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
+            const req = {
+                path: '/protected', ip, cookies: {},
+                // CRUCIAL: The client now submits its fingerprint along with the solution.
+                query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution, pow_fp: solverFingerprint },
+                headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1'
+            };
             let redirectedTo, cookieName, cookieValue;
 
             // On attache le score de suspicion à la requête, comme le ferait le middleware dans un vrai scénario.
@@ -663,6 +672,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             const finalRedirectPath = res.redirect.mock.calls[0][0];
             expect(finalRedirectPath).toBe('/protected');
             expect(finalRedirectPath).not.toContain('pow_nonce');
+            expect(finalRedirectPath).not.toContain('pow_fp');
             expect(finalRedirectPath).not.toContain('pow_solution'); // The query should be empty
             expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
             expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
@@ -678,6 +688,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             const ip = '127.0.0.1';
             const deviceId = 'device-under-probation';
             const probationaryTtl = 30000; // 30 seconds, as defined in fingerprint.js
+            const solverFingerprint = 'fp-probation';
             const userAgent = 'test-ua';
 
             // 1. Créer une empreinte de référence cohérente en utilisant la même logique que le middleware.
@@ -722,24 +733,26 @@ describe('Fingerprint & PoW Security Suite', () => {
             const memDifficulty = parseInt(challengeBody.match(/const memDifficulty = (\d+)/)[1], 10);
             const cpuTarget = BigInt('0x' + cpuTargetHex);
 
-            // --- CORRECTION : Simuler le stockage du contexte du challenge par le serveur ---
-            // C'est l'étape manquante. Le middleware stocke ces informations lorsqu'il émet le challenge.
+            // Simulate the server storing the challenge context, including the original fingerprint.
             await inMemoryStore.set(`secret:${nonce}`, {
                 clientSecret: clientSecret,
                 cpuTarget: cpuTargetHex,
                 memDifficulty: memDifficulty,
+                fingerprint: solverFingerprint, // The server expects this fingerprint.
             });
 
             // Résolution du challenge CPU
             let cpuSolution = 0;
             while (true) {
-                const hash = createHash('sha256').update(`${nonce}:${cpuSolution}:${clientSecret}`).digest('hex');
+                // The solver includes its fingerprint in the hash.
+                const hash = createHash('sha256').update(`${nonce}:${cpuSolution}:${clientSecret}:${solverFingerprint}`).digest('hex');
                 if (BigInt('0x' + hash) < cpuTarget) break;
                 cpuSolution++;
             }
 
             // Résolution du challenge Mémoire
             const solveMemPoW = (seed, diff) => {
+                if (diff === 0) return 0; // Handle 0MB case
                 const size = diff * 1024 * 1024;
                 const buffer = new Uint32Array(size / 4);
                 let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
@@ -754,7 +767,13 @@ describe('Fingerprint & PoW Security Suite', () => {
             // --- ÉTAPE 3: Soumettre la solution ---
             const submissionReq = {
                 path: '/some-data', ip, cookies: {},
-                query: { pow_type: 'cpu_mem', pow_nonce: nonce, pow_solution_cpu: String(cpuSolution), pow_solution_mem: String(memSolution) },
+                query: {
+                    pow_type: 'cpu_mem',
+                    pow_nonce: nonce,
+                    pow_solution_cpu: String(cpuSolution),
+                    pow_solution_mem: String(memSolution),
+                    pow_fp: solverFingerprint // The client submits its fingerprint.
+                },
                 headers: { 'user-agent': userAgent }, rawHeaders: ['User-Agent', userAgent], httpVersion: '1.1'
             };
 
@@ -783,13 +802,14 @@ describe('Fingerprint & PoW Security Suite', () => {
             const correctClientSecret = 'the-correct-secret';
             const wrongClientSecretOnServer = 'the-wrong-secret';
             const suspicionFactor = 0.1;
+            const solverFingerprint = 'fp-test';
             const target = __internal.calculateTarget(suspicionFactor);
 
             // 1. Le client résout le challenge avec le secret qu'il a reçu (le bon)
             let solution = 0;
             // Client-side simulation: hash does NOT include IP when clientSecret is used.
             while (true) {
-                const hash = createHash('sha256').update(`${nonce}:${solution}:${correctClientSecret}`).digest('hex');
+                const hash = createHash('sha256').update(`${nonce}:${solution}:${correctClientSecret}:${solverFingerprint}`).digest('hex');
                 if (BigInt('0x' + hash) < target) break;
                 solution++;
             }
@@ -798,7 +818,8 @@ describe('Fingerprint & PoW Security Suite', () => {
             await inMemoryStore.set(`secret:${nonce}`, {
                 clientSecret: wrongClientSecretOnServer, // The secret is wrong
                 cpuTarget: target.toString(16), // But the target is correct
-                memDifficulty: 0
+                memDifficulty: 0,
+                fingerprint: solverFingerprint, // Fingerprint is correct
             });
 
             vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
@@ -807,7 +828,13 @@ describe('Fingerprint & PoW Security Suite', () => {
                 };
             });
 
-            const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
+            const req = {
+                path: '/protected', ip, cookies: {},
+                query: {
+                    pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution, pow_fp: solverFingerprint
+                },
+                headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1'
+            };
 
             let sentStatus, sentBody;
             const res = {
@@ -832,14 +859,15 @@ describe('Fingerprint & PoW Security Suite', () => {
             const clientSecret = 'a-secret-for-combined';
             const suspicionFactor = 0.5; // Medium suspicion to trigger combined challenge
             const memDifficulty = 1; // 1MB
+            const solverFingerprint = 'fp-combined-test';
 
             // 1. Le client simule la résolution des deux challenges
             // --- Résolution CPU ---
             const target = __internal.calculateTarget(suspicionFactor);
             let cpuSolution = 0;
             while (true) {
-                // Client-side simulation: hash does NOT include IP when clientSecret is used.
-                const hash = createHash('sha256').update(`${nonce}:${cpuSolution}:${clientSecret}`).digest('hex');
+                // The solver includes its fingerprint.
+                const hash = createHash('sha256').update(`${nonce}:${cpuSolution}:${clientSecret}:${solverFingerprint}`).digest('hex');
                 if (BigInt('0x' + hash) < target) break;
                 cpuSolution++;
             }
@@ -865,6 +893,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 clientSecret: clientSecret,
                 cpuTarget: target.toString(16),
                 memDifficulty: memDifficulty,
+                fingerprint: solverFingerprint, // Server stores the original fingerprint
             });
 
             // Simule un score de suspicion moyen
@@ -875,7 +904,13 @@ describe('Fingerprint & PoW Security Suite', () => {
             // 3. La requête de l'utilisateur revient avec les deux solutions
             const req = {
                 path: '/protected-resource', ip, cookies: {},
-                query: { pow_type: 'cpu_mem', pow_nonce: nonce, pow_solution_cpu: cpuSolution, pow_solution_mem: memSolution },
+                query: {
+                    pow_type: 'cpu_mem',
+                    pow_nonce: nonce,
+                    pow_solution_cpu: cpuSolution,
+                    pow_solution_mem: memSolution,
+                    pow_fp: solverFingerprint // Client submits its fingerprint
+                },
                 headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1'
             };
             let redirectedTo, cookieName, cookieValue;
