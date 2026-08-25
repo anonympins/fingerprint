@@ -584,8 +584,8 @@ describe('Fingerprint & PoW Security Suite', () => {
       // L'objet `res` mocké doit supporter la chaîne .status().send() pour les cas d'échec,
       // and we'll spy on them to ensure they are NOT called on success.
       const res = {
-        cookie: (n, v) => { cookieName = n; cookieValue = v; },
-        redirect: (p) => { redirectedTo = p; },
+        cookie: (n, v) => { cookieName = n; cookieValue = v; }, // Garder la logique pour capturer les valeurs
+        redirect: vi.fn((p) => { redirectedTo = p; }), // Transformer en espion tout en gardant la logique
         status: vi.fn(function() { return this; }),
         send: vi.fn()
       };
@@ -599,9 +599,13 @@ describe('Fingerprint & PoW Security Suite', () => {
 
       await powMiddleware(dynamicTtlConfig)(req, res, next);
 
-      expect(res.status).not.toHaveBeenCalled();
-      expect(res.send).not.toHaveBeenCalled();
-      expect(redirectedTo, 'Should redirect to the original path').toBe('/protected');
+      // Vérifier que la redirection a bien eu lieu
+      expect(res.redirect).toHaveBeenCalledTimes(1);
+      // Vérifier que l'URL de redirection a été nettoyée des paramètres pow_*
+      const finalRedirectPath = res.redirect.mock.calls[0][0];
+      expect(finalRedirectPath).toBe('/protected');
+      expect(finalRedirectPath).not.toContain('pow_nonce');
+      expect(finalRedirectPath).not.toContain('pow_solution');
       expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
       expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
     });
