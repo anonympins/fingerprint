@@ -1616,17 +1616,9 @@ export class FingerprintEngine {
                 logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now() });
             }
 
-            // NOUVEAU : Nettoyer l'URL de redirection pour éviter les boucles.
-            // On reconstruit l'URL sans les paramètres pow_*.
-            const redirectUrl = new URL(path, `http://${requestContext.headers.host || 'localhost'}`);
-            redirectUrl.searchParams.delete('pow_type');
-            redirectUrl.searchParams.delete('pow_nonce');
-            redirectUrl.searchParams.delete('pow_solution');
-            redirectUrl.searchParams.delete('pow_solution_cpu');
-            redirectUrl.searchParams.delete('pow_solution_mem');
             return {
               action: 'redirect',
-              path: redirectUrl.pathname + redirectUrl.search, // On utilise le chemin et les paramètres nettoyés
+              path: path,
               score: 0, // Le score n'est pas pertinent ici, on a passé le test.
               vector: { challenge_solved: 100 },
               cookie: {
