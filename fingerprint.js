@@ -1276,9 +1276,10 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   ticketMaxAge, // NOUVEAU: Durée de validité du ticket configurable
   nonce,
   solution,
+  suspicionFactor,
   clientSecret, // Le secret est maintenant requis
-  target, // La cible est maintenant passée directement
 ) {
+  const target = calculateTarget(suspicionFactor);
   const message = clientSecret
     ? `${clientIp}:${nonce}:${solution}:${clientSecret}`
     : `${clientIp}:${nonce}:${solution}`;
@@ -1288,7 +1289,7 @@ export function verifyCpuTargetPoWAndGenerateTicket(
     .digest("hex");
   const hashAsInt = BigInt("0x" + hash);
 
-  if (hashAsInt < BigInt("0x" + target)) {
+  if (hashAsInt < target) {
     // The comparison is direct with native BigInts
     // The proof is valid, generate the ticket
       const expiry = Date.now() + (ticketMaxAge || 3600000); // Utilise la durée passée ou un fallback.
@@ -1589,11 +1590,11 @@ export class FingerprintEngine {
             
             if (pow_type === "cpu_target") {
                 // On passe la durée de vie du ticket configurée
-                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget);
+                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
                 isValid = ticket !== null;
                 this._log('CPU target challenge verification', { isValid });
             } else if (pow_type === "cpu_mem") {
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget);
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
                 const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
                 isValid = cpuTicket !== null && isMemValid;
                 if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
