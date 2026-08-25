@@ -14,8 +14,8 @@ export { createMongoDbStore } from "./mongodb-store.js";
  * @returns {string} The secret key.
  */
 const getPowSecret = () => {
-  const secret = import.meta.env.POW_SECRET;
-  if (!secret && import.meta.env.NODE_ENV === 'production') {
+  const secret = process.env.POW_SECRET;
+  if (!secret && process.env.NODE_ENV === 'production') {
     throw new Error('POW_SECRET environment variable is not set. This is required for production.');
   }
   return secret || "fallback-dev-secret-32-chars-minimum";
@@ -984,7 +984,7 @@ async function resolveRequestIdentity(context, securityConfig = {}) {
       name: "device_id",
       value: deviceId,
       options: {
-        httpOnly: true, secure: import.meta.env.NODE_ENV === "production", sameSite: "strict",
+        httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
         // Le maxAge est maintenant configurable. Par défaut, c'est un cookie de session.
         ...(securityConfig.deviceIdCookieMaxAge && { maxAge: securityConfig.deviceIdCookieMaxAge }),
       }
@@ -1435,7 +1435,7 @@ export { isMalicious };
 
 export class FingerprintEngine {
   constructor(securityConfig) {
-    const isProduction = import.meta.env.NODE_ENV === 'production';
+    const isProduction = process.env.NODE_ENV === 'production';
     this.securityConfig = securityConfig;
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();
