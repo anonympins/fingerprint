@@ -79,11 +79,16 @@ async function solveCpuTarget(message, target) {
  * @returns {Promise<number>} La solution (nombre entier).
  */
 async function solveMemory(seed, difficulty) {
+    // On définit un seuil pour savoir quand faire une pause, afin de ne pas bloquer le thread UI.
+    const YIELD_THRESHOLD = 100000;
     const size = difficulty * 1024 * 1024;
     const buffer = new Uint32Array(size / 4);
     let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
     for (let i = 0; i < buffer.length; i++) {
         buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+        if (i % YIELD_THRESHOLD === 0) {
+            await new Promise(r => setTimeout(r, 0)); // Respiration pour ne pas geler l'UI
+        }
     }
     let solution = 0;
     const iterations = size / 16;
@@ -91,6 +96,9 @@ async function solveMemory(seed, difficulty) {
     for (let i = 0; i < iterations; i++) {
         addr = buffer[addr] % buffer.length;
         solution ^= addr;
+        if (i % YIELD_THRESHOLD === 0) {
+            await new Promise(r => setTimeout(r, 0)); // Respiration pour ne pas geler l'UI
+        }
     }
     return solution;
 }
