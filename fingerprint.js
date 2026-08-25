@@ -30,7 +30,7 @@ const getPowSolverCode = () => {
   try {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    const solverPath = join(__dirname, 'pow.solver.js');
+    const solverPath = join(__dirname, 'pow.solver.inline.js'); // Use the inline version
     return readFileSync(solverPath, 'utf-8');
   } catch (error) {
     console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
