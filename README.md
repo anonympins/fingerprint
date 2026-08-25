@@ -523,7 +523,7 @@ const server = http.createServer(async (req, res) => {
         clientIp: req.socket.remoteAddress,
         path: req.url.split('?')[0],
         cookies: {}, // Parse cookies from req.headers.cookie
-        query: new URL(req.url, `http://${req.headers.host}`).searchParams,
+        query: Object.fromEntries(new URL(req.url, `http://${req.headers.host}`).searchParams),
         headers: req.headers,
         rawReq: req, // Pass the raw request
         rawRes: res, // Pass the raw response for cookie setting
