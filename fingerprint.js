@@ -1255,48 +1255,61 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  * @param {string} clientIp - The client's IP address.
  * @returns {string} HTML content.
  */
-function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret) {
+function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapContainerHtml) {
     const { nonce, target, path } = cpuChallengeDetails;
     const solverCode = getPowSolverCode();
-    return `
-      <html><head><title>Advanced Security Check</title></head>
-      <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
-        <h1>Enhanced Verification... (Level 2)</h1>
-        <p>Your activity requires an additional security check. This may take a few moments.</p>
-        <div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div>
-        <script>${solverCode}</script>
-        <script>
-          async function solve() {
-            const nonce = "${nonce}";
-            const path = "${path}";
-            const clientSecret = "${clientSecret}";
-            const clientIp = "${clientIp}";
-            const cpuTarget = BigInt("0x${target}");
-            const memDifficulty = ${memoryDifficulty};
 
-            // --- CPU Challenge ---
-            document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
-            const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {
-                // Optional progress callback
-            });
+    const challengeScript = `
+      async function solve() {
+        const nonce = "${nonce}";
+        const path = "${path}";
+        const clientSecret = "${clientSecret}";
+        const clientIp = "${clientIp}";
+        const cpuTarget = BigInt("0x${target}");
+        const memDifficulty = ${memoryDifficulty};
 
-            // --- Memory Challenge ---
-            document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
-            await new Promise(r => setTimeout(r, 10)); // Yield to update UI
+        // --- CPU Challenge ---
+        document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
+        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {
+            // Optional progress callback
+        });
 
-            let memSolution = 0;
-            try {
-                const memSeed = nonce + ":" + clientSecret;
-                memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);
-            } catch(e) {
-                document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
-                return;
-            }
-            window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
-          }
-          solve();
-        </script>
-      </body></html>`;
+        // --- Memory Challenge ---
+        document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
+        await new Promise(r => setTimeout(r, 10)); // Yield to update UI
+
+        let memSolution = 0;
+        try {
+            const memSeed = nonce + ":" + clientSecret;
+            memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);
+        } catch(e) {
+            document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
+            return;
+        }
+        window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
+      }
+      solve();
+    `;
+
+    let htmlTemplate;
+    const customTemplatePath = securityConfig?.challengePagePath;
+
+    if (customTemplatePath) {
+        try {
+            htmlTemplate = readFileSync(customTemplatePath, 'utf-8');
+        } catch (error) {
+            console.warn(`[Fingerprint] Could not load custom challenge page at '${customTemplatePath}'. Falling back to default. Error: ${error.message}`);
+        }
+    }
+
+    if (!htmlTemplate) {
+        htmlTemplate = `<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>`;
+    }
+
+    return htmlTemplate
+        .replace('<!-- FINGERPRINT_SOLVER_SCRIPT -->', solverCode)
+        .replace('<!-- FINGERPRINT_CHALLENGE_SCRIPT -->', challengeScript)
+        .replace('<!-- FINGERPRINT_TRAPS -->', trapContainerHtml);
 }
 
 /**
@@ -1889,8 +1902,7 @@ export class FingerprintEngine {
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
                 // For browsers, send the HTML page.
-                const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
-                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret).replace('</body>', `${trapContainer}</body>`);
+                const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapContainer);
                 this._log('Browser challenge page generated', { 
                     pageLength: page.length, 
                     hasTrapContainer: true 
