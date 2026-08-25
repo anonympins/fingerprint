@@ -763,6 +763,25 @@ function getHoneypotScore(context, honeypotConfig = {}) {
 }
 
 /**
+ * @private
+ * Map of malicious patterns grouped by type.
+ */
+const injectionPatterns = {
+    // SQL/NoSQL injections, including time-based attacks
+    sql: /(\$ne|' *OR *'1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i,
+    // Log4Shell (JNDI injection)
+    log4shell: /\$\{jndi:(ldap|rmi|dns):/i,
+    // Server-Side Template Injection (SSTI) for engines like Jinja2, Twig, etc.
+    ssti: /\{\{.*\}\}|\{%.*%\}/,
+    // XML External Entity (XXE) injection
+    xxe: /<!ENTITY\s+.*SYSTEM/i,
+    // Path Traversal
+    traversal: /(\.\.\/|\.\.\\)/,
+    // Remote Command Execution (RCE)
+    rce: /`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i,
+};
+
+/**
  * Calcule un score basé sur les métriques comportementales envoyées par le client.
  * @param {object} context - Le contexte de la requête, contenant les en-têtes.
  * @returns {{behaviorScore: number}}
@@ -1556,28 +1575,22 @@ function determineOptimalTicketTtl(suspicionScore) {
 
 /**
  * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
- * @param {string} str - La chaîne à vérifier.
- * @returns {boolean} - True si un pattern malveillant est détecté.
  * @private
+ * @param {string} str - La chaîne à vérifier.
+ * @param {string[]} [typesToDetect=['sql', 'log4shell', 'ssti', 'xxe', 'traversal', 'rce']] - Les types d'injections à détecter.
+ * @returns {boolean} - True si un pattern malveillant est détecté.
  */
-function isMalicious(str) {
+function isMalicious(str, typesToDetect = Object.keys(injectionPatterns)) {
     if (typeof str !== 'string') return false;
-    // Regex pour les injections SQL et NoSQL de base
-    // Ajout de la détection des injections basées sur le temps (SLEEP, BENCHMARK, WAITFOR) et d'autres commandes dangereuses.
-    const injectionRegex = /(\$ne|' *OR *'1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i;
-    // Regex pour les injections plus avancées
-    const log4ShellRegex = /\$\{jndi:(ldap|rmi|dns):/i;
-    const sstiRegex = /\{\{.*\}\}|\{%.*%\}/; // Détecte les syntaxes de type Jinja2, Twig, etc.
-    const xxeRegex = /<!ENTITY\s+.*SYSTEM/i;
-    const pathTraversalRegex = /(\.\.\/|\.\.\\)/;
-    // Regex pour les injections de commandes.
-    // Elle détecte :
-    // 1. L'utilisation de backticks ``.
-    // 2. Des commandes dangereuses (rm, whoami...) qui sont soit au début de la chaîne,
-    //    soit précédées par un séparateur de commande (;, &&, ||, |) suivi d'espaces.
-    const commandInjectionRegex = /`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i;
 
-    return injectionRegex.test(str) || log4ShellRegex.test(str) || sstiRegex.test(str) || xxeRegex.test(str) || pathTraversalRegex.test(str) || commandInjectionRegex.test(str);
+    for (const type of typesToDetect) {
+        const regex = injectionPatterns[type];
+        if (regex && regex.test(str)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 // --- Middleware Proof-of-Work (Le péage) ---
@@ -2110,6 +2123,82 @@ export class FingerprintEngine {
   }
 }
 
+/**
+ * Returns a default list of security analyzers for honeypot detection.
+ * This list can be used as a base and extended with custom rules.
+ * Currently includes an XSS detection analyzer.
+ * @returns {Array<Function>}
+ */
+export const default_analyzers = () => [
+    // Analyzer for Cross-Site Scripting (XSS) detection.
+    // It uses the 'xss' library, which should be installed by the user (`npm install xss`).
+    // If 'xss' is not available, this analyzer will be safely ignored.
+    xss_analyzer
+];
+
+export const xss_analyzer = async (data) => {
+    try {
+        // Dynamically import the 'xss' library.
+        // The module is loaded only once by Node's cache.
+        const xss = (await import('xss')).default;
+        const originalData = JSON.stringify(data);
+        // If the sanitized string is different, it means malicious HTML/JS was found and removed.
+        return xss(originalData) !== originalData;
+    } catch (error) {
+        // This catch block handles the case where the 'xss' module is not installed.
+        if (error.code === 'ERR_MODULE_NOT_FOUND') {
+            console.warn('[Fingerprint] Warning: The "xss" package is not installed. The default XSS analyzer is disabled. Run "npm install xss" to enable it.');
+            // To avoid repeated warnings, we can replace this function with a no-op.
+            this.isXssAnalyzerAvailable = false; // A flag to prevent future attempts.
+        }
+        return false; // In case of any error, we assume the data is not malicious.
+    }
+}
+/**
+ * Returns a powerful WAF (Web Application Firewall) analyzer based on ModSecurity.
+ * This analyzer is highly effective against a wide range of attacks (SQLi, XSS, RCE, etc.)
+ * by using the OWASP Core Rule Set.
+ *
+ * **Note:** This is an optional and advanced feature.
+ * 1. The user must install the package: `npm install modsecurity-nodejs`
+ * 2. ModSecurity rules (like the OWASP CRS) must be available on the server.
+ *
+ * If the package is not installed, the analyzer will be safely ignored.
+ *
+ * @param {string} rulesPath - The path to the ModSecurity rules configuration file (e.g., `crs-setup.conf`).
+ * @returns {Function} An analyzer function to be used in the `honeypot.analyzers` array.
+ */
+export const modsecurity_analyzer = (rulesPath) => {
+    let wafInstance = null; // Singleton instance for the WAF
+
+    return async (data) => {
+        if (!rulesPath) {
+            console.warn('[Fingerprint] ModSecurity analyzer disabled: `rulesPath` is not provided.');
+            return false;
+        }
+
+        try {
+            if (!wafInstance) {
+                // Dynamically import the library only when needed.
+                const { ModSecurity } = await import('modsecurity-nodejs');
+                wafInstance = new ModSecurity();
+                wafInstance.init();
+                wafInstance.addRules(rulesPath);
+                console.log('[Fingerprint] ModSecurity WAF analyzer initialized successfully.');
+            }
+
+            // The `transaction` method checks the data against the loaded rules.
+            // It returns `null` if no rules are matched, or an object with intervention details if a threat is found.
+            const result = wafInstance.transaction(data);
+            return result !== null; // A non-null result means a threat was detected.
+        } catch (error) {
+            if (error.code === 'ERR_MODULE_NOT_FOUND') {
+                console.warn('[Fingerprint] Warning: "modsecurity-nodejs" is not installed. The WAF analyzer is disabled. Run "npm install modsecurity-nodejs" to enable it.');
+            }
+            return false; // Assume data is safe if any error occurs.
+        }
+    };
+};
 /**
  * Returns a default list of whitelisting rules for common and legitimate web crawlers.
  * This list can be used as a base and extended with custom rules.

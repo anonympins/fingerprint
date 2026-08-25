@@ -18,14 +18,20 @@ The process unfolds in three steps:
     *   **Header Anomalies**: Missing `User-Agent`, `Accept-Language`, etc.
     *   **Device Behavior**: Rapid fingerprint changes (User-Agent rotation).
     *   **IP Behavior**: An excessive number of different devices seen from the same IP, or a single device using a large number of IPs (proxy rotation).
-    *   **Inconsistency**: A low similarity score between the current fingerprint and the initial one associated with the `device_id` (cookie theft detection).
+    *   **Inconsistency**: A low similarity score between the current fingerprint and the one initially associated with the `device_id` (cookie theft detection).
+    *   **Cross-Layer Inconsistency**: Mismatches between client-side data (e.g., OS reported by the browser) and server-side headers (e.g., `User-Agent`).
     *   **Request Patterns**: Repetitive, rapid-fire, or sequential requests typical of scraping bots. The parameters for detecting these patterns (e.g., request velocity, burst detection) are dynamically adjusted by the auto-tuner for optimal performance.
     *   **Honeypot Trap**: Detection of bots that automatically fill hidden form fields or probe for common but unused URL parameters (e.g., `?debug=true`).
 3.  **Dynamic Challenge**: If the suspicion score exceeds a certain threshold, a challenge is presented to the user. The difficulty and type of challenge depend on the score:
-    *   **Low to Medium Suspicion**: A combined CPU and Memory Proof-of-Work (PoW) challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
+    *   **Low to Medium Suspicion**: A combined **CPU and Memory Proof-of-Work (PoW)** challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
     *   **High Suspicion**: For the most suspicious requests, the system issues a high-difficulty combined CPU/Memory challenge. The architecture allows for plugging in more complex challenges like CAPTCHAs if needed.
+    *   **New Devices**: To increase the cost for bots that simply clear their cookies, new (unseen) devices are systematically presented with a minimal, almost imperceptible challenge on their first visit, even if their suspicion score is low.
 
-Once the challenge is solved, a clearance "ticket" is issued via a secure cookie, exempting the user from new challenges for a set period. For API clients, the challenge is delivered as a `429` JSON response, and the client is expected to solve it and retry the request.
+Once the challenge is solved, a clearance "ticket" is issued via a secure cookie, exempting the user from new challenges. The duration of this ticket is dynamic:
+- **Probationary Ticket**: If the request was moderately suspicious, a very short-lived "probationary" ticket (e.g., 30 seconds) is issued. This forces the client to be re-evaluated quickly, increasing security.
+- **Optimal TTL Ticket**: For less suspicious requests, a genetic algorithm calculates the optimal ticket duration, balancing security (shorter TTL for higher risk) and user experience (longer TTL for lower risk).
+
+For API clients, the challenge is delivered as a `404` JSON response, and the client library can automatically solve it and retry the original request.
 
 ## Features
 
@@ -33,7 +39,7 @@ Once the challenge is solved, a clearance "ticket" is issued via a secure cookie
 -   **Secure Ticket System**: Uses HMAC-SHA256 signatures to validate clearances and prevent tampering.
 -   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
 -   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`. The datastore must support setting a Time-To-Live (TTL) for challenge secrets.
--   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure ticket validation.
+-   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure validation of tickets and other signatures.
 -   **Bot Whitelisting**: Includes a DNS-based verification mechanism to reliably identify and whitelist legitimate crawlers like Googlebot and Bingbot, preventing them from being challenged. The results are cached for optimal performance.
 -   **Automatic Parameter Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust not only suspicion thresholds (`low`, `medium`, `high`) but also the parameters for behavioral pattern detection, improving accuracy and reducing false positives over time.
 
@@ -61,7 +67,7 @@ The `powMiddleware` requires a configuration object defining the weights of susp
 import express from 'express';
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
-import { powMiddleware, default_whitelist } from './fingerprint.js'; // Adjust the path
+import { powMiddleware, default_whitelist, default_analyzers } from './fingerprint.js'; // Adjust the path
 
 const app = express();
 app.use(cookieParser());
@@ -81,15 +87,15 @@ const securityConfig = {
         headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
         requestPatternScore: 0.6,// Penalizes bot-like request sequences (scraping, etc.)
         inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
-        behaviorScore: 0.7,    // Penalizes non-human interactions (no mouse/keyboard activity)
-        honeypotScore: 1.0       // Strongly penalizes bots filling hidden form fields
+        behaviorScore: 0.7,      // Penalizes non-human interactions (no mouse/keyboard activity)
+        honeypotScore: 1.0,      // Strongly penalizes bots filling hidden form fields
+        crossLayerInconsistencyScore: 0.4 // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
     },
-    // A new, non-suspicious device will always have its score adjusted to a minimum of 1, ensuring it receives a minimal, almost imperceptible challenge on its first visit.
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued
         medium: 45, // Score for a more difficult combined CPU/Memory challenge
         high: 75,   // Score for a very difficult challenge
-        block: 95,  // Score above which the request is blocked outright (HTTP 403)
+        block: 95,  // Score above which the request is blocked outright (HTTP 404)
         isStaticResource: (req) => req.path.startsWith('/static/'), // Optional: Custom function to identify static resources
         isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json') // Optional: Custom function to identify API requests
     },
@@ -114,27 +120,20 @@ const securityConfig = {
         // List of URL paths that should never be accessed by a legitimate user.
         // A request to one of these paths will immediately flag the device as malicious.
         trapUrls: ['/wp-admin', '/.env', '/admin.php', '/phpmyadmin'], // (Optional)
-        // Automatically detect common SQL/NoSQL injection and RCE patterns in request values. (Optional, default: true)
-        detectInjections: true,
-        // (Optional) Plug in external, more robust analyzers. This allows you to extend the default detection with specialized libraries (e.g., WAFs, anti-spam) or your own custom logic.
+        // Automatically detect common injection patterns. Can be a boolean or an array of specific types.
+        // - `true`: Enables all available detections (default).
+        // - `false`: Disables injection detection.
+        // - `['sql', 'rce']`: Enables only SQL injection and Remote Command Execution detection.
+        detectInjections: ['sql', 'rce', 'traversal', 'xxe', 'ssti', 'log4shell'], // (Optional, default: true)
+        // (Optional) Plug in external analyzers. This allows you to extend detection with specialized libraries or custom logic.
         // Each function receives an object with all query and body data and should return `true` if a threat is detected.
         analyzers: [
-            // Example 1: Using a general-purpose WAF library.
-            // (npm install generic-waf)
-            (data) => {
-                const WAF = require('generic-waf');
-                const waf = new WAF();
-                // This WAF expects a string, so we stringify the data to check all values at once.
-                return waf.isMalicious(JSON.stringify(data));
-            },
-            // Example 2: Using a specialized library for XSS detection.
-            // (npm install xss)
-            (data) => {
-                const xss = require('xss');
-                const originalData = JSON.stringify(data);
-                // If the sanitized string is different from the original, it means malicious HTML/JS was found and removed.
-                return xss(originalData) !== originalData;
-            },
+            ...default_analyzers(), // Includes the default XSS analyzer.
+
+            // Example 2: Enable a powerful WAF with ModSecurity and the OWASP Core Rule Set.
+            // Requires `npm install modsecurity-nodejs` and downloading the OWASP CRS rules.
+            // modsecurity_analyzer('/path/to/owasp-crs/crs-setup.conf'),
+
             // Example 3: A custom function to detect specific keywords (e.g., for anti-spam).
             (data) => {
                 const spamKeywords = ['viagra', 'free money', 'crypto pump'];
@@ -251,7 +250,7 @@ The main Express middleware. It orchestrates identification, suspicion calculati
 
 #### `configureStore(store)`
 Allows replacing the in-memory store with an external datastore (like Redis) for persistence and scaling.
-The library provides ready-to-use adapters for popular datastores like Redis and MongoDB, which automatically handle the Time-To-Live (TTL) required for temporary data like challenge secrets.
+The library provides ready-to-use adapters for popular datastores like **Redis**, **MongoDB**, and any **SQL database** supported by Knex.js. These adapters automatically handle the Time-To-Live (TTL) required for temporary data like challenge secrets.
 
 **Redis Example:**
 
@@ -284,6 +283,32 @@ configureStore(mongoStore);
 // you must create a TTL index on the `expiresAt` field in your MongoDB collection.
 // Run this command in the mongo shell:
 // db.sessions.createIndex({ "expiresAt": 1 }, { expireAfterSeconds: 0 })
+```
+
+**SQL Example (with Knex.js):**
+
+```javascript
+import { configureStore } from './fingerprint.js';
+import { createSqlStore } from './sql-store.js';
+import knex from 'knex';
+
+const knexClient = knex({
+  client: 'pg', // or 'mysql', 'sqlite3', etc.
+  connection: process.env.DATABASE_URL,
+});
+
+const sqlStore = createSqlStore(knexClient, 'fingerprint_sessions'); // 'fingerprint_sessions' is the table name
+configureStore(sqlStore);
+
+// IMPORTANT: For automatic expiration of challenges and other temporary data to work,
+// your table must have an `expiresAt` column. The store will handle cleanup of expired rows,
+// but you must create the table yourself.
+// Example schema for PostgreSQL:
+// CREATE TABLE fingerprint_sessions (
+//   "key" VARCHAR(255) PRIMARY KEY,
+//   "value" TEXT NOT NULL,
+//   "expiresAt" TIMESTAMPTZ
+// );
 ```
 
 #### `identifyRequest(req, res)`
