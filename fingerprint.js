@@ -376,15 +376,15 @@ const generateTspChallenge = (
           <div id="loader" style="margin:20px;">⚙️ Calculating route... (${numCities} cities)</div>
           <script>${solverCode}</script>
           <script>
-            const cities = ${citiesJson};
-            const nonce = "${nonce}";
+            const cities = ${citiesJson}; // Safe, as it's JSON
+            const nonce = ${JSON.stringify(nonce)}; // Safe
             const targetMaxDistance = ${targetMaxDistance};
 
             async function solve() {
               const result = await window.solveTspChallenge(cities, targetMaxDistance);
               
               if (result.distance <= targetMaxDistance) {
-                window.location.href = "${path}" + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(result.path);
+                window.location.href = ${JSON.stringify(path)} + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(result.path);
               } else {
                 document.getElementById('loader').innerText = "Error: Could not find a sufficient solution. Please try again.";
               }
@@ -1235,13 +1235,13 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
         <script>${solverCode}</script>
         <script>
           async function solve() {
-            const clientIp = "${clientIp}";
-            const nonce = "${nonce}";
+            const clientIp = ${JSON.stringify(clientIp)};
+            const nonce = ${JSON.stringify(nonce)};
             const cpuTarget = BigInt("0x${target}");
             const solution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, null, (progress) => {
                 // Optional progress callback
             });
-            window.location.href = "${path}?pow_type=cpu_target&pow_nonce=${nonce}&pow_solution=" + solution;
+            window.location.href = ${JSON.stringify(path)} + "?pow_type=cpu_target&pow_nonce=" + nonce + "&pow_solution=" + solution;
           }
           solve();
         </script>
@@ -1261,10 +1261,10 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
 
     const challengeScript = `
       async function solve() {
-        const nonce = "${nonce}";
-        const path = "${path}";
-        const clientSecret = "${clientSecret}";
-        const clientIp = "${clientIp}";
+        const nonce = ${JSON.stringify(nonce)};
+        const path = ${JSON.stringify(path)};
+        const clientSecret = ${JSON.stringify(clientSecret)};
+        const clientIp = ${JSON.stringify(clientIp)};
         const cpuTarget = BigInt("0x${target}");
         const memDifficulty = ${memoryDifficulty};
 
@@ -1286,7 +1286,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
             document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
             return;
         }
-        window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
+        window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
       }
       solve();
     `;
@@ -2170,6 +2170,9 @@ export const __internal = {
     determineOptimalTicketTtl,
     getRequestPatternScore, // Expose for testing
     getBehaviorScore, // Expose for testing
+    // Expose page generators for security testing
+    generateCpuTargetChallengePage,
+    generateCombinedPoWChallengePage,
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---

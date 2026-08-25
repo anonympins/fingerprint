@@ -1533,3 +1533,46 @@ describe('determineOptimalTicketTtl', () => {
     // Ce test est plus difficile à déclencher, mais il valide la robustesse de la fonction.
     // On peut le simuler en forçant l'algorithme génétique à retourner un tableau vide.
 });
+
+describe('Challenge Page Generation Security (XSS)', () => {
+    // Les fonctions sont déjà exportées via __internal
+    const { generateCpuTargetChallengePage, generateCombinedPoWChallengePage } = __internal;
+
+    // Mock readFileSync pour éviter les erreurs de système de fichiers lorsque getPowSolverCode est appelé
+    beforeEach(() => {
+        // Assurez-vous que le mock est actif pour ces tests
+        readFileSync.mockReturnValue('// MOCK SOLVER CODE');
+    });
+
+    afterEach(() => {
+        readFileSync.mockClear();
+    });
+
+    it('should escape the path parameter in generateCpuTargetChallengePage to prevent XSS', () => {
+        const maliciousPath = `"/;alert('XSS');//`;
+        const challengeDetails = {
+            nonce: 'test-nonce',
+            target: '0000',
+            path: maliciousPath,
+        };
+
+        const html = generateCpuTargetChallengePage(challengeDetails, '127.0.0.1');
+
+        // 1. Le script malveillant brut ne doit PAS être présent.
+        expect(html).not.toContain(`window.location.href = "/;alert('XSS');//?pow_type=cpu_target`);
+
+        // 2. Le chemin doit être correctement échappé via JSON.stringify, neutralisant l'attaque.
+        const expectedEscapedString = `window.location.href = ${JSON.stringify(maliciousPath)} + "?pow_type=cpu_target`;
+        expect(html).toContain(expectedEscapedString);
+    });
+
+    it('should escape the path parameter in generateCombinedPoWChallengePage to prevent XSS', () => {
+        const maliciousPath = `test.com";\nconsole.log("pwned");//`;
+        const challengeDetails = { nonce: 'test-nonce', target: '0000', path: maliciousPath };
+
+        const html = generateCombinedPoWChallengePage(challengeDetails, 16, '127.0.0.1', 'secret', {}, '');
+
+        expect(html).not.toContain(`const path = "test.com";`);
+        expect(html).toContain(`const path = ${JSON.stringify(maliciousPath)};`);
+    });
+});
