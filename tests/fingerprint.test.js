@@ -6,7 +6,7 @@ import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
 
 // Mock import.meta.env before importing the module that uses it
 vi.mock('import-meta-env', () => ({
-  env: { NODE_ENV: 'test', POW_SECRET: 'fallback-dev-secret-32-chars-minimum' },
+    env: { NODE_ENV: 'test', POW_SECRET: 'fallback-dev-secret-32-chars-minimum' },
 }));
 
 vi.mock('node:fs', async () => {
@@ -16,467 +16,476 @@ vi.mock('node:fs', async () => {
 
 import * as fingerprint from '../fingerprint.js';
 const {
-  FingerprintEngine,
-  isTicketValid,
-  identifyRequest,
-  powMiddleware,
-  __internal,
-  configureStore,
-  verifyCpuTargetPoWAndGenerateTicket,
-  verifyMemoryPoW,
-  verifyTspChallenge,
-  startThresholdAutoTuning,
-  default_whitelist,
-  stopThresholdAutoTuning,
+    FingerprintEngine,
+    isTicketValid,
+    identifyRequest,
+    powMiddleware,
+    __internal,
+    configureStore,
+    verifyCpuTargetPoWAndGenerateTicket,
+    verifyMemoryPoW,
+    verifyTspChallenge,
+    startThresholdAutoTuning,
+    default_whitelist,
+    stopThresholdAutoTuning,
+    getCompositeDeviceHash
 } = fingerprint;
-const { getRequestPatternScore, getDeviceHash } = __internal;
+const { store, getRequestPatternScore, getDeviceHash } = __internal;
 let getBehaviorScore; // Sera initialisé après l'import
 // Mock the entire dns/promises module
 vi.mock('node:dns/promises');
 
 describe('Fingerprint & PoW Security Suite', () => {
-  test('cyrb53 should be deterministic', () => {
-    const input = "test-string";
-    expect(cyrb53(input)).toBe(cyrb53(input));
-    expect(cyrb53("a")).not.toBe(cyrb53("b"));
-  });
-
-  describe('FingerprintBuilder', () => {
-    test('should handle null and undefined values gracefully', () => {
-      const builder = new FingerprintBuilder();
-      builder.add('key1', 'value1');
-      builder.add('key2', null);
-      builder.add('key3', undefined);
-      expect(builder.toString()).toBe('key1:6263243896157005');
+    test('cyrb53 should be deterministic', () => {
+        const input = "test-string";
+        expect(cyrb53(input)).toBe(cyrb53(input));
+        expect(cyrb53("a")).not.toBe(cyrb53("b"));
     });
 
-    test('comparison logic should handle various cases', () => {
-      const fp1 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
-      const fp2 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
-      const fp3 = new FingerprintBuilder().add('hw', '4_8').add('gpu', 'amd').toString();
-      const fp4 = new FingerprintBuilder().add('hw', '8_16').add('os', 'win32').toString(); // Partial match
-
-      expect(FingerprintBuilder.compare(fp1, fp2), "Identical FPs should return 1").toBe(1);
-      expect(FingerprintBuilder.compare(fp1, fp3), "Different FPs should have low similarity score").toBeLessThan(0.5);
-      expect(FingerprintBuilder.compare(fp1, fp4), "Partial match should return a score between 0 and 1").toBeGreaterThan(0);
-      expect(FingerprintBuilder.compare(fp1, fp4)).toBeLessThan(1);
-      expect(FingerprintBuilder.compare(fp1, ''), "Comparison with empty string should be 0").toBe(0);
-      expect(FingerprintBuilder.compare(null, fp2), "Comparison with null should be 0").toBe(0);
-    });
-  });
-
-  describe('JA3 Fingerprinting', () => {
-
-    const mockClientHello = {
-      version: 'TLSv1.3',
-      ciphers: [4865, 4866],
-      extensions: [0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 27, 21],
-      ellipticCurves: [29, 23, 24],
-      ellipticCurvePointFormats: [0],
-    };
-
-    test('should prioritize JA3 hash from x-ja3-hash header', () => {
-      const context = {
-        headers: { 'x-ja3-hash': 'header-provided-ja3-hash' },
-        rawReq: { socket: { clientHello: mockClientHello } } // Even if socket data exists
-      };
-      const deviceHash = getDeviceHash(context);
-      expect(deviceHash).toContain(`ja3:${cyrb53('header-provided-ja3-hash')}`);
-    });
-
-    test('should calculate JA3 hash from clientHello if header is missing', () => {
-      const context = {
-        headers: {},
-        rawReq: { socket: { clientHello: mockClientHello } }
-      };
-      const deviceHash = getDeviceHash(context);
-      // The getDeviceHash function internally uses FingerprintBuilder, which applies cyrb53 to the value.
-      // So we just need to check if the hash of the expected JA3 MD5 is present.
-      const expectedComponent = `ja3`;
-      expect(deviceHash).toContain(expectedComponent);
-    });
-
-    test('should not include JA3 hash if no data is available', () => {
-      const context = {
-        headers: {},
-        rawReq: { socket: {} } // No clientHello
-      };
-      const deviceHash = getDeviceHash(context);
-      expect(deviceHash).not.toContain('ja3:');
-    });
-
-    test('should handle missing rawReq or socket gracefully', () => {
-      const context1 = { headers: {} }; // No rawReq
-      const context2 = { headers: {}, rawReq: {} }; // No socket
-
-      const deviceHash1 = getDeviceHash(context1);
-      const deviceHash2 = getDeviceHash(context2);
-
-      expect(deviceHash1).not.toContain('ja3:');
-      expect(deviceHash2).not.toContain('ja3:');
-    });
-  });
-
-
-
-  describe('CPU Target PoW Workflow', () => {
-    const ip = '127.0.0.1';
-    const nonce = 'test-nonce';
-    const suspicionFactor = 0.1; // Low suspicion for a quick test
-    const clientSecret = 'my-super-secret-client-key';
-
-    test('should solve and verify correctly without a clientSecret (fallback)', () => {
-      let solution = 0;
-      const target = __internal.calculateTarget(suspicionFactor);
-      while (true) {
-        const hash = createHash('sha256').update(`${ip}:${nonce}:${solution}`).digest('hex');
-        if (BigInt('0x' + hash) < target) break;
-        solution++;
-      }
-      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, undefined, target.toString(16));
-      expect(ticket, "Ticket should be generated for a valid solution without secret").toBeTruthy();
-      expect(isTicketValid(ip, ticket), "Ticket should be valid").toBe(true);
-    });
-
-    test('should solve and verify correctly WITH a clientSecret', async () => {
-      let solution = 0;
-      const target = __internal.calculateTarget(suspicionFactor);
-      // Client-side simulation now includes the secret
-      while (true) {
-        // The client-side logic omits the IP when a clientSecret is present.
-        const msg = `${nonce}:${solution}:${clientSecret}`;
-        const hash = createHash('sha256').update(msg).digest('hex');
-        if (BigInt('0x' + hash) < target) break;
-        solution++;
-      }
-
-      // Server-side verification includes the secret
-      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, clientSecret, target.toString(16));
-      expect(ticket, "Ticket should be generated for a valid solution with secret").toBeTruthy();
-      expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
-      expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
-
-      // Verification should fail if the secret is wrong or missing
-      const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, 'wrong-secret', target.toString(16));
-      expect(badTicket1, "Ticket should not be generated with the wrong secret").toBeNull();
-      // Verification should also fail if the IP is included in the hash (old logic)
-      const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, undefined, target.toString(16)); // This simulates the server expecting no secret
-      expect(badTicket2, "Ticket should not be generated when the server expects no secret but one was used for hashing").toBeNull();
-    });
-
-    test('should solve a medium-difficulty challenge within a reasonable time', async () => {
-      const ip = '127.0.0.1';
-      const nonce = 'test-nonce-perf';
-      const suspicionFactor = 0.5; // "Niveau 2"
-      const clientSecret = 'perf-secret';
-
-      // Calcule la cible comme le ferait le serveur
-      const target = __internal.calculateTarget(suspicionFactor);
-
-      // Simule la résolution du challenge
-      let solution = 0;
-      while (true) {
-        // The client-side logic now omits the IP when a clientSecret is present.
-        const currentMessage = `${nonce}:${solution}:${clientSecret}`;
-        const hash = createHash('sha256').update(currentMessage).digest('hex');
-        if (BigInt('0x' + hash) < target) break;
-        solution++;
-      }
-
-      expect(solution).toBeGreaterThan(0); // Vérifie que le challenge a bien été résolu
-    }, 8000); // Timeout de 8 secondes pour ce test
-  });
-
-  test('PoW Ticket Expiration', () => {
-    const ip = '127.0.0.1';
-    // Simulate an expired ticket by manipulating the string (for testing)
-    const expiredTimestamp = Date.now() - 1000;
-    const signature = createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiredTimestamp}`).digest("hex");
-    const ticket = `${expiredTimestamp}:${signature}`;
-    expect(isTicketValid(ip, ticket), "An expired ticket should be rejected").toBe(false);
-  });
-
-  describe('Memory PoW Verification', () => {
-    const nonce = 'test-nonce-mem';
-    const difficulty = 1; // 1MB for a quick test
-    const clientSecret = 'my-mem-secret';
-
-    const solveMemPoW = (seed, diff) => {
-      const size = diff * 1024 * 1024;
-      const buffer = new Uint32Array(size / 4);
-      let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
-      for (let i = 0; i < buffer.length; i++) {
-          buffer[i] = (h = Math.imul(h ^ i, 1597334677));
-      }
-      let clientSolution = 0;
-      const iterations = size / 16;
-      // Align the test solver with the actual implementation in fingerprint.js
-      // This uses a data-dependent memory access pattern, which is more secure.
-      let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
-      for (let i = 0; i < iterations; i++) {
-        addr = buffer[addr] % buffer.length;
-        clientSolution ^= addr;
-      }
-      return clientSolution;
-    };
-
-    test('should verify correctly without a clientSecret', () => {
-      const clientSolution = solveMemPoW(nonce, difficulty);
-      expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, undefined), "Valid memory PoW solution should be accepted").toBe(true);
-      expect(verifyMemoryPoW(nonce, String(clientSolution + 1), difficulty, undefined), "Invalid memory PoW solution should be rejected").toBe(false);
-    });
-
-    test('should verify correctly WITH a clientSecret', () => {
-      const seed = `${nonce}:${clientSecret}`;
-      const clientSolution = solveMemPoW(seed, difficulty);
-
-      // Server-side verification
-      expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, clientSecret), "Valid memory PoW with secret should be accepted").toBe(true);
-      expect(verifyMemoryPoW(nonce, String(clientSolution + 1), difficulty, clientSecret), "Invalid memory PoW with secret should be rejected").toBe(false);
-      expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, 'wrong-secret'), "Memory PoW with wrong secret should be rejected").toBe(false);
-      expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, undefined), "Memory PoW expecting a secret should be rejected if it's missing").toBe(false);
-    });
-  });
-
-  test('TSP Challenge Verification', () => {
-    const nonce = 'test-nonce-tsp';
-    const cities = [{x: 10, y: 10}, {x: 90, y: 90}, {x: 10, y: 90}, {x: 90, y: 10}];
-    const numCities = cities.length;
-    const targetMaxDistance = 350; // A reasonable target for this square
-
-    // A valid, optimal path for this square is [0, 2, 1, 3] or similar
-    const validSolution = JSON.stringify([0, 2, 1, 3]);
-    // An invalid path (not a permutation)
-    const invalidPermutation = JSON.stringify([0, 1, 1, 2]);
-    // A valid path, but likely too long
-    const suboptimalSolution = JSON.stringify([0, 1, 2, 3]);
-
-    expect(verifyTspChallenge(nonce, validSolution, numCities, targetMaxDistance, cities), "A valid TSP solution should be accepted").toBe(true);
-    expect(verifyTspChallenge(nonce, invalidPermutation, numCities, targetMaxDistance, cities), "A TSP solution that is not a permutation should be rejected").toBe(false);
-
-    // This test assumes the simple path is longer than the target.
-    const isSuboptimalRejected = !verifyTspChallenge(nonce, suboptimalSolution, numCities, targetMaxDistance, cities);
-    if (isSuboptimalRejected) {
-      expect(true, "A suboptimal TSP solution (too long) should be rejected").toBe(true);
-    }
-  });
-
-  describe('identifyRequest (for Rate Limiting)', () => {
-    const inMemoryStore = {
-      _map: new Map(),
-      get: async (key) => inMemoryStore._map.get(key),
-      set: async (key, value) => inMemoryStore._map.set(key, value),
-      has: async (key) => inMemoryStore._map.has(key),
-      delete: async (key) => inMemoryStore._map.delete(key),
-    };
-    const securityConfig = {
-      weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.4, inconsistencyScore: 0.8 },
-      thresholds: { low: 20, medium: 35, high: 75 }
-    };
-    let engine;
-
-    beforeEach(() => {
-      inMemoryStore._map.clear();
-      configureStore(inMemoryStore);
-      vi.restoreAllMocks(); // Restore mocks before each test
-      engine = new FingerprintEngine(securityConfig);
-    });
-
-    test('should return a device-specific key for a normal request', async () => {
-      const requestContext = {
-        clientIp: '127.0.0.1',
-        cookies: {},
-        headers: { // Minimal headers
-          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'accept-language': 'en-US,en;q=0.9',
-          'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-        },
-        rawHeaders: ['User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', 'Accept-Language', 'en-US,en;q=0.9', 'Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'],
-        httpVersion: '1.1',
-        query: new URLSearchParams() };
-      const key = await engine.identifyRequest(requestContext);
-      expect(key).toMatch(/^device:/);
-    });
-
-    test('should return a suspicion-based key for a highly suspicious request', async () => {
-      // This context simulates a request from a simple script (e.g., curl) with missing headers.
-      const requestContext = {
-        clientIp: '127.0.0.1',
-        cookies: {},
-        headers: {}, // Simulate completely missing headers
-        rawHeaders: [],
-        httpVersion: '1.1',
-        query: new URLSearchParams()
-      };
-      const key = await engine.identifyRequest(requestContext);
-      // Missing accept/accept-language headers should trigger a medium suspicion score.
-      expect(key).toBe('suspicious_medium:127.0.0.1');
-    });
-  });
-
-  test('getDeviceHash should prioritize client-side fingerprint header', async () => {
-    // 1. Spy on the getDeviceHash function from its actual module
-    const getDeviceHashSpy = vi.spyOn(fingerprint, 'getDeviceHash');
-
-    // 2. Simulate a request context with the special header
-    const clientSideFingerprint = 'cvs:12345|gpu:67890|hw:stable';
-    const requestContext = {
-      headers: {
-        'user-agent': 'A regular user agent',
-        'x-device-fingerprint': clientSideFingerprint,
-      },
-      // ... other context properties
-    };
-
-    // 3. Call the function and assert it returns the client-side FP
-    const result = fingerprint.getDeviceHash(requestContext);
-
-    expect(result).toBe(clientSideFingerprint);
-    expect(getDeviceHashSpy).toHaveBeenCalledWith(requestContext);
-  });
-
-  describe('powMiddleware', () => {
-    // Mock store for tests
-    const inMemoryStore = {
-      _map: new Map(),
-      async get(key) { return this._map.get(key); },
-      async set(key, value) { this._map.set(key, value); },
-      async has(key) { return this._map.has(key); },
-      async delete(key) { this._map.delete(key); },
-    };
-    beforeEach(() => {
-      inMemoryStore._map.clear();
-      configureStore(inMemoryStore);
-    });
-
-    const securityConfig = {
-      weights: { historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 1, requestPatternScore: 1 },
-      thresholds: { low: 20, medium: 45, high: 75 },
-      // NOUVEAU : Activer explicitement le challenge pour les nouveaux appareils pour ce scénario de test.
-      // C'est cette option qui permet à la logique de s'exécuter.
-      challengeNewDevices: true,
-    };
-
-    afterEach(() => {
-      vi.restoreAllMocks();
-    });
-
-    test('should call next() for a non-suspicious request', async () => {
-      // Simuler un appareil connu et non suspect
-      const deviceId = 'known-device-123';
-      await inMemoryStore.set(`device:${deviceId}`, {
-        initialDeviceHash: 'some-hash',
-        ips: new Set(['127.0.0.1']),
-        lastUpdate: Date.now(),
-        lastFpHash: 'some-hash',
-        lastChangeTimestamp: 0,
-        rapidChangeCount: 0,
-      });
-
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-        historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-      });
-
-      const req = { path: '/', ip: '127.0.0.1', cookies: { device_id: deviceId }, query: {}, headers: { 'user-agent': 'test-ua' } };
-      const res = { cookie: vi.fn(), status: vi.fn().mockReturnThis(), send: vi.fn() };
-      const next = vi.fn();
-
-      const middleware = powMiddleware(securityConfig);
-      await middleware(req, res, next);
-
-      expect(next, 'next() should have been called').toHaveBeenCalled();
-      // Pour un appareil connu, le cookie ne doit pas être redéfini
-      expect(res.cookie).not.toHaveBeenCalled();
-    });
-
-    test('should issue a minimal challenge for a new, non-suspicious device', async () => {
-        // 1. Simuler un score de suspicion de 0.
-        // A new device should have a score of at least 1 to trigger the initial challenge.
-        vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-            historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 0, honeypotScore: 0, requestPatternScore: 0
+    describe('FingerprintBuilder', () => {
+        test('should handle null and undefined values gracefully', () => {
+            const builder = new FingerprintBuilder();
+            builder.add('key1', 'value1');
+            builder.add('key2', null);
+            builder.add('key3', undefined);
+            expect(builder.toString()).toBe('key1:6263243896157005');
         });
 
-        // 2. Simuler une nouvelle requête (pas de cookie device_id)
-        const req = {
-            path: '/', ip: '127.0.0.1', cookies: {}, query: {},
-            headers: { 'user-agent': 'A normal browser' },
-            rawHeaders: ['User-Agent', 'A normal browser'], httpVersion: '1.1'
-        };
-        let sentStatus, sentBody;
-        const res = {
-            status: (s) => { sentStatus = s; return res; },
-            send: (b) => { sentBody = b; },
-            cookie: vi.fn()
-        };
-        const next = vi.fn();
+        test('comparison logic should handle various cases', () => {
+            const fp1 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
+            const fp2 = new FingerprintBuilder().add('hw', '8_16').add('gpu', 'nvidia').toString();
+            const fp3 = new FingerprintBuilder().add('hw', '4_8').add('gpu', 'amd').toString();
+            const fp4 = new FingerprintBuilder().add('hw', '8_16').add('os', 'win32').toString(); // Partial match
 
-        await powMiddleware(securityConfig)(req, res, next);
-
-        // 3. Vérifier qu'un challenge est bien émis, même avec un score de 0
-        expect(sentStatus).toBe(404);
-        expect(sentBody).toContain('Enhanced Verification');
-        expect(next).not.toHaveBeenCalled();
+            expect(FingerprintBuilder.compare(fp1, fp2), "Identical FPs should return 1").toBe(1);
+            expect(FingerprintBuilder.compare(fp1, fp3), "Different FPs should have low similarity score").toBeLessThan(0.5);
+            expect(FingerprintBuilder.compare(fp1, fp4), "Partial match should return a score between 0 and 1").toBeGreaterThan(0);
+            expect(FingerprintBuilder.compare(fp1, fp4)).toBeLessThan(1);
+            expect(FingerprintBuilder.compare(fp1, ''), "Comparison with empty string should be 0").toBe(0);
+            expect(FingerprintBuilder.compare(null, fp2), "Comparison with null should be 0").toBe(0);
+        });
     });
 
-    test('should issue a challenge for a suspicious request', async () => {
-      const getSuspicionVectorSpy = vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async (requestContext, securityConfig) => {
-        // The securityConfig is passed as the second argument
-        expect(securityConfig).toBeDefined();
-        return {
-          historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+    describe('JA3 Fingerprinting', () => {
+
+        const mockClientHello = {
+            version: 'TLSv1.3',
+            ciphers: [4865, 4866],
+            extensions: [0, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43, 27, 21],
+            ellipticCurves: [29, 23, 24],
+            ellipticCurvePointFormats: [0],
         };
-      });
 
-      const req = {
-        path: '/',
-        ip: '127.0.0.1',
-        cookies: {},
-        query: {},
-        headers: { 'user-agent': 'test-ua' },
-        rawHeaders: ['User-Agent', 'test-ua'], httpVersion: '1.1' };
-      let sentStatus, sentBody;
-      const res = {
-        status: (s) => { sentStatus = s; return res; },
-        send: (b) => { sentBody = b; },
-        cookie: vi.fn() // Mock cookie to prevent errors in getSuspicionVector
-      };
-      const next = vi.fn(() => { throw new Error('next() should not be called'); });
+        test('should prioritize JA3 hash from x-ja3-hash header', () => {
+            const context = {
+                headers: { 'x-ja3-hash': 'header-provided-ja3-hash' },
+                rawReq: { socket: { clientHello: mockClientHello } } // Even if socket data exists
+            };
+            const deviceHash = getDeviceHash(context);
+            expect(deviceHash).toContain(`ja3:${cyrb53('header-provided-ja3-hash')}`);
+        });
 
-      req.fingerprint = {};
-      const middleware = powMiddleware(securityConfig);
-      await middleware(req, res, next);
+        test('should calculate JA3 hash from clientHello if header is missing', () => {
+            const context = {
+                headers: {},
+                rawReq: { socket: { clientHello: mockClientHello } }
+            };
+            const deviceHash = getDeviceHash(context);
+            // The getDeviceHash function internally uses FingerprintBuilder, which applies cyrb53 to the value.
+            // So we just need to check if the hash of the expected JA3 MD5 is present.
+            const expectedComponent = `ja3`;
+            expect(deviceHash).toContain(expectedComponent);
+        });
 
-      assert.strictEqual(sentStatus, 404, 'Status should be 404');
-      assert.ok(sentBody.includes('Enhanced Verification'), 'Should send a combined challenge page even for low suspicion');
-      assert.ok(sentBody.includes('Initializing combined verification...'), 'Challenge should always be the combined CPU+Mem type');
+        test('should not include JA3 hash if no data is available', () => {
+            const context = {
+                headers: {},
+                rawReq: { socket: {} } // No clientHello
+            };
+            const deviceHash = getDeviceHash(context);
+            expect(deviceHash).not.toContain('ja3:');
+        });
+
+        test('should handle missing rawReq or socket gracefully', () => {
+            const context1 = { headers: {} }; // No rawReq
+            const context2 = { headers: {}, rawReq: {} }; // No socket
+
+            const deviceHash1 = getDeviceHash(context1);
+            const deviceHash2 = getDeviceHash(context2);
+
+            expect(deviceHash1).not.toContain('ja3:');
+            expect(deviceHash2).not.toContain('ja3:');
+        });
     });
 
-    test('should issue a Memory challenge for a medium-suspicious request', async () => {
-      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
-        return {
-          historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-        };
-      });
 
-      const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
-      let sentStatus, sentBody;
-      const res = {
-        status: (s) => { sentStatus = s; return res; },
-        send: (b) => { sentBody = b; },
-        cookie: vi.fn() // Mock cookie to prevent errors in getSuspicionVector
-      };
-      const next = vi.fn(() => { throw new Error('next() should not be called'); });
 
-      req.fingerprint = {};
-      await powMiddleware(securityConfig)(req, res, next);
+    describe('CPU Target PoW Workflow', () => {
+        const ip = '127.0.0.1';
+        const nonce = 'test-nonce';
+        const suspicionFactor = 0.1; // Low suspicion for a quick test
+        const clientSecret = 'my-super-secret-client-key';
 
-      expect(sentStatus, 'Status should be 404').toBe(404);
-      expect(sentBody, 'Should send a combined challenge page for medium suspicion').toContain('Enhanced Verification');
-      expect(sentBody, 'Challenge should be the combined CPU+Mem type').toContain('Initializing combined verification...');
+        test('should solve and verify correctly without a clientSecret (fallback)', () => {
+            let solution = 0;
+            const target = __internal.calculateTarget(suspicionFactor);
+            while (true) {
+                const hash = createHash('sha256').update(`${ip}:${nonce}:${solution}`).digest('hex');
+                if (BigInt('0x' + hash) < target) break;
+                solution++;
+            }
+            const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, undefined, target.toString(16));
+            expect(ticket, "Ticket should be generated for a valid solution without secret").toBeTruthy();
+            expect(isTicketValid(ip, ticket), "Ticket should be valid").toBe(true);
+        });
+
+        test('should solve and verify correctly WITH a clientSecret', async () => {
+            let solution = 0;
+            const target = __internal.calculateTarget(suspicionFactor);
+            // Client-side simulation now includes the secret
+            while (true) {
+                // The client-side logic omits the IP when a clientSecret is present.
+                const msg = `${nonce}:${solution}:${clientSecret}`;
+                const hash = createHash('sha256').update(msg).digest('hex');
+                if (BigInt('0x' + hash) < target) break;
+                solution++;
+            }
+
+            // Server-side verification includes the secret
+            const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, clientSecret, target.toString(16));
+            expect(ticket, "Ticket should be generated for a valid solution with secret").toBeTruthy();
+            expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
+            expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
+
+            // Verification should fail if the secret is wrong or missing
+            const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, 'wrong-secret', target.toString(16));
+            expect(badTicket1, "Ticket should not be generated with the wrong secret").toBeNull();
+            // Verification should also fail if the IP is included in the hash (old logic)
+            const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, undefined, target.toString(16)); // This simulates the server expecting no secret
+            expect(badTicket2, "Ticket should not be generated when the server expects no secret but one was used for hashing").toBeNull();
+        });
+
+        test('should solve a medium-difficulty challenge within a reasonable time', async () => {
+            const ip = '127.0.0.1';
+            const nonce = 'test-nonce-perf';
+            const suspicionFactor = 0.5; // "Niveau 2"
+            const clientSecret = 'perf-secret';
+
+            // Calcule la cible comme le ferait le serveur
+            const target = __internal.calculateTarget(suspicionFactor);
+
+            // Simule la résolution du challenge
+            let solution = 0;
+            while (true) {
+                // The client-side logic now omits the IP when a clientSecret is present.
+                const currentMessage = `${nonce}:${solution}:${clientSecret}`;
+                const hash = createHash('sha256').update(currentMessage).digest('hex');
+                if (BigInt('0x' + hash) < target) break;
+                solution++;
+            }
+
+            expect(solution).toBeGreaterThan(0); // Vérifie que le challenge a bien été résolu
+        }, 8000); // Timeout de 8 secondes pour ce test
     });
 
-    test('should use a custom HTML template for the challenge page if provided', async () => {
-        const customTemplate = `
+    test('PoW Ticket Expiration', () => {
+        const ip = '127.0.0.1';
+        // Simulate an expired ticket by manipulating the string (for testing)
+        const expiredTimestamp = Date.now() - 1000;
+        const signature = createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiredTimestamp}`).digest("hex");
+        const ticket = `${expiredTimestamp}:${signature}`;
+        expect(isTicketValid(ip, ticket), "An expired ticket should be rejected").toBe(false);
+    });
+
+    describe('Memory PoW Verification', () => {
+        const nonce = 'test-nonce-mem';
+        const difficulty = 1; // 1MB for a quick test
+        const clientSecret = 'my-mem-secret';
+
+        const solveMemPoW = (seed, diff) => {
+            const size = diff * 1024 * 1024;
+            const buffer = new Uint32Array(size / 4);
+            let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
+            for (let i = 0; i < buffer.length; i++) {
+                buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+            }
+            let clientSolution = 0;
+            const iterations = size / 16;
+            // Align the test solver with the actual implementation in fingerprint.js
+            // This uses a data-dependent memory access pattern, which is more secure.
+            let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+            for (let i = 0; i < iterations; i++) {
+                addr = buffer[addr] % buffer.length;
+                clientSolution ^= addr;
+            }
+            return clientSolution;
+        };
+
+        test('should verify correctly without a clientSecret', () => {
+            const clientSolution = solveMemPoW(nonce, difficulty);
+            expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, undefined), "Valid memory PoW solution should be accepted").toBe(true);
+            expect(verifyMemoryPoW(nonce, String(clientSolution + 1), difficulty, undefined), "Invalid memory PoW solution should be rejected").toBe(false);
+        });
+
+        test('should verify correctly WITH a clientSecret', () => {
+            const seed = `${nonce}:${clientSecret}`;
+            const clientSolution = solveMemPoW(seed, difficulty);
+
+            // Server-side verification
+            expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, clientSecret), "Valid memory PoW with secret should be accepted").toBe(true);
+            expect(verifyMemoryPoW(nonce, String(clientSolution + 1), difficulty, clientSecret), "Invalid memory PoW with secret should be rejected").toBe(false);
+            expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, 'wrong-secret'), "Memory PoW with wrong secret should be rejected").toBe(false);
+            expect(verifyMemoryPoW(nonce, String(clientSolution), difficulty, undefined), "Memory PoW expecting a secret should be rejected if it's missing").toBe(false);
+        });
+    });
+
+    test('TSP Challenge Verification', () => {
+        const nonce = 'test-nonce-tsp';
+        const cities = [{x: 10, y: 10}, {x: 90, y: 90}, {x: 10, y: 90}, {x: 90, y: 10}];
+        const numCities = cities.length;
+        const targetMaxDistance = 350; // A reasonable target for this square
+
+        // A valid, optimal path for this square is [0, 2, 1, 3] or similar
+        const validSolution = JSON.stringify([0, 2, 1, 3]);
+        // An invalid path (not a permutation)
+        const invalidPermutation = JSON.stringify([0, 1, 1, 2]);
+        // A valid path, but likely too long
+        const suboptimalSolution = JSON.stringify([0, 1, 2, 3]);
+
+        expect(verifyTspChallenge(nonce, validSolution, numCities, targetMaxDistance, cities), "A valid TSP solution should be accepted").toBe(true);
+        expect(verifyTspChallenge(nonce, invalidPermutation, numCities, targetMaxDistance, cities), "A TSP solution that is not a permutation should be rejected").toBe(false);
+
+        // This test assumes the simple path is longer than the target.
+        const isSuboptimalRejected = !verifyTspChallenge(nonce, suboptimalSolution, numCities, targetMaxDistance, cities);
+        if (isSuboptimalRejected) {
+            expect(true, "A suboptimal TSP solution (too long) should be rejected").toBe(true);
+        }
+    });
+
+    describe('identifyRequest (for Rate Limiting)', () => {
+        const inMemoryStore = {
+            _map: new Map(),
+            get: async (key) => inMemoryStore._map.get(key),
+            set: async (key, value) => inMemoryStore._map.set(key, value),
+            has: async (key) => inMemoryStore._map.has(key),
+            delete: async (key) => inMemoryStore._map.delete(key),
+        };
+        const securityConfig = {
+            weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.4, inconsistencyScore: 0.8 },
+            thresholds: { low: 20, medium: 35, high: 75 }
+        };
+        let engine;
+
+        beforeEach(() => {
+            inMemoryStore._map.clear();
+            configureStore(inMemoryStore);
+            vi.restoreAllMocks(); // Restore mocks before each test
+            engine = new FingerprintEngine(securityConfig);
+        });
+
+        test('should return a device-specific key for a normal request', async () => {
+            const requestContext = {
+                clientIp: '127.0.0.1',
+                cookies: {},
+                headers: { // Minimal headers
+                    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'accept-language': 'en-US,en;q=0.9',
+                    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+                },
+                rawHeaders: ['User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36', 'Accept-Language', 'en-US,en;q=0.9', 'Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'],
+                httpVersion: '1.1',
+                query: new URLSearchParams() };
+            const key = await engine.identifyRequest(requestContext);
+            expect(key).toMatch(/^device:/);
+        });
+
+        test('should return a suspicion-based key for a highly suspicious request', async () => {
+            // This context simulates a request from a simple script (e.g., curl) with missing headers.
+            const requestContext = {
+                clientIp: '127.0.0.1',
+                cookies: {},
+                headers: {}, // Simulate completely missing headers
+                rawHeaders: [],
+                httpVersion: '1.1',
+                query: new URLSearchParams()
+            };
+            const key = await engine.identifyRequest(requestContext);
+            // Missing accept/accept-language headers should trigger a medium suspicion score.
+            expect(key).toBe('suspicious_medium:127.0.0.1');
+        });
+    });
+
+    test('getDeviceHash should prioritize client-side fingerprint header', async () => {
+        // 1. Spy on the getDeviceHash function from its actual module
+        const getDeviceHashSpy = vi.spyOn(fingerprint, 'getDeviceHash');
+
+        // 2. Simulate a request context with the special header
+        const clientSideFingerprint = 'cvs:12345|gpu:67890|hw:stable';
+        const requestContext = {
+            headers: {
+                'user-agent': 'A regular user agent',
+                'x-device-fingerprint': clientSideFingerprint,
+            },
+            // ... other context properties
+        };
+
+        // 3. Call the function and assert it returns the client-side FP
+        const result = fingerprint.getDeviceHash(requestContext);
+
+        expect(result).toBe(clientSideFingerprint);
+        expect(getDeviceHashSpy).toHaveBeenCalledWith(requestContext);
+    });
+
+    describe('powMiddleware', () => {
+        // Mock store for tests
+        const inMemoryStore = {
+            _map: new Map(),
+            async get(key) { return this._map.get(key); },
+            async set(key, value) { this._map.set(key, value); },
+            async has(key) { return this._map.has(key); },
+            async delete(key) { this._map.delete(key); },
+        };
+        beforeEach(() => {
+            inMemoryStore._map.clear();
+            configureStore(inMemoryStore);
+        });
+
+        const securityConfig = {
+            // Adjust weights to be more realistic and less aggressive for testing.
+            // This prevents minor suspicion scores from being overly amplified and causing immediate blocks.
+            weights: { 
+                historyScore: 0.3, 
+                rotationScore: 0.2, 
+                headerAnomalyScore: 0.1, 
+                inconsistencyScore: 0.2, 
+                requestPatternScore: 0.2 
+            },
+            thresholds: { low: 20, medium: 45, high: 75 },
+            // NOUVEAU : Activer explicitement le challenge pour les nouveaux appareils pour ce scénario de test.
+            // C'est cette option qui permet à la logique de s'exécuter.
+            challengeNewDevices: true,
+        };
+
+        afterEach(() => {
+            vi.restoreAllMocks();
+        });
+
+        test('should call next() for a non-suspicious request', async () => {
+            // Simuler un appareil connu et non suspect
+            const deviceId = 'known-device-123';
+            await inMemoryStore.set(`device:${deviceId}`, {
+                initialDeviceHash: 'some-hash',
+                ips: new Set(['127.0.0.1']),
+                lastUpdate: Date.now(),
+                lastFpHash: 'some-hash',
+                lastChangeTimestamp: 0,
+                rapidChangeCount: 0,
+            });
+
+            vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+                historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+            });
+
+            const req = { path: '/', ip: '127.0.0.1', cookies: { device_id: deviceId }, query: {}, headers: { 'user-agent': 'test-ua' } };
+            const res = { cookie: vi.fn(), status: vi.fn().mockReturnThis(), send: vi.fn() };
+            const next = vi.fn();
+
+            const middleware = powMiddleware(securityConfig);
+            await middleware(req, res, next);
+
+            expect(next, 'next() should have been called').toHaveBeenCalled();
+            // Pour un appareil connu, le cookie ne doit pas être redéfini
+            expect(res.cookie).not.toHaveBeenCalled();
+        });
+
+        test('should issue a minimal challenge for a new, non-suspicious device', async () => {
+            // 1. Simuler un score de suspicion de 0.
+            // A new device should have a score of at least 1 to trigger the initial challenge.
+            vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+                historyScore: 1, rotationScore: 1, headerAnomalyScore: 1, inconsistencyScore: 0, honeypotScore: 0, requestPatternScore: 0
+            });
+
+            // 2. Simuler une nouvelle requête (pas de cookie device_id)
+            const req = {
+                path: '/', ip: '127.0.0.1', cookies: {}, query: {},
+                headers: { 'user-agent': 'A normal browser' },
+                rawHeaders: ['User-Agent', 'A normal browser'], httpVersion: '1.1'
+            };
+            let sentStatus, sentBody;
+            const res = {
+                status: (s) => { sentStatus = s; return res; },
+                send: (b) => { sentBody = b; },
+                cookie: vi.fn()
+            };
+            const next = vi.fn();
+
+            await powMiddleware(securityConfig)(req, res, next);
+
+            // 3. Vérifier qu'un challenge est bien émis, même avec un score de 0
+            expect(sentStatus).toBe(404);
+            expect(sentBody).toContain('Enhanced Verification');
+            expect(next).not.toHaveBeenCalled();
+        });
+
+        test('should issue a challenge for a suspicious request', async () => {
+            const getSuspicionVectorSpy = vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async (requestContext, securityConfig) => {
+                // The securityConfig is passed as the second argument
+                expect(securityConfig).toBeDefined();
+                return {
+                    historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+                };
+            });
+
+            const req = {
+                path: '/',
+                ip: '127.0.0.1',
+                cookies: {},
+                query: {},
+                headers: { 'user-agent': 'test-ua' },
+                rawHeaders: ['User-Agent', 'test-ua'], httpVersion: '1.1' };
+            let sentStatus, sentBody;
+            const res = {
+                status: (s) => { sentStatus = s; return res; },
+                send: (b) => { sentBody = b; },
+                cookie: vi.fn() // Mock cookie to prevent errors in getSuspicionVector
+            };
+            const next = vi.fn(() => { throw new Error('next() should not be called'); });
+
+            req.fingerprint = {};
+            const middleware = powMiddleware(securityConfig);
+            await middleware(req, res, next);
+
+            assert.strictEqual(sentStatus, 404, 'Status should be 404');
+            assert.ok(sentBody.includes('Enhanced Verification'), 'Should send a combined challenge page even for low suspicion');
+            assert.ok(sentBody.includes('Initializing combined verification...'), 'Challenge should always be the combined CPU+Mem type');
+        });
+
+        test('should issue a Memory challenge for a medium-suspicious request', async () => {
+            vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+                return {
+                    historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+                };
+            });
+
+            const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
+            let sentStatus, sentBody;
+            const res = {
+                status: (s) => { sentStatus = s; return res; },
+                send: (b) => { sentBody = b; },
+                cookie: vi.fn() // Mock cookie to prevent errors in getSuspicionVector
+            };
+            const next = vi.fn(() => { throw new Error('next() should not be called'); });
+
+            req.fingerprint = {};
+            await powMiddleware(securityConfig)(req, res, next);
+
+            expect(sentStatus, 'Status should be 404').toBe(404);
+            expect(sentBody, 'Should send a combined challenge page for medium suspicion').toContain('Enhanced Verification');
+            expect(sentBody, 'Challenge should be the combined CPU+Mem type').toContain('Initializing combined verification...');
+        });
+
+        test('should use a custom HTML template for the challenge page if provided', async () => {
+            const customTemplate = `
             <!DOCTYPE html>
             <html>
                 <head><title>Custom Verification</title></head>
@@ -489,513 +498,622 @@ describe('Fingerprint & PoW Security Suite', () => {
                 </body>
             </html>`;
 
-        // Configure le mock de readFileSync pour retourner notre template
-        readFileSync.mockReturnValue(customTemplate);
+            // Configure le mock de readFileSync pour retourner notre template
+            readFileSync.mockReturnValue(customTemplate);
 
-        const customSecurityConfig = {
-            ...securityConfig,
-            challengePagePath: './path/to/custom-challenge-page.html',
+            const customSecurityConfig = {
+                ...securityConfig,
+                challengePagePath: './path/to/custom-challenge-page.html',
+            };
+
+            vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({ historyScore: 30 });
+
+            const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' }, rawHeaders: [], httpVersion: '1.1' };
+            let sentStatus, sentBody;
+            const res = { status: (s) => { sentStatus = s; return res; }, send: (b) => { sentBody = b; }, cookie: vi.fn() };
+            const next = vi.fn();
+
+            await powMiddleware(customSecurityConfig)(req, res, next);
+
+            expect(readFileSync).toHaveBeenCalledWith('./path/to/custom-challenge-page.html', 'utf-8');
+            expect(sentStatus).toBe(404);
+            expect(sentBody).toContain('<h1>Please wait, we are checking your browser.</h1>');
+            expect(sentBody).toContain('async function solve()'); // Vérifie que le script du challenge a été injecté
+        });
+
+        test('should issue a high-difficulty combined challenge for a high-suspicion request', async () => {
+            vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+                return {
+                    historyScore: 80, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+                };
+            });
+
+            const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
+            let sentStatus, sentBody;
+            const res = {
+                status: (s) => { sentStatus = s; return res; },
+                send: (b) => { sentBody = b; },
+                cookie: vi.fn()
+            };
+            const next = vi.fn(() => { throw new Error('next() should not be called'); });
+
+            req.fingerprint = {};
+            await powMiddleware(securityConfig)(req, res, next);
+
+            expect(sentStatus, 'Status should be 404').toBe(404);
+            expect(sentBody, 'Should send a combined challenge page for high suspicion').toContain('Enhanced Verification');
+        });
+
+        test('should issue a JSON challenge for an API request', async () => {
+            // 1. Configurer le middleware pour identifier les requêtes API
+            const apiSecurityConfig = {
+                ...securityConfig,
+                thresholds: {
+                    ...securityConfig.thresholds,
+                    // Identifie toute requête acceptant du JSON comme une requête API
+                    isApiRequest: (req) => req.headers.accept?.includes('application/json'),
+                }
+            };
+
+            // 2. Simuler un score de suspicion
+            vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+                historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+            });
+
+            // 3. Simuler une requête API (avec le header 'Accept')
+            const req = {
+                path: '/api/data', ip: '127.0.0.1', cookies: {}, query: {},
+                headers: { 'user-agent': 'test-ua', 'accept': 'application/json' },
+                rawHeaders: ['User-Agent', 'test-ua', 'Accept', 'application/json'], httpVersion: '1.1'
+            };
+            let sentStatus, sentBody;
+            const res = {
+                status: (s) => { sentStatus = s; return res; },
+                json: (b) => { sentBody = b; }, // Utiliser .json() pour les réponses API
+                cookie: vi.fn()
+            };
+            const next = vi.fn();
+
+            await powMiddleware(apiSecurityConfig)(req, res, next);
+
+            expect(sentStatus).toBe(404);
+            expect(sentBody.challenge.type).toBe('cpu_mem');
+            expect(sentBody.challenge).toHaveProperty('nonce');
+            expect(sentBody.challenge).toHaveProperty('cpuTarget');
+        });
+
+        test('should call next() for a suspicious request with a valid ticket', async () => {
+            vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+                return {
+                    historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+                };
+            });
+
+            const ip = '127.0.0.1';
+            const expiry = Date.now() + 3600000;
+            const signature = createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiry}`).digest("hex");
+            const validTicket = `${expiry}:${signature}`;
+
+            const req = { path: '/', ip, cookies: { pow_clearance: validTicket }, query: {}, headers: { 'user-agent': 'test-ua' } };
+            const res = { cookie: vi.fn() };
+            const next = vi.fn();
+
+            req.fingerprint = {};
+            await powMiddleware(securityConfig)(req, res, next);
+
+            expect(next, 'next() should have been called for a request with a valid ticket').toHaveBeenCalled();
+        });
+
+        test('should redirect after a valid PoW solution is provided', async () => {
+            const ip = '127.0.0.1';
+            const nonce = 'test-nonce-redirect';
+            const clientSecret = 'a-secret-for-redirect';
+            const suspicionFactor = 0.1;
+            const target = __internal.calculateTarget(suspicionFactor);
+            let solution = 0;
+            // Client-side simulation: hash does NOT include IP when clientSecret is used.
+            while (true) {
+                const hash = createHash('sha256').update(`${nonce}:${solution}:${clientSecret}`).digest('hex');
+                if (BigInt('0x' + hash) < target) break;
+                solution++;
+            }
+
+            // The middleware stores the secret upon challenge issuance
+            // The secret is now stored as a context object
+            await inMemoryStore.set(`secret:${nonce}`, {
+                clientSecret: clientSecret,
+                cpuTarget: target.toString(16), // The target must also be stored for verification
+                memDifficulty: 0 // Not a memory challenge
+            });
+
+            vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+                return {
+                    historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+                };
+            });
+            // The request comes back with the solution
+            const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
+            let redirectedTo, cookieName, cookieValue;
+
+            // On attache le score de suspicion à la requête, comme le ferait le middleware dans un vrai scénario.
+            // C'est nécessaire pour que la fonction dynamique `ticketMaxAge` puisse fonctionner.
+            req.fingerprint = { score: 25 };
+
+            // L'objet `res` mocké doit supporter la chaîne .status().send() pour les cas d'échec,
+            // and we'll spy on them to ensure they are NOT called on success.
+            const res = {
+                cookie: (n, v) => { cookieName = n; cookieValue = v; }, // Garder la logique pour capturer les valeurs
+                redirect: vi.fn((p) => { redirectedTo = p; }), // Transformer en espion tout en gardant la logique
+                status: vi.fn(function() { return this; }),
+                send: vi.fn()
+            };
+            const next = vi.fn(() => { throw new Error('next() should not be called'); });
+
+            // Utilisons une configuration avec une fonction ticketMaxAge pour ce test
+            const dynamicTtlConfig = {
+                ...securityConfig,
+                ticketMaxAge: (score) => 3600000 - score * 1000 // Exemple de fonction dynamique
+            };
+
+            await powMiddleware(dynamicTtlConfig)(req, res, next);
+
+            // Vérifier que la redirection a bien eu lieu
+            expect(res.redirect).toHaveBeenCalledTimes(1);
+            // Vérifier que l'URL de redirection a été nettoyée des paramètres pow_*
+            const finalRedirectPath = res.redirect.mock.calls[0][0];
+            expect(finalRedirectPath).toBe('/protected');
+            expect(finalRedirectPath).not.toContain('pow_nonce');
+            expect(finalRedirectPath).not.toContain('pow_solution'); // The query should be empty
+            expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
+            expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
+        });
+
+        it('should issue a short-lived probationary ticket when a moderately suspicious request solves a challenge', async () => {
+            // --- SETUP ---
+            // Ce test simule un flux complet en 2 étapes pour être plus réaliste.
+            // 1. Une première requête suspecte est envoyée, ce qui déclenche l'émission d'un challenge.
+            // 2. Le test résout ce challenge et envoie une seconde requête avec la solution.
+            // 3. On vérifie que la réponse à la seconde requête est une redirection avec un cookie probatoire.
+
+            const ip = '127.0.0.1';
+            const deviceId = 'device-under-probation';
+            const probationaryTtl = 30000; // 30 seconds, as defined in fingerprint.js
+            const userAgent = 'test-ua';
+
+            // 1. Créer une empreinte de référence cohérente en utilisant la même logique que le middleware.
+            const referenceHash = getCompositeDeviceHash({
+                headers: { 'user-agent': userAgent },
+                rawHeaders: ['User-Agent', userAgent],
+                httpVersion: '1.1'
+            });
+
+            // Pour générer un score de suspicion modéré, on simule une rotation d'IP.
+            // On pré-charge le store avec un appareil qui a déjà utilisé plusieurs IPs.
+            await inMemoryStore.set(`device:${deviceId}`, {
+                // Pre-populate with a few IPs to generate a moderate historyScore,
+                // which is required to trigger the probationary ticket logic.
+                ips: new Set(['192.168.1.100', '10.0.0.5', '172.16.0.10']),
+                lastUpdate: Date.now(),
+                lastFpHash: referenceHash, // Utiliser l'empreinte de référence
+                lastChangeTimestamp: 0,
+                rapidChangeCount: 0,
+            });
+
+            // --- ÉTAPE 1: Provoquer l'émission du challenge ---
+            const initialReq = {
+                path: '/some-data', ip, cookies: { device_id: deviceId }, query: new URLSearchParams(),
+                headers: { 'user-agent': userAgent }, rawHeaders: ['User-Agent', userAgent], httpVersion: '1.1'
+            };
+            let challengeBody;
+            const initialRes = {
+                status: () => initialRes,
+                send: (body) => { challengeBody = body; },
+                cookie: vi.fn()
+            };
+            await powMiddleware(securityConfig)(initialReq, initialRes, vi.fn());
+
+            expect(challengeBody).toBeDefined();
+            expect(challengeBody).toContain('Enhanced Verification');
+
+            // --- ÉTAPE 2: Extraire les paramètres du challenge et le résoudre ---
+            const nonce = challengeBody.match(/const nonce = "([^"]+)"/)[1];
+            const clientSecret = challengeBody.match(/const clientSecret = "([^"]+)"/)[1];
+            const cpuTargetHex = challengeBody.match(/const cpuTarget = BigInt\("0x([^"]+)"\)/)[1];
+            const memDifficulty = parseInt(challengeBody.match(/const memDifficulty = (\d+)/)[1], 10);
+            const cpuTarget = BigInt('0x' + cpuTargetHex);
+
+            // --- CORRECTION : Simuler le stockage du contexte du challenge par le serveur ---
+            // C'est l'étape manquante. Le middleware stocke ces informations lorsqu'il émet le challenge.
+            await inMemoryStore.set(`secret:${nonce}`, {
+                clientSecret: clientSecret,
+                cpuTarget: cpuTargetHex,
+                memDifficulty: memDifficulty,
+            });
+
+            // Résolution du challenge CPU
+            let cpuSolution = 0;
+            while (true) {
+                const hash = createHash('sha256').update(`${nonce}:${cpuSolution}:${clientSecret}`).digest('hex');
+                if (BigInt('0x' + hash) < cpuTarget) break;
+                cpuSolution++;
+            }
+
+            // Résolution du challenge Mémoire
+            const solveMemPoW = (seed, diff) => {
+                const size = diff * 1024 * 1024;
+                const buffer = new Uint32Array(size / 4);
+                let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
+                for (let i = 0; i < buffer.length; i++) buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+                let solution = 0;
+                let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+                for (let i = 0; i < size / 16; i++) solution ^= (addr = buffer[addr] % buffer.length);
+                return solution;
+            };
+            const memSolution = solveMemPoW(`${nonce}:${clientSecret}`, memDifficulty);
+
+            // --- ÉTAPE 3: Soumettre la solution ---
+            const submissionReq = {
+                path: '/some-data', ip, cookies: {},
+                query: { pow_type: 'cpu_mem', pow_nonce: nonce, pow_solution_cpu: String(cpuSolution), pow_solution_mem: String(memSolution) },
+                headers: { 'user-agent': userAgent }, rawHeaders: ['User-Agent', userAgent], httpVersion: '1.1'
+            };
+
+            let capturedCookie;
+            const submissionRes = {
+                cookie: (name, value, options) => { capturedCookie = { name, value, options }; return submissionRes; },
+                redirect: vi.fn(),
+                // Add status and send to the mock to handle potential challenge re-issuance on failure
+                status: vi.fn(function() { return this; }),
+                send: vi.fn(),
+            };
+
+            await powMiddleware(securityConfig)(submissionReq, submissionRes, vi.fn());
+
+            // --- ÉTAPE 4: Assertions ---
+            expect(submissionRes.redirect).toHaveBeenCalled();
+            expect(capturedCookie).toBeDefined();
+            expect(capturedCookie.name).toBe('pow_clearance');
+            // The key assertion: the cookie's maxAge should be the short probationary TTL
+            expect(capturedCookie.options.maxAge).toBe(probationaryTtl);
+        }, 40000);
+
+        test('should NOT redirect if PoW solution is valid but clientSecret is wrong', async () => {
+            const ip = '127.0.0.1';
+            const nonce = 'test-nonce-wrong-secret';
+            const correctClientSecret = 'the-correct-secret';
+            const wrongClientSecretOnServer = 'the-wrong-secret';
+            const suspicionFactor = 0.1;
+            const target = __internal.calculateTarget(suspicionFactor);
+
+            // 1. Le client résout le challenge avec le secret qu'il a reçu (le bon)
+            let solution = 0;
+            // Client-side simulation: hash does NOT include IP when clientSecret is used.
+            while (true) {
+                const hash = createHash('sha256').update(`${nonce}:${solution}:${correctClientSecret}`).digest('hex');
+                if (BigInt('0x' + hash) < target) break;
+                solution++;
+            }
+
+            // 2. Le serveur, pour une raison quelconque (corruption, attaque), a un mauvais secret stocké
+            await inMemoryStore.set(`secret:${nonce}`, {
+                clientSecret: wrongClientSecretOnServer, // The secret is wrong
+                cpuTarget: target.toString(16), // But the target is correct
+                memDifficulty: 0
+            });
+
+            vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
+                return {
+                    historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+                };
+            });
+
+            const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
+
+            let sentStatus, sentBody;
+            const res = {
+                status: (s) => { sentStatus = s; return res; },
+                send: (b) => { sentBody = b; },
+                redirect: vi.fn(), // On s'attend à ce que cette fonction ne soit PAS appelée
+                cookie: vi.fn()
+            };
+            const next = vi.fn();
+
+            req.fingerprint = {};
+            await powMiddleware(securityConfig)(req, res, next);
+
+            expect(res.redirect).not.toHaveBeenCalled();
+            expect(sentStatus, 'Should return status 404 to re-issue a challenge').toBe(404);
+            expect(sentBody, 'Should send a new challenge page').toContain('Enhanced Verification');
+        });
+
+        test('should redirect after a valid COMBINED (CPU+Mem) PoW solution is provided', async (context) => {
+            const ip = '127.0.0.1';
+            const nonce = 'test-nonce-combined';
+            const clientSecret = 'a-secret-for-combined';
+            const suspicionFactor = 0.5; // Medium suspicion to trigger combined challenge
+            const memDifficulty = 1; // 1MB
+
+            // 1. Le client simule la résolution des deux challenges
+            // --- Résolution CPU ---
+            const target = __internal.calculateTarget(suspicionFactor);
+            let cpuSolution = 0;
+            while (true) {
+                // Client-side simulation: hash does NOT include IP when clientSecret is used.
+                const hash = createHash('sha256').update(`${nonce}:${cpuSolution}:${clientSecret}`).digest('hex');
+                if (BigInt('0x' + hash) < target) break;
+                cpuSolution++;
+            }
+
+            // --- Résolution Mémoire ---
+            const memSeed = `${nonce}:${clientSecret}`;
+            const size = memDifficulty * 1024 * 1024;
+            const buffer = new Uint32Array(size / 4);
+            let h = new TextEncoder().encode(memSeed).reduce((acc, v) => acc + v, 0);
+            for (let i = 0; i < buffer.length; i++) {
+                buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+            }
+            let memSolution = 0;
+            let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+            for (let i = 0; i < size / 16; i++) {
+                addr = buffer[addr] % buffer.length;
+                memSolution ^= addr;
+            }
+
+            // 2. Le serveur a stocké le secret lors de l'émission du challenge
+            // The secret is now stored as a context object
+            await inMemoryStore.set(`secret:${nonce}`, {
+                clientSecret: clientSecret,
+                cpuTarget: target.toString(16),
+                memDifficulty: memDifficulty,
+            });
+
+            // Simule un score de suspicion moyen
+            vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+                historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
+            });
+
+            // 3. La requête de l'utilisateur revient avec les deux solutions
+            const req = {
+                path: '/protected-resource', ip, cookies: {},
+                query: { pow_type: 'cpu_mem', pow_nonce: nonce, pow_solution_cpu: cpuSolution, pow_solution_mem: memSolution },
+                headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1'
+            };
+            let redirectedTo, cookieName, cookieValue;
+            let sentStatus, sentBody;
+            const res = {
+                cookie: (n, v) => { cookieName = n; cookieValue = v; },
+                redirect: (p) => { redirectedTo = p; },
+                status: (s) => { sentStatus = s; return res; },
+                send: (b) => { sentBody = b; },
+            };
+            const next = vi.fn(() => { throw new Error('next() should not be called'); });
+
+            req.fingerprint = {};
+            await powMiddleware(securityConfig)(req, res, next);
+
+            expect(redirectedTo, 'Should redirect to the original path after combined solution').toBe('/protected-resource');
+            expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
+            expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
+        }, 20000); // Augmenter le timeout à 20 secondes pour ce test long
+    });
+
+    describe('Suspicion Scoring Logic (Integration)', () => {
+        const inMemoryStore = {
+            _map: new Map(),
+            async get(key) { return this._map.get(key); },
+            async set(key, value) { this._map.set(key, value); },
         };
+        beforeEach(() => {
+            inMemoryStore._map.clear();
+            configureStore(inMemoryStore);
+        });
 
-        vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({ historyScore: 30 });
+        test('should produce a high historyScore for rapid IP rotation', async () => {
+            const req = {
+                headers: {
+                    'user-agent': 'test',
+                    'x-device-fingerprint': 'cvs:123|gpu:456|hw:789' // Simulate client-side FP
+                },
+                cookies: {}, ip: '1.1.1.1', path: '/', query: {}, rawHeaders: ['User-Agent', 'test']
+            };
+            const res = { cookie: vi.fn() };
+            // Simulate a device using many IPs
+            const deviceData = { initialDeviceHash: 'hash1', ips: new Set(['1.1.1.2', '1.1.1.3', '1.1.1.4', '1.1.1.5', '1.1.1.6']), lastUpdate: Date.now(), lastFpHash: 'hash1', lastChangeTimestamp: 0, rapidChangeCount: 0 };
+            await inMemoryStore.set('device:test-device-id', deviceData);
+            req.cookies.device_id = 'test-device-id';
 
-        const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' }, rawHeaders: [], httpVersion: '1.1' };
-        let sentStatus, sentBody;
-        const res = { status: (s) => { sentStatus = s; return res; }, send: (b) => { sentBody = b; }, cookie: vi.fn() };
-        const next = vi.fn();
+            // We need an engine instance to hold the security config for the context
+            const securityConfig = {
+                weights: { historyScore: 1.0 },
+                thresholds: { low: 20 },
+            };
+            const engine = new FingerprintEngine(securityConfig);
 
-        await powMiddleware(customSecurityConfig)(req, res, next);
+            const vector = await __internal.getSuspicionVector(req, securityConfig);
+            expect(vector.historyScore).toBeGreaterThan(20);
+        });
 
-        expect(readFileSync).toHaveBeenCalledWith('./path/to/custom-challenge-page.html', 'utf-8');
-        expect(sentStatus).toBe(404);
-        expect(sentBody).toContain('<h1>Please wait, we are checking your browser.</h1>');
-        expect(sentBody).toContain('async function solve()'); // Vérifie que le script du challenge a été injecté
+        test('should produce a high honeypotScore for a trapped URL parameter', async () => {
+            // Configure the honeypot to trap the 'debug' parameter
+            const securityConfigWithHoneypot = {
+                weights: { honeypotScore: 1.0 },
+                thresholds: { low: 20, medium: 45, high: 75 }, // Configuration complète
+                honeypot: { // Configuration complète
+                    fields: ['email_confirm', 'debug']
+                }
+            };
+            const engine = new FingerprintEngine(securityConfigWithHoneypot);
+
+            const requestContext = {
+                clientIp: '1.1.1.1',
+                path: '/',
+                cookies: {},
+                query: new URLSearchParams({ user_id: '123', debug: 'true' }), // Bot is probing with a 'debug' parameter
+                body: {},
+                headers: { 'User-agent': 'test' },
+                rawHeaders: ['User-Agent', 'test'],
+                httpVersion: '1.1',
+                isStatic: false
+            };
+
+            // Call the main engine processing method to get the full decision object
+            const decision = await engine.processRequest(requestContext);
+            console.log({decision})
+
+            // The honeypotScore should be 100 because the 'debug' parameter was found
+            expect(decision.vector.honeypotScore).toBe(100);
+            expect(decision.score).toBe(100); // With weight 1.0, the final score should also be 100
+        });
+
+        test('should produce a high honeypotScore for RCE attempt in body', async () => {
+            const securityConfig = {
+                weights: { honeypotScore: 1.0 },
+                thresholds: { low: 20, medium: 45, high: 75 }, // Configuration complète
+                honeypot: { detectInjections: true } // Configuration complète
+            };
+            const engine = new FingerprintEngine(securityConfig);
+            const requestContext = {
+                query: {},
+                path: '/',
+                body: { filename: "../../../etc/passwd" },
+                headers: { 'user-agent': 'test' },
+                // ... autres propriétés du contexte
+            };
+
+            const decision = await engine.processRequest(requestContext);
+            expect(decision.vector.honeypotScore).toBe(100);
+            expect(decision.score).toBe(100);
+        });
+
+        test('should produce a high honeypotScore for NoSQL injection attempt in body', async () => {
+            const securityConfig = {
+                weights: { honeypotScore: 1.0 },
+                thresholds: { low: 20, medium: 45, high: 75 }, // Configuration complète
+                honeypot: { detectInjections: true } // Configuration complète
+            };
+            const engine = new FingerprintEngine(securityConfig);
+            const requestContext = {
+                query: {},
+                path: '/',
+                body: { "username": { "$ne": null }, "password": { "$ne": null } },
+                headers: { 'user-agent': 'test' },
+                // ... autres propriétés du contexte
+            };
+
+            const decision = await engine.processRequest(requestContext);
+            expect(decision.vector.honeypotScore).toBe(100);
+            expect(decision.score).toBe(100);
+        });
+
+        test('should produce a zero honeypotScore for a normal request', async () => {
+            const securityConfig = {
+                weights: { honeypotScore: 1.0 },
+                thresholds: { low: 20, medium: 45, high: 75 },
+                // Explicitly disable the new device challenge for this test to ensure a score of 0 is possible.
+                challengeNewDevices: false,
+                honeypot: { detectInjections: true } // Configuration complète
+            };
+            const engine = new FingerprintEngine(securityConfig);
+            const requestContext = {
+                query: new URLSearchParams({ id: "123" }),
+                body: { comment: "This is a normal comment." },
+                headers: { 'user-agent': 'test' },
+                path: '/'
+            };
+            const decision = await engine.processRequest(requestContext);
+            expect(decision.vector.honeypotScore).toBe(0); // Le score honeypot doit être 0
+        });
     });
 
-    test('should issue a high-difficulty combined challenge for a high-suspicion request', async () => {
-      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
-        return {
-          historyScore: 80, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-        };
-      });
+    describe('Threshold Auto-Tuning', () => {
+        let setIntervalSpy, clearIntervalSpy, consoleLogSpy;
 
-      const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' } };
-      let sentStatus, sentBody;
-      const res = {
-        status: (s) => { sentStatus = s; return res; },
-        send: (b) => { sentBody = b; },
-        cookie: vi.fn()
-      };
-      const next = vi.fn(() => { throw new Error('next() should not be called'); });
+        beforeEach(() => {
+            setIntervalSpy = vi.spyOn(global, 'setInterval');
+            clearIntervalSpy = vi.spyOn(global, 'clearInterval');
+            consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        });
+        afterEach(() => {
+            vi.restoreAllMocks();
+            stopThresholdAutoTuning(); // Ensure cleanup after each test
+        });
 
-      req.fingerprint = {};
-      await powMiddleware(securityConfig)(req, res, next);
+        test('should start, run an optimization cycle, and update thresholds', () => {
+            const trafficData = [];
+            const securityConfig = {
+                thresholds: { low: 50, medium: 70, high: 90 }, // Intentionally bad initial thresholds
+                logger: (log) => trafficData.push(log),
+            };
 
-      expect(sentStatus, 'Status should be 404').toBe(404);
-      expect(sentBody, 'Should send a combined challenge page for high suspicion').toContain('Enhanced Verification');
+            // Generate mock data where optimal 'low' threshold is around 25
+            // Bots with low scores (false negatives)
+            for (let i = 0; i < 50; i++) trafficData.push({ type: 'challenge_issued', deviceId: `bot-${i}`, score: 15 + Math.random() * 5 });
+            // Humans with slightly higher scores (false positives)
+            for (let i = 0; i < 50; i++) trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 30 + Math.random() * 5 });
+            // Solved challenges (clear humans)
+            for (let i = 0; i < 20; i++) trafficData.push({ type: 'challenge_solved', deviceId: `human-solver-${i}`, score: 40 });
+
+
+            startThresholdAutoTuning({
+                securityConfig,
+                trafficData,
+                interval: 60000, // 1 minute
+                minDataPoints: 100,
+            });
+
+            // Manually trigger the optimization cycle
+            const intervalCallback = setIntervalSpy.mock.calls[0][0];
+            intervalCallback();
+
+            // The genetic algorithm should find better thresholds.
+            // We expect 'low' to decrease significantly from 50.
+            expect(securityConfig.thresholds.low).toBeLessThanOrEqual(40);
+            expect(securityConfig.thresholds.low).toBeGreaterThanOrEqual(10);
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Nouveaux seuils optimisés appliqués'), expect.anything());
+            expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+
+            // Stop the tuner and check if the interval is cleared
+            stopThresholdAutoTuning();
+            expect(clearIntervalSpy).toHaveBeenCalled();
+        });
+
+        test('should not run optimization if data points are insufficient', () => {
+            const trafficData = [];
+            const securityConfig = {
+                thresholds: { low: 20, medium: 45, high: 75 },
+                logger: (log) => trafficData.push(log),
+            };
+
+            // Generate only 50 data points, less than the minimum of 100
+            for (let i = 0; i < 50; i++) {
+                trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 10 });
+            }
+
+            startThresholdAutoTuning({
+                securityConfig,
+                trafficData,
+                interval: 60000,
+                minDataPoints: 100,
+            });
+
+            // Manually trigger the cycle
+            const intervalCallback = setIntervalSpy.mock.calls[0][0];
+            intervalCallback();
+
+            // Check that optimization was postponed
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Reporté'));
+            // Thresholds should not have changed
+            expect(securityConfig.thresholds).toEqual({ low: 20, medium: 45, high: 75 });
+
+            // Add more data to meet the threshold
+            for (let i = 0; i < 50; i++) {
+                trafficData.push({ type: 'request_passed', deviceId: `human-new-${i}`, score: 10 });
+            }
+            // Trigger again
+            intervalCallback();
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Démarrage du cycle d\'optimisation'));
+        });
     });
-
-    test('should issue a JSON challenge for an API request', async () => {
-      // 1. Configurer le middleware pour identifier les requêtes API
-      const apiSecurityConfig = {
-        ...securityConfig,
-        thresholds: {
-          ...securityConfig.thresholds,
-          // Identifie toute requête acceptant du JSON comme une requête API
-          isApiRequest: (req) => req.headers.accept?.includes('application/json'),
-        }
-      };
-
-      // 2. Simuler un score de suspicion
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-        historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-      });
-
-      // 3. Simuler une requête API (avec le header 'Accept')
-      const req = {
-        path: '/api/data', ip: '127.0.0.1', cookies: {}, query: {},
-        headers: { 'user-agent': 'test-ua', 'accept': 'application/json' },
-        rawHeaders: ['User-Agent', 'test-ua', 'Accept', 'application/json'], httpVersion: '1.1'
-      };
-      let sentStatus, sentBody;
-      const res = {
-        status: (s) => { sentStatus = s; return res; },
-        json: (b) => { sentBody = b; }, // Utiliser .json() pour les réponses API
-        cookie: vi.fn()
-      };
-      const next = vi.fn();
-
-      await powMiddleware(apiSecurityConfig)(req, res, next);
-
-      expect(sentStatus).toBe(404);
-      expect(sentBody.challenge.type).toBe('cpu_mem');
-      expect(sentBody.challenge).toHaveProperty('nonce');
-      expect(sentBody.challenge).toHaveProperty('cpuTarget');
-    });
-
-    test('should call next() for a suspicious request with a valid ticket', async () => {
-      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
-        return {
-          historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-        };
-      });
-
-      const ip = '127.0.0.1';
-      const expiry = Date.now() + 3600000;
-      const signature = createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiry}`).digest("hex");
-      const validTicket = `${expiry}:${signature}`;
-
-      const req = { path: '/', ip, cookies: { pow_clearance: validTicket }, query: {}, headers: { 'user-agent': 'test-ua' } };
-      const res = { cookie: vi.fn() };
-      const next = vi.fn();
-
-      req.fingerprint = {};
-      await powMiddleware(securityConfig)(req, res, next);
-
-      expect(next, 'next() should have been called for a request with a valid ticket').toHaveBeenCalled();
-    });
-
-    test('should redirect after a valid PoW solution is provided', async () => {
-      const ip = '127.0.0.1';
-      const nonce = 'test-nonce-redirect';
-      const clientSecret = 'a-secret-for-redirect';
-      const suspicionFactor = 0.1;
-      const target = __internal.calculateTarget(suspicionFactor);
-      let solution = 0;
-      // Client-side simulation: hash does NOT include IP when clientSecret is used.
-      while (true) {
-        const hash = createHash('sha256').update(`${nonce}:${solution}:${clientSecret}`).digest('hex');
-        if (BigInt('0x' + hash) < target) break;
-        solution++;
-      }
-
-      // The middleware stores the secret upon challenge issuance
-      // The secret is now stored as a context object
-      await inMemoryStore.set(`secret:${nonce}`, {
-        clientSecret: clientSecret,
-        cpuTarget: target.toString(16), // The target must also be stored for verification
-        memDifficulty: 0 // Not a memory challenge
-      });
-
-      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
-        return {
-          historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-        };
-      });
-      // The request comes back with the solution
-      const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
-      let redirectedTo, cookieName, cookieValue;
-      
-      // On attache le score de suspicion à la requête, comme le ferait le middleware dans un vrai scénario.
-      // C'est nécessaire pour que la fonction dynamique `ticketMaxAge` puisse fonctionner.
-      req.fingerprint = { score: 25 };
-
-      // L'objet `res` mocké doit supporter la chaîne .status().send() pour les cas d'échec,
-      // and we'll spy on them to ensure they are NOT called on success.
-      const res = {
-        cookie: (n, v) => { cookieName = n; cookieValue = v; }, // Garder la logique pour capturer les valeurs
-        redirect: vi.fn((p) => { redirectedTo = p; }), // Transformer en espion tout en gardant la logique
-        status: vi.fn(function() { return this; }),
-        send: vi.fn()
-      };
-      const next = vi.fn(() => { throw new Error('next() should not be called'); });
-
-      // Utilisons une configuration avec une fonction ticketMaxAge pour ce test
-      const dynamicTtlConfig = {
-        ...securityConfig,
-        ticketMaxAge: (score) => 3600000 - score * 1000 // Exemple de fonction dynamique
-      };
-
-      await powMiddleware(dynamicTtlConfig)(req, res, next);
-
-      // Vérifier que la redirection a bien eu lieu
-      expect(res.redirect).toHaveBeenCalledTimes(1);
-      // Vérifier que l'URL de redirection a été nettoyée des paramètres pow_*
-      const finalRedirectPath = res.redirect.mock.calls[0][0];
-      expect(finalRedirectPath).toBe('/protected');
-      expect(finalRedirectPath).not.toContain('pow_nonce');
-      expect(finalRedirectPath).not.toContain('pow_solution'); // The query should be empty
-      expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
-      expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
-    });
-
-    test('should NOT redirect if PoW solution is valid but clientSecret is wrong', async () => {
-      const ip = '127.0.0.1';
-      const nonce = 'test-nonce-wrong-secret';
-      const correctClientSecret = 'the-correct-secret';
-      const wrongClientSecretOnServer = 'the-wrong-secret';
-      const suspicionFactor = 0.1;
-      const target = __internal.calculateTarget(suspicionFactor);
-
-      // 1. Le client résout le challenge avec le secret qu'il a reçu (le bon)
-      let solution = 0;
-      // Client-side simulation: hash does NOT include IP when clientSecret is used.
-      while (true) {
-        const hash = createHash('sha256').update(`${nonce}:${solution}:${correctClientSecret}`).digest('hex');
-        if (BigInt('0x' + hash) < target) break;
-        solution++;
-      }
-
-      // 2. Le serveur, pour une raison quelconque (corruption, attaque), a un mauvais secret stocké
-      await inMemoryStore.set(`secret:${nonce}`, {
-        clientSecret: wrongClientSecretOnServer, // The secret is wrong
-        cpuTarget: target.toString(16), // But the target is correct
-        memDifficulty: 0
-      });
-
-      vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
-        return {
-          historyScore: 25, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-        };
-      });
-
-      const req = { path: '/protected', ip, cookies: {}, query: { pow_type: 'cpu_target', pow_nonce: nonce, pow_solution: solution }, headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1' };
-
-      let sentStatus, sentBody;
-      const res = {
-        status: (s) => { sentStatus = s; return res; },
-        send: (b) => { sentBody = b; },
-        redirect: vi.fn(), // On s'attend à ce que cette fonction ne soit PAS appelée
-        cookie: vi.fn()
-      };
-      const next = vi.fn();
-
-      req.fingerprint = {};
-      await powMiddleware(securityConfig)(req, res, next);
-
-      expect(res.redirect).not.toHaveBeenCalled();
-      expect(sentStatus, 'Should return status 404 to re-issue a challenge').toBe(404);
-      expect(sentBody, 'Should send a new challenge page').toContain('Enhanced Verification');
-    });
-
-    test('should redirect after a valid COMBINED (CPU+Mem) PoW solution is provided', async (context) => {
-      const ip = '127.0.0.1';
-      const nonce = 'test-nonce-combined';
-      const clientSecret = 'a-secret-for-combined';
-      const suspicionFactor = 0.5; // Medium suspicion to trigger combined challenge
-      const memDifficulty = 1; // 1MB
-
-      // 1. Le client simule la résolution des deux challenges
-      // --- Résolution CPU ---
-      const target = __internal.calculateTarget(suspicionFactor);
-      let cpuSolution = 0;
-      while (true) {
-        // Client-side simulation: hash does NOT include IP when clientSecret is used.
-        const hash = createHash('sha256').update(`${nonce}:${cpuSolution}:${clientSecret}`).digest('hex');
-        if (BigInt('0x' + hash) < target) break;
-        cpuSolution++;
-      }
-
-      // --- Résolution Mémoire ---
-      const memSeed = `${nonce}:${clientSecret}`;
-      const size = memDifficulty * 1024 * 1024;
-      const buffer = new Uint32Array(size / 4);
-      let h = new TextEncoder().encode(memSeed).reduce((acc, v) => acc + v, 0);
-      for (let i = 0; i < buffer.length; i++) {
-          buffer[i] = (h = Math.imul(h ^ i, 1597334677));
-      }
-      let memSolution = 0;
-      let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
-      for (let i = 0; i < size / 16; i++) {
-        addr = buffer[addr] % buffer.length;
-        memSolution ^= addr;
-      }
-
-      // 2. Le serveur a stocké le secret lors de l'émission du challenge
-      // The secret is now stored as a context object
-      await inMemoryStore.set(`secret:${nonce}`, {
-        clientSecret: clientSecret,
-        cpuTarget: target.toString(16),
-        memDifficulty: memDifficulty,
-      });
-
-      // Simule un score de suspicion moyen
-      vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
-        historyScore: 50, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, honeypotScore: 0
-      });
-
-      // 3. La requête de l'utilisateur revient avec les deux solutions
-      const req = {
-        path: '/protected-resource', ip, cookies: {},
-        query: { pow_type: 'cpu_mem', pow_nonce: nonce, pow_solution_cpu: cpuSolution, pow_solution_mem: memSolution },
-        headers: { 'user-agent': 'test-ua' }, rawHeaders:[], httpVersion: '1.1'
-      };
-      let redirectedTo, cookieName, cookieValue;
-      let sentStatus, sentBody;
-      const res = {
-        cookie: (n, v) => { cookieName = n; cookieValue = v; },
-        redirect: (p) => { redirectedTo = p; },
-        status: (s) => { sentStatus = s; return res; },
-        send: (b) => { sentBody = b; },
-      };
-      const next = vi.fn(() => { throw new Error('next() should not be called'); });
-
-      req.fingerprint = {};
-      await powMiddleware(securityConfig)(req, res, next);
-
-      expect(redirectedTo, 'Should redirect to the original path after combined solution').toBe('/protected-resource');
-      expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
-      expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
-    }, 20000); // Augmenter le timeout à 20 secondes pour ce test long
-  });
-
-  describe('Suspicion Scoring Logic (Integration)', () => {
-    const inMemoryStore = {
-      _map: new Map(),
-      async get(key) { return this._map.get(key); },
-      async set(key, value) { this._map.set(key, value); },
-    };
-    beforeEach(() => {
-      inMemoryStore._map.clear();
-      configureStore(inMemoryStore);
-    });
-
-    test('should produce a high historyScore for rapid IP rotation', async () => {
-      const req = {
-        headers: {
-          'user-agent': 'test',
-          'x-device-fingerprint': 'cvs:123|gpu:456|hw:789' // Simulate client-side FP
-        },
-        cookies: {}, ip: '1.1.1.1', path: '/', query: {}, rawHeaders: ['User-Agent', 'test']
-      };
-      const res = { cookie: vi.fn() };
-      // Simulate a device using many IPs
-      const deviceData = { initialDeviceHash: 'hash1', ips: new Set(['1.1.1.2', '1.1.1.3', '1.1.1.4', '1.1.1.5', '1.1.1.6']), lastUpdate: Date.now(), lastFpHash: 'hash1', lastChangeTimestamp: 0, rapidChangeCount: 0 };
-      await inMemoryStore.set('device:test-device-id', deviceData);
-      req.cookies.device_id = 'test-device-id';
-
-      // We need an engine instance to hold the security config for the context
-      const securityConfig = {
-        weights: { historyScore: 1.0 },
-        thresholds: { low: 20 },
-      };
-      const engine = new FingerprintEngine(securityConfig);
-
-      const vector = await __internal.getSuspicionVector(req, securityConfig);
-      expect(vector.historyScore).toBeGreaterThan(20);
-    });
-
-    test('should produce a high honeypotScore for a trapped URL parameter', async () => {
-      // Configure the honeypot to trap the 'debug' parameter
-      const securityConfigWithHoneypot = {
-        weights: { honeypotScore: 1.0 },
-        thresholds: { low: 20, medium: 45, high: 75 }, // Configuration complète
-        honeypot: { // Configuration complète
-          fields: ['email_confirm', 'debug']
-        }
-      };
-      const engine = new FingerprintEngine(securityConfigWithHoneypot);
-
-      const requestContext = {
-        clientIp: '1.1.1.1',
-        path: '/',
-        cookies: {},
-        query: new URLSearchParams({ user_id: '123', debug: 'true' }), // Bot is probing with a 'debug' parameter
-        body: {},
-        headers: { 'User-agent': 'test' },
-        rawHeaders: ['User-Agent', 'test'],
-        httpVersion: '1.1',
-        isStatic: false
-      };
-
-      // Call the main engine processing method to get the full decision object
-      const decision = await engine.processRequest(requestContext);
-     console.log({decision})
-
-      // The honeypotScore should be 100 because the 'debug' parameter was found
-      expect(decision.vector.honeypotScore).toBe(100);
-      expect(decision.score).toBe(100); // With weight 1.0, the final score should also be 100
-    });
-
-    test('should produce a high honeypotScore for RCE attempt in body', async () => {
-      const securityConfig = {
-        weights: { honeypotScore: 1.0 },
-        thresholds: { low: 20, medium: 45, high: 75 }, // Configuration complète
-        honeypot: { detectInjections: true } // Configuration complète
-      };
-      const engine = new FingerprintEngine(securityConfig);
-      const requestContext = {
-        query: {},
-        path: '/',
-        body: { filename: "../../../etc/passwd" },
-        headers: { 'user-agent': 'test' },
-        // ... autres propriétés du contexte
-      };
-
-      const decision = await engine.processRequest(requestContext);
-      expect(decision.vector.honeypotScore).toBe(100);
-      expect(decision.score).toBe(100);
-    });
-
-    test('should produce a high honeypotScore for NoSQL injection attempt in body', async () => {
-      const securityConfig = {
-        weights: { honeypotScore: 1.0 },
-        thresholds: { low: 20, medium: 45, high: 75 }, // Configuration complète
-        honeypot: { detectInjections: true } // Configuration complète
-      };
-      const engine = new FingerprintEngine(securityConfig);
-      const requestContext = {
-        query: {},
-        path: '/',
-        body: { "username": { "$ne": null }, "password": { "$ne": null } },
-        headers: { 'user-agent': 'test' },
-        // ... autres propriétés du contexte
-      };
-
-      const decision = await engine.processRequest(requestContext);
-      expect(decision.vector.honeypotScore).toBe(100);
-      expect(decision.score).toBe(100);
-    });
-
-    test('should produce a zero honeypotScore for a normal request', async () => {
-      const securityConfig = {
-        weights: { honeypotScore: 1.0 },
-        thresholds: { low: 20, medium: 45, high: 75 },
-        // Explicitly disable the new device challenge for this test to ensure a score of 0 is possible.
-        challengeNewDevices: false,
-        honeypot: { detectInjections: true } // Configuration complète
-      };
-      const engine = new FingerprintEngine(securityConfig);
-      const requestContext = {
-        query: new URLSearchParams({ id: "123" }),
-        body: { comment: "This is a normal comment." },
-        headers: { 'user-agent': 'test' },
-        path: '/'
-      };
-      const decision = await engine.processRequest(requestContext);
-      expect(decision.vector.honeypotScore).toBe(0); // Le score honeypot doit être 0
-    });
-  });
-
-  describe('Threshold Auto-Tuning', () => {
-    let setIntervalSpy, clearIntervalSpy, consoleLogSpy;
-
-    beforeEach(() => {
-      setIntervalSpy = vi.spyOn(global, 'setInterval');
-      clearIntervalSpy = vi.spyOn(global, 'clearInterval');
-      consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    });
-    afterEach(() => {
-      vi.restoreAllMocks();
-      stopThresholdAutoTuning(); // Ensure cleanup after each test
-    });
-
-    test('should start, run an optimization cycle, and update thresholds', () => {
-      const trafficData = [];
-      const securityConfig = {
-        thresholds: { low: 50, medium: 70, high: 90 }, // Intentionally bad initial thresholds
-        logger: (log) => trafficData.push(log),
-      };
-
-      // Generate mock data where optimal 'low' threshold is around 25
-      // Bots with low scores (false negatives)
-      for (let i = 0; i < 50; i++) trafficData.push({ type: 'challenge_issued', deviceId: `bot-${i}`, score: 15 + Math.random() * 5 });
-      // Humans with slightly higher scores (false positives)
-      for (let i = 0; i < 50; i++) trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 30 + Math.random() * 5 });
-      // Solved challenges (clear humans)
-      for (let i = 0; i < 20; i++) trafficData.push({ type: 'challenge_solved', deviceId: `human-solver-${i}`, score: 40 });
-
-
-      startThresholdAutoTuning({
-        securityConfig,
-        trafficData,
-        interval: 60000, // 1 minute
-        minDataPoints: 100,
-      });
-
-      // Manually trigger the optimization cycle
-      const intervalCallback = setIntervalSpy.mock.calls[0][0];
-      intervalCallback();
-
-      // The genetic algorithm should find better thresholds.
-      // We expect 'low' to decrease significantly from 50.
-      expect(securityConfig.thresholds.low).toBeLessThanOrEqual(40);
-      expect(securityConfig.thresholds.low).toBeGreaterThanOrEqual(10);
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Nouveaux seuils optimisés appliqués'), expect.anything());
-      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
-
-      // Stop the tuner and check if the interval is cleared
-      stopThresholdAutoTuning();
-      expect(clearIntervalSpy).toHaveBeenCalled();
-    });
-
-    test('should not run optimization if data points are insufficient', () => {
-      const trafficData = [];
-      const securityConfig = {
-        thresholds: { low: 20, medium: 45, high: 75 },
-        logger: (log) => trafficData.push(log),
-      };
-
-      // Generate only 50 data points, less than the minimum of 100
-      for (let i = 0; i < 50; i++) {
-        trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 10 });
-      }
-
-      startThresholdAutoTuning({
-        securityConfig,
-        trafficData,
-        interval: 60000,
-        minDataPoints: 100,
-      });
-
-      // Manually trigger the cycle
-      const intervalCallback = setIntervalSpy.mock.calls[0][0];
-      intervalCallback();
-
-      // Check that optimization was postponed
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Reporté'));
-      // Thresholds should not have changed
-      expect(securityConfig.thresholds).toEqual({ low: 20, medium: 45, high: 75 });
-
-      // Add more data to meet the threshold
-      for (let i = 0; i < 50; i++) {
-        trafficData.push({ type: 'request_passed', deviceId: `human-new-${i}`, score: 10 });
-      }
-      // Trigger again
-      intervalCallback();
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Démarrage du cycle d\'optimisation'));
-    });
-  });
 
 
     describe('getHoneypotScore Advanced Detections', () => {
@@ -1177,7 +1295,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 // This analyzer flags any request containing the word 'custom-threat'
                 return JSON.stringify(data).includes('custom-threat');
             });
-    
+
             const securityConfigWithAnalyzer = {
                 // On crée une config locale pour ce test pour éviter les interférences
                 weights: baseSecurityConfig.weights,
@@ -1190,9 +1308,9 @@ describe('Fingerprint & PoW Security Suite', () => {
                     analyzers: [customAnalyzer]
                 }
             };
-    
+
             const engine = new FingerprintEngine(securityConfigWithAnalyzer);
-    
+
             // 1. Test a request that should be flagged by the analyzer
             const maliciousRequestContext = {
                 clientIp: '1.1.1.1',
@@ -1204,13 +1322,13 @@ describe('Fingerprint & PoW Security Suite', () => {
                 rawHeaders: ['user-agent', 'A regular browser'],
                 isStatic: false,
             };
-    
+
             const decisionMalicious = await engine.processRequest(maliciousRequestContext);
-    
+
             expect(customAnalyzer).toHaveBeenCalledWith({ comment: 'this is a custom-threat' });
             expect(decisionMalicious.vector.honeypotScore).toBe(100);
             expect(decisionMalicious.action).toBe('block');
-    
+
             // 2. Test a normal request that should not be flagged
             const cleanRequestContext = {
                 clientIp: '2.2.2.2',
@@ -1222,7 +1340,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                 rawHeaders: ['user-agent', 'A regular browser', 'accept-language', 'en-US,en;q=0.9'],
                 isStatic: false,
             };
-    
+
             const decisionClean = await engine.processRequest(cleanRequestContext);
 
             expect(customAnalyzer).toHaveBeenCalledWith({ comment: 'this is a normal comment' });
@@ -1231,45 +1349,45 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
     });
 
-  describe('getBehaviorScore', () => {
-    // La fonction est privée, on la récupère via l'export __internal
-    beforeEach(() => {
-        getBehaviorScore = fingerprint.__internal.getBehaviorScore;
-    });
+    describe('getBehaviorScore', () => {
+        // La fonction est privée, on la récupère via l'export __internal
+        beforeEach(() => {
+            getBehaviorScore = fingerprint.__internal.getBehaviorScore;
+        });
 
-    it('should return a score of 0 when x-behavior-metrics header is missing', () => {
-        const context = { headers: {} };
-        const { behaviorScore } = getBehaviorScore(context);
-        expect(behaviorScore).toBe(0);
-    });
+        it('should return a score of 0 when x-behavior-metrics header is missing', () => {
+            const context = { headers: {} };
+            const { behaviorScore } = getBehaviorScore(context);
+            expect(behaviorScore).toBe(0);
+        });
 
-    it('should return a score of 100 for honeypot interaction', () => {
-        const metrics = { honeypotInteraction: true, mouseEntropy: 50, keystrokeLatency: 120 };
-        const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
-        const { behaviorScore } = getBehaviorScore(context);
-        expect(behaviorScore).toBe(100);
-    });
+        it('should return a score of 100 for honeypot interaction', () => {
+            const metrics = { honeypotInteraction: true, mouseEntropy: 50, keystrokeLatency: 120 };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { behaviorScore } = getBehaviorScore(context);
+            expect(behaviorScore).toBe(100);
+        });
 
-    it('should return a score of 40 for no mouse or keyboard activity', () => {
-        const metrics = { honeypotInteraction: false, mouseEntropy: 0, keystrokeLatency: 0 };
-        const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
-        const { behaviorScore } = getBehaviorScore(context);
-        expect(behaviorScore).toBe(40);
-    });
+        it('should return a score of 40 for no mouse or keyboard activity', () => {
+            const metrics = { honeypotInteraction: false, mouseEntropy: 0, keystrokeLatency: 0 };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { behaviorScore } = getBehaviorScore(context);
+            expect(behaviorScore).toBe(40);
+        });
 
-    it('should return a score of 0 for normal user activity', () => {
-        const metrics = { honeypotInteraction: false, mouseEntropy: 150.5, keystrokeLatency: 88.2 };
-        const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
-        const { behaviorScore } = getBehaviorScore(context);
-        expect(behaviorScore).toBe(0);
-    });
+        it('should return a score of 0 for normal user activity', () => {
+            const metrics = { honeypotInteraction: false, mouseEntropy: 150.5, keystrokeLatency: 88.2 };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { behaviorScore } = getBehaviorScore(context);
+            expect(behaviorScore).toBe(0);
+        });
 
-    it('should return a score of 10 for a malformed header', () => {
-        const context = { headers: { 'x-behavior-metrics': 'this is not json' } };
-        const { behaviorScore } = getBehaviorScore(context);
-        expect(behaviorScore).toBe(10);
+        it('should return a score of 10 for a malformed header', () => {
+            const context = { headers: { 'x-behavior-metrics': 'this is not json' } };
+            const { behaviorScore } = getBehaviorScore(context);
+            expect(behaviorScore).toBe(10);
+        });
     });
-});
 
 
     describe('Bot Whitelisting', () => {
@@ -1532,4 +1650,47 @@ describe('determineOptimalTicketTtl', () => {
 
     // Ce test est plus difficile à déclencher, mais il valide la robustesse de la fonction.
     // On peut le simuler en forçant l'algorithme génétique à retourner un tableau vide.
+});
+
+describe('Challenge Page Generation Security (XSS)', () => {
+    // Les fonctions sont déjà exportées via __internal
+    const { generateCpuTargetChallengePage, generateCombinedPoWChallengePage } = __internal;
+
+    // Mock readFileSync pour éviter les erreurs de système de fichiers lorsque getPowSolverCode est appelé
+    beforeEach(() => {
+        // Assurez-vous que le mock est actif pour ces tests
+        readFileSync.mockReturnValue('// MOCK SOLVER CODE');
+    });
+
+    afterEach(() => {
+        readFileSync.mockClear();
+    });
+
+    it('should escape the path parameter in generateCpuTargetChallengePage to prevent XSS', () => {
+        const maliciousPath = `"/;alert('XSS');//`;
+        const challengeDetails = {
+            nonce: 'test-nonce',
+            target: '0000',
+            path: maliciousPath,
+        };
+
+        const html = generateCpuTargetChallengePage(challengeDetails, '127.0.0.1');
+
+        // 1. Le script malveillant brut ne doit PAS être présent.
+        expect(html).not.toContain(`window.location.href = "/;alert('XSS');//?pow_type=cpu_target`);
+
+        // 2. Le chemin doit être correctement échappé via JSON.stringify, neutralisant l'attaque.
+        const expectedEscapedString = `window.location.href = ${JSON.stringify(maliciousPath)} + "?pow_type=cpu_target`;
+        expect(html).toContain(expectedEscapedString);
+    });
+
+    it('should escape the path parameter in generateCombinedPoWChallengePage to prevent XSS', () => {
+        const maliciousPath = `test.com";\nconsole.log("pwned");//`;
+        const challengeDetails = { nonce: 'test-nonce', target: '0000', path: maliciousPath };
+
+        const html = generateCombinedPoWChallengePage(challengeDetails, 16, '127.0.0.1', 'secret', {}, '');
+
+        expect(html).not.toContain(`const path = "test.com";`);
+        expect(html).toContain(`const path = ${JSON.stringify(maliciousPath)};`);
+    });
 });

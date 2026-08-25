@@ -16,7 +16,9 @@
  * @returns {Promise<number>} La solution (un nombre entier).
  */
 export async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null, progressCallback) {
-    const cpuTarget = BigInt('0x' + target);
+    // Le 'target' est déjà un BigInt lorsqu'il est appelé depuis la page de challenge.
+    // On s'assure juste qu'il est bien de ce type.
+    const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
     let cpuSolution = 0;
     const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
     while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
@@ -77,18 +79,28 @@ export async function solveCpuTarget(message, target) {
  * @returns {Promise<number>} La solution (nombre entier).
  */
 export async function solveMemory(seed, difficulty) {
+    // On définit un seuil pour savoir quand faire une pause, afin de ne pas bloquer le thread UI.
+    const YIELD_THRESHOLD = 100000;
     const size = difficulty * 1024 * 1024;
     const buffer = new Uint32Array(size / 4);
     let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
+
     for (let i = 0; i < buffer.length; i++) {
         buffer[i] = (h = Math.imul(h ^ i, 1597334677));
+        if (i % YIELD_THRESHOLD === 0) {
+            await new Promise(r => setTimeout(r, 0)); // Respiration pour ne pas geler l'UI
+        }
     }
+
     let solution = 0;
     const iterations = size / 16;
     let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
     for (let i = 0; i < iterations; i++) {
         addr = buffer[addr] % buffer.length;
         solution ^= addr;
+        if (i % YIELD_THRESHOLD === 0) {
+            await new Promise(r => setTimeout(r, 0)); // Respiration pour ne pas geler l'UI
+        }
     }
     return solution;
 }

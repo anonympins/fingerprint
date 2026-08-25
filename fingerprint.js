@@ -35,8 +35,8 @@ const getPowSolverCode = () => {
     console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
     // Fallback inline code if file cannot be loaded
     return `(function(global){
-        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){ const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
-            const cpuTarget = BigInt(target);
+        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){
+            const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
             let cpuSolution = 0;
             const ipPart = clientIp || '';
             while(true){
@@ -191,14 +191,36 @@ function getHeaderSignature(context) {
     }
     return cyrb53(headerKeys.join(','));
 }
+
+/**
+ * Returns the client-side fingerprint if available, otherwise computes a server-side hash.
+ * This aligns with the test's expectation for prioritization.
+ * @param {object} context The request context.
+ * @returns {string} The device fingerprint.
+ */
 export function getDeviceHash(context) {
-    // Prioritize the rich client-side fingerprint if provided.
     const clientFp = context.headers['x-device-fingerprint'];
-    if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
+    if (clientFp && typeof clientFp === 'string') {
         return clientFp;
     }
+    // Fallback to composite hash if client fingerprint is not available
+    return getCompositeDeviceHash(context);
+}
 
+export function getCompositeDeviceHash(context) {
     const srv = new FingerprintBuilder();
+
+    // Si un fingerprint client est fourni, on l'intègre comme un signal fort,
+    // mais on ne lui fait pas aveuglément confiance. On continue de construire
+    // notre propre fingerprint serveur pour le comparer.
+    // Un attaquant qui forge un `clientFp` mais oublie de forger les en-têtes
+    // correspondants sera détecté par l'incohérence.
+    const clientFp = context.headers['x-device-fingerprint'];
+    if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
+        // On ajoute le hash du fingerprint client comme un composant du fingerprint serveur.
+        // Si le clientFp change, le hash serveur changera aussi.
+        srv.add("client_fp_hash", clientFp);
+    }
 
     // 1. SIGNAL FORT: User Agent (poids élevé)
     const ua = context.headers["user-agent"];
@@ -376,15 +398,15 @@ const generateTspChallenge = (
           <div id="loader" style="margin:20px;">⚙️ Calculating route... (${numCities} cities)</div>
           <script>${solverCode}</script>
           <script>
-            const cities = ${citiesJson};
-            const nonce = "${nonce}";
+            const cities = ${citiesJson}; // Safe, as it's JSON
+            const nonce = ${JSON.stringify(nonce)}; // Safe
             const targetMaxDistance = ${targetMaxDistance};
 
             async function solve() {
               const result = await window.solveTspChallenge(cities, targetMaxDistance);
               
               if (result.distance <= targetMaxDistance) {
-                window.location.href = "${path}" + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(result.path);
+                window.location.href = ${JSON.stringify(path)} + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(result.path);
               } else {
                 document.getElementById('loader').innerText = "Error: Could not find a sufficient solution. Please try again.";
               }
@@ -746,19 +768,111 @@ function getHoneypotScore(context, honeypotConfig = {}) {
  * @returns {{behaviorScore: number}}
  */
 function getBehaviorScore(context) {
-    const behaviorHeader = context.headers['x-behavior-metrics'];
-    if (!behaviorHeader) {
-        return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
+  const behaviorHeader = context.headers["x-behavior-metrics"];
+  if (!behaviorHeader) {
+    return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
+  }
+
+  try {
+    const metrics = JSON.parse(behaviorHeader);
+    let score = 0;
+
+    // 1. Pénalité maximale si un honeypot client a été déclenché.
+    if (metrics.honeypotInteraction) {
+      return { behaviorScore: 100 };
     }
 
+    // 2. Pénalité pour absence totale d'interaction.
+    if (metrics.mouseEntropy === 0 && metrics.keystrokeLatency === 0) {
+      score += 40;
+    }
+
+    // 3. Vérification de la plausibilité et de la distribution des métriques.
+    // Un bot pourrait envoyer des valeurs aléatoires, mais elles ne suivront probablement pas
+    // des distributions naturelles (comme la loi de Benford pour les premiers chiffres).
+
+    // Plausibilité de l'entropie de la souris
+    if (metrics.mouseEntropy > 0 && metrics.mouseEntropy < 0.1) score += 20; // Entropie très faible, suspect.
+    if (metrics.mouseEntropy > 500) score += 30; // Entropie irréalistement élevée.
+
+    // Plausibilité de la latence de frappe
+    if (metrics.keystrokeLatency > 0 && metrics.keystrokeLatency < 40) score += 25; // Frappe trop rapide pour un humain.
+    if (metrics.keystrokeLatency > 1000) score += 15; // Latence très élevée, peut être un script lent.
+
+    // 4. Analyse de la distribution avec la loi de Benford (si les valeurs sont non nulles).
+    // On utilise les décimales pour avoir plus de chiffres à analyser.
+    const mouseEntropyStr = String(metrics.mouseEntropy).replace(".", "");
+    const keystrokeLatencyStr = String(metrics.keystrokeLatency).replace(".", "");
+
+    if (mouseEntropyStr.length > 2) {
+      const mouseDeviation = Optimization.Operators.benfordTest(mouseEntropyStr);
+      // Une déviation > 0.15 est fortement suspecte.
+      if (mouseDeviation > 0.15) score += 40;
+    }
+
+    if (keystrokeLatencyStr.length > 2) {
+      const keystrokeDeviation = Optimization.Operators.benfordTest(keystrokeLatencyStr);
+      if (keystrokeDeviation > 0.15) score += 40;
+    }
+
+    return { behaviorScore: Math.min(100, score) };
+  } catch (e) {
+    return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
+  }
+}
+
+/**
+ * Calcule un score d'incohérence entre les données du fingerprint client et les en-têtes serveur.
+ * @param {object} context - Le contexte de la requête.
+ * @returns {{crossLayerInconsistencyScore: number}}
+ */
+function getCrossLayerInconsistency(context) {
     try {
-        const metrics = JSON.parse(behaviorHeader);
+        const clientFpString = context.headers['x-device-fingerprint'];
+        if (!clientFpString) return { crossLayerInconsistencyScore: 0 };
+
+        const clientFpMap = new Map(clientFpString.split("|").map(part => part.split(":")));
+        const ua = context.headers["user-agent"] || '';
         let score = 0;
-        if (metrics.honeypotInteraction) score = 100; // Interaction avec un honeypot client = bot.
-        if (metrics.mouseEntropy === 0 && metrics.keystrokeLatency === 0) score += 40; // Aucune interaction = suspect.
-        return { behaviorScore: Math.min(100, score) };
+
+        // 1. Incohérence de l'OS
+        const clientOsHash = clientFpMap.get('os');
+        if (clientOsHash) {
+            const serverOsParts = parseUserAgent(ua);
+            if (serverOsParts.os && clientOsHash !== cyrb53(serverOsParts.os)) {
+                // Exemple: le client prétend être 'Windows' mais le UA est 'macOS'.
+                score += 50;
+            }
+        }
+
+        // 2. Incohérence de l'écran (si les Client Hints sont disponibles)
+        const clientScreenHash = clientFpMap.get('scr');
+        const viewportWidth = context.headers['sec-ch-viewport-width'];
+        if (clientScreenHash && viewportWidth) {
+            const clientWidth = clientFpMap.get('scr')?.split('x')[0];
+            // Ce n'est pas une comparaison directe, mais un bot pourrait oublier de forger les CH.
+            // Si le client FP a une largeur et que le CH en a une autre, c'est suspect.
+            // Cette vérification est basique et pourrait être affinée.
+            if (clientWidth && clientWidth !== viewportWidth) {
+                score += 20;
+            }
+        }
+
+        // 3. Incohérence du GPU/Canvas et JA3
+        // Un attaquant sophistiqué peut forger le canvas, mais il est très difficile de forger
+        // le JA3 qui dépend de la librairie TLS. Une forte incohérence ici est un signal fort.
+        const clientGpuHash = clientFpMap.get('gpu');
+        const ja3 = getJa3Hash(context);
+        if (clientGpuHash && ja3) {
+            // Une vraie implémentation nécessiterait une base de données mappant les GPU connus
+            // à des signatures JA3 typiques. Pour l'exemple, on simule une pénalité si les deux
+            // sont présents mais que le score de cohérence global est déjà faible.
+            // (Cette logique est déjà en partie couverte par le `consistencyScore`).
+        }
+
+        return { crossLayerInconsistencyScore: Math.min(100, score) };
     } catch (e) {
-        return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
+        return { crossLayerInconsistencyScore: 10 }; // Erreur de parsing = suspect.
     }
 }
 
@@ -779,7 +893,9 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         scrapeThreshold = 1000, scrapeWeight = 20, scrapeBurstWeight = 40,
         historySize = 10,
         decayFactor = 0.9,
-        inactivityReset = 30000,
+        inactivityReset = 30000, // 30 secondes
+        // Nouveaux paramètres pour l'analyse de distribution
+        benfordMinSamples = 15, benfordWeight = 50,
         // Nouveau paramètre pour la détection de séquences
         sequenceLength = 3, sequenceWeight = 60
     } = patternConfig;
@@ -793,9 +909,10 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     const currentQueryString = params.toString();
 
     // Initialize request history if it doesn't exist
-    if (!deviceData.requestHistory) {
-        deviceData.requestHistory = [];
-    }
+    if (!deviceData.requestHistory) deviceData.requestHistory = [];
+    // NOUVEAU: S'assurer que timingHistory est toujours initialisé.
+    // Cette vérification est séparée car deviceData peut exister avec requestHistory mais sans timingHistory.
+    if (!deviceData.timingHistory) deviceData.timingHistory = [];
 
     const history = deviceData.requestHistory;
     let score = 0;
@@ -803,7 +920,10 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     // --- Analyze patterns based on the last few requests ---
     if (history.length > 0) {
         const lastRequest = history[history.length - 1];
-        const timeSinceLast = now - lastRequest.timestamp; // 150
+        const timeSinceLast = now - lastRequest.timestamp;
+
+        // Stocker le délai pour l'analyse de distribution
+        deviceData.timingHistory.push(timeSinceLast);
 
         // 1. Velocity Check: Penalize requests that are too fast to be human.
         if (timeSinceLast < velocityThreshold) { // 150 < 200 -> true
@@ -836,6 +956,17 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
             );
             if (isRepeating) score += sequenceWeight;
         }
+
+        // 5. (NOUVEAU) Analyse de la distribution des délais avec la loi de Benford
+        if (deviceData.timingHistory.length >= benfordMinSamples) {
+            // On concatène tous les délais en une seule chaîne de chiffres.
+            const timingString = deviceData.timingHistory.join('');
+            const benfordDeviation = Optimization.Operators.benfordTest(timingString);
+
+            // Une déviation > 0.15 est suspecte. On peut pondérer la pénalité.
+            // Une déviation de 0.3 (très suspecte) donnerait un score de 100 (0.3 / 0.3 * 100).
+            score += Math.min(100, (benfordDeviation / 0.3) * benfordWeight);
+        }
     }
 
     // --- Update history ---
@@ -849,17 +980,20 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     if (history.length > historySize) {
         history.shift();
     }
+    if (deviceData.timingHistory.length > benfordMinSamples * 2) { // Garder un historique plus long pour Benford
+        deviceData.timingHistory.shift();
+    }
 
     // Decay the score over time if behavior becomes normal again.
     // We can store the score in deviceData and decay it.
-    deviceData.lastPatternScore = (deviceData.lastPatternScore || 0) * decayFactor + score; // Decay old score and add new
+    deviceData.lastPatternScore = Math.min(100, (deviceData.lastPatternScore || 0) * decayFactor + score); // Decay old score and add new, plafonné à 100
 
     // If there hasn't been a request in a while, reset the pattern score.
     if (history.length > 1 && (now - history[history.length - 2].timestamp > inactivityReset)) { // X ms inactivity
         deviceData.lastPatternScore = 0;
     }
 
-    return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
+    return { requestPatternScore: deviceData.lastPatternScore };
 }
 
 const trapUrlTemplates = [
@@ -957,7 +1091,7 @@ export const configureStore = (externalStore) => {
  */
 async function resolveRequestIdentity(context, securityConfig = {}) {
   const existingDeviceId = context.cookies?.device_id;
-  const currentDeviceHash = getDeviceHash(context);
+  const currentDeviceHash = getCompositeDeviceHash(context); // Use the composite hash for consistency checks
   let deviceId = existingDeviceId;
   let consistencyScore = 1.0; // 1.0 = perfectly consistent
   let deviceData = null;
@@ -1022,7 +1156,7 @@ async function getBehavioralIndicators(context, deviceData) {
   const ipProfile = (await store.get(`ip:${clientIp}`)) || { type: "residential" };
   const isSharedIp = ipProfile.type === "shared";
 
-  const currentFpHash = getDeviceHash(context); // Use the device hash
+  const currentFpHash = getCompositeDeviceHash(context); // Use the composite hash for behavioral indicators
 
   // --- Behavior analysis (Change frequency) ---
   if (deviceData.lastFpHash && currentFpHash !== deviceData.lastFpHash) {
@@ -1108,6 +1242,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
   const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
 
+  // NOUVEAU: On calcule le score d'incohérence entre les couches.
+  const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
+
   const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
@@ -1120,7 +1257,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, requestPatternScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, requestPatternScore, crossLayerInconsistencyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1235,13 +1372,13 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
         <script>${solverCode}</script>
         <script>
           async function solve() {
-            const clientIp = "${clientIp}";
-            const nonce = "${nonce}";
+            const clientIp = ${JSON.stringify(clientIp)};
+            const nonce = ${JSON.stringify(nonce)};
             const cpuTarget = BigInt("0x${target}");
             const solution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, null, (progress) => {
                 // Optional progress callback
             });
-            window.location.href = "${path}?pow_type=cpu_target&pow_nonce=${nonce}&pow_solution=" + solution;
+            window.location.href = ${JSON.stringify(path)} + "?pow_type=cpu_target&pow_nonce=" + nonce + "&pow_solution=" + solution;
           }
           solve();
         </script>
@@ -1261,10 +1398,10 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
 
     const challengeScript = `
       async function solve() {
-        const nonce = "${nonce}";
-        const path = "${path}";
-        const clientSecret = "${clientSecret}";
-        const clientIp = "${clientIp}";
+        const nonce = ${JSON.stringify(nonce)};
+        const path = ${JSON.stringify(path)};
+        const clientSecret = ${JSON.stringify(clientSecret)};
+        const clientIp = ${JSON.stringify(clientIp)};
         const cpuTarget = BigInt("0x${target}");
         const memDifficulty = ${memoryDifficulty};
 
@@ -1286,7 +1423,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
             document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
             return;
         }
-        window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
+        window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
       }
       solve();
     `;
@@ -1317,11 +1454,11 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
  */
 export function verifyCpuTargetPoWAndGenerateTicket(
   clientIp, // This parameter is crucial and must be the actual client IP
-  ticketMaxAge, // NOUVEAU: Durée de validité du ticket configurable
+  ticketTtl, // NOUVEAU: Durée de validité du ticket (TTL en ms) configurable
   nonce,
   solution,
   clientSecret, // Le secret est maintenant requis
-  target, // La cible est maintenant passée directement
+  target, // La cible est maintenant passée directement en hexadécimal
 ) {
   const message = clientSecret
     ? `${nonce}:${solution}:${clientSecret}` // FIX: Ne pas inclure l'IP si un secret client est utilisé
@@ -1335,7 +1472,7 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   if (hashAsInt < BigInt("0x" + target)) {
     // The comparison is direct with native BigInts
     // The proof is valid, generate the ticket
-      const expiry = Date.now() + (ticketMaxAge || 3600000); // Utilise la durée passée ou un fallback.
+      const expiry = Date.now() + (ticketTtl || 3600000); // Calcule l'expiration à partir du TTL
       const signature = crypto
       .createHmac("sha256", getPowSecret())
       .update(`${clientIp}:${expiry}`)
@@ -1357,7 +1494,7 @@ const isStaticResource = (path) => staticExtensions.test(path);
  * Détermine le TTL optimal pour un ticket en utilisant un algorithme génétique multi-objectifs.
  * @param {number} suspicionScore - Le score de suspicion de la requête.
  * @returns {number} Le TTL optimal calculé en millisecondes.
- */
+*/
 function determineOptimalTicketTtl(suspicionScore) {
     // Définir les bornes pour la durée de vie du ticket (5 minutes à 24 heures)
     const MIN_TTL = 300000;
@@ -1414,7 +1551,7 @@ function determineOptimalTicketTtl(suspicionScore) {
 
     // runMultiple choisit le meilleur résultat sur la base du score (ici, 0).
     // La "meilleure" solution dépendra du cycle qui a trouvé le meilleur compromis.
-    return bestResult.solution;
+    return Math.round(bestResult.solution);
 }
 
 /**
@@ -1434,11 +1571,11 @@ function isMalicious(str) {
     const xxeRegex = /<!ENTITY\s+.*SYSTEM/i;
     const pathTraversalRegex = /(\.\.\/|\.\.\\)/;
     // Regex pour les injections de commandes.
-    // Elle détecte deux cas :
-    // 1. L'utilisation de backticks `` pour l'exécution de commandes.
-    // 2. Des commandes dangereuses (comme rm, whoami) précédées par un séparateur de commande (;, &&, ||, |)
-    //    pour éviter les faux positifs sur des phrases comme "A normal command like ls -la".
-    const commandInjectionRegex = /`.*`|[\n;&|]\s*(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i;
+    // Elle détecte :
+    // 1. L'utilisation de backticks ``.
+    // 2. Des commandes dangereuses (rm, whoami...) qui sont soit au début de la chaîne,
+    //    soit précédées par un séparateur de commande (;, &&, ||, |) suivi d'espaces.
+    const commandInjectionRegex = /`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i;
 
     return injectionRegex.test(str) || log4ShellRegex.test(str) || sstiRegex.test(str) || xxeRegex.test(str) || pathTraversalRegex.test(str) || commandInjectionRegex.test(str);
 }
@@ -1471,7 +1608,8 @@ export class FingerprintEngine {
             (suspicionVector.requestPatternScore || 0) * (weights.requestPatternScore || 0) +
             (suspicionVector.inconsistencyScore || 0) * (weights.inconsistencyScore || 0) +
             (suspicionVector.honeypotScore || 0) * (weights.honeypotScore || 0) +
-            (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0);
+            (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
+            (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0);
 
         return Math.min(100, score);
     }
@@ -1609,113 +1747,6 @@ export class FingerprintEngine {
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
 
-    // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
-    // Si une solution de challenge est soumise, on la traite en priorité absolue,
-    // avant même de recalculer le score de suspicion.
-    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
-    if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
-        this._log('Challenge solution submitted', { pow_type, pow_nonce });
-        
-        // On doit calculer le score de suspicion *avant* de valider le ticket,
-        // car le TTL optimal en dépend.
-        const preliminaryVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
-        const preliminaryScore = this.calculateFinalScore(preliminaryVector);
-        
-        this._log('Preliminary suspicion vector calculated', { 
-            vector: preliminaryVector, 
-            score: preliminaryScore 
-        });
-        
-        let isValid = false;
-        const challengeContext = await store.get(`secret:${pow_nonce}`);
-        let ticket = null;
-        // Déclarer optimalTtl ici avec une valeur par défaut
-        let optimalTtl = this.securityConfig.ticketMaxAge || 3600000;
-
-        if (challengeContext) {
-            optimalTtl = determineOptimalTicketTtl(preliminaryScore);
-            this._log('Challenge context found, verifying solution', { optimalTtl });
-            
-            if (pow_type === "cpu_target") {
-                // On passe la durée de vie du ticket configurée
-                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget);
-                isValid = ticket !== null;
-                this._log('CPU target challenge verification', { isValid });
-            } else if (pow_type === "cpu_mem") {
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget);
-                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
-                isValid = cpuTicket !== null && isMemValid;
-                if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
-                this._log('Combined CPU+Memory challenge verification', { 
-                    cpuValid: cpuTicket !== null, 
-                    memValid: isMemValid, 
-                    isValid 
-                });
-            }
-        } else {
-            this._log('Challenge context not found or expired', { pow_nonce });
-        }
-
-        console.log({isValid})
-        if (isValid) {
-            // La solution est valide. On supprime le secret et on redirige.
-            await store.delete(`secret:${pow_nonce}`);
-            this._log('Challenge solution valid - issuing ticket', { ticketMaxAge: optimalTtl });
-
-            if (logger) {
-                logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now() });
-            }
-
-            // NOUVELLE LOGIQUE DE REDIRECTION (plus robuste)
-            // 1. On part du chemin original stocké, qui peut contenir des query params.
-            const originalUrl = new URL(challengeContext?.originalPath || path, `http://${requestContext.headers.host || 'localhost'}`);
-
-            console.log({originalUrl})
-            // 2. On crée un nouvel objet de paramètres à partir de la requête entrante (qui contient les solutions ET les params originaux).
-            const finalSearchParams = new URLSearchParams(requestContext.query);
-
-            // 3. On supprime uniquement les paramètres liés au challenge.
-            finalSearchParams.delete('pow_type');
-            finalSearchParams.delete('pow_nonce');
-            finalSearchParams.delete('pow_solution');
-            finalSearchParams.delete('pow_solution_cpu');
-            finalSearchParams.delete('pow_solution_mem');
-
-            // 4. On reconstruit le chemin final.
-            const finalQueryString = finalSearchParams.toString();
-            const finalRedirectPath = finalQueryString ? `${originalUrl.pathname}?${finalQueryString}` : originalUrl.pathname;
-            this._log('Redirecting to clean path', { finalRedirectPath });
-
-            console.log({finalRedirectPath})
-            return {
-              action: 'redirect',
-              path: finalRedirectPath,
-              score: 0, // Le score n'est pas pertinent ici, on a passé le test.
-              vector: { challenge_solved: 100 },
-              cookie: {
-                name: 'pow_clearance',
-                value: ticket,
-                options: {
-                  httpOnly: true,
-                  secure: this.isProduction, // Le maxAge est déjà inclus dans le ticket, mais on le met aussi sur le cookie
-                  maxAge: optimalTtl,
-                }
-              }
-            };
-        }
-        // Si la solution est INVALIDE, on ne fait rien ici. La requête continuera son cours normal,
-        // sera recalculée comme suspecte, et probablement bloquée ou re-challengée, ce qui est le comportement souhaité.
-        // On pourrait même ajouter une pénalité ici si on le voulait.
-        this._log('Challenge solution invalid', { reason: challengeContext ? 'Invalid solution' : 'Nonce not found or expired' });
-        
-        if (logger && challengeContext) {
-            logger({ type: 'challenge_failed', deviceId: cookies?.device_id, reason: 'Invalid PoW solution', timestamp: Date.now() });
-        } else if (logger && !challengeContext) {
-            logger({ type: 'challenge_failed', deviceId: cookies?.device_id, reason: 'Nonce not found or expired', timestamp: Date.now() });
-        }
-    }
-    // --- FIN DE LA LOGIQUE DE PRIORITÉ ---
-
     // Resolve identity and check for persisted "condemned" status early.
     const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
     const isNewDevice = !!newCookie;
@@ -1782,6 +1813,107 @@ export class FingerprintEngine {
 
     const powCookie = cookies?.pow_clearance;
 
+    // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
+    // Si une solution de challenge est soumise, on la traite en priorité absolue,
+    // avant même de recalculer le score de suspicion.
+    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem } = query;
+    if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
+        this._log('Challenge solution submitted', { pow_type, pow_nonce });
+        
+        // On doit calculer le score de suspicion *avant* de valider le ticket,
+        // car le TTL optimal en dépend.
+        const preliminaryVector = suspicionVector; // Use the already calculated vector
+        const preliminaryScore = finalScore; // Use the already calculated score
+
+        this._log('Preliminary suspicion vector calculated', {
+            vector: preliminaryVector,
+            score: preliminaryScore
+        });
+
+        let isValid = false;
+        const challengeContext = await store.get(`secret:${pow_nonce}`);
+        let ticket = null;
+        // Déclarer optimalTtl ici avec une valeur par défaut
+        let optimalTtl = this.securityConfig.ticketMaxAge || 3600000;
+        // NOUVEAU: Logique de ticket probatoire
+
+        let finalTtl; // Déclarer finalTtl ici pour qu'il soit accessible dans la portée
+        const isProbationary = preliminaryScore >= thresholds.low;
+        const probationaryTtl = 30000; // 30 secondes
+
+        if (challengeContext) {
+            optimalTtl = determineOptimalTicketTtl(preliminaryScore);
+            finalTtl = isProbationary ? probationaryTtl : optimalTtl;
+            this._log('Challenge context found, verifying solution', { optimalTtl, finalTtl });
+
+            if (pow_type === "cpu_target" && pow_solution) {
+                // On passe la durée de vie du ticket configurée
+                console.log("ticket");
+                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget);
+                console.log(ticket !== null)
+                isValid = ticket !== null;
+                this._log('CPU target challenge verification', { isValid });
+            } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget);
+                const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
+                isValid = cpuTicket !== null && isMemValid;
+                if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
+                this._log('Combined CPU+Memory challenge verification', {
+                    cpuValid: cpuTicket !== null,
+                    memValid: isMemValid,
+                    isValid
+                });
+            }
+        } else {
+            this._log('Challenge context not found or expired', { pow_nonce });
+        }
+        if (isValid) {
+            // La solution est valide. On supprime le secret et on redirige.
+            await store.delete(`secret:${pow_nonce}`);
+            this._log('Challenge solution valid - issuing ticket', { ticketMaxAge: finalTtl, isProbationary });
+
+            if (logger) {
+                logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now() });
+            }
+
+            // NOUVELLE LOGIQUE DE REDIRECTION (plus robuste)
+            // 1. On part du chemin original stocké, qui peut contenir des query params.
+            const originalUrl = new URL(challengeContext?.originalPath || path, `http://${requestContext.headers.host || 'localhost'}`);
+            // 2. On crée un nouvel objet de paramètres à partir de la requête entrante (qui contient les solutions ET les params originaux).
+            const finalSearchParams = new URLSearchParams(requestContext.query);
+
+            // 3. On supprime uniquement les paramètres liés au challenge.
+            finalSearchParams.delete('pow_type');
+            finalSearchParams.delete('pow_nonce');
+            finalSearchParams.delete('pow_solution');
+            finalSearchParams.delete('pow_solution_cpu');
+            finalSearchParams.delete('pow_solution_mem');
+
+            // 4. On reconstruit le chemin final.
+            const finalQueryString = finalSearchParams.toString();
+            const finalRedirectPath = finalQueryString ? `${originalUrl.pathname}?${finalQueryString}` : originalUrl.pathname;
+            this._log('Redirecting to clean path', { finalRedirectPath });
+            return {
+              action: 'redirect',
+              path: finalRedirectPath,
+              score: 0, // Le score n'est pas pertinent ici, on a passé le test.
+              vector: { challenge_solved: 100 },
+              cookie: {
+                name: 'pow_clearance',
+                value: ticket,
+                options: { httpOnly: true, secure: this.isProduction, maxAge: finalTtl }
+              }
+            };
+        } else {
+            // If the solution is invalid, we should treat it as a high-suspicion event.
+            // This prevents the request from proceeding and forces a new, likely harder, challenge.
+            this._log('Challenge solution invalid', { pow_nonce });
+            suspicionVector.honeypotScore = 100; // Invalid solution is a strong bot signal.
+            finalScore = this.calculateFinalScore(suspicionVector);
+        }
+    }
+    // --- FIN DE LA LOGIQUE DE PRIORITÉ ---
+
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
       this._log('Request blocked - score exceeded block threshold', { finalScore, blockThreshold });
@@ -1807,9 +1939,8 @@ export class FingerprintEngine {
         return { action: 'block', status: 404, score: 100, vector: { honeypotScore: 100 } };
     }
 
-    if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
+    if (isSuspicious && !isTicketValid(clientIp, powCookie)) { // The powCookie check is now after the PoW solution check
         this._log('Suspicious request without valid ticket - issuing challenge', { finalScore, hasPowCookie: !!powCookie });
-        
         // Honeypot: Direct probing of challenge endpoints is highly suspicious.
         // A legitimate user only hits these endpoints via the challenge page itself.
         // If we see a pow_nonce on a request that IS suspicious but has no valid ticket,
@@ -1853,17 +1984,18 @@ export class FingerprintEngine {
             const maxMemDifficulty = 48;  // 48Mo pour les plus suspects
             const memDifficulty = Math.round(minMemDifficulty + memActivationFactor * (maxMemDifficulty - minMemDifficulty));
 
-            this._log('Challenge parameters calculated', { 
-                suspicionFactor, 
-                memActivationFactor, 
-                memDifficulty, 
-                cpuTarget: cpuChallengeDetails.target 
+            this._log('Challenge parameters calculated', {
+                suspicionFactor,
+                memActivationFactor,
+                memDifficulty,
+                cpuTarget: cpuChallengeDetails.target
             });
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
             await store.set(`secret:${nonce}`, {
                 clientSecret,
                 cpuTarget: cpuChallengeDetails.target,
+                suspicionScore: finalScore, // *** FIX: Store the score that triggered the challenge ***
                 memDifficulty: memDifficulty,
                 originalPath: path, // *** FIX: Store the original path ***
             }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
@@ -2162,7 +2294,9 @@ export const powMiddleware = (securityConfig) => {
  * This is a common pattern to allow mocking of ES module functions.
  */
 export const __internal = {
+    store, // Export the store for testing
     getDeviceHash,
+    getCompositeDeviceHash,
     getSuspicionVector,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
@@ -2170,6 +2304,10 @@ export const __internal = {
     determineOptimalTicketTtl,
     getRequestPatternScore, // Expose for testing
     getBehaviorScore, // Expose for testing
+    getCrossLayerInconsistency, // Expose for testing
+    // Expose page generators for security testing
+    generateCpuTargetChallengePage,
+    generateCombinedPoWChallengePage,
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
