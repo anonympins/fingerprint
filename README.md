@@ -97,6 +97,7 @@ const securityConfig = {
     ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
     challengeTtl: 300000, // 5 minutes. Time during which a challenge nonce is valid.
     deviceIdCookieMaxAge: undefined, // By default, it's a session cookie. Set a value in ms for a persistent cookie.
+    challengePagePath: './path/to/your/custom-challenge-page.html', // (Optional) Path to a custom HTML template for the challenge page.
     verbose: true, // set to true to log for fingerprint detection output
     patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
         velocityThreshold: 800,   // ms between requests to be considered "fast"
@@ -199,7 +200,50 @@ app.use((req, res, next) => {
 
 app.listen(3000, () => console.log('Server started on port 3000'));
 ```
+### Customizing the Challenge Page
 
+You can provide your own HTML template for the Proof-of-Work challenge page to maintain a consistent user experience with your brand.
+
+1.  **Configuration**: In your `securityConfig`, specify the path to your template file using the `challengePagePath` option.
+
+    ```javascript
+    const securityConfig = {
+        // ... other options
+        challengePagePath: './path/to/your/custom-challenge-page.html',
+    };
+    ```
+
+2.  **Template Placeholders**: Your HTML file **must** contain the following placeholders. The system will replace them with the dynamic JavaScript code required to run the challenge.
+
+    *   `<!-- FINGERPRINT_SOLVER_SCRIPT -->`: This will be replaced by the script that contains the logic for solving the CPU and memory challenges.
+    *   `<!-- FINGERPRINT_CHALLENGE_SCRIPT -->`: This will be replaced by the script that initiates the challenge with the specific parameters for the current request (nonce, difficulty, etc.).
+    *   `<!-- FINGERPRINT_TRAPS -->`: This will be replaced by hidden "honeypot" links designed to trap simple bots. This placeholder is crucial for an effective defense.
+
+#### Example Custom HTML Template
+
+Here is a basic example of what your `custom-challenge-page.html` could look like:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Security Verification</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; padding-top: 50px; }
+        h1 { color: #333; }
+    </style>
+</head>
+<body>
+    <h1>Please wait while we verify your connection...</h1>
+    <div id="loader" style="margin:20px;">⚙️ Initializing verification...</div>
+
+    <script><!-- FINGERPRINT_SOLVER_SCRIPT --></script>
+    <script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script>
+    <!-- FINGERPRINT_TRAPS -->
+</body>
+</html>
+```
 ## Public API
 
 In addition to the main middleware, several functions are exported to allow for more advanced integrations.

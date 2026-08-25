@@ -1,12 +1,18 @@
 import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
 import dns from 'node:dns/promises';
+import { readFileSync } from 'node:fs';
 import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
 
 // Mock import.meta.env before importing the module that uses it
 vi.mock('import-meta-env', () => ({
   env: { NODE_ENV: 'test', POW_SECRET: 'fallback-dev-secret-32-chars-minimum' },
 }));
+
+vi.mock('node:fs', async () => {
+    const actualFs = await vi.importActual('node:fs');
+    return { ...actualFs, readFileSync: vi.fn() };
+});
 
 import * as fingerprint from '../fingerprint.js';
 const {
@@ -467,6 +473,43 @@ describe('Fingerprint & PoW Security Suite', () => {
       expect(sentStatus, 'Status should be 404').toBe(404);
       expect(sentBody, 'Should send a combined challenge page for medium suspicion').toContain('Enhanced Verification');
       expect(sentBody, 'Challenge should be the combined CPU+Mem type').toContain('Initializing combined verification...');
+    });
+
+    test('should use a custom HTML template for the challenge page if provided', async () => {
+        const customTemplate = `
+            <!DOCTYPE html>
+            <html>
+                <head><title>Custom Verification</title></head>
+                <body>
+                    <h1>Please wait, we are checking your browser.</h1>
+                    <div id="custom-loader">Loading...</div>
+                    <script><!-- FINGERPRINT_SOLVER_SCRIPT --></script>
+                    <script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script>
+                    <!-- FINGERPRINT_TRAPS -->
+                </body>
+            </html>`;
+
+        // Configure le mock de readFileSync pour retourner notre template
+        readFileSync.mockReturnValue(customTemplate);
+
+        const customSecurityConfig = {
+            ...securityConfig,
+            challengePagePath: './path/to/custom-challenge-page.html',
+        };
+
+        vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({ historyScore: 30 });
+
+        const req = { path: '/', ip: '127.0.0.1', cookies: {}, query: {}, headers: { 'user-agent': 'test-ua' }, rawHeaders: [], httpVersion: '1.1' };
+        let sentStatus, sentBody;
+        const res = { status: (s) => { sentStatus = s; return res; }, send: (b) => { sentBody = b; }, cookie: vi.fn() };
+        const next = vi.fn();
+
+        await powMiddleware(customSecurityConfig)(req, res, next);
+
+        expect(readFileSync).toHaveBeenCalledWith('./path/to/custom-challenge-page.html', 'utf-8');
+        expect(sentStatus).toBe(404);
+        expect(sentBody).toContain('<h1>Please wait, we are checking your browser.</h1>');
+        expect(sentBody).toContain('async function solve()'); // Vérifie que le script du challenge a été injecté
     });
 
     test('should issue a high-difficulty combined challenge for a high-suspicion request', async () => {
