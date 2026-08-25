@@ -1422,10 +1422,11 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         const clientIp = ${JSON.stringify(clientIp)};
         const cpuTarget = BigInt("0x${target}");
         const memDifficulty = ${memoryDifficulty};
+        const fingerprint = ''; // Placeholder, as client-side FP is not injected here yet.
 
         // --- CPU Challenge ---
         document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
-        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {
+        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, fingerprint, (progress) => {
             // Optional progress callback
         });
 
@@ -1476,10 +1477,11 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   nonce,
   solution,
   clientSecret, // Le secret est maintenant requis
-  target, // La cible est maintenant passée directement en hexadécimal
+  target, // La cible est maintenant passée directement en hexadécimal,
+  fingerprint, // (NOUVEAU) Le fingerprint de la requête originale
 ) {
   const message = clientSecret
-    ? `${nonce}:${solution}:${clientSecret}` // FIX: Ne pas inclure l'IP si un secret client est utilisé
+    ? `${nonce}:${solution}:${clientSecret}`
     : `${clientIp}:${nonce}:${solution}`; // L'IP est utilisée uniquement pour les challenges sans secret (plus anciens/simples)
   const hash = crypto
     .createHash("sha256")
@@ -1860,11 +1862,12 @@ export class FingerprintEngine {
 
             if (pow_type === "cpu_target" && pow_solution) {
                 // On passe la durée de vie du ticket configurée
-                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget);
+                // (NOUVEAU) On passe le fingerprint stocké dans le contexte du challenge
+                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget, challengeContext.fingerprint);
                 isValid = ticket !== null;
                 this._log('CPU target challenge verification', { isValid });
             } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget);
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget, challengeContext.fingerprint);
                 const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
                 isValid = cpuTicket !== null && isMemValid;
                 if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
@@ -1902,7 +1905,7 @@ export class FingerprintEngine {
             // 4. On reconstruit le chemin final.
             const finalQueryString = finalSearchParams.toString();
             const finalRedirectPath = finalQueryString ? `${originalUrl.pathname}?${finalQueryString}` : originalUrl.pathname;
-            this._log('Redirecting to clean path', { finalRedirectPath });
+            this._log('Redirecting to clean path', { finalRedirectPath, cookieMaxAge: finalTtl });
             return {
               action: 'redirect',
               path: finalRedirectPath,
@@ -1910,8 +1913,8 @@ export class FingerprintEngine {
               vector: { challenge_solved: 100 },
               cookie: {
                 name: 'pow_clearance',
-                value: ticket,
-                options: { httpOnly: true, secure: this.isProduction, maxAge: finalTtl }
+                value: ticket, // The ticket itself
+                options: { httpOnly: true, secure: this.isProduction, maxAge: finalTtl } // Options for setting the cookie
               }
             };
         } else {
@@ -2000,12 +2003,15 @@ export class FingerprintEngine {
                 memDifficulty,
                 cpuTarget: cpuChallengeDetails.target
             });
+            // (NOUVEAU) On stocke le fingerprint de la requête qui a déclenché le challenge.
+            const originalFingerprint = requestContext.headers['x-device-fingerprint'] || getCompositeDeviceHash(requestContext);
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
             await store.set(`secret:${nonce}`, {
                 clientSecret,
                 cpuTarget: cpuChallengeDetails.target,
                 suspicionScore: finalScore, // *** FIX: Store the score that triggered the challenge ***
+                fingerprint: originalFingerprint, // *** NOUVEAU ***
                 memDifficulty: memDifficulty,
                 originalPath: path, // *** FIX: Store the original path ***
             }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
