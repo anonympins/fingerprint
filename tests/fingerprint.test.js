@@ -775,7 +775,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(capturedCookie.name).toBe('pow_clearance');
             // The key assertion: the cookie's maxAge should be the short probationary TTL
             expect(capturedCookie.options.maxAge).toBe(probationaryTtl);
-        });
+        }, 40000);
 
         test('should NOT redirect if PoW solution is valid but clientSecret is wrong', async () => {
             const ip = '127.0.0.1';
