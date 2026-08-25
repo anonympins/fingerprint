@@ -164,22 +164,158 @@ export function getDeviceHash(context) {
     // Prioritize the rich client-side fingerprint if provided.
     const clientFp = context.headers['x-device-fingerprint'];
     if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
-        // Basic validation to ensure it looks like our client-side fingerprint.
         return clientFp;
     }
 
-    // Fallback to server-side only fingerprinting if the header is missing.
     const srv = new FingerprintBuilder();
-    srv.add("ua", context.headers["user-agent"]);
-    if (context.headers["sec-ch-ua-platform"])
-        srv.add("os", context.headers["sec-ch-ua-platform"]);
-    if (context.headers["sec-ch-ua"]) srv.add("ch", context.headers["sec-ch-ua"]);
-    // Add JA3 hash if available. This is a very strong signal.
+
+    // 1. SIGNAL FORT: User Agent (poids élevé)
+    const ua = context.headers["user-agent"];
+    if (ua) {
+        srv.add("ua", ua);
+        // Extraire des infos supplémentaires du UA
+        const uaParts = parseUserAgent(ua);
+        if (uaParts.browser) srv.add("browser", uaParts.browser);
+        if (uaParts.os) srv.add("os_version", uaParts.os);
+        if (uaParts.device) srv.add("device_type", uaParts.device);
+    }
+
+    // 2. SIGNAL FORT: JA3 TLS Fingerprint
     const ja3 = getJa3Hash(context);
     if (ja3) srv.add("ja3", ja3);
 
+    // 3. SIGNAL MOYEN: Client Hints (modern browsers)
+    if (context.headers["sec-ch-ua"]) {
+        srv.add("ch_ua", context.headers["sec-ch-ua"]);
+    }
+    if (context.headers["sec-ch-ua-platform"]) {
+        srv.add("ch_platform", context.headers["sec-ch-ua-platform"]);
+    }
+    if (context.headers["sec-ch-ua-mobile"]) {
+        srv.add("ch_mobile", context.headers["sec-ch-ua-mobile"]);
+    }
+    if (context.headers["sec-ch-ua-model"]) {
+        srv.add("ch_model", context.headers["sec-ch-ua-model"]);
+    }
+    if (context.headers["sec-ch-ua-arch"]) {
+        srv.add("ch_arch", context.headers["sec-ch-ua-arch"]);
+    }
+    if (context.headers["sec-ch-ua-bitness"]) {
+        srv.add("ch_bitness", context.headers["sec-ch-ua-bitness"]);
+    }
+
+    // 4. SIGNAL MOYEN: HTTP Version et protocole
+    if (context.httpVersion) {
+        srv.add("http_ver", context.httpVersion);
+    }
+    if (context.headers["upgrade-insecure-requests"]) {
+        srv.add("upgrade", context.headers["upgrade-insecure-requests"]);
+    }
+
+    // 10. SIGNAL FORT: Ordonnancement des headers
     srv.add("h_ord", getHeaderSignature(context));
+
+    // 11. SIGNAL AVANCÉ: Cookies (si disponible)
+    if (context.cookies) {
+        const cookieKeys = Object.keys(context.cookies).sort().join(',');
+        srv.add("cookie_keys", cookieKeys);
+    }
+
+    // 12. SIGNAL AVANCÉ: Format de la requête
+    if (context.rawHeaders) {
+        // Vérifier des headers spécifiques qui indiquent le client
+        const clientHeaders = ['x-requested-with', 'x-forwarded-for', 'x-real-ip', 'cf-connecting-ip'];
+        clientHeaders.forEach(h => {
+            if (context.headers[h]) {
+                srv.add(h.replace(/-/g, '_'), context.headers[h]);
+            }
+        });
+    }
+
+    // 13. OPTIONNEL: IP (version simplifiée pour les réseaux partagés)
+    // Ne pas inclure l'IP complète, mais un hash du réseau /24 ou /16
+    // pour détecter les changements de réseau tout en protégeant la vie privée
+    const ip = context.clientIp || context.headers['x-forwarded-for']?.split(',')[0]?.trim();
+    if (ip && isPrivateIp(ip)) {
+        // Pour les IP privées, on peut prendre le /24
+        const networkHash = hashNetwork(ip, 24);
+        srv.add("network", networkHash);
+    }
+
     return srv.toString();
+}
+
+// Fonctions utilitaires
+function parseUserAgent(ua) {
+    // Parser basique du User-Agent
+    const result = {};
+
+    // Détection du navigateur
+    if (ua.includes('Chrome') && !ua.includes('Edg')) {
+        result.browser = 'Chrome';
+        const match = ua.match(/Chrome\/(\d+)/);
+        if (match) result.browser += `/${match[1]}`;
+    } else if (ua.includes('Firefox')) {
+        result.browser = 'Firefox';
+        const match = ua.match(/Firefox\/(\d+)/);
+        if (match) result.browser += `/${match[1]}`;
+    } else if (ua.includes('Safari') && !ua.includes('Chrome')) {
+        result.browser = 'Safari';
+        const match = ua.match(/Version\/(\d+)/);
+        if (match) result.browser += `/${match[1]}`;
+    } else if (ua.includes('Edg')) {
+        result.browser = 'Edge';
+        const match = ua.match(/Edg\/(\d+)/);
+        if (match) result.browser += `/${match[1]}`;
+    }
+
+    // Détection de l'OS
+    if (ua.includes('Windows NT 10.0')) result.os = 'Windows 10';
+    else if (ua.includes('Windows NT 6.1')) result.os = 'Windows 7';
+    else if (ua.includes('Mac OS X')) result.os = 'macOS';
+    else if (ua.includes('Linux') && !ua.includes('Android')) result.os = 'Linux';
+    else if (ua.includes('Android')) result.os = 'Android';
+    else if (ua.includes('iPhone') || ua.includes('iPad')) result.os = 'iOS';
+
+    // Détection du type d'appareil
+    if (ua.includes('Mobile')) result.device = 'mobile';
+    else if (ua.includes('Tablet')) result.device = 'tablet';
+    else result.device = 'desktop';
+
+    return result;
+}
+
+function normalizeReferer(referer) {
+    try {
+        const url = new URL(referer);
+        return `${url.protocol}//${url.hostname}`;
+    } catch {
+        return referer;
+    }
+}
+
+function isPrivateIp(ip) {
+    // Vérifier si l'IP est privée
+    const parts = ip.split('.');
+    if (parts.length !== 4) return false;
+    const first = parseInt(parts[0]);
+    return (first === 10) || (first === 172 && parseInt(parts[1]) >= 16 && parseInt(parts[1]) <= 31) || (first === 192 && parseInt(parts[1]) === 168);
+}
+
+function hashNetwork(ip, prefix = 24) {
+    // Hash du réseau (masque /24 ou /16)
+    const parts = ip.split('.');
+    if (parts.length !== 4) return null;
+    const maskBytes = prefix / 8;
+    const network = parts.slice(0, maskBytes).join('.');
+    // Hash simple
+    let hash = 0;
+    for (let i = 0; i < network.length; i++) {
+        const char = network.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+    }
+    return hash.toString(16);
 }
 
 /**
@@ -607,8 +743,8 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
 
     // Default values for the pattern detection logic, which can be overridden by the auto-tuner.
     const {
-        velocityThreshold = 200, velocityWeight = 30,
-        burstThreshold = 500, burstWeight = 50,
+        velocityThreshold = 800, velocityWeight = 30,
+        burstThreshold = 1500, burstWeight = 50,
         scrapeThreshold = 1000, scrapeWeight = 20, scrapeBurstWeight = 40,
         historySize = 10,
         decayFactor = 0.9,
@@ -1168,7 +1304,7 @@ export function verifyCpuTargetPoWAndGenerateTicket(
 }
 
 const staticExtensions = new RegExp(
-  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map)$",
+  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest)$",
   "i",
 );
 const isStaticResource = (path) => staticExtensions.test(path);
@@ -1518,7 +1654,7 @@ export class FingerprintEngine {
         if (onDeviceCompromised) {
             onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
         }
-        return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+        return { action: 'block', status: 404, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
 
     // The engine now works with the context directly, no more rawReq dependency here.
@@ -1546,7 +1682,8 @@ export class FingerprintEngine {
       finalScore = thresholds.low;
     }
 
-    const isBlocked = finalScore >= (thresholds.block || 95);
+    const blockThreshold = thresholds.block ?? 95;
+    const isBlocked = finalScore >= blockThreshold;
 
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
@@ -1567,18 +1704,18 @@ export class FingerprintEngine {
         isSuspiciousMedium, 
         isSuspicious, 
         suspicionFactor,
-        thresholds: { low: thresholds.low, medium: thresholds.medium, high: thresholds.high, block: thresholds.block }
+        thresholds: { low: thresholds.low, medium: thresholds.medium, high: thresholds.high, block: blockThreshold }
     });
 
     const powCookie = cookies?.pow_clearance;
 
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
-      this._log('Request blocked - score exceeded block threshold', { finalScore, blockThreshold: thresholds.block });
+      this._log('Request blocked - score exceeded block threshold', { finalScore, blockThreshold });
       if (onDeviceCompromised) {
         onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Score exceeded block threshold', score: finalScore, vector: suspicionVector });
       }
-      return { action: 'block', status: 403, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+      return { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
     }
 
     // Honeypot: Check if the request is for a trap URL generated in a previous challenge.
@@ -1594,7 +1731,7 @@ export class FingerprintEngine {
             logger({ type: 'trap_triggered', deviceId: cookies?.device_id, score: 100, path: path, timestamp: Date.now() });
         }
         await store.set(`device:${cookies.device_id}`, deviceData); // No TTL for condemned status
-        return { action: 'block', status: 403, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+        return { action: 'block', status: 404, score: 100, vector: { honeypotScore: 100 } };
     }
 
     if (isSuspicious && !isTicketValid(clientIp, powCookie)) {
@@ -1613,7 +1750,7 @@ export class FingerprintEngine {
             suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
             // Recalculate the final score with the updated vector.
             const newFinalScore = this.calculateFinalScore(suspicionVector);
-            return { action: 'block', status: 403, body: 'Forbidden', score: newFinalScore, vector: suspicionVector, status: 403, body: 'Forbidden' };
+            return { action: 'block', status: 404, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
         }
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
@@ -1688,7 +1825,7 @@ export class FingerprintEngine {
                     }
                 };
                 this._log('API challenge response generated', { challengePayload });
-                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: challengePayload };
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
                 // For browsers, send the HTML page.
                 const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;
@@ -1697,7 +1834,7 @@ export class FingerprintEngine {
                     pageLength: page.length, 
                     hasTrapContainer: true 
                 });
-                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 429, body: page };
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: page };
             }
         }
     }
@@ -1882,6 +2019,14 @@ export const powMiddleware = (securityConfig) => {
       securityConfig: securityConfig,
       ...securityConfig.autotuning,
     });
+  }
+
+  // Provide a default for isApiRequest if not specified by the user.
+  // This makes API challenge handling work more seamlessly out-of-the-box.
+  if (!securityConfig.thresholds?.isApiRequest) {
+    if (!securityConfig.thresholds) securityConfig.thresholds = {};
+    securityConfig.thresholds.isApiRequest = (req) => 
+      req.headers?.accept?.includes('application/json');
   }
 
   return async (req, res, next) => {

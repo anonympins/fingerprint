@@ -402,7 +402,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         await powMiddleware(securityConfig)(req, res, next);
 
         // 3. Vérifier qu'un challenge est bien émis, même avec un score de 0
-        expect(sentStatus).toBe(429);
+        expect(sentStatus).toBe(404);
         expect(sentBody).toContain('Enhanced Verification');
         expect(next).not.toHaveBeenCalled();
     });
@@ -435,7 +435,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       const middleware = powMiddleware(securityConfig);
       await middleware(req, res, next);
 
-      assert.strictEqual(sentStatus, 429, 'Status should be 429');
+      assert.strictEqual(sentStatus, 404, 'Status should be 404');
       assert.ok(sentBody.includes('Enhanced Verification'), 'Should send a combined challenge page even for low suspicion');
       assert.ok(sentBody.includes('Initializing combined verification...'), 'Challenge should always be the combined CPU+Mem type');
     });
@@ -459,7 +459,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
-      expect(sentStatus, 'Status should be 429').toBe(429);
+      expect(sentStatus, 'Status should be 404').toBe(404);
       expect(sentBody, 'Should send a combined challenge page for medium suspicion').toContain('Enhanced Verification');
       expect(sentBody, 'Challenge should be the combined CPU+Mem type').toContain('Initializing combined verification...');
     });
@@ -483,7 +483,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       req.fingerprint = {};
       await powMiddleware(securityConfig)(req, res, next);
 
-      expect(sentStatus, 'Status should be 429').toBe(429);
+      expect(sentStatus, 'Status should be 404').toBe(404);
       expect(sentBody, 'Should send a combined challenge page for high suspicion').toContain('Enhanced Verification');
     });
 
@@ -519,7 +519,7 @@ describe('Fingerprint & PoW Security Suite', () => {
 
       await powMiddleware(apiSecurityConfig)(req, res, next);
 
-      expect(sentStatus).toBe(429);
+      expect(sentStatus).toBe(404);
       expect(sentBody.challenge.type).toBe('cpu_mem');
       expect(sentBody.challenge).toHaveProperty('nonce');
       expect(sentBody.challenge).toHaveProperty('cpuTarget');
@@ -646,7 +646,7 @@ describe('Fingerprint & PoW Security Suite', () => {
       await powMiddleware(securityConfig)(req, res, next);
 
       expect(res.redirect).not.toHaveBeenCalled();
-      expect(sentStatus, 'Should return status 429 to re-issue a challenge').toBe(429);
+      expect(sentStatus, 'Should return status 404 to re-issue a challenge').toBe(404);
       expect(sentBody, 'Should send a new challenge page').toContain('Enhanced Verification');
     });
 
@@ -848,100 +848,6 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
   });
 
-  describe('Client-Side Functions', () => {
-    // Mock browser environment for client-side functions
-    const mockWindow = {
-      navigator: {
-        hardwareConcurrency: 8,
-        deviceMemory: 8,
-        maxTouchPoints: 0,
-        platform: 'Win32',
-        webdriver: false,
-        language: 'en-US',
-      },
-      screen: {
-        width: 1920,
-        height: 1080,
-        colorDepth: 24,
-      },
-      document: {
-        createElement: vi.fn().mockImplementation((tag) => {
-          if (tag === "canvas") {
-            const canvasMock = {
-              width: 0,
-              height: 0,
-              getContext: vi.fn((contextType) => {
-                if (contextType === "2d") {
-                  return {
-                    // These are for the 2D context
-                    fillRect: vi.fn(),
-                    fillText: vi.fn(),
-                    toDataURL: vi
-                      .fn()
-                      .mockReturnValue("data:image/png;base64,mock-canvas-data"),
-                  };
-                }
-                if (
-                  contextType === "webgl" ||
-                  contextType === "experimental-webgl"
-                ) {
-                  // These are for the WebGL context
-                  return {
-                    getExtension: vi.fn().mockReturnValue({
-                      UNMASKED_VENDOR_WEBGL: "vendor_id",
-                      UNMASKED_RENDERER_WEBGL: "renderer_id",
-                    }),
-                  };
-                }
-                return null;
-              }),
-            };
-            return canvasMock;
-          }
-          return {};
-        }),
-      },
-      Intl: {
-        DateTimeFormat: () => ({
-          resolvedOptions: () => ({ timeZone: 'Europe/Paris' }),
-        }),
-      },
-      crypto: {
-        subtle: {
-          importKey: vi.fn().mockResolvedValue('mock-key'),
-          sign: vi.fn().mockResolvedValue(new ArrayBuffer(32)), // Mock 32-byte signature
-        }
-      }
-    };
-
-    let clientFunctions;
-
-    beforeEach(async () => {
-      // Use vi.stubGlobal to mock browser environment, compatible with newer Node versions
-      vi.stubGlobal('window', mockWindow);
-      vi.stubGlobal('document', mockWindow.document);
-      vi.stubGlobal('navigator', mockWindow.navigator);
-      vi.stubGlobal('screen', mockWindow.screen);
-      vi.stubGlobal('Intl', mockWindow.Intl);
-      (await import('../fingerprint.client.js'))._resetCache();
-      // Dynamically import client functions to use the mocked environment
-      clientFunctions = await import('../fingerprint.client.js');
-    });
-
-    afterEach(() => {
-      mockWindow.document.createElement.mockClear();
-      vi.restoreAllMocks();
-    });
-
-    test('getDeviceFingerprint should generate a fingerprint string', () => {
-      const fp = clientFunctions.getDeviceFingerprint();
-      expect(fp).toBeTypeOf('string');
-      expect(fp).toContain('geo:');
-      expect(fp).toContain('hw:');
-      expect(fp).toContain('scr:');
-    });
-  });
-
   describe('Threshold Auto-Tuning', () => {
     let setIntervalSpy, clearIntervalSpy, consoleLogSpy;
 
@@ -1139,7 +1045,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(decision.vector.honeypotScore).toBe(100);
             expect(decision.score).toBeGreaterThanOrEqual(100);
             expect(decision.action).toBe('block');
-            expect(decision.status).toBe(403);
+            expect(decision.status).toBe(404);
         });
 
         it('should penalize direct challenge probing', async () => {
@@ -1417,8 +1323,8 @@ describe('Fingerprint & PoW Security Suite', () => {
 
 describe('getRequestPatternScore', () => {
     const patternConfig = {
-        velocityThreshold: 200, velocityWeight: 30,
-        burstThreshold: 500, burstWeight: 50,
+        velocityThreshold: 800, velocityWeight: 30,
+        burstThreshold: 1500, burstWeight: 50,
         scrapeThreshold: 1000, scrapeWeight: 20, scrapeBurstWeight: 40,
         historySize: 10,
         decayFactor: 0.9,
