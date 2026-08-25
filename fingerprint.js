@@ -1,4 +1,3 @@
-// C:/Dev/games.primals.net/src/utils/fingerprint.js
 import crypto from "node:crypto";
 import { BlockList } from "node:net";
 import dns from "node:dns/promises";
@@ -36,11 +35,13 @@ const getPowSolverCode = () => {
     console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
     // Fallback inline code if file cannot be loaded
     return `(function(global){
-        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){
+        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){ const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
             const cpuTarget = BigInt(target);
             let cpuSolution = 0;
+            const ipPart = clientIp || '';
             while(true){
-                const msg = clientSecret ? clientIp+':'+nonce+':'+cpuSolution+':'+clientSecret : clientIp+':'+nonce+':'+cpuSolution;
+                // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
+                const msg = clientSecret ? \`\${nonce}:\${cpuSolution}:\${clientSecret}\` : \`\${ipPart}:\${nonce}:\${cpuSolution}\`;
                 const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
                 const hashHex = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
                 if(BigInt('0x'+hashHex) < cpuTarget) break;
@@ -95,9 +96,39 @@ const getPowSolverCode = () => {
             const solutionDistance=evaluatePathDistance(cities,solutionPath);
             return{path:solutionPath,distance:solutionDistance};
         }
+        async function solveChallenge(challenge) {
+            const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
+            const solutions = {};
+
+            switch (type) {
+                case 'cpu_target':
+                    solutions.cpu = await solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret);
+                    break;
+                case 'cpu_mem':
+                case 'cpu_mem_inline':
+                    const memSeed = nonce + ":" + clientSecret;
+                    const [cpuSol, memSol] = await Promise.all([
+                        solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret),
+                        solveMemory(memSeed, memDifficulty)
+                    ]);
+                    solutions.cpu = cpuSol;
+                    solutions.mem = memSol;
+                    break;
+                case 'tsp':
+                    const tspResult = await solveTsp(cities, targetMaxDistance);
+                    solutions.tsp = tspResult.path;
+                    solutions.distance = tspResult.distance;
+                    break;
+                default:
+                    throw new Error(\`Unknown challenge type: \${type}\`);
+            }
+
+            return solutions;
+        }
         global.solveCpuChallengeInline=solveCpuTargetInline;
         global.solveMemoryChallenge=solveMemory;
         global.solveTspChallenge=solveTsp;
+        global.solveChallenge=solveChallenge;
     })(typeof window!=='undefined'?window:global);`;
   }
 };
@@ -1276,20 +1307,19 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   ticketMaxAge, // NOUVEAU: Durée de validité du ticket configurable
   nonce,
   solution,
-  suspicionFactor,
   clientSecret, // Le secret est maintenant requis
+  target, // La cible est maintenant passée directement
 ) {
-  const target = calculateTarget(suspicionFactor);
   const message = clientSecret
-    ? `${clientIp}:${nonce}:${solution}:${clientSecret}`
-    : `${clientIp}:${nonce}:${solution}`;
+    ? `${nonce}:${solution}:${clientSecret}` // FIX: Ne pas inclure l'IP si un secret client est utilisé
+    : `${clientIp}:${nonce}:${solution}`; // L'IP est utilisée uniquement pour les challenges sans secret (plus anciens/simples)
   const hash = crypto
     .createHash("sha256")
     .update(message)
     .digest("hex");
   const hashAsInt = BigInt("0x" + hash);
 
-  if (hashAsInt < target) {
+  if (hashAsInt < BigInt("0x" + target)) {
     // The comparison is direct with native BigInts
     // The proof is valid, generate the ticket
       const expiry = Date.now() + (ticketMaxAge || 3600000); // Utilise la durée passée ou un fallback.
@@ -1304,7 +1334,7 @@ export function verifyCpuTargetPoWAndGenerateTicket(
 }
 
 const staticExtensions = new RegExp(
-  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest)$",
+  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest|webmanifest)$",
   "i",
 );
 const isStaticResource = (path) => staticExtensions.test(path);
@@ -1381,6 +1411,7 @@ function determineOptimalTicketTtl(suspicionScore) {
  * @private
  */
 function isMalicious(str) {
+    if (typeof str !== 'string') return false;
     // Regex pour les injections SQL et NoSQL de base
     // Ajout de la détection des injections basées sur le temps (SLEEP, BENCHMARK, WAITFOR) et d'autres commandes dangereuses.
     const injectionRegex = /(\$ne|' *OR *'1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i;
@@ -1400,6 +1431,8 @@ function isMalicious(str) {
 }
 
 // --- Middleware Proof-of-Work (Le péage) ---
+export { isMalicious };
+
 export class FingerprintEngine {
   constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
@@ -1583,18 +1616,20 @@ export class FingerprintEngine {
         let isValid = false;
         const challengeContext = await store.get(`secret:${pow_nonce}`);
         let ticket = null;
+        // Déclarer optimalTtl ici avec une valeur par défaut
+        let optimalTtl = this.securityConfig.ticketMaxAge || 3600000;
 
         if (challengeContext) {
-            const optimalTtl = determineOptimalTicketTtl(preliminaryScore);
+            optimalTtl = determineOptimalTicketTtl(preliminaryScore);
             this._log('Challenge context found, verifying solution', { optimalTtl });
             
             if (pow_type === "cpu_target") {
                 // On passe la durée de vie du ticket configurée
-                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget);
                 isValid = ticket !== null;
                 this._log('CPU target challenge verification', { isValid });
             } else if (pow_type === "cpu_mem") {
-                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution_cpu, null, challengeContext.clientSecret, challengeContext.cpuTarget);
+                const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, optimalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget);
                 const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
                 isValid = cpuTicket !== null && isMemValid;
                 if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
@@ -1608,18 +1643,40 @@ export class FingerprintEngine {
             this._log('Challenge context not found or expired', { pow_nonce });
         }
 
+        console.log({isValid})
         if (isValid) {
             // La solution est valide. On supprime le secret et on redirige.
             await store.delete(`secret:${pow_nonce}`);
-            this._log('Challenge solution valid - issuing ticket', { ticketMaxAge: this.securityConfig.ticketMaxAge || 3600000 });
+            this._log('Challenge solution valid - issuing ticket', { ticketMaxAge: optimalTtl });
 
             if (logger) {
                 logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now() });
             }
 
+            // NOUVELLE LOGIQUE DE REDIRECTION (plus robuste)
+            // 1. On part du chemin original stocké, qui peut contenir des query params.
+            const originalUrl = new URL(challengeContext?.originalPath || path, `http://${requestContext.headers.host || 'localhost'}`);
+
+            console.log({originalUrl})
+            // 2. On crée un nouvel objet de paramètres à partir de la requête entrante (qui contient les solutions ET les params originaux).
+            const finalSearchParams = new URLSearchParams(requestContext.query);
+
+            // 3. On supprime uniquement les paramètres liés au challenge.
+            finalSearchParams.delete('pow_type');
+            finalSearchParams.delete('pow_nonce');
+            finalSearchParams.delete('pow_solution');
+            finalSearchParams.delete('pow_solution_cpu');
+            finalSearchParams.delete('pow_solution_mem');
+
+            // 4. On reconstruit le chemin final.
+            const finalQueryString = finalSearchParams.toString();
+            const finalRedirectPath = finalQueryString ? `${originalUrl.pathname}?${finalQueryString}` : originalUrl.pathname;
+            this._log('Redirecting to clean path', { finalRedirectPath });
+
+            console.log({finalRedirectPath})
             return {
               action: 'redirect',
-              path: path,
+              path: finalRedirectPath,
               score: 0, // Le score n'est pas pertinent ici, on a passé le test.
               vector: { challenge_solved: 100 },
               cookie: {
@@ -1628,7 +1685,7 @@ export class FingerprintEngine {
                 options: {
                   httpOnly: true,
                   secure: this.isProduction, // Le maxAge est déjà inclus dans le ticket, mais on le met aussi sur le cookie
-                  maxAge: this.securityConfig.ticketMaxAge || 3600000,
+                  maxAge: optimalTtl,
                 }
               }
             };
@@ -1794,7 +1851,8 @@ export class FingerprintEngine {
             await store.set(`secret:${nonce}`, {
                 clientSecret,
                 cpuTarget: cpuChallengeDetails.target,
-                memDifficulty: memDifficulty
+                memDifficulty: memDifficulty,
+                originalPath: path, // *** FIX: Store the original path ***
             }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
 
             // Associate the current challenge nonce with the device for trap URL verification later.
@@ -1814,7 +1872,7 @@ export class FingerprintEngine {
             }
 
             // Check if the request is an API request to return a JSON challenge
-            const isApi = this.securityConfig.thresholds?.isApiRequest?.(requestContext);
+            const isApi = requestContext.rawReq && this.securityConfig.thresholds?.isApiRequest?.(requestContext.rawReq);
 
             if (isApi) {
                 // For API clients, send a JSON response with challenge details.
@@ -2093,7 +2151,6 @@ export const powMiddleware = (securityConfig) => {
  */
 export const __internal = {
     getDeviceHash,
-    isMalicious,
     getSuspicionVector,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing

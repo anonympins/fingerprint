@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { __internal } from '../fingerprint.js';
+import { isMalicious } from '../fingerprint.js';
 
-// On importe la fonction privée via l'export __internal pour les tests
-const { isMalicious } = __internal;
+// We import the function directly to test it in isolation, avoiding vite:define errors.
 
 describe('isMalicious Unit Tests', () => {
 

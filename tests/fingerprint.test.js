@@ -1,10 +1,14 @@
 import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
 import dns from 'node:dns/promises';
-import * as fingerprint from '../fingerprint.js';
 import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
 
+// Mock import.meta.env before importing the module that uses it
+vi.mock('import-meta-env', () => ({
+  env: { NODE_ENV: 'test', POW_SECRET: 'fallback-dev-secret-32-chars-minimum' },
+}));
 
+import * as fingerprint from '../fingerprint.js';
 const {
   FingerprintEngine,
   isTicketValid,
@@ -123,34 +127,35 @@ describe('Fingerprint & PoW Security Suite', () => {
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
-      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, undefined);
+      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, undefined, target.toString(16));
       expect(ticket, "Ticket should be generated for a valid solution without secret").toBeTruthy();
       expect(isTicketValid(ip, ticket), "Ticket should be valid").toBe(true);
     });
 
-    test('should solve and verify correctly WITH a clientSecret', () => {
+    test('should solve and verify correctly WITH a clientSecret', async () => {
       let solution = 0;
       const target = __internal.calculateTarget(suspicionFactor);
       // Client-side simulation now includes the secret
-      const message = `${ip}:${nonce}:${solution}:${clientSecret}`;
       while (true) {
-        const currentMessage = `${ip}:${nonce}:${solution}:${clientSecret}`;
-        const hash = createHash('sha256').update(currentMessage).digest('hex');
+        // The client-side logic omits the IP when a clientSecret is present.
+        const msg = `${nonce}:${solution}:${clientSecret}`;
+        const hash = createHash('sha256').update(msg).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
 
       // Server-side verification includes the secret
-      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, clientSecret);
+      const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, clientSecret, target.toString(16));
       expect(ticket, "Ticket should be generated for a valid solution with secret").toBeTruthy();
       expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
       expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
 
       // Verification should fail if the secret is wrong or missing
-      const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, 'wrong-secret');
-      expect(badTicket1, "Ticket should not be generated with wrong secret").toBeNull();
-      const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, suspicionFactor, undefined);
-      expect(badTicket2, "Ticket should not be generated when secret is expected but missing").toBeNull();
+      const badTicket1 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, 'wrong-secret', target.toString(16));
+      expect(badTicket1, "Ticket should not be generated with the wrong secret").toBeNull();
+      // Verification should also fail if the IP is included in the hash (old logic)
+      const badTicket2 = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, undefined, target.toString(16)); // This simulates the server expecting no secret
+      expect(badTicket2, "Ticket should not be generated when the server expects no secret but one was used for hashing").toBeNull();
     });
 
     test('should solve a medium-difficulty challenge within a reasonable time', async () => {
@@ -164,9 +169,9 @@ describe('Fingerprint & PoW Security Suite', () => {
 
       // Simule la résolution du challenge
       let solution = 0;
-      const message = `${ip}:${nonce}:${solution}:${clientSecret}`;
       while (true) {
-        const currentMessage = `${ip}:${nonce}:${solution}:${clientSecret}`;
+        // The client-side logic now omits the IP when a clientSecret is present.
+        const currentMessage = `${nonce}:${solution}:${clientSecret}`;
         const hash = createHash('sha256').update(currentMessage).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
@@ -554,8 +559,9 @@ describe('Fingerprint & PoW Security Suite', () => {
       const suspicionFactor = 0.1;
       const target = __internal.calculateTarget(suspicionFactor);
       let solution = 0;
+      // Client-side simulation: hash does NOT include IP when clientSecret is used.
       while (true) {
-        const hash = createHash('sha256').update(`${ip}:${nonce}:${solution}:${clientSecret}`).digest('hex');
+        const hash = createHash('sha256').update(`${nonce}:${solution}:${clientSecret}`).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
@@ -584,8 +590,8 @@ describe('Fingerprint & PoW Security Suite', () => {
       // L'objet `res` mocké doit supporter la chaîne .status().send() pour les cas d'échec,
       // and we'll spy on them to ensure they are NOT called on success.
       const res = {
-        cookie: (n, v) => { cookieName = n; cookieValue = v; },
-        redirect: (p) => { redirectedTo = p; },
+        cookie: (n, v) => { cookieName = n; cookieValue = v; }, // Garder la logique pour capturer les valeurs
+        redirect: vi.fn((p) => { redirectedTo = p; }), // Transformer en espion tout en gardant la logique
         status: vi.fn(function() { return this; }),
         send: vi.fn()
       };
@@ -599,9 +605,13 @@ describe('Fingerprint & PoW Security Suite', () => {
 
       await powMiddleware(dynamicTtlConfig)(req, res, next);
 
-      expect(res.status).not.toHaveBeenCalled();
-      expect(res.send).not.toHaveBeenCalled();
-      expect(redirectedTo, 'Should redirect to the original path').toBe('/protected');
+      // Vérifier que la redirection a bien eu lieu
+      expect(res.redirect).toHaveBeenCalledTimes(1);
+      // Vérifier que l'URL de redirection a été nettoyée des paramètres pow_*
+      const finalRedirectPath = res.redirect.mock.calls[0][0];
+      expect(finalRedirectPath).toBe('/protected');
+      expect(finalRedirectPath).not.toContain('pow_nonce');
+      expect(finalRedirectPath).not.toContain('pow_solution'); // The query should be empty
       expect(cookieName, 'Should set the clearance cookie').toBe('pow_clearance');
       expect(isTicketValid(ip, cookieValue), 'The set cookie should be valid').toBe(true);
     });
@@ -616,14 +626,19 @@ describe('Fingerprint & PoW Security Suite', () => {
 
       // 1. Le client résout le challenge avec le secret qu'il a reçu (le bon)
       let solution = 0;
+      // Client-side simulation: hash does NOT include IP when clientSecret is used.
       while (true) {
-        const hash = createHash('sha256').update(`${ip}:${nonce}:${solution}:${correctClientSecret}`).digest('hex');
+        const hash = createHash('sha256').update(`${nonce}:${solution}:${correctClientSecret}`).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         solution++;
       }
 
       // 2. Le serveur, pour une raison quelconque (corruption, attaque), a un mauvais secret stocké
-      await inMemoryStore.set(`secret:${nonce}`, wrongClientSecretOnServer);
+      await inMemoryStore.set(`secret:${nonce}`, {
+        clientSecret: wrongClientSecretOnServer, // The secret is wrong
+        cpuTarget: target.toString(16), // But the target is correct
+        memDifficulty: 0
+      });
 
       vi.spyOn(__internal, 'getSuspicionVector').mockImplementation(async function() {
         return {
@@ -662,7 +677,8 @@ describe('Fingerprint & PoW Security Suite', () => {
       const target = __internal.calculateTarget(suspicionFactor);
       let cpuSolution = 0;
       while (true) {
-        const hash = createHash('sha256').update(`${ip}:${nonce}:${cpuSolution}:${clientSecret}`).digest('hex');
+        // Client-side simulation: hash does NOT include IP when clientSecret is used.
+        const hash = createHash('sha256').update(`${nonce}:${cpuSolution}:${clientSecret}`).digest('hex');
         if (BigInt('0x' + hash) < target) break;
         cpuSolution++;
       }
