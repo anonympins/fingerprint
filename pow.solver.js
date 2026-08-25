@@ -16,13 +16,12 @@
  * @returns {Promise<number>} La solution (un nombre entier).
  */
 export async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null, progressCallback) {
-    const cpuTarget = BigInt('0x' + target);
+    const cpuTarget = BigInt(target);
     let cpuSolution = 0;
-    const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
     while (true) {
-        const msg = clientSecret
-            ? `${ipPart}:${nonce}:${cpuSolution}:${clientSecret}`
-            : `${ipPart}:${nonce}:${cpuSolution}`;
+        const msg = clientSecret 
+            ? `${clientIp}:${nonce}:${cpuSolution}:${clientSecret}`
+            : `${clientIp}:${nonce}:${cpuSolution}`;
         const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
         const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         if (BigInt('0x' + hashHex) < cpuTarget) break;
@@ -163,16 +162,12 @@ export async function solveTsp(cities, targetMaxDistance) {
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
 export async function solveChallenge(challenge) {
-    const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
+    const { type, nonce, clientSecret, target, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
     const solutions = {};
 
     switch (type) {
         case 'cpu_target':
             const baseMessageCpu = `:${nonce}`; // L'IP est gérée côté serveur
-            if (!cpuTarget) {
-                throw new Error("Challenge data is missing 'cpuTarget' property.");
-            }
-            const target = cpuTarget; // Keep variable name for consistency below
             solutions.cpu = await solveCpuTarget(baseMessageCpu, BigInt('0x' + target));
             break;
         case 'cpu_mem':
@@ -180,10 +175,8 @@ export async function solveChallenge(challenge) {
             const baseMessageCombined = `${nonce}:${clientSecret}`;
             const memSeed = `:${nonce}:${clientSecret}`;
             const [cpuSol, memSol] = await Promise.all([
-                (async () => {
-                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret);
-                })(),
+                // On utilise une version de solveCpuTarget qui n'a pas besoin de l'IP
+                solveCpuTargetInline(null, nonce, target, clientSecret),
                 solveMemory(memSeed, memDifficulty)
             ]);
             solutions.cpu = cpuSol;
@@ -193,10 +186,7 @@ export async function solveChallenge(challenge) {
             // Version inline pour compatibilité HTML avec IP incluse
             const memSeedInline = `${nonce}:${clientSecret}`;
             const [cpuSolInline, memSolInline] = await Promise.all([
-                (async () => {
-                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret);
-                })(),
+                solveCpuTargetInline(clientIp, nonce, target, clientSecret),
                 solveMemory(memSeedInline, memDifficulty)
             ]);
             solutions.cpu = cpuSolInline;
