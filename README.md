@@ -497,7 +497,7 @@ Although not exported for direct public use, understanding its role can be usefu
 
 While `powMiddleware` is convenient for Express, you can use the `FingerprintEngine` directly in any Node.js server environment (e.g., native `http`, Fastify, Koa). This gives you full control over the request/response cycle.
 
-**For concrete examples with Koa and Fastify, see our Framework Integration Guide.**
+**For concrete examples with Koa and Fastify, see our [Framework Integration Guide](https://github.com/anonympins/fingerprint/blob/main/INTEGRATION.md).**
 
 The engine is a named export from the main module.
 
