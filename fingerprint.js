@@ -1334,7 +1334,7 @@ export function verifyCpuTargetPoWAndGenerateTicket(
 }
 
 const staticExtensions = new RegExp(
-  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest)$",
+  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest|webmanifest)$",
   "i",
 );
 const isStaticResource = (path) => staticExtensions.test(path);
