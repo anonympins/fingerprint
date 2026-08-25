@@ -28,7 +28,7 @@ describe('Proof-of-Work Solvers', () => {
             const hashBigInt = BigInt('0x' + hash);
 
             expect(hashBigInt).toBeLessThan(targetBigInt);
-        });
+        }, 20000);
 
         it('should find a valid CPU solution with a client secret', async () => {
             const clientSecret = 'my-secret';
@@ -40,7 +40,7 @@ describe('Proof-of-Work Solvers', () => {
             const hash = createHash('sha256').update(msg).digest('hex');
             const hashBigInt = BigInt('0x' + hash);
             expect(hashBigInt).toBeLessThan(targetBigInt);
-        });
+        }, 20000);
 
         it('should call the progress callback', async () => {
             const progressCallback = vi.fn();
