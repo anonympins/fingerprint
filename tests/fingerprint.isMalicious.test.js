@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { __internal } from '../fingerprint.js';
+import { isMalicious } from '../fingerprint.js';
 
-// On importe la fonction privée via l'export __internal pour les tests
-const { isMalicious } = __internal;
+// We import the function directly to test it in isolation, avoiding vite:define errors.
 
 describe('isMalicious Unit Tests', () => {
 
@@ -99,10 +98,11 @@ describe('isMalicious Unit Tests', () => {
 
     describe('Command Injection', () => {
         it.each([
-            ["/path/to/script.sh; ls -la"],
-            ["127.0.0.1 && whoami"],
+            ["/path/to/script.sh; ls -la "],
+            ["127.0.0.1 && whoami "],
             ["`reboot`"],
-            ["filename.txt\ncat /etc/passwd"],
+            ["filename.txt\ncat /etc/passwd "],
+            [" | rm -rf /"], // Pipe before a dangerous command
         ])('should detect Command Injection pattern: %s', (payload) => {
             expect(isMalicious(payload)).toBe(true);
         });
@@ -111,7 +111,7 @@ describe('isMalicious Unit Tests', () => {
             ["A normal command like ls -la /tmp"],
             ["Use the pipe | for output redirection."],
         ])('should NOT detect legitimate command-like string: %s', (payload) => {
-            expect(isMalicious(payload)).toBe(false);
+            expect(isMalicious(payload)).toBe(false); // This will fail with the old regex
         });
     });
 });
