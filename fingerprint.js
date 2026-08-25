@@ -2124,6 +2124,82 @@ export class FingerprintEngine {
 }
 
 /**
+ * Returns a default list of security analyzers for honeypot detection.
+ * This list can be used as a base and extended with custom rules.
+ * Currently includes an XSS detection analyzer.
+ * @returns {Array<Function>}
+ */
+export const default_analyzers = () => [
+    // Analyzer for Cross-Site Scripting (XSS) detection.
+    // It uses the 'xss' library, which should be installed by the user (`npm install xss`).
+    // If 'xss' is not available, this analyzer will be safely ignored.
+    xss_analyzer
+];
+
+export const xss_analyzer = async (data) => {
+    try {
+        // Dynamically import the 'xss' library.
+        // The module is loaded only once by Node's cache.
+        const xss = (await import('xss')).default;
+        const originalData = JSON.stringify(data);
+        // If the sanitized string is different, it means malicious HTML/JS was found and removed.
+        return xss(originalData) !== originalData;
+    } catch (error) {
+        // This catch block handles the case where the 'xss' module is not installed.
+        if (error.code === 'ERR_MODULE_NOT_FOUND') {
+            console.warn('[Fingerprint] Warning: The "xss" package is not installed. The default XSS analyzer is disabled. Run "npm install xss" to enable it.');
+            // To avoid repeated warnings, we can replace this function with a no-op.
+            this.isXssAnalyzerAvailable = false; // A flag to prevent future attempts.
+        }
+        return false; // In case of any error, we assume the data is not malicious.
+    }
+}
+/**
+ * Returns a powerful WAF (Web Application Firewall) analyzer based on ModSecurity.
+ * This analyzer is highly effective against a wide range of attacks (SQLi, XSS, RCE, etc.)
+ * by using the OWASP Core Rule Set.
+ *
+ * **Note:** This is an optional and advanced feature.
+ * 1. The user must install the package: `npm install modsecurity-nodejs`
+ * 2. ModSecurity rules (like the OWASP CRS) must be available on the server.
+ *
+ * If the package is not installed, the analyzer will be safely ignored.
+ *
+ * @param {string} rulesPath - The path to the ModSecurity rules configuration file (e.g., `crs-setup.conf`).
+ * @returns {Function} An analyzer function to be used in the `honeypot.analyzers` array.
+ */
+export const modsecurity_analyzer = (rulesPath) => {
+    let wafInstance = null; // Singleton instance for the WAF
+
+    return async (data) => {
+        if (!rulesPath) {
+            console.warn('[Fingerprint] ModSecurity analyzer disabled: `rulesPath` is not provided.');
+            return false;
+        }
+
+        try {
+            if (!wafInstance) {
+                // Dynamically import the library only when needed.
+                const { ModSecurity } = await import('modsecurity-nodejs');
+                wafInstance = new ModSecurity();
+                wafInstance.init();
+                wafInstance.addRules(rulesPath);
+                console.log('[Fingerprint] ModSecurity WAF analyzer initialized successfully.');
+            }
+
+            // The `transaction` method checks the data against the loaded rules.
+            // It returns `null` if no rules are matched, or an object with intervention details if a threat is found.
+            const result = wafInstance.transaction(data);
+            return result !== null; // A non-null result means a threat was detected.
+        } catch (error) {
+            if (error.code === 'ERR_MODULE_NOT_FOUND') {
+                console.warn('[Fingerprint] Warning: "modsecurity-nodejs" is not installed. The WAF analyzer is disabled. Run "npm install modsecurity-nodejs" to enable it.');
+            }
+            return false; // Assume data is safe if any error occurs.
+        }
+    };
+};
+/**
  * Returns a default list of whitelisting rules for common and legitimate web crawlers.
  * This list can be used as a base and extended with custom rules.
  * @returns {Array<{userAgent: string, hostnameSuffix: string}>}

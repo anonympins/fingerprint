@@ -67,7 +67,7 @@ The `powMiddleware` requires a configuration object defining the weights of susp
 import express from 'express';
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
-import { powMiddleware, default_whitelist } from './fingerprint.js'; // Adjust the path
+import { powMiddleware, default_whitelist, default_analyzers } from './fingerprint.js'; // Adjust the path
 
 const app = express();
 app.use(cookieParser());
@@ -125,25 +125,15 @@ const securityConfig = {
         // - `false`: Disables injection detection.
         // - `['sql', 'rce']`: Enables only SQL injection and Remote Command Execution detection.
         detectInjections: ['sql', 'rce', 'traversal', 'xxe', 'ssti', 'log4shell'], // (Optional, default: true)
-        // (Optional) Plug in external, more robust analyzers. This allows you to extend the default detection with specialized libraries (e.g., WAFs, anti-spam) or your own custom logic.
+        // (Optional) Plug in external analyzers. This allows you to extend detection with specialized libraries or custom logic.
         // Each function receives an object with all query and body data and should return `true` if a threat is detected.
         analyzers: [
-            // Example 1: Using a general-purpose WAF library.
-            // (npm install generic-waf)
-            (data) => {
-                const WAF = require('generic-waf');
-                const waf = new WAF();
-                // This WAF expects a string, so we stringify the data to check all values at once.
-                return waf.isMalicious(JSON.stringify(data));
-            },
-            // Example 2: Using a specialized library for XSS detection.
-            // (npm install xss)
-            (data) => {
-                const xss = require('xss');
-                const originalData = JSON.stringify(data);
-                // If the sanitized string is different from the original, it means malicious HTML/JS was found and removed.
-                return xss(originalData) !== originalData;
-            },
+            ...default_analyzers(), // Includes the default XSS analyzer.
+
+            // Example 2: Enable a powerful WAF with ModSecurity and the OWASP Core Rule Set.
+            // Requires `npm install modsecurity-nodejs` and downloading the OWASP CRS rules.
+            // modsecurity_analyzer('/path/to/owasp-crs/crs-setup.conf'),
+
             // Example 3: A custom function to detect specific keywords (e.g., for anti-spam).
             (data) => {
                 const spamKeywords = ['viagra', 'free money', 'crypto pump'];
