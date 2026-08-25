@@ -35,7 +35,7 @@ const getPowSolverCode = () => {
     console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
     // Fallback inline code if file cannot be loaded
     return `(function(global){
-        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){
+        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){ const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
             const cpuTarget = BigInt(target);
             let cpuSolution = 0;
             const ipPart = clientIp || '';

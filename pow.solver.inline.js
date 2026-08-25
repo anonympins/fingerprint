@@ -16,7 +16,9 @@
  * @returns {Promise<number>} La solution (un nombre entier).
  */
 async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null, progressCallback) {
-    const cpuTarget = BigInt('0x' + target);
+    // Le 'target' est déjà un BigInt lorsqu'il est appelé depuis la page de challenge.
+    // On s'assure juste qu'il est bien de ce type.
+    const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
     let cpuSolution = 0;
     const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
     while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
