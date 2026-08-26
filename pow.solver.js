@@ -355,7 +355,7 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
             const [cpuSol, memSol] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property."); // Pass fingerprint to solver
-                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret, null, fingerprint);
+                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret, null, fingerprint);
                 })(),
                 solveMemory(memSeed, memDifficulty)
             ]);
