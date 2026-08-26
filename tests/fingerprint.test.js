@@ -128,7 +128,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         const clientSecret = 'my-super-secret-client-key';
 
         test('should solve and verify correctly without a clientSecret (fallback)', () => {
-            const securityConfig = { cpu: { minDifficultyBits: 16 } }; // Difficulté plus faible pour le test
+            const securityConfig = { cpu: { minDifficultyBits: 2, maxDifficultyBits: 4 } }; // Difficulté plus faible pour le test
             let solution = 0;
             const target = __internal.calculateTarget(suspicionFactor, securityConfig);
             const baseBlock = new TextEncoder().encode(`${nonce}::test-fp-string:`);
@@ -146,7 +146,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
 
         test('should solve and verify correctly WITH a clientSecret', async () => {
-            const securityConfig = { cpu: { minDifficultyBits: 16 } };
+            const securityConfig = { cpu: { minDifficultyBits: 4 } };
             let solution = 0;
             const target = __internal.calculateTarget(suspicionFactor, securityConfig);
             // Client-side simulation now includes the secret
@@ -639,7 +639,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             // FIX: Merge CI config correctly. The CI config should take precedence.
             const securityConfigWithLowDiff = {
                 ...securityConfig, // Base config
-                cpu: { minDifficultyBits: 16, ...securityConfig.cpu }, // Apply local diff, but let CI config (securityConfig.cpu) overwrite it.
+                cpu: { minDifficultyBits: 4, ...securityConfig.cpu }, // Apply local diff, but let CI config (securityConfig.cpu) overwrite it.
             };
             const middleware = powMiddleware(securityConfigWithLowDiff);
 
@@ -803,7 +803,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             const suspicionFactor = 0.1;
             const securityConfigWithLowDiff = {
                 ...securityConfig,
-                cpu: { minDifficultyBits: 16, ...securityConfig.cpu }, // Merge configs correctly
+                cpu: { minDifficultyBits: 4, ...securityConfig.cpu }, // Merge configs correctly
             };
             const solverFingerprint = 'fp-test';
             const target = __internal.calculateTarget(suspicionFactor, securityConfigWithLowDiff);

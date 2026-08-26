@@ -51,7 +51,7 @@ describe('Proof-of-Work Solvers', () => {
             const progressCallback = vi.fn();
             const baseBlock = new TextEncoder().encode(`${nonce}:`);
             // Use a much harder target to ensure the loop runs long enough
-            const hardTarget = '00000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF';
+            const hardTarget = '0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF';
             await solveCpuTargetInline(baseBlock, hardTarget, progressCallback);
 
             // Check if the callback was called with a number
