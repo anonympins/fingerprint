@@ -27,111 +27,12 @@ const getPowSecret = () => {
  * @returns {string} The solver JavaScript code.
  */
 const getPowSolverCode = () => {
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const solverPath = join(__dirname, 'pow.solver.inline.js'); // Use the inline version
-    return readFileSync(solverPath, 'utf-8');
-  } catch (error) {
-    console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
-    // Fallback inline code if file cannot be loaded
-    return `(function(global){
-        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){
-            const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
-            let cpuSolution = 0;
-            const ipPart = clientIp || '';
-            while(true){
-                // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
-                const msg = clientSecret ? \`\${nonce}:\${cpuSolution}:\${clientSecret}\` : \`\${ipPart}:\${nonce}:\${cpuSolution}\`;
-                const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-                const hashHex = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-                if(BigInt('0x'+hashHex) < cpuTarget) break;
-                cpuSolution++;
-                if(cpuSolution % 100000 === 0) await new Promise(r=>setTimeout(r,0));
-            }
-            return cpuSolution;
-        }
-        async function solveMemory(seed, difficulty){
-            const size = difficulty * 1024 * 1024;
-            const buffer = new Uint32Array(size / 4);
-            let h = new TextEncoder().encode(seed).reduce((acc,v)=>acc+v,0);
-            for(let i=0;i<buffer.length;i++) buffer[i] = h = Math.imul(h^i,1597334677);
-            let solution = 0;
-            const iterations = size / 16;
-            let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
-            for(let i=0;i<iterations;i++){
-                addr = buffer[addr] % buffer.length;
-                solution ^= addr;
-            }
-            return solution;
-        }
-        async function solveTsp(cities, targetMaxDistance){
-            function distance(c1,c2){return Math.sqrt(Math.pow(c1.x-c2.x,2)+Math.pow(c1.y-c2.y,2));}
-            function evaluatePathDistance(cities,path){
-                let total=0;
-                for(let i=0;i<path.length-1;i++) total+=distance(cities[path[i]],cities[path[i+1]]);
-                total+=distance(cities[path[path.length-1]],cities[path[0]]);
-                return total;
-            }
-            function solveTspNearestNeighbor(cities){
-                const n=cities.length;
-                if(n===0)return[];
-                let path=[0];
-                let visited=new Array(n).fill(false);
-                visited[0]=true;
-                for(let i=1;i<n;i++){
-                    let nearest=-1, minDist=Infinity;
-                    for(let j=0;j<n;j++){
-                        if(!visited[j]){
-                            const d=distance(cities[path[i-1]],cities[j]);
-                            if(d<minDist){minDist=d;nearest=j;}
-                        }
-                    }
-                    path.push(nearest);
-                    visited[nearest]=true;
-                }
-                return path;
-            }
-            await new Promise(r=>setTimeout(r,10));
-            const solutionPath=solveTspNearestNeighbor(cities);
-            const solutionDistance=evaluatePathDistance(cities,solutionPath);
-            return{path:solutionPath,distance:solutionDistance};
-        }
-        async function solveChallenge(challenge) {
-            const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
-            const solutions = {};
-
-            switch (type) {
-                case 'cpu_target':
-                    solutions.cpu = await solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret);
-                    break;
-                case 'cpu_mem':
-                case 'cpu_mem_inline':
-                    const memSeed = nonce + ":" + clientSecret;
-                    const [cpuSol, memSol] = await Promise.all([
-                        solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret),
-                        solveMemory(memSeed, memDifficulty)
-                    ]);
-                    solutions.cpu = cpuSol;
-                    solutions.mem = memSol;
-                    break;
-                case 'tsp':
-                    const tspResult = await solveTsp(cities, targetMaxDistance);
-                    solutions.tsp = tspResult.path;
-                    solutions.distance = tspResult.distance;
-                    break;
-                default:
-                    throw new Error(\`Unknown challenge type: \${type}\`);
-            }
-
-            return solutions;
-        }
-        global.solveCpuChallengeInline=solveCpuTargetInline;
-        global.solveMemoryChallenge=solveMemory;
-        global.solveTspChallenge=solveTsp;
-        global.solveChallenge=solveChallenge;
-    })(typeof window!=='undefined'?window:global);`;
-  }
+  // On supprime le try/catch. Si le fichier n'est pas trouvé, le processus plantera,
+  // ce qui est préférable à servir un code de secours potentiellement désynchronisé.
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const solverPath = join(__dirname, 'pow.solver.inline.js'); // Utilise la version inline
+  return readFileSync(solverPath, 'utf-8');
 };
 
 /**
@@ -606,11 +507,11 @@ export const verifyPoWAndGenerateTicket = (
  * Verifies a memory PoW solution.
  * The server performs the same calculation to validate.
  */
-export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret) => {
+export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret = '') => {
   const size = difficulty * 1024 * 1024;
   const iterations = size / 16;
   const buffer = new Uint32Array(size / 4);
-  const seed = clientSecret ? `${nonce}:${clientSecret}` : nonce;
+  const seed = `:${nonce}:${clientSecret}`;
   let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
 
   for (let i = 0; i < buffer.length; i++) {
@@ -1359,20 +1260,44 @@ const BASE_TARGET = MAX_DIFFICULTY_TARGET >> 16n;
  * @param {number} suspicionFactor - A number from 0 to 1.
  * @returns {BigInt} The target number.
  */
-function calculateTarget(suspicionFactor) {
+function calculateTarget(suspicionFactor, securityConfig = {}) {
   // Difficulty range adjusted to be realistic.
   // MIN_DIFFICULTY: Fast enough not to bother a slightly suspicious user.
   // MAX_DIFFICULTY: Slow enough to heavily penalize a bot, but feasible for a patient human (5-30s).
-  const MIN_DIFFICULTY_BITS = 18; // Default value, should be configurable
-  const MAX_DIFFICULTY_BITS = 26; // Default value, should be configurable
+  // NOUVEAU: La difficulté est maintenant configurable.
+  const { cpu: cpuConfig = {} } = securityConfig;
+  const MIN_DIFFICULTY_BITS = cpuConfig.minDifficultyBits ?? 8;
+  const MAX_DIFFICULTY_BITS = cpuConfig.maxDifficultyBits ?? 16;
 
   // Use linear interpolation between min and max difficulty.
   const totalDifficultyBits =
     MIN_DIFFICULTY_BITS +
     suspicionFactor * (MAX_DIFFICULTY_BITS - MIN_DIFFICULTY_BITS);
+  
+  if (totalDifficultyBits <= 0) return 2n ** 256n - 1n; // Si la difficulté est nulle ou négative, la cible est maximale (aucun challenge).
 
-  // The target is max / 2^bits
-  return MAX_DIFFICULTY_TARGET >> BigInt(Math.floor(totalDifficultyBits));
+  // The correct way to calculate the target is to define the number of leading zero bits required.
+  // A target for N bits of difficulty is 2^(256-N).
+  // We can calculate this with a left-shift on 1.
+  const shift = 256n - BigInt(Math.floor(totalDifficultyBits));
+  return 1n << shift;
+}
+
+/**
+ * @private
+ * Crée le bloc de base pour le challenge CPU.
+ * Ce buffer contient toutes les données sauf la solution.
+ * @param {string} nonce
+ * @param {string} clientSecret
+ * @param {string} fingerprint
+ * @returns {Buffer}
+ */
+function createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint) {
+    const sortedFingerprint = (fingerprint || '').split('|').filter(p => p).sort().join('|');
+    // On concatène les chaînes, puis on les convertit en buffer une seule fois.
+    // Cela garantit que le client et le serveur travaillent sur la même base binaire.
+    const messageBase = `${nonce}:${clientSecret}:${sortedFingerprint}:`; // Le ':' final est le séparateur pour la solution.
+    return Buffer.from(messageBase, 'utf8');
 }
 
 /**
@@ -1383,12 +1308,15 @@ export function generateCpuTargetChallenge(
   nonce,
   suspicionFactor,
   originalUrl,
+  securityConfig,
 ) {
-  const target = calculateTarget(suspicionFactor);
+  const target = calculateTarget(suspicionFactor, securityConfig);
+  // Le baseBlock est créé ici et sera stocké dans le contexte du challenge.
+  const baseBlock = createCpuChallengeBaseBlock(nonce, null, ''); // Pour le challenge simple, le secret et le fingerprint sont vides.
   return {
     type: "cpu_target",
     nonce: nonce,
-    target: target.toString(16), // Send the target in hexadecimal
+    target: target.toString(16),
     path: originalUrl,
   };
 }
@@ -1413,10 +1341,11 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
           async function solve() {
             const clientIp = ${JSON.stringify(clientIp)};
             const nonce = ${JSON.stringify(nonce)};
-            const cpuTarget = BigInt("0x${target}");
-            const solution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, null, (progress) => {
-                // Optional progress callback
-            });
+            const cpuTarget = BigInt("0x" + "${target}");
+            // La nouvelle version de solveCpuChallengeInline n'a plus besoin de l'IP ou du secret,
+            // car tout est dans le baseBlock. Pour la compatibilité de ce challenge simple, on passe null.
+            const baseBlockBytes = new TextEncoder().encode(nonce + ":");
+            const solution = await window.solveCpuChallengeInline(baseBlockBytes, cpuTarget, (progress) => {});
             window.location.href = ${JSON.stringify(path)} + "?pow_type=cpu_target&pow_nonce=" + nonce + "&pow_solution=" + solution;
           }
           solve();
@@ -1431,9 +1360,14 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  * @param {string} clientIp - The client's IP address.
  * @returns {string} HTML content.
  */
-function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapContainerHtml) {
+function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapContainerHtml, originalFingerprint) {
     const { nonce, target, path } = cpuChallengeDetails;
     const solverCode = getPowSolverCode();
+    // On prépare le baseBlock pour le client. Il sera envoyé sous forme de tableau d'octets.
+    // Le fingerprint est maintenant passé directement en paramètre.
+    const fingerprint = originalFingerprint;
+    const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint);
+    const baseBlockBytes = `[${baseBlock.toString('utf8').split('').map(c => c.charCodeAt(0)).join(',')}]`;
 
     const challengeScript = `
       async function solve() {
@@ -1441,16 +1375,14 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         const path = ${JSON.stringify(path)};
         const clientSecret = ${JSON.stringify(clientSecret)};
         const clientIp = ${JSON.stringify(clientIp)};
-        const cpuTarget = BigInt("0x${target}");
+        const cpuTarget = BigInt("0x" + "${target}");
         const memDifficulty = ${memoryDifficulty};
-        // The client-side fingerprint library must be available to generate the fingerprint
-        // of the machine solving the challenge. This assumes a client library is loaded.
-        // We need a function to get the client fingerprint. Let's assume it's available on window.
-        const getClientFingerprint = () => (window.ClientLibrary && typeof window.ClientLibrary.getDeviceFingerprint === 'function') ? window.ClientLibrary.getDeviceFingerprint() : '';
-        const fingerprint = getClientFingerprint();
+        // Le client reçoit directement le 'baseBlock' sous forme de tableau d'octets.
+        // Il n'a plus besoin de construire le message lui-même.
+        const baseBlock = new Uint8Array(${baseBlockBytes});
 
         // --- CPU Challenge ---
-        document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {}, fingerprint);
+        document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';        const cpuSolution = await window.solveCpuChallengeInline(baseBlock, cpuTarget, (progress) => {});
 
         // --- Memory Challenge ---
         document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
@@ -1465,7 +1397,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         }
 
         // Redirect with both solutions and the fingerprint used to solve.
-        const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution + "&pow_fp=" + encodeURIComponent(fingerprint);
+        const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
         window.location.href = finalUrl;
       }
       solve();
@@ -1497,23 +1429,56 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
  */
 export function verifyCpuTargetPoWAndGenerateTicket(
   clientIp, // This parameter is crucial and must be the actual client IP
-  ticketTtl, // NOUVEAU: Durée de validité du ticket (TTL en ms) configurable
+  ticketTtl,
   nonce,
   solution,
-  clientSecret, // Le secret est maintenant requis
-  target, // La cible est maintenant passée directement en hexadécimal,
-  fingerprint, // Le fingerprint du SOLVER, soumis par le client
+  challengeContext = {}, // Le contexte complet du challenge est maintenant passé
 ) {
-  const message = clientSecret
-    ? `${nonce}:${solution}:${clientSecret}:${fingerprint}`
-    : `${clientIp}:${nonce}:${solution}`; // L'IP est utilisée uniquement pour les challenges sans secret (plus anciens/simples)
+  const { cpuTarget, baseBlock } = challengeContext;
+  if (!cpuTarget || !baseBlock) {
+      console.error('[FP Server Verify] Invalid challenge context. Missing cpuTarget or baseBlock.');
+      return null;
+  }
+
+  // Le baseBlock est déjà un Buffer ou un tableau d'octets.
+  // On s'assure que c'est un Buffer pour la concaténation.
+  const baseBlockBuffer = Buffer.isBuffer(baseBlock) ? baseBlock : Buffer.from(baseBlock);
+  const solutionBuffer = Buffer.from(String(solution), 'utf8');
+
+  // Concaténation binaire directe. C'est la garantie de cohérence.
+  const finalBlock = Buffer.concat([baseBlockBuffer, solutionBuffer]);
+
   const hash = crypto
     .createHash("sha256")
-    .update(message)
+    .update(finalBlock)
     .digest("hex");
   const hashAsInt = BigInt("0x" + hash);
+  const targetAsInt = BigInt("0x" + cpuTarget);
 
-  if (hashAsInt < BigInt("0x" + target)) {
+  // --- NOUVEAUX LOGS POUR LE DÉBOGAGE ---
+  console.log('[FP Server Verify] Intermediate values:', {
+    hashCalculated: `0x${hash}`,
+    hashAsInt: hashAsInt.toString(), // Log as string to see full value
+    target: `0x${cpuTarget}`,
+    targetAsInt: targetAsInt.toString(), // Log as string to see full value
+  });
+  // --- FIN DES NOUVEAUX LOGS ---
+
+  const isValid = hashAsInt < targetAsInt;
+
+  // --- AJOUT DE LOGS POUR LE DÉBOGAGE ---
+  if (!isValid) {
+    console.log('[FP Server Verify] CPU PoW verification FAILED. Details:', {
+      hashCalculated: `0x${hash}`,
+      target: `0x${cpuTarget}`,
+
+    });
+  }
+  // --- FIN DES LOGS ---
+
+  if (isValid) {
+      console.log('[FP Server Verify] CPU PoW verification PASSED. Details:', {
+      });
     // The comparison is direct with native BigInts
     // The proof is valid, generate the ticket
       const expiry = Date.now() + (ticketTtl || 3600000); // Calcule l'expiration à partir du TTL
@@ -1763,7 +1728,7 @@ export class FingerprintEngine {
     // Si une solution de challenge est soumise, on la traite en priorité absolue,
     // avant même de recalculer le score de suspicion.
     const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp, pow_solution_population, pow_solution_work_result, pow_problem_id } = query;
-    if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
+    if (pow_nonce && (pow_solution || pow_solution_cpu)) { // Vérifie pow_solution pour la compatibilité ascendante
         this._log('Challenge solution submitted', { pow_type, pow_nonce });
 
         // On doit calculer le score de suspicion *avant* de valider le ticket,
@@ -1794,7 +1759,7 @@ export class FingerprintEngine {
             // --- FIX: Use submitted fingerprint, but fallback to current request's fingerprint ---
             // This handles API clients that might not use the full client-side library but still solve the challenge.
             const solverFingerprint = pow_fp || getCompositeDeviceHash(requestContext);
-            const originalFingerprint = challengeContext.fingerprint;
+    const originalFingerprint = challengeContext.fingerprint; // This is the fingerprint of the request that *triggered* the challenge
 
             let similarity;
             const similarityThreshold = this.securityConfig.similarityThreshold ?? 0.95;
@@ -1805,7 +1770,10 @@ export class FingerprintEngine {
                 similarity = (originalFingerprint === solverFingerprint) ? 1.0 : 0.0;
             } else {
                 // Use the weighted comparison for structured fingerprints.
-                similarity = FingerprintBuilder.compare(originalFingerprint, solverFingerprint);
+        // We compare the fingerprint of the request that triggered the challenge
+        // with the fingerprint of the request that is submitting the solution.
+        // They should be very similar.
+        similarity = FingerprintBuilder.compare(originalFingerprint, getCompositeDeviceHash(requestContext));
             }
 
             if (similarity < similarityThreshold) {
@@ -1821,13 +1789,13 @@ export class FingerprintEngine {
                 finalTtl = isProbationary ? probationaryTtl : optimalTtl;
                 this._log('Challenge context found, verifying solution', { optimalTtl, finalTtl });
 
-                if (pow_type === "cpu_target" && pow_solution) {
-                    ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget, solverFingerprint);
+                if ((pow_type === "cpu_target" || !pow_type) && (pow_solution_cpu || pow_solution)) { // !pow_type pour compatibilité
+                    const cpuSolution = pow_solution_cpu || pow_solution;
+            ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, cpuSolution, challengeContext);
                     isValid = ticket !== null;
                     this._log('CPU target challenge verification', { isValid });
-                } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
-                    const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget, solverFingerprint);
-                    const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
+                } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {                    const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext);
+            const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret); // Memory PoW is independent of fingerprint
                     isValid = cpuTicket !== null && isMemValid;
                     if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
                     this._log('Combined CPU+Memory challenge verification', {
@@ -1851,7 +1819,7 @@ export class FingerprintEngine {
 
             // NOUVELLE LOGIQUE DE REDIRECTION (plus robuste)
             // 1. On part du chemin original stocké, qui peut contenir des query params.
-            const originalUrl = new URL(challengeContext?.originalPath || path, `http://${requestContext.headers.host || 'localhost'}`);
+            const originalUrl = new URL(challengeContext?.originalPath || requestContext.path, `http://${requestContext.headers.host || 'localhost'}`);
             // 2. On crée un nouvel objet de paramètres à partir de la requête entrante (qui contient les solutions ET les params originaux).
             const finalSearchParams = new URLSearchParams(requestContext.query);
 
@@ -2024,8 +1992,8 @@ export class FingerprintEngine {
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce));
             const trapLinksHtml = trapUrls.map(url => `<a href="${url}" tabindex="-1">config</a>`).join(' ');
 
-
-            const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path);
+            // On passe la configuration pour que la difficulté soit calculée correctement.
+            const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
 
             // La difficulté mémoire démarre à 0 et augmente seulement après un certain seuil de suspicion.
             // Par exemple, elle ne commence à augmenter qu'à partir de 25% du chemin entre 'low' et 'high'.
@@ -2045,12 +2013,14 @@ export class FingerprintEngine {
             const originalFingerprint = requestContext.headers['x-device-fingerprint'] || __internal.getCompositeDeviceHash(requestContext);
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
+            const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint);
             await store.set(`secret:${nonce}`, {
                 clientSecret,
                 cpuTarget: cpuChallengeDetails.target,
                 suspicionScore: finalScore, // *** FIX: Store the score that triggered the challenge ***
                 fingerprint: originalFingerprint, // *** NOUVEAU ***
                 memDifficulty: memDifficulty,
+                baseBlock: baseBlock, // *** NOUVEAU: Le bloc de base est stocké pour la vérification ***
                 originalPath: path, // *** FIX: Store the original path ***
             }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
 
@@ -2082,13 +2052,14 @@ export class FingerprintEngine {
                         clientSecret: clientSecret, // The client needs this to solve the challenge
                         cpuTarget: cpuChallengeDetails.target,
                         memDifficulty: memDifficulty,
+                        baseBlock: [...baseBlock], // Envoyer le buffer comme un tableau d'octets
                     }
                 };
                 this._log('API challenge response generated', { challengePayload });
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
                 // For browsers, send the HTML page.
-                const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapContainer);
+                const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapContainer, originalFingerprint);
                 this._log('Browser challenge page generated', { 
                     pageLength: page.length, 
                     hasTrapContainer: true 

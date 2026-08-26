@@ -362,11 +362,6 @@ const ClientLibrary = {
         url.searchParams.set(`pow_solution_${key}`, String(value));
       });
 
-      // Pour le challenge d'optimisation, la solution est un tableau d'objets
-      if (solution.population) {
-        url.searchParams.set('pow_solution_population', JSON.stringify(solution.population));
-      }
-
       // Pour le challenge de travail utile
       if (solution.work_result) {
         url.searchParams.set('pow_solution_work_result', JSON.stringify(solution.work_result));
