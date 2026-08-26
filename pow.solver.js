@@ -16,9 +16,10 @@
  * @param {bigint} target - La cible à atteindre.
  * @param {string} clientSecret - Le secret client (optionnel).
  * @param {Function} progressCallback - Callback pour les mises à jour de progression.
+ * @param {string} [fingerprint=''] - The client's fingerprint, to be included in the hash.
  * @returns {Promise<number>} La solution (un nombre entier).
  */
-export async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null, progressCallback) {
+export async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null, progressCallback, fingerprint = '') {
     // Le 'target' est déjà un BigInt lorsqu'il est appelé depuis la page de challenge.
     // On s'assure juste qu'il est bien de ce type.
     const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
@@ -26,7 +27,7 @@ export async function solveCpuTargetInline(clientIp, nonce, target, clientSecret
     const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
     while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
         const msg = clientSecret ?
-            `${nonce}:${cpuSolution}:${clientSecret}` :
+            `${nonce}:${cpuSolution}:${clientSecret}:${fingerprint}` :
             `${ipPart}:${nonce}:${cpuSolution}`;
         const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
         const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -328,12 +329,13 @@ export async function solveOptimizationTask(initialPopulation, generations) {
  * @param {object} challenge - L'objet challenge reçu du serveur.
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
-export async function solveChallenge(challenge) {
+export async function solveChallenge(challenge, fingerprint = '') {
     const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, optimizationTask, usefulWorkTask } = challenge;
     const solutions = {};
 
     switch (type) {
         case 'cpu_target':
+            // Note: This case is not fully exercised by tests as it relies on Web Workers.
             const baseMessageCpu = `:${nonce}`; // L'IP est gérée côté serveur
             if (!cpuTarget) {
                 throw new Error("Challenge data is missing 'cpuTarget' property.");
@@ -348,7 +350,7 @@ export async function solveChallenge(challenge) {
             const [cpuSol, memSol] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret);
+                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret, fingerprint);
                 })(),
                 solveMemory(memSeed, memDifficulty)
             ]);
@@ -361,7 +363,7 @@ export async function solveChallenge(challenge) {
             const [cpuSolInline, memSolInline] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret);
+                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret, fingerprint);
                 })(),
                 solveMemory(memSeedInline, memDifficulty)
             ]);

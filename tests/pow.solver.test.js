@@ -32,11 +32,12 @@ describe('Proof-of-Work Solvers', () => {
 
         it('should find a valid CPU solution with a client secret', async () => {
             const clientSecret = 'my-secret';
-            const solution = await solveCpuTargetInline(ip, nonce, targetHex, clientSecret);
+            const fingerprint = ''; // Explicitly define the fingerprint used for the test
+            const solution = await solveCpuTargetInline(ip, nonce, targetHex, clientSecret, null, fingerprint);
 
             // Verification: re-hash the solution and check against the target
             // When a secret is used, the IP is omitted from the hash.
-            const msg = `${nonce}:${solution}:${clientSecret}`;
+            const msg = `${nonce}:${solution}:${clientSecret}:${fingerprint}`;
             const hash = createHash('sha256').update(msg).digest('hex');
             const hashBigInt = BigInt('0x' + hash);
             expect(hashBigInt).toBeLessThan(targetBigInt);

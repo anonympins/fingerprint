@@ -371,6 +371,10 @@ const ClientLibrary = {
         url.searchParams.set('pow_problem_id', solution.problem_id);
       }
 
+      // --- FIX: Add the solver's fingerprint to the retry request ---
+      const solverFp = this.getDeviceFingerprint();
+      url.searchParams.set('pow_fp', solverFp);
+
       // On utilise la chaîne d'intercepteurs pour la requête réessayée,
       // ce qui garantit que le fetch original est appelé avec le bon contexte.
       // Cela évite de réintroduire l'erreur "Illegal invocation".

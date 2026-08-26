@@ -1456,10 +1456,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         const fingerprint = getClientFingerprint();
 
         // --- CPU Challenge ---
-        document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
-        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, fingerprint, (progress) => {
-            // Optional progress callback
-        });
+        document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {}, fingerprint);
         // --- Memory Challenge ---
         document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
         await new Promise(r => setTimeout(r, 10)); // Yield to update UI
@@ -1706,7 +1703,7 @@ export class FingerprintEngine {
     if (deviceData?.condemned) {
         this._log('Device condemned - blocking request', { deviceId });
         if (onDeviceCompromised) {
-            onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
+            onDeviceCompromised({ deviceId: deviceId, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
         }
         return { action: 'block', status: 404, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
     }
@@ -1795,8 +1792,10 @@ export class FingerprintEngine {
         if (challengeContext) {
             // *** NOUVELLE VÉRIFICATION CRUCIALE ***
             // On compare le fingerprint soumis par le solver (`pow_fp`) avec celui stocké
-            // lors de l'émission du challenge (`challengeContext.fingerprint`).
-            const solverFingerprint = pow_fp;
+            // lors de l'émission du challenge.
+            // --- FIX: Use submitted fingerprint, but fallback to current request's fingerprint ---
+            // This handles API clients that might not use the full client-side library but still solve the challenge.
+            const solverFingerprint = pow_fp || getCompositeDeviceHash(requestContext);
             const originalFingerprint = challengeContext.fingerprint;
 
             if (solverFingerprint !== originalFingerprint) {
@@ -1873,6 +1872,13 @@ export class FingerprintEngine {
             this._log('Challenge solution invalid', { pow_nonce });
             suspicionVector.honeypotScore = 100; // Invalid solution is a strong bot signal.
             finalScore = this.calculateFinalScore(suspicionVector);
+            // --- FIX: After invalidating a solution, immediately check if the new score triggers a block ---
+            const newBlockThreshold = thresholds.block ?? 95;
+            if (finalScore >= newBlockThreshold) {
+                this._log('Request blocked after invalid challenge solution', { finalScore, newBlockThreshold });
+                return { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+            }
+            // If not blocked, the request will proceed to be re-challenged.
         }
     } else if (pow_nonce && pow_type === 'optimization_task' && pow_solution_population) {
         this._log('Optimization task solution submitted', { pow_nonce });
@@ -1935,7 +1941,7 @@ export class FingerprintEngine {
     if (isBlocked) {
       this._log('Request blocked - score exceeded block threshold', { finalScore, blockThreshold });
       if (onDeviceCompromised) {
-        onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Score exceeded block threshold', score: finalScore, vector: suspicionVector });
+        onDeviceCompromised({ deviceId: deviceId, clientIp, reason: 'Score exceeded block threshold', score: finalScore, vector: suspicionVector });
       }
       return { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
     }
@@ -1947,7 +1953,7 @@ export class FingerprintEngine {
         this._log('Honeypot trap URL triggered - condemning device', { path, deviceId });
         deviceData.condemned = true; // This device is a bot. Condemn it.
         if (onDeviceCompromised) {
-            onDeviceCompromised({ deviceId: cookies?.device_id, clientIp, reason: 'Triggered signed honeypot trap URL', score: 100, vector: { honeypotScore: 100 } });
+            onDeviceCompromised({ deviceId: deviceId, clientIp, reason: 'Triggered signed honeypot trap URL', score: 100, vector: { honeypotScore: 100 } });
         }
         if (logger) {
             logger({ type: 'trap_triggered', deviceId: cookies?.device_id, score: 100, path: path, timestamp: Date.now() });
@@ -2019,8 +2025,8 @@ export class FingerprintEngine {
                 memDifficulty,
                 cpuTarget: cpuChallengeDetails.target
             });
-            // (NOUVEAU) On stocke le fingerprint de la requête qui a déclenché le challenge.
-            const originalFingerprint = requestContext.headers['x-device-fingerprint'] || getCompositeDeviceHash(requestContext);
+            // (NOUVEAU) On stocke le fingerprint de la requête qui a déclenché le challenge. We call it via __internal to allow mocking.
+            const originalFingerprint = requestContext.headers['x-device-fingerprint'] || __internal.getCompositeDeviceHash(requestContext);
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
             await store.set(`secret:${nonce}`, {
