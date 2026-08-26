@@ -1981,7 +1981,7 @@ export class FingerprintEngine {
             }
 
             // Check if the request is an API request to return a JSON challenge
-            const isApi = requestContext.rawReq && this.securityConfig.thresholds?.isApiRequest?.(requestContext.rawReq);
+            const isApi = requestContext.rawReq && this.securityConfig?.isApiRequest?.(requestContext.rawReq);
 
             if (isApi) {
                 // For API clients, send a JSON response with challenge details.
@@ -2362,9 +2362,8 @@ export const powMiddleware = (securityConfig) => {
 
   // Provide a default for isApiRequest if not specified by the user.
   // This makes API challenge handling work more seamlessly out-of-the-box.
-  if (!securityConfig.thresholds?.isApiRequest) {
-    if (!securityConfig.thresholds) securityConfig.thresholds = {};
-    securityConfig.thresholds.isApiRequest = (req) => 
+  if (!securityConfig?.isApiRequest) {
+    securityConfig.isApiRequest = (req) =>
       req.headers?.accept?.includes('application/json');
   }
 
@@ -2376,7 +2375,7 @@ export const powMiddleware = (securityConfig) => {
       query: req.query,
       body: req.body,
       headers: req.headers,
-      isStatic: isStaticResource(req.path),
+      isStatic: securityConfig?.isStaticResource?.(req.path) || isStaticResource(req.path),
       // Pass the original request object for the isApiRequest function
       rawReq: req,
       requestTimestamp: Date.now(), // Timestamp de début de requête

@@ -97,8 +97,6 @@ const securityConfig = {
         medium: 45, // Score for a more difficult combined CPU/Memory challenge
         high: 75,   // Score for a very difficult challenge
         block: 95,  // Score above which the request is blocked outright (HTTP 404)
-        isStaticResource: (req) => req.path.startsWith('/static/'), // Optional: Custom function to identify static resources
-        isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json') // Optional: Custom function to identify API requests
     },
     // (Optional) Configure the duration (in milliseconds) for various temporary data.
     ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
@@ -161,8 +159,10 @@ const securityConfig = {
         ...default_whitelist(), // Use the defaults
         { userAgent: 'MyIndustrySpecificBot', hostnameSuffix: '.my-bot-verifier.com' }, // Add a custom bot
     ],
-    // Or, if you only want the defaults:
-    // whitelist: default_whitelist(),
+    // Optional: Custom function to identify static resources
+    isStaticResource: (req) => req.path.startsWith('/static/'),
+    // Optional: Custom function to identify API requests
+    isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
     // The logger is required for auto-tuning. It collects data on requests.
     logger: (log) => trafficData.push(log),
     // (Optional) Configuration for the automatic threshold and pattern tuning.
