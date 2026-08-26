@@ -122,6 +122,29 @@ describe('Proof-of-Work Solvers', () => {
             expect(solutions).toHaveProperty('mem', expect.any(Number));
         });
 
+        it('should solve a "cpu_mem" challenge and correctly include the fingerprint in the hash', async () => {
+            const fingerprint = 'test-fp-12345';
+            const challenge = {
+                type: 'cpu_mem',
+                nonce,
+                clientSecret,
+                cpuTarget,
+                memDifficulty: 1,
+                clientIp: null // API call
+            };
+
+            // 1. Résoudre le challenge en passant le fingerprint
+            const solutions = await solveChallenge(challenge, fingerprint);
+            expect(solutions).toHaveProperty('cpu', expect.any(Number));
+
+            // 2. Vérifier que la solution CPU est valide AVEC le fingerprint
+            const cpuSolution = solutions.cpu;
+            const msg = `${nonce}:${cpuSolution}:${clientSecret}:${fingerprint}`;
+            const hash = createHash('sha256').update(msg).digest('hex');
+            const hashBigInt = BigInt('0x' + hash);
+            expect(hashBigInt).toBeLessThan(BigInt('0x' + cpuTarget));
+        });
+
         it('should solve a "tsp" challenge', async () => {
             const challenge = {
                 type: 'tsp',
