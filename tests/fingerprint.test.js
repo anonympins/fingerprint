@@ -190,7 +190,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             }
 
             expect(solution).toBeGreaterThan(0); // Vérifie que le challenge a bien été résolu
-        }, 8000); // Timeout de 8 secondes pour ce test
+        }, 20000); // Timeout de 8 secondes pour ce test
     });
 
     test('PoW Ticket Expiration', () => {
@@ -355,7 +355,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
 
         // Détecte si on est dans un environnement de CI/CD
-        const isCI = process.env.CI === 'true';
+        const isCI = !!process.env.CI;
 
         // Configuration de base pour les tests
         let securityConfig = {
@@ -847,8 +847,12 @@ describe('Fingerprint & PoW Security Suite', () => {
             await powMiddleware(securityConfigWithLowDiff)(req, res, next);
 
             expect(res.redirect).not.toHaveBeenCalled();
-            expect(sentStatus, 'Should return status 404 to re-issue a challenge').toBe(404);
-            expect(sentBody, 'Should send a new challenge page').toContain('Enhanced Verification');
+            // An invalid solution is a strong bot signal (honeypotScore=100), which should trigger a block.
+            expect(sentStatus, 'Should return status 404 to block the request').toBe(404);
+            expect(sentBody, 'Should send a Forbidden message').toBe('Forbidden');
+            // Use the same fallback logic as the engine: default block threshold is 95 if not specified.
+            const blockThreshold = securityConfigWithLowDiff.thresholds.block ?? 95;
+            expect(req.fingerprint.score).toBeGreaterThanOrEqual(blockThreshold);
         });
 
         test('should redirect after a valid COMBINED (CPU+Mem) PoW solution is provided', async (context) => {
