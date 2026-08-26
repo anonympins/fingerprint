@@ -1,6 +1,6 @@
 {
   "name": "@anonympins/fingerprint",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.",
   "main": "fingerprint.js",
   "type": "module",
@@ -15,6 +15,9 @@
     "fingerprint.client.js",
     "fingerprint.builder.js",
     "pow.solver.js",
+    "pow.worker.js",
+    "problem-manager.js",
+    "optimization.worker.js",
     "library.js",
     "redis-store.js",
     "mongodb-store.js",

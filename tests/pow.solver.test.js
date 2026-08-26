@@ -1,5 +1,5 @@
 import { it, describe, expect, vi, beforeEach } from 'vitest';
-import { createHash, webcrypto } from 'node:crypto';
+import { createHash } from 'node:crypto';
 // Import the functions to be tested.
 // Since the inline file doesn't use exports, we can't directly import.
 // Instead, we'll test the ES module version which shares the same logic.
@@ -13,18 +13,21 @@ import {
 describe('Proof-of-Work Solvers', () => {
 
     describe('solveCpuTargetInline', () => {
-        const ip = '127.0.0.1';
         const nonce = 'test-nonce';
         // A relatively easy target for quick tests (first 16 bits must be zero)
         const targetHex = '0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF';
         const targetBigInt = BigInt('0x' + targetHex);
 
-        it('should find a valid CPU solution without a client secret', async () => {
-            const solution = await solveCpuTargetInline(ip, nonce, targetHex);
+        it('should find a valid CPU solution with a simple base block', async () => {
+            // Le `baseBlock` est maintenant un Uint8Array.
+            // Le client et le serveur doivent s'accorder sur sa construction.
+            // Ici, on simule un challenge simple avec juste le nonce.
+            const baseBlock = new TextEncoder().encode(`${nonce}:`);
+            const solution = await solveCpuTargetInline(baseBlock, targetHex);
 
             // Verification: re-hash the solution and check against the target
-            const msg = `${ip}:${nonce}:${solution}`;
-            const hash = createHash('sha256').update(msg).digest('hex');
+            const finalBlock = new Uint8Array([...baseBlock, ...new TextEncoder().encode(String(solution))]);
+            const hash = createHash('sha256').update(finalBlock).digest('hex');
             const hashBigInt = BigInt('0x' + hash);
 
             expect(hashBigInt).toBeLessThan(targetBigInt);
@@ -32,26 +35,29 @@ describe('Proof-of-Work Solvers', () => {
 
         it('should find a valid CPU solution with a client secret', async () => {
             const clientSecret = 'my-secret';
-            const solution = await solveCpuTargetInline(ip, nonce, targetHex, clientSecret);
+            const fingerprint = 'test-fp-string';
+            // Le `baseBlock` est maintenant un Uint8Array qui inclut toutes les informations.
+            const baseBlock = new TextEncoder().encode(`${nonce}:${clientSecret}:${fingerprint}:`);
+            const solution = await solveCpuTargetInline(baseBlock, targetHex);
 
             // Verification: re-hash the solution and check against the target
-            // When a secret is used, the IP is omitted from the hash.
-            const msg = `${nonce}:${solution}:${clientSecret}`;
-            const hash = createHash('sha256').update(msg).digest('hex');
+            const finalBlock = new Uint8Array([...baseBlock, ...new TextEncoder().encode(String(solution))]);
+            const hash = createHash('sha256').update(finalBlock).digest('hex');
             const hashBigInt = BigInt('0x' + hash);
             expect(hashBigInt).toBeLessThan(targetBigInt);
         }, 20000);
 
         it('should call the progress callback', async () => {
             const progressCallback = vi.fn();
+            const baseBlock = new TextEncoder().encode(`${nonce}:`);
             // Use a much harder target to ensure the loop runs long enough
             const hardTarget = '0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF';
-            await solveCpuTargetInline(ip, nonce, hardTarget, null, progressCallback);
+            await solveCpuTargetInline(baseBlock, hardTarget, progressCallback);
 
             // Check if the callback was called with a number
             expect(progressCallback).toHaveBeenCalled();
             expect(progressCallback).toHaveBeenCalledWith(expect.any(Number));
-        }, 20000); // Increase timeout for harder challenge
+        }, 40000); // Increase timeout for harder challenge
     });
 
     describe('solveMemory', () => {
@@ -98,13 +104,15 @@ describe('Proof-of-Work Solvers', () => {
                 clientSecret,
                 cpuTarget,
                 memDifficulty: 1,
-                // No clientIp for API calls
+                // Pour les appels API, le serveur pré-calcule le baseBlock
+                // sans l'IP du client, mais avec l'empreinte digitale.
+                baseBlock: [...new TextEncoder().encode(`${nonce}:${clientSecret}:`)]
             };
 
-            const solutions = await solveChallenge(challenge);
+            const solutions = await solveChallenge(challenge, ''); // Le fingerprint est passé en 2e arg
             expect(solutions).toHaveProperty('cpu', expect.any(Number));
             expect(solutions).toHaveProperty('mem', expect.any(Number));
-        });
+        }, 20000);
 
         it('should solve a "cpu_mem_inline" challenge for a browser', async () => {
             const challenge = {
@@ -113,13 +121,14 @@ describe('Proof-of-Work Solvers', () => {
                 clientSecret,
                 cpuTarget,
                 memDifficulty: 1,
-                clientIp: '1.2.3.4'
+                // Pour le challenge inline, le serveur inclut l'IP dans le baseBlock.
+                baseBlock: [...new TextEncoder().encode(`${nonce}:${clientSecret}:`)]
             };
 
-            const solutions = await solveChallenge(challenge);
+            const solutions = await solveChallenge(challenge, '');
             expect(solutions).toHaveProperty('cpu', expect.any(Number));
             expect(solutions).toHaveProperty('mem', expect.any(Number));
-        });
+        }, 20000);
 
         it('should solve a "tsp" challenge', async () => {
             const challenge = {

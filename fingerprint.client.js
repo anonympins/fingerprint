@@ -335,7 +335,7 @@ const ClientLibrary = {
    * @private
    */
   async solveChallengeAndRetry(response, resource, options) {
-    if (response.status !== 404 || !response.headers.get('content-type')?.includes('application/json')) {
+    if (response.status !== 404 || !response.headers.get('content-type')?.includes('application/json') || response.bodyUsed) {
       return response;
     }
     
@@ -346,7 +346,9 @@ const ClientLibrary = {
       }
 
       console.log(`[Fingerprint] Received a '${challengeData.challenge.type}' challenge. Solving...`);
-      const solution = await solveChallenge(challengeData.challenge);
+      // L'empreinte de l'appareil qui résout le challenge est cruciale.
+      const solverFp = this.getDeviceFingerprint();
+      const solution = await solveChallenge(challengeData.challenge, solverFp);
       console.log('[Fingerprint] Challenge solved. Retrying original request.');
 
       // Ajouter la solution aux paramètres de la requête pour le nouvel essai
@@ -360,16 +362,14 @@ const ClientLibrary = {
         url.searchParams.set(`pow_solution_${key}`, String(value));
       });
 
-      // Pour le challenge d'optimisation, la solution est un tableau d'objets
-      if (solution.population) {
-        url.searchParams.set('pow_solution_population', JSON.stringify(solution.population));
-      }
-
       // Pour le challenge de travail utile
       if (solution.work_result) {
         url.searchParams.set('pow_solution_work_result', JSON.stringify(solution.work_result));
         url.searchParams.set('pow_problem_id', solution.problem_id);
       }
+
+      // On ajoute l'empreinte du solveur à la requête de réessai.
+      url.searchParams.set('pow_fp', solverFp);
 
       // On utilise la chaîne d'intercepteurs pour la requête réessayée,
       // ce qui garantit que le fetch original est appelé avec le bon contexte.
@@ -418,8 +418,9 @@ const ClientLibrary = {
         // Ajoute l'intercepteur pour la résolution de challenge
         if (fetchConfig.handleChallenges !== false) {
           this.addFetchInterceptor(async (resource, options, next) => {
-            const response = await next(resource, options);
-            return this.solveChallengeAndRetry(response, resource, options);
+            const originalResponse = await next(resource, options);
+            // On clone la réponse pour que la lecture du corps par solveChallengeAndRetry ne la consomme pas pour l'appelant original.
+            return this.solveChallengeAndRetry(originalResponse.clone(), resource, options);
           });
         }
     }

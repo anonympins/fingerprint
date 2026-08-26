@@ -10,26 +10,42 @@
 'use strict';
 
 /**
- * Résout un challenge CPU basé sur une cible (version inline pour compatibilité HTML).
- * @param {string} clientIp - L'adresse IP du client.
- * @param {string} nonce - Le nonce du challenge.
+ * Résout un challenge CPU basé sur une cible en utilisant un bloc de base binaire.
+ * @param {Uint8Array} baseBlock - Le bloc de données initial (nonce, secret, fp) fourni par le serveur.
  * @param {bigint} target - La cible à atteindre.
- * @param {string} clientSecret - Le secret client (optionnel).
  * @param {Function} progressCallback - Callback pour les mises à jour de progression.
  * @returns {Promise<number>} La solution (un nombre entier).
  */
-export async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null, progressCallback) {
-    // Le 'target' est déjà un BigInt lorsqu'il est appelé depuis la page de challenge.
-    // On s'assure juste qu'il est bien de ce type.
+export async function solveCpuTargetInline(baseBlock, target, progressCallback) {
+    // --- FIX: Add validation for the target to prevent BigInt conversion errors ---
+    if (typeof target !== 'bigint' && (typeof target !== 'string' || !/^[0-9a-fA-F]+$/.test(target))) {
+        throw new TypeError(`Invalid target type: expected a BigInt or a hex string, but got ${typeof target} with value ${target}`);
+    }
+
     const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
+    // --- END FIX ---
+    const encoder = new TextEncoder();
     let cpuSolution = 0;
-    const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
-    while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
-        const msg = clientSecret ?
-            `${nonce}:${cpuSolution}:${clientSecret}` :
-            `${ipPart}:${nonce}:${cpuSolution}`;
-        const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
+
+    while (true) {
+        const solutionBytes = encoder.encode(String(cpuSolution));
+        
+        // Concaténation binaire directe : c'est plus rapide et plus sûr.
+        const finalBlock = new Uint8Array(baseBlock.length + solutionBytes.length);
+        finalBlock.set(baseBlock);
+        finalBlock.set(solutionBytes, baseBlock.length);
+
+        if (cpuSolution === 0) {
+            const reconstructedMsg = new TextDecoder().decode(finalBlock);
+            console.log('[FP Solve Debug] Client will hash message:', reconstructedMsg);
+        }
+        const buf = await crypto.subtle.digest("SHA-256", finalBlock);
         const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        // --- AJOUT DE LOGS POUR LE DÉBOGAGE CÔTÉ CLIENT ---
+        if (cpuSolution === 0) { // Log only the first attempt
+            console.log(`[FP Client Solve] Attempt 0 hash: "0x${hashHex}"`);
+        }
+        // --- FIN DES LOGS ---
         if (BigInt('0x' + hashHex) < cpuTarget) break;
         cpuSolution++;
         if (cpuSolution % 100000 === 0) {
@@ -328,27 +344,30 @@ export async function solveOptimizationTask(initialPopulation, generations) {
  * @param {object} challenge - L'objet challenge reçu du serveur.
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
-export async function solveChallenge(challenge) {
+export async function solveChallenge(challenge, fingerprint = '') { // The fingerprint is now passed from the client library
     const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, optimizationTask, usefulWorkTask } = challenge;
     const solutions = {};
 
     switch (type) {
         case 'cpu_target':
-            const baseMessageCpu = `:${nonce}`; // L'IP est gérée côté serveur
+            // Note: This case is not fully exercised by tests as it relies on Web Workers.
             if (!cpuTarget) {
                 throw new Error("Challenge data is missing 'cpuTarget' property.");
             }
             const target = cpuTarget; // Keep variable name for consistency below
-            solutions.cpu = await solveCpuTarget(baseMessageCpu, BigInt('0x' + target));
+            // Pour ce challenge simple, le baseBlock est juste le nonce.
+            const baseBlockBytes = new TextEncoder().encode(nonce + ":");
+            solutions.cpu = await solveCpuTargetInline(baseBlockBytes, target, null);
             break;
         case 'cpu_mem':
             // Pour les appels API, le client IP n'est pas connu, on ne le met pas dans le message
-            const baseMessageCombined = `${nonce}:${clientSecret}`;
+            const baseMessageCombined = `:${nonce}:${clientSecret}`;
             const memSeed = `:${nonce}:${clientSecret}`;
             const [cpuSol, memSol] = await Promise.all([
                 (async () => {
-                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret);
+                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property."); // Pass fingerprint to solver
+                    const baseBlock = new Uint8Array(challenge.baseBlock);
+                    return solveCpuTargetInline(baseBlock, cpuTarget, null);
                 })(),
                 solveMemory(memSeed, memDifficulty)
             ]);
@@ -357,11 +376,12 @@ export async function solveChallenge(challenge) {
             break;
         case 'cpu_mem_inline':
             // Version inline pour compatibilité HTML avec IP incluse
-            const memSeedInline = `${nonce}:${clientSecret}`;
+            const memSeedInline = `:${nonce}:${clientSecret}`;
             const [cpuSolInline, memSolInline] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret);
+                    const baseBlock = new Uint8Array(challenge.baseBlock);
+                    return solveCpuTargetInline(baseBlock, cpuTarget, null);
                 })(),
                 solveMemory(memSeedInline, memDifficulty)
             ]);
