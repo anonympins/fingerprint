@@ -1788,7 +1788,7 @@ export class FingerprintEngine {
     // Si une solution de challenge est soumise, on la traite en priorité absolue,
     // avant même de recalculer le score de suspicion.
     const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp, pow_solution_population, pow_solution_work_result, pow_problem_id } = query;
-    if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
+    if (pow_nonce && (pow_solution || pow_solution_cpu)) { // Vérifie pow_solution pour la compatibilité ascendante
         this._log('Challenge solution submitted', { pow_type, pow_nonce });
 
         // On doit calculer le score de suspicion *avant* de valider le ticket,
@@ -1846,12 +1846,12 @@ export class FingerprintEngine {
                 finalTtl = isProbationary ? probationaryTtl : optimalTtl;
                 this._log('Challenge context found, verifying solution', { optimalTtl, finalTtl });
 
-                if (pow_type === "cpu_target" && pow_solution) {
-                    ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution, challengeContext.clientSecret, challengeContext.cpuTarget, solverFingerprint);
+                if ((pow_type === "cpu_target" || !pow_type) && (pow_solution_cpu || pow_solution)) { // !pow_type pour compatibilité
+                    const cpuSolution = pow_solution_cpu || pow_solution;
+                    ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, cpuSolution, challengeContext.clientSecret, challengeContext.cpuTarget, solverFingerprint);
                     isValid = ticket !== null;
                     this._log('CPU target challenge verification', { isValid });
-                } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
-                    const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget, solverFingerprint);
+                } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {                    const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext.clientSecret, challengeContext.cpuTarget, solverFingerprint);
                     const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret);
                     isValid = cpuTicket !== null && isMemValid;
                     if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
