@@ -335,13 +335,13 @@ const ClientLibrary = {
    * @private
    */
   async solveChallengeAndRetry(response, resource, options) {
-    if (response.status !== 404 || !response.headers.get('content-type')?.includes('application/json')) {
+    if (response.status !== 404 || !response.headers.get('content-type')?.includes('application/json') || response.bodyUsed) {
       return response;
     }
     
     try {
       const challengeData = await response.json();
-      if (!challengeData.challenge || !challengeData.challenge.type) {
+      if (!challengeData.challenge || !challengeData.challenge.type || !challengeData.challenge.cpuTarget) {
         return response; // Pas un challenge JSON valide
       }
 
@@ -418,8 +418,9 @@ const ClientLibrary = {
         // Ajoute l'intercepteur pour la résolution de challenge
         if (fetchConfig.handleChallenges !== false) {
           this.addFetchInterceptor(async (resource, options, next) => {
-            const response = await next(resource, options);
-            return this.solveChallengeAndRetry(response, resource, options);
+            const originalResponse = await next(resource, options);
+            // On clone la réponse pour que la lecture du corps par solveChallengeAndRetry ne la consomme pas pour l'appelant original.
+            return this.solveChallengeAndRetry(originalResponse.clone(), resource, options);
           });
         }
     }
