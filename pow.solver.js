@@ -1,6 +1,9 @@
 /**
  * @file @/pow.solver.js
  * @description Contient les fonctions côté client pour résoudre les différents types de challenges Proof-of-Work.
+ * IMPORTANT: Pour les tâches d'optimisation, ce fichier a besoin d'accéder aux algorithmes de `library.js`.
+ * Dans un vrai projet, il faudrait bundler une version client de `library.js` et l'importer ici.
+ * Pour cet exemple, nous allons copier/coller les fonctions nécessaires.
  * Fichier compatible à la fois avec l'import de modules ES6 et l'injection directe dans un script HTML.
  */
 
@@ -169,13 +172,164 @@ export async function solveTsp(cities, targetMaxDistance) {
     return { path: solutionPath, distance: solutionDistance };
 }
 
+// --- Fonctions d'optimisation copiées/adaptées de library.js pour le client ---
+
+const ClientOptimizers = {
+    simulatedAnnealing(initialSolution, evaluator, neighbor, iterations, temp, cooling) {
+        let currentSolution = initialSolution;
+        let currentEnergy = evaluator(currentSolution);
+        let temperature = temp;
+
+        for (let i = 0; i < iterations; i++) {
+            const newSolution = neighbor(currentSolution);
+            const newEnergy = evaluator(newSolution);
+            if (newEnergy < currentEnergy || Math.random() < Math.exp((currentEnergy - newEnergy) / temperature)) {
+                currentSolution = newSolution;
+                currentEnergy = newEnergy;
+            }
+            temperature *= cooling;
+        }
+        return { solution: currentSolution, energy: currentEnergy };
+    },
+
+    geneticAlgorithm(createIndividual, fitness, crossover, mutate, generations, popSize) {
+        let population = Array.from({ length: popSize }, () => {
+            const chromosome = createIndividual();
+            return { chromosome, fitness: fitness(chromosome) };
+        });
+
+        for (let gen = 0; gen < generations; gen++) {
+            population.sort((a, b) => a.fitness - b.fitness);
+            const newPopulation = [population[0]]; // Elitism
+            while (newPopulation.length < popSize) {
+                const p1 = population[Math.floor(Math.random() * (popSize / 2))];
+                const p2 = population[Math.floor(Math.random() * (popSize / 2))];
+                let offspring = crossover(p1.chromosome, p2.chromosome);
+                if (Math.random() < 0.1) offspring = mutate(offspring);
+                newPopulation.push({ chromosome: offspring, fitness: fitness(offspring) });
+            }
+            population = newPopulation;
+        }
+        return population;
+    }
+};
+
+/**
+ * Résout une unité de travail utile (Useful Work Unit).
+ * @param {object} task - La tâche envoyée par le serveur.
+ * @returns {Promise<object>} Le résultat du calcul.
+ */
+async function solveUsefulWorkTask(task) {
+    await new Promise(r => setTimeout(r, 10)); // Yield thread
+
+    switch (task.type) {
+        case 'simulated_annealing_iterations': {
+            const { cities } = task.payload;
+            const distance = (c1, c2) => Math.sqrt(Math.pow(c1.x - c2.x, 2) + Math.pow(c1.y - c2.y, 2));
+            const evaluator = (path) => {
+                let total = 0;
+                for (let i = 0; i < path.length - 1; i++) total += distance(cities[path[i]], cities[path[i + 1]]);
+                total += distance(cities[path[path.length - 1]], cities[path[0]]);
+                return total;
+            };
+            const neighbor = (path) => {
+                const newPath = [...path];
+                const [i, j] = [Math.floor(Math.random() * path.length), Math.floor(Math.random() * path.length)];
+                [newPath[i], newPath[j]] = [newPath[j], newPath[i]];
+                return newPath;
+            };
+            const initialSolution = task.initialSolution || Array.from({ length: cities.length }, (_, i) => i).sort(() => 0.5 - Math.random());
+            
+            return ClientOptimizers.simulatedAnnealing(initialSolution, evaluator, neighbor, task.iterations, task.payload.options.initialTemperature, task.payload.options.coolingRate);
+        }
+
+        case 'genetic_algorithm_generations': {
+            const { assets, maxVolatility } = task.payload;
+            const fitness = (weights) => {
+                const total = weights.reduce((s, w) => s + w, 0);
+                if (total === 0) return Infinity;
+                const normW = weights.map(w => w / total);
+                const ret = normW.reduce((s, w, i) => s + w * assets[i].expectedReturn, 0);
+                const vol = normW.reduce((s, w, i) => s + w * assets[i].volatility, 0);
+                if (vol > maxVolatility) return 1000 + (vol - maxVolatility);
+                return -ret;
+            };
+            const createIndividual = () => Array.from({ length: assets.length }, Math.random);
+            const crossover = (p1, p2) => p1.map((w, i) => (w + p2[i]) / 2);
+            const mutate = p => { const n = [...p], i = Math.floor(Math.random() * n.length); n[i] += (Math.random() - 0.5) * 0.2; return n.map(v => Math.max(0, v)); };
+            
+            // Le client doit recréer la population si elle n'est pas fournie
+            const initialPopulation = task.initialPopulation || Array.from({ length: task.payload.options.populationSize }, () => ({ chromosome: createIndividual(), fitness: 0 }));
+            initialPopulation.forEach(p => p.fitness = fitness(p.chromosome));
+
+            const finalPopulation = ClientOptimizers.geneticAlgorithm(createIndividual, fitness, crossover, mutate, task.generations, task.payload.options.populationSize);
+            return { population: finalPopulation };
+        }
+
+        case 'run_multiple_parallel':
+            // Côté client, on ne peut pas utiliser de vrais workers pour `runMultipleParallel`.
+            // On exécute donc une version simplifiée : un seul cycle du solveur demandé.
+            // Cela reste un travail coûteux et valide le principe du "Useful Work".
+            const { solverName, baseSolverArgs } = task;
+            const clientSolver = ClientOptimizers[solverName];
+            if (!clientSolver) throw new Error(`Solver ${solverName} not found on client.`);
+            
+            // On simule l'appel avec les arguments de base.
+            // Note: `baseSolverArgs` peut contenir des options.
+            return clientSolver(...baseSolverArgs);
+
+        default:
+            throw new Error(`Unknown useful work type: ${task.type}`);
+    }
+}
+
+/**
+ * Résout une tâche d'optimisation basée sur un algorithme génétique.
+ * Reçoit une population et la fait évoluer pendant un certain nombre de générations.
+ * NOTE: Cette fonction est une version simplifiée de l'AG de `library.js` adaptée au client.
+ * @param {Array<object>} initialPopulation - La population de départ.
+ * @param {number} generations - Le nombre de générations à exécuter.
+ * @returns {Promise<Array<object>>} La population finale après évolution.
+ */
+export async function solveOptimizationTask(initialPopulation, generations) {
+    // Fonctions AG simplifiées (croisement, mutation)
+    const crossover = (p1, p2) => p1.map((w, i) => (w + p2[i]) / 2);
+    const mutate = (p) => {
+        const newP = [...p];
+        const i = Math.floor(Math.random() * newP.length);
+        newP[i] += (Math.random() - 0.5) * 0.2;
+        return newP;
+    };
+
+    let population = initialPopulation;
+
+    for (let gen = 0; gen < generations; gen++) {
+        // Sélection simple : on garde les 50% meilleurs
+        const parents = population.sort((a, b) => a.fitness - b.fitness).slice(0, Math.ceil(population.length / 2));
+        const newPopulation = [...parents]; // Élitisme
+
+        while (newPopulation.length < population.length) {
+            const parent1 = parents[Math.floor(Math.random() * parents.length)];
+            const parent2 = parents[Math.floor(Math.random() * parents.length)];
+            let offspring = crossover(parent1.chromosome, parent2.chromosome);
+            if (Math.random() < 0.1) offspring = mutate(offspring);
+            // La fitness sera recalculée côté serveur pour la vérification.
+            newPopulation.push({ chromosome: offspring, fitness: -1 });
+        }
+        population = newPopulation;
+        // Pause pour ne pas geler l'UI sur les longues tâches
+        if (gen % 10 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    return population;
+}
+
 /**
  * Fonction principale qui reçoit un objet challenge et le résout.
  * @param {object} challenge - L'objet challenge reçu du serveur.
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
 export async function solveChallenge(challenge) {
-    const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
+    const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, optimizationTask, usefulWorkTask } = challenge;
     const solutions = {};
 
     switch (type) {
@@ -218,6 +372,15 @@ export async function solveChallenge(challenge) {
             const tspResult = await solveTsp(cities, targetMaxDistance);
             solutions.tsp = tspResult.path;
             solutions.distance = tspResult.distance;
+            break;
+        case 'optimization_task':
+            const finalPopulation = await solveOptimizationTask(optimizationTask.population, optimizationTask.generations);
+            solutions.population = finalPopulation.map(p => p.chromosome); // On ne renvoie que les chromosomes
+            break;
+        case 'useful_work_task':
+            const workResult = await solveUsefulWorkTask(usefulWorkTask.task);
+            solutions.work_result = workResult;
+            solutions.problem_id = usefulWorkTask.problemId;
             break;
         default:
             throw new Error(`Unknown challenge type: ${type}`);
