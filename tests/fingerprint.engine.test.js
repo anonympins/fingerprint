@@ -75,7 +75,7 @@ describe('FingerprintEngine Challenge Validation', () => {
         // Extract challenge details from the HTML body (simplified parsing)
         const body = challengeDecision.body;
         const nonce = body.match(/const nonce = "(.*?)"/)[1];
-        const cpuTarget = body.match(/const cpuTarget = BigInt\("0x(.*?)"\)/)[1];
+        const cpuTarget = body.match(/const cpuTarget = BigInt\("0x" \+ "([0-9a-fA-F]+)"\)/)[1];
         const memDifficulty = parseInt(body.match(/const memDifficulty = (\d+)/)[1], 10);
 
         // Check that the challenge context was stored correctly
@@ -86,8 +86,14 @@ describe('FingerprintEngine Challenge Validation', () => {
         // --- 2. Second request: The user submits the solved challenge ---
 
         // The client solves the challenge
-        const cpuSolution = await solveCpuTargetInline(null, nonce, cpuTarget, challengeContext.clientSecret, null, 'fingerprint-A');
-        const memSolution = await solveMemory(`${nonce}:${challengeContext.clientSecret}`, memDifficulty, 'fingerprint-A');
+        // --- FIX: Simulate the client creating the baseBlock for the solver ---
+        const messageBase = `${nonce}:${challengeContext.clientSecret}:fingerprint-A:`;
+        const baseBlock = new TextEncoder().encode(messageBase);
+
+        const cpuSolution = await solveCpuTargetInline(baseBlock, cpuTarget, null);
+        // The memory challenge seed does not include the fingerprint.
+        const memSeed = `${nonce}:${challengeContext.clientSecret}`;
+        const memSolution = await solveMemory(memSeed, memDifficulty);
 
         const submissionRequestContext = {
             clientIp: '127.0.0.1',
@@ -135,13 +141,19 @@ describe('FingerprintEngine Challenge Validation', () => {
         const challengeDecision = await engine.processRequest(originalRequestContext);
         const body = challengeDecision.body;
         const nonce = body.match(/const nonce = "(.*?)"/)[1];
-        const cpuTarget = body.match(/const cpuTarget = BigInt\("0x(.*?)"\)/)[1];
+        const cpuTarget = body.match(/const cpuTarget = BigInt\("0x" \+ "([0-9a-fA-F]+)"\)/)[1];
         const memDifficulty = parseInt(body.match(/const memDifficulty = (\d+)/)[1], 10);
         const challengeContext = await inMemoryStore.get(`secret:${nonce}`);
 
         // --- 2. Second request: Solution is submitted from "Machine B" ---
-        const cpuSolution = await solveCpuTargetInline(null, nonce, cpuTarget, challengeContext.clientSecret, null, 'fingerprint-B');
-        const memSolution = await solveMemory(`${nonce}:${challengeContext.clientSecret}`, memDifficulty, 'fingerprint-B');
+        // --- FIX: Simulate the client creating the baseBlock for the solver ---
+        // The solver uses the fingerprint of the machine it's running on.
+        const messageBase = `${nonce}:${challengeContext.clientSecret}:fingerprint-B:`;
+        const baseBlock = new TextEncoder().encode(messageBase);
+
+        const cpuSolution = await solveCpuTargetInline(baseBlock, cpuTarget, null);
+        const memSeed = `${nonce}:${challengeContext.clientSecret}`;
+        const memSolution = await solveMemory(memSeed, memDifficulty);
 
         const submissionRequestContext = {
             clientIp: '127.0.0.1',

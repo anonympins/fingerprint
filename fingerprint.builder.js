@@ -50,6 +50,21 @@ export class FingerprintBuilder {
         this.components.set(group, value);
         return this;
     }
+
+    /**
+     * Affiche les composants actuels dans la console.
+     * @param {string} [title='FingerprintBuilder Components'] - Un titre pour le log.
+     */
+    log(title = 'FingerprintBuilder Components') {
+        console.log(`--- ${title} ---`);
+        const sortedComponents = Array.from(this.components.entries())
+            .sort((a, b) => a[0].localeCompare(b[0]));
+        
+        console.table(Object.fromEntries(sortedComponents));
+        console.log(`Final string: ${this.toString()}`);
+        console.log(`---------------------------------${'-'.repeat(title.length)}`);
+    }
+
     /**
      * Génère la chaîne de signature finale.
      * Trie les clés pour garantir un ordre déterministe.
