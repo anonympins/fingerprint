@@ -266,9 +266,6 @@ export function getCompositeDeviceHash(context) {
         srv.add("upgrade", context.headers["upgrade-insecure-requests"]);
     }
 
-    // 10. SIGNAL FORT: Ordonnancement des headers
-    srv.add("h_ord", getHeaderSignature(context));
-
     // 11. SIGNAL AVANCÉ: Cookies (si disponible)
     if (context.cookies) {
         const cookieKeys = Object.keys(context.cookies).sort().join(',');
