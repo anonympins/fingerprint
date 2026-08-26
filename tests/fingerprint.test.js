@@ -636,7 +636,11 @@ describe('Fingerprint & PoW Security Suite', () => {
                 historyScore: 30, // A score high enough to trigger a challenge
             });
 
-            const securityConfigWithLowDiff = { ...securityConfig, cpu: { minDifficultyBits: 16 } };
+            // FIX: Merge CI config correctly. The CI config should take precedence.
+            const securityConfigWithLowDiff = {
+                ...securityConfig, // Base config
+                cpu: { minDifficultyBits: 16, ...securityConfig.cpu }, // Apply local diff, but let CI config (securityConfig.cpu) overwrite it.
+            };
             const middleware = powMiddleware(securityConfigWithLowDiff);
 
             // --- 2. Initial Request: Trigger the challenge ---
@@ -794,10 +798,13 @@ describe('Fingerprint & PoW Security Suite', () => {
         test('should NOT redirect if PoW solution is valid but clientSecret is wrong', async () => {
             const ip = '127.0.0.1';
             const nonce = 'test-nonce-wrong-secret';
-            const correctClientSecret = 'the-correct-secret';
+            const correctClientSecret = 'the-correct-secret'; // This is what the client gets and uses
             const wrongClientSecretOnServer = 'the-wrong-secret';
             const suspicionFactor = 0.1;
-            const securityConfigWithLowDiff = { ...securityConfig, cpu: { minDifficultyBits: 16 } };
+            const securityConfigWithLowDiff = {
+                ...securityConfig,
+                cpu: { minDifficultyBits: 16, ...securityConfig.cpu }, // Merge configs correctly
+            };
             const solverFingerprint = 'fp-test';
             const target = __internal.calculateTarget(suspicionFactor, securityConfigWithLowDiff);
             const baseBlock = new TextEncoder().encode(`${nonce}:${correctClientSecret}:${solverFingerprint}:`);
