@@ -98,6 +98,10 @@ const securityConfig = {
         high: 75,   // Score for a very difficult challenge
         block: 95,  // Score above which the request is blocked outright (HTTP 404)
     },
+    cpu: {
+        minDifficultyBits: 8,
+        maxDifficultyBits: 24,
+    },
     // (Optional) Configure the duration (in milliseconds) for various temporary data.
     ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
     challengeTtl: 300000, // 5 minutes. Time during which a challenge nonce is valid.

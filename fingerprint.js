@@ -1267,7 +1267,7 @@ function calculateTarget(suspicionFactor, securityConfig = {}) {
   // NOUVEAU: La difficulté est maintenant configurable.
   const { cpu: cpuConfig = {} } = securityConfig;
   const MIN_DIFFICULTY_BITS = cpuConfig.minDifficultyBits ?? 8;
-  const MAX_DIFFICULTY_BITS = cpuConfig.maxDifficultyBits ?? 22;
+  const MAX_DIFFICULTY_BITS = cpuConfig.maxDifficultyBits ?? 16;
 
   // Use linear interpolation between min and max difficulty.
   const totalDifficultyBits =
