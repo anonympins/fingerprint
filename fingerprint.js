@@ -27,111 +27,12 @@ const getPowSecret = () => {
  * @returns {string} The solver JavaScript code.
  */
 const getPowSolverCode = () => {
-  try {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = dirname(__filename);
-    const solverPath = join(__dirname, 'pow.solver.inline.js'); // Use the inline version
-    return readFileSync(solverPath, 'utf-8');
-  } catch (error) {
-    console.warn('Could not load pow.solver.js for inlining, using fallback inline code');
-    // Fallback inline code if file cannot be loaded
-    return `(function(global){
-        async function solveCpuTargetInline(clientIp, nonce, target, clientSecret, progressCallback){
-            const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
-            let cpuSolution = 0;
-            const ipPart = clientIp || '';
-            while(true){
-                // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
-                const msg = clientSecret ? \`\${nonce}:\${cpuSolution}:\${clientSecret}\` : \`\${ipPart}:\${nonce}:\${cpuSolution}\`;
-                const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-                const hashHex = Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-                if(BigInt('0x'+hashHex) < cpuTarget) break;
-                cpuSolution++;
-                if(cpuSolution % 100000 === 0) await new Promise(r=>setTimeout(r,0));
-            }
-            return cpuSolution;
-        }
-        async function solveMemory(seed, difficulty){
-            const size = difficulty * 1024 * 1024;
-            const buffer = new Uint32Array(size / 4);
-            let h = new TextEncoder().encode(seed).reduce((acc,v)=>acc+v,0);
-            for(let i=0;i<buffer.length;i++) buffer[i] = h = Math.imul(h^i,1597334677);
-            let solution = 0;
-            const iterations = size / 16;
-            let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
-            for(let i=0;i<iterations;i++){
-                addr = buffer[addr] % buffer.length;
-                solution ^= addr;
-            }
-            return solution;
-        }
-        async function solveTsp(cities, targetMaxDistance){
-            function distance(c1,c2){return Math.sqrt(Math.pow(c1.x-c2.x,2)+Math.pow(c1.y-c2.y,2));}
-            function evaluatePathDistance(cities,path){
-                let total=0;
-                for(let i=0;i<path.length-1;i++) total+=distance(cities[path[i]],cities[path[i+1]]);
-                total+=distance(cities[path[path.length-1]],cities[path[0]]);
-                return total;
-            }
-            function solveTspNearestNeighbor(cities){
-                const n=cities.length;
-                if(n===0)return[];
-                let path=[0];
-                let visited=new Array(n).fill(false);
-                visited[0]=true;
-                for(let i=1;i<n;i++){
-                    let nearest=-1, minDist=Infinity;
-                    for(let j=0;j<n;j++){
-                        if(!visited[j]){
-                            const d=distance(cities[path[i-1]],cities[j]);
-                            if(d<minDist){minDist=d;nearest=j;}
-                        }
-                    }
-                    path.push(nearest);
-                    visited[nearest]=true;
-                }
-                return path;
-            }
-            await new Promise(r=>setTimeout(r,10));
-            const solutionPath=solveTspNearestNeighbor(cities);
-            const solutionDistance=evaluatePathDistance(cities,solutionPath);
-            return{path:solutionPath,distance:solutionDistance};
-        }
-        async function solveChallenge(challenge) {
-            const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
-            const solutions = {};
-
-            switch (type) {
-                case 'cpu_target':
-                    solutions.cpu = await solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret);
-                    break;
-                case 'cpu_mem':
-                case 'cpu_mem_inline':
-                    const memSeed = nonce + ":" + clientSecret;
-                    const [cpuSol, memSol] = await Promise.all([
-                        solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret),
-                        solveMemory(memSeed, memDifficulty)
-                    ]);
-                    solutions.cpu = cpuSol;
-                    solutions.mem = memSol;
-                    break;
-                case 'tsp':
-                    const tspResult = await solveTsp(cities, targetMaxDistance);
-                    solutions.tsp = tspResult.path;
-                    solutions.distance = tspResult.distance;
-                    break;
-                default:
-                    throw new Error(\`Unknown challenge type: \${type}\`);
-            }
-
-            return solutions;
-        }
-        global.solveCpuChallengeInline=solveCpuTargetInline;
-        global.solveMemoryChallenge=solveMemory;
-        global.solveTspChallenge=solveTsp;
-        global.solveChallenge=solveChallenge;
-    })(typeof window!=='undefined'?window:global);`;
-  }
+  // On supprime le try/catch. Si le fichier n'est pas trouvé, le processus plantera,
+  // ce qui est préférable à servir un code de secours potentiellement désynchronisé.
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = dirname(__filename);
+  const solverPath = join(__dirname, 'pow.solver.inline.js'); // Utilise la version inline
+  return readFileSync(solverPath, 'utf-8');
 };
 
 /**
