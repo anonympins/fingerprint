@@ -29,6 +29,11 @@ export async function solveCpuTargetInline(clientIp, nonce, target, clientSecret
         const msg = clientSecret ? // The fingerprint is part of the signed message when a secret is used.
             `${nonce}:${cpuSolution}:${clientSecret}:${fingerprint}` :
             `${ipPart}:${nonce}:${cpuSolution}`;
+        // --- AJOUT DE LOGS POUR LE DÉBOGAGE ---
+        if (cpuSolution === 0) { // Log only the first attempt to avoid flooding the console
+            console.log('[FP Solve Debug] Client will hash message:', msg);
+        }
+        // --- FIN DES LOGS ---
         const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
         const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         if (BigInt('0x' + hashHex) < cpuTarget) break;
@@ -350,7 +355,7 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
             const [cpuSol, memSol] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property."); // Pass fingerprint to solver
-                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret, null, fingerprint);
+                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret, null, fingerprint);
                 })(),
                 solveMemory(memSeed, memDifficulty)
             ]);
@@ -363,7 +368,7 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
             const [cpuSolInline, memSolInline] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret, null, fingerprint);
+                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret, null, fingerprint); // clientIp is expected here for inline version
                 })(),
                 solveMemory(memSeedInline, memDifficulty)
             ]);

@@ -1504,6 +1504,17 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   target, // La cible est maintenant passée directement en hexadécimal,
   fingerprint, // Le fingerprint du SOLVER, soumis par le client
 ) {
+  // --- AJOUT DE LOGS POUR LE DÉBOGAGE ---
+    console.log('[FP Verify Debug] Verifying CPU Target PoW with:', {
+      clientIp,
+      nonce,
+      solution,
+      clientSecret: clientSecret ? '***' : null,
+      target,
+      fingerprint,
+    });
+  // --- FIN DES LOGS ---
+
   const message = clientSecret
     ? `${nonce}:${solution}:${clientSecret}:${fingerprint}`
     : `${clientIp}:${nonce}:${solution}`; // L'IP est utilisée uniquement pour les challenges sans secret (plus anciens/simples)
@@ -1513,7 +1524,21 @@ export function verifyCpuTargetPoWAndGenerateTicket(
     .digest("hex");
   const hashAsInt = BigInt("0x" + hash);
 
-  if (hashAsInt < BigInt("0x" + target)) {
+  const targetAsInt = BigInt("0x" + target);
+
+  const isValid = hashAsInt < targetAsInt;
+
+  // --- AJOUT DE LOGS POUR LE DÉBOGAGE ---
+  if (!isValid) {
+    console.log('[FP Verify Debug] CPU PoW verification FAILED. Details:', {
+      messageHashed: message,
+      hashCalculated: `0x${hash}`,
+      target: `0x${target}`,
+    });
+  }
+  // --- FIN DES LOGS ---
+
+  if (isValid) {
     // The comparison is direct with native BigInts
     // The proof is valid, generate the ticket
       const expiry = Date.now() + (ticketTtl || 3600000); // Calcule l'expiration à partir du TTL

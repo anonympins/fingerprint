@@ -145,6 +145,26 @@ describe('Proof-of-Work Solvers', () => {
             expect(hashBigInt).toBeLessThan(BigInt('0x' + cpuTarget));
         });
 
+        it('should solve a "cpu_mem_inline" challenge and correctly include the fingerprint in the hash', async () => {
+            const fingerprint = 'test-fp-browser-54321';
+            const challenge = {
+                type: 'cpu_mem_inline',
+                nonce,
+                clientSecret,
+                cpuTarget,
+                memDifficulty: 1,
+                clientIp: '1.2.3.4'
+            };
+
+            const solutions = await solveChallenge(challenge, fingerprint);
+            expect(solutions).toHaveProperty('cpu', expect.any(Number));
+
+            const cpuSolution = solutions.cpu;
+            const msg = `${nonce}:${cpuSolution}:${clientSecret}:${fingerprint}`;
+            const hash = createHash('sha256').update(msg).digest('hex');
+            expect(BigInt('0x' + hash)).toBeLessThan(BigInt('0x' + cpuTarget));
+        });
+
         it('should solve a "tsp" challenge', async () => {
             const challenge = {
                 type: 'tsp',
