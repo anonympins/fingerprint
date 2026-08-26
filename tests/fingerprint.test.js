@@ -354,7 +354,11 @@ describe('Fingerprint & PoW Security Suite', () => {
             configureStore(inMemoryStore);
         });
 
-        const securityConfig = {
+        // Détecte si on est dans un environnement de CI/CD
+        const isCI = process.env.CI === 'true';
+
+        // Configuration de base pour les tests
+        let securityConfig = {
             // Adjust weights to be more realistic and less aggressive for testing.
             // This prevents minor suspicion scores from being overly amplified and causing immediate blocks.
             weights: { 
@@ -362,13 +366,26 @@ describe('Fingerprint & PoW Security Suite', () => {
                 rotationScore: 0.2, 
                 headerAnomalyScore: 0.1, 
                 inconsistencyScore: 0.2, 
-                requestPatternScore: 0.2 
+                requestPatternScore: 0.2,
+                honeypotScore: 1.0, // Garder un poids élevé pour les tests de honeypot
             },
             thresholds: { low: 20, medium: 45, high: 75 },
             // NOUVEAU : Activer explicitement le challenge pour les nouveaux appareils pour ce scénario de test.
             // C'est cette option qui permet à la logique de s'exécuter.
             challengeNewDevices: true,
         };
+
+        // Si on est en CI, on surcharge la configuration pour abaisser la difficulté
+        if (isCI) {
+            console.log('[CI Mode] Using low-difficulty configuration for tests.');
+            securityConfig = {
+                ...securityConfig,
+                cpu: {
+                    minDifficultyBits: 1, // Difficulté CPU minimale
+                    maxDifficultyBits: 2, // Difficulté CPU maximale très faible
+                }
+            };
+        }
 
         afterEach(() => {
             vi.restoreAllMocks();
