@@ -60,6 +60,17 @@ export class FingerprintBuilder {
             .map(([key, hash]) => `${key}:${hash}`)
             .join("|");
     }
+        /**
+        * Adds a raw component without hashing it.
+        * Useful for metrics that need to be read on the server.
+    * @param {string} group - The name of the group.
+    * @param {string|number} value - The raw value.
+    */
+    addRaw(group, value) {
+        if (value === undefined || value === null) return this;
+        this.components.set(group, value);
+        return this;
+    }
 
     /**
      * Compares two fingerprints and returns a similarity score (0 to 1).
@@ -75,15 +86,40 @@ export class FingerprintBuilder {
         const map1 = parse(fpString1);
         const map2 = parse(fpString2);
 
+        // Keys to ignore when comparing the initial request fingerprint with the challenge solver's fingerprint.
+        // Headers like Client-Hints (ch_*), cookie presence (cookie_keys), and upgrade-insecure-requests
+        // can vary or be absent on the subsequent request that submits the solution, especially after a redirect.
+        // By ignoring them, we focus the comparison on more stable identifiers like UA, JA3, GPU, etc.
+        const volatileKeys = new Set([
+            'ch_ua', 'ch_platform', 'ch_mobile', 'ch_model', 'ch_arch', 'ch_bitness',
+            'cookie_keys', 'upgrade',
+            // Also ignore network and http version as they can change between requests (e.g., proxy, protocol upgrade)
+            'network', 'http_ver',
+            // Ignore proxy-related headers as they are not stable client identifiers
+            'x_forwarded_for', 'x_real_ip', 'cf_connecting_ip'
+        ]);
+
         // Poids de "véracité" (Entropie/Stabilité)
+        // Les poids sont augmentés pour donner plus d'importance aux signaux forts.
         const weights = {
-            cvs: 4.0,   // Canvas: Très haute entropie (Rendu unique)
-            gpu: 3.0,   // GPU: Haute entropie (Matériel spécifique)
-            hw: 1.5,    // Hardware: Moyenne entropie
-            scr: 1.0,   // Screen: Moyenne
-            geo: 0.5,   // Geo: Faible (VPN/Voyage)
-            os: 0.5,    // OS: Faible (Générique)
-            bot: 0.0,   // Bot: Informatif
+            // --- Signaux très forts (difficiles à usurper) ---
+            cvs: 5.0,   // Canvas: Très haute entropie (Rendu unique du GPU/driver)
+            gpu: 4.0,   // GPU: Haute entropie (Matériel spécifique)
+            ja3: 3.5,   // JA3: Identifie la librairie TLS (très stable pour un client donné)
+            ua: 2.0,    // User-Agent: Signal fort, bien que modifiable
+            
+            // --- Signaux composites et dérivés ---
+            client_fp_hash: 3.0, // Le hash de l'empreinte client est un signal très fort.
+            browser: 1.5,        // Le navigateur extrait du UA.
+            os_version: 1.5,     // L'OS extrait du UA.
+            device_type: 1.0,    // Le type d'appareil extrait du UA.
+
+            // --- Signaux moyens ---
+            hw: 1.5,    // Hardware (CPU, RAM): Stabilité moyenne
+            scr: 1.0,   // Screen: Stabilité moyenne
+            // 'os' est souvent la même chose que 'ch_platform', on peut le déprécier ou lui donner un poids faible.
+            os: 0.8,    // OS (nav.platform): Assez stable
+            geo: 0.5,   // Geo/Langue: Peut changer (VPN, voyage)
         };
 
         let weightedMatches = 0;
@@ -92,8 +128,14 @@ export class FingerprintBuilder {
         const allKeys = new Set([...map1.keys(), ...map2.keys()]);
 
         allKeys.forEach((key) => {
-            const weight = weights[key] || 1.0;
-            totalWeight += weight;
+            // On ignore les clés volatiles pour cette comparaison spécifique.
+            if (volatileKeys.has(key)) return;
+
+            // On ne compare que les clés qui ont un poids défini.
+            const weight = weights[key];
+            if (!weight) return;
+
+            totalWeight += weight; // N'incrémenter que si la clé est pertinente.
             if (map1.get(key) === map2.get(key)) {
                 weightedMatches += weight;
             }

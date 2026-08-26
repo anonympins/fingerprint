@@ -227,11 +227,6 @@ export function getCompositeDeviceHash(context) {
     const ua = context.headers["user-agent"];
     if (ua) {
         srv.add("ua", ua);
-        // Extraire des infos supplémentaires du UA
-        const uaParts = parseUserAgent(ua);
-        if (uaParts.browser) srv.add("browser", uaParts.browser);
-        if (uaParts.os) srv.add("os_version", uaParts.os);
-        if (uaParts.device) srv.add("device_type", uaParts.device);
     }
 
     // 2. SIGNAL FORT: JA3 TLS Fingerprint
@@ -943,8 +938,10 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     const now = Date.now();
     const currentPath = context.path;
     // Make the function robust to handle both URLSearchParams and plain objects for query.
-    // Ensure query parameters are consistently handled, whether they come from a URLSearchParams object or a plain object.
-    const params = context.query instanceof URLSearchParams ? context.query : new URLSearchParams(context.query);
+    const params =
+      context.query instanceof URLSearchParams
+        ? new URLSearchParams(context.query.toString()) // Clone to avoid modifying the original
+        : new URLSearchParams(context.query || {});
     params.sort(); // Sort for deterministic order
     const currentQueryString = params.toString();
 
@@ -1799,10 +1796,24 @@ export class FingerprintEngine {
             const solverFingerprint = pow_fp || getCompositeDeviceHash(requestContext);
             const originalFingerprint = challengeContext.fingerprint;
 
-            if (solverFingerprint !== originalFingerprint) {
+            let similarity;
+            const similarityThreshold = this.securityConfig.similarityThreshold ?? 0.95;
+
+            // If fingerprints are simple strings (like test placeholders 'fp-probation')
+            // and don't contain the typical structure, fall back to a strict equality check.
+            if (!originalFingerprint?.includes(':') || !solverFingerprint?.includes(':')) {
+                similarity = (originalFingerprint === solverFingerprint) ? 1.0 : 0.0;
+            } else {
+                // Use the weighted comparison for structured fingerprints.
+                similarity = FingerprintBuilder.compare(originalFingerprint, solverFingerprint);
+            }
+
+            if (similarity < similarityThreshold) {
                 this._log('Fingerprint mismatch - challenge solved on a different machine!', {
                     original: originalFingerprint,
                     solver: solverFingerprint,
+                    similarity: similarity.toFixed(4),
+                    threshold: similarityThreshold
                 });
                 isValid = false;
             } else {
@@ -1851,6 +1862,10 @@ export class FingerprintEngine {
             finalSearchParams.delete('pow_solution_cpu');
             finalSearchParams.delete('pow_solution_mem');
             finalSearchParams.delete('pow_fp'); // Ne pas oublier de nettoyer le fingerprint
+            // NOUVEAU: Nettoyer aussi les paramètres des challenges d'optimisation et de travail utile
+            finalSearchParams.delete('pow_solution_population');
+            finalSearchParams.delete('pow_solution_work_result');
+            finalSearchParams.delete('pow_problem_id');
 
             // 4. On reconstruit le chemin final.
             const finalQueryString = finalSearchParams.toString();
