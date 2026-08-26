@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { BlockList } from "node:net";
 import dns from "node:dns/promises";
+import { problemManager } from "./problem-manager.js";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
 import { readFileSync } from "node:fs";
@@ -1741,6 +1742,7 @@ export class FingerprintEngine {
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
     const isSuspicious = finalScore >= thresholds.low;
+    const isVerySuspicious = finalScore >= thresholds.medium; // Seuil pour le challenge d'optimisation
 
     // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
     const suspicionFactor = isSuspicious
@@ -1765,7 +1767,7 @@ export class FingerprintEngine {
     // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
     // Si une solution de challenge est soumise, on la traite en priorité absolue,
     // avant même de recalculer le score de suspicion.
-    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp } = query;
+    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp, pow_solution_population, pow_solution_work_result, pow_problem_id } = query;
     if (pow_nonce && (pow_solution || (pow_solution_cpu && pow_solution_mem))) {
         this._log('Challenge solution submitted', { pow_type, pow_nonce });
 
@@ -1872,6 +1874,60 @@ export class FingerprintEngine {
             suspicionVector.honeypotScore = 100; // Invalid solution is a strong bot signal.
             finalScore = this.calculateFinalScore(suspicionVector);
         }
+    } else if (pow_nonce && pow_type === 'optimization_task' && pow_solution_population) {
+        this._log('Optimization task solution submitted', { pow_nonce });
+        const challengeContext = await store.get(`secret:${pow_nonce}`);
+        let isValid = false;
+
+        if (challengeContext?.optimizationProblem) {
+            try {
+                const submittedChromosomes = JSON.parse(pow_solution_population);
+                // Vérification simple : le client a-t-il renvoyé le bon nombre de solutions ?
+                if (Array.isArray(submittedChromosomes) && submittedChromosomes.length === challengeContext.optimizationProblem.population.length) {
+                    // Le serveur recalcule la fitness pour la nouvelle population.
+                    const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator({ trafficData: challengeContext.optimizationProblem.trafficData });
+                    const newPopulation = submittedChromosomes.map(chromosome => ({ chromosome, fitness: fitnessFunction(chromosome) }));
+                    
+                    // On met à jour le problème principal avec la nouvelle population.
+                    challengeContext.optimizationProblem.population = newPopulation;
+                    await store.set(`device:${deviceId}`, deviceData); // Sauvegarde l'état mis à jour
+                    isValid = true;
+                }
+            } catch (e) {
+                this._log('Error parsing optimization solution', { error: e.message });
+            }
+        }
+
+        if (isValid) {
+            await store.delete(`secret:${pow_nonce}`);
+            // La solution est valide, on accorde un ticket et on redirige.
+            const ticket = "valid_ticket_placeholder"; // Générer un vrai ticket ici
+            return { action: 'redirect', path: path, score: 0, vector: { challenge_solved: 100 }, cookie: { name: 'pow_clearance', value: ticket, options: { httpOnly: true, secure: this.isProduction, maxAge: 60000 } } };
+        } else {
+            this._log('Optimization task solution invalid', { pow_nonce });
+            suspicionVector.honeypotScore = 100;
+            finalScore = this.calculateFinalScore(suspicionVector);
+        }
+    } else if (pow_nonce && pow_type === 'useful_work_task' && pow_solution_work_result && pow_problem_id) {
+        this._log('Useful work solution submitted', { problemId: pow_problem_id });
+        const challengeContext = await store.get(`secret:${pow_nonce}`);
+        if (challengeContext) {
+            try {
+                const workResult = JSON.parse(pow_solution_work_result);
+                problemManager.integrateSolution(pow_problem_id, workResult);
+
+                await store.delete(`secret:${pow_nonce}`);
+                // Accorder un ticket de passage comme pour un PoW normal
+                const ticket = "valid_ticket_placeholder"; // Générer un vrai ticket ici
+                return { action: 'redirect', path: path, score: 0, vector: { challenge_solved: 100 }, cookie: { name: 'pow_clearance', value: ticket, options: { httpOnly: true, secure: this.isProduction, maxAge: 60000 } } };
+
+            } catch (e) {
+                this._log('Error parsing useful work solution', { error: e.message });
+            }
+        }
+        // Si la validation échoue, on pénalise fortement
+        suspicionVector.honeypotScore = 100;
+        finalScore = this.calculateFinalScore(suspicionVector);
     }
     // --- FIN DE LA LOGIQUE DE PRIORITÉ ---
 
@@ -1922,13 +1978,25 @@ export class FingerprintEngine {
         const nonce = crypto.randomBytes(16).toString("hex");
         const clientSecret = crypto.randomBytes(16).toString("hex");
 
-        // LEVEL 3: CAPTCHA (the highest)
-        if (isSuspiciousHigh) {
-            // ... logic for TSP/Captcha challenge
-        }
+        // Pour les scores élevés, on choisit aléatoirement entre un challenge de travail utile et un PoW classique.
+        // Cela rend l'automatisation plus difficile pour un attaquant.
+        if (isSuspicious && this.securityConfig.enableUsefulWork && Math.random() > 0.5) {
+            this._log('Issuing a useful work challenge', { finalScore });
 
-        // UNIFIED CHALLENGE LOGIC for all suspicion levels (low, medium, high)
-        if (isSuspicious) { // Couvre à la fois low et medium
+            const { problemId, task } = problemManager.dispatchWork(suspicionFactor);
+
+            await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
+
+            const challengePayload = {
+                challenge: {
+                    type: 'useful_work_task',
+                    nonce: nonce,
+                    clientSecret: clientSecret,
+                    usefulWorkTask: { problemId, task }
+                }
+            };
+            return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
+        } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce));

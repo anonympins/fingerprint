@@ -289,20 +289,23 @@ const Optimization = {
    * @param {number} numCycles - Le nombre total de cycles à exécuter.
    * @param {boolean} [logProgress=false] - Si true, affiche la progression dans la console.
    * @param {object} [options={}] - Options pour la parallélisation.
-   * @param {number} [options.concurrency] - Le nombre de workers à utiliser en parallèle. Par défaut, le nombre de cœurs CPU.
+   * @param {number} [options.concurrency] - Le nombre de workers à utiliser en parallèle. Par défaut, le nombre de cœurs CPU. 
+   * @param {function(number): Array<any>} [options.workerDataGenerator] - Une fonction qui, pour chaque cycle (index), génère les arguments spécifiques à passer au solveur. Si non fournie, `baseSolverArgs` est utilisé tel quel.
    * @returns {Promise<{bestResult: object, stats: {scores: Array<number>, average: number, stdDev: number}}>} Le meilleur résultat et des statistiques.
    */
   async runMultipleParallel(
     solverName,
-    baseSolverArgs,
+    baseSolverArgs = [], // Default to empty array if not provided
     numCycles,
     logProgress = false,
     options = {},
   ) {
     const concurrency = options.concurrency || os.cpus().length;
+    const workerDataGenerator = options.workerDataGenerator;
+
     if (logProgress) {
       console.log(
-        `   (Utilisation d'un pool de ${concurrency} workers pour ${numCycles} cycles)`,
+        `   (Utilisation d'un pool de ${concurrency} workers pour ${numCycles} cycles avec le solveur ${solverName})`,
       );
     }
 
@@ -317,18 +320,15 @@ const Optimization = {
 
         const workerData = {
           solverName,
-          solverArgs: [
-            // Chaque worker génère son propre jeu de données aléatoires pour garantir l'indépendance des cycles.
-            Array.from({ length: 50 }, () => ({
-              x: Math.random() * 100,
-              y: Math.random() * 100,
-            })),
-            ...baseSolverArgs,
-          ],
+          solverArgs: workerDataGenerator
+            ? workerDataGenerator(taskIndex)
+            : baseSolverArgs,
         };
 
-        const result = await new Promise((resolve, reject) => {
-          const worker = new Worker("./worker.js", { workerData });
+        const result = await new Promise(async (resolve, reject) => {
+          // Le chemin du worker doit être absolu ou relatif au fichier appelant.
+          // On utilise import.meta.url pour résoudre le chemin de manière fiable.
+          const worker = new Worker(new URL('./optimization.worker.js', import.meta.url), { workerData });
           worker.on("message", resolve);
           worker.on("error", reject);
           worker.on("exit", (code) => {

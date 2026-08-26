@@ -171,6 +171,8 @@ const securityConfig = {
         interval: 1800000,              // Optimization cycle every 30 minutes (in ms).
         minDataPoints: 200              // Minimum requests before starting an optimization cycle.
     },
+    // Enables problem solving for suspicious activity (configurable in problems.config.json)
+    enableUsefulWork: true
 };
 
 // Create an instance of the middleware with your security configuration.

@@ -360,6 +360,17 @@ const ClientLibrary = {
         url.searchParams.set(`pow_solution_${key}`, String(value));
       });
 
+      // Pour le challenge d'optimisation, la solution est un tableau d'objets
+      if (solution.population) {
+        url.searchParams.set('pow_solution_population', JSON.stringify(solution.population));
+      }
+
+      // Pour le challenge de travail utile
+      if (solution.work_result) {
+        url.searchParams.set('pow_solution_work_result', JSON.stringify(solution.work_result));
+        url.searchParams.set('pow_problem_id', solution.problem_id);
+      }
+
       // On utilise la chaîne d'intercepteurs pour la requête réessayée,
       // ce qui garantit que le fetch original est appelé avec le bon contexte.
       // Cela évite de réintroduire l'erreur "Illegal invocation".
