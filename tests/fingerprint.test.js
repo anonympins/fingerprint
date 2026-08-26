@@ -1687,6 +1687,63 @@ describe('determineOptimalTicketTtl', () => {
     // On peut le simuler en forçant l'algorithme génétique à retourner un tableau vide.
 });
 
+describe('getTimeInconsistencyScore', () => {
+    const REPLAY_THRESHOLD_MS = 5000; // Doit correspondre à la valeur dans fingerprint.js
+
+    it('should return 0 for a normal, fresh request (clientTimestamp slightly before requestTimestamp)', () => {
+        const requestTimestamp = Date.now();
+        const clientTimestamp = requestTimestamp - 100; // 100ms before server reception
+        const context = { requestTimestamp };
+        const metrics = { clientTimestamp };
+
+        const { timeInconsistencyScore } = __internal.getTimeInconsistencyScore(context, metrics);
+        expect(timeInconsistencyScore).toBe(0);
+    });
+
+    it('should return a score > 0 for a replayed request (clientTimestamp significantly before requestTimestamp)', () => {
+        const requestTimestamp = Date.now();
+        const clientTimestamp = requestTimestamp - (REPLAY_THRESHOLD_MS + 1000); // 1 second beyond threshold
+        const context = { requestTimestamp };
+        const metrics = { clientTimestamp };
+
+        const { timeInconsistencyScore } = __internal.getTimeInconsistencyScore(context, metrics);
+        // Expected score: ( (REPLAY_THRESHOLD_MS + 1000) / REPLAY_THRESHOLD_MS - 1) * 50
+        // (6000 / 5000 - 1) * 50 = (1.2 - 1) * 50 = 0.2 * 50 = 10
+        expect(timeInconsistencyScore).toBeGreaterThan(0);
+        // Utiliser toBeCloseTo pour éviter les problèmes de précision des nombres à virgule flottante.
+        expect(timeInconsistencyScore).toBeCloseTo(10);
+    });
+
+    it('should cap the score at 100 for very large time differences', () => {
+        const requestTimestamp = Date.now();
+        const clientTimestamp = requestTimestamp - (REPLAY_THRESHOLD_MS * 5); // 5 times the threshold
+        const context = { requestTimestamp };
+        const metrics = { clientTimestamp };
+
+        const { timeInconsistencyScore } = __internal.getTimeInconsistencyScore(context, metrics);
+        expect(timeInconsistencyScore).toBe(100);
+    });
+
+    it('should return 0 if clientTimestamp is after requestTimestamp (client clock ahead)', () => {
+        const requestTimestamp = Date.now();
+        const clientTimestamp = requestTimestamp + 5000; // Client clock is 5 seconds ahead
+        const context = { requestTimestamp };
+        const metrics = { clientTimestamp };
+
+        const { timeInconsistencyScore } = __internal.getTimeInconsistencyScore(context, metrics);
+        expect(timeInconsistencyScore).toBe(0);
+    });
+
+    it('should return 0 if clientTimestamp or requestTimestamp is missing', () => {
+        const context1 = { requestTimestamp: Date.now() };
+        const metrics1 = {}; // Missing clientTimestamp
+        expect(__internal.getTimeInconsistencyScore(context1, metrics1).timeInconsistencyScore).toBe(0);
+
+        const context2 = {}; // Missing requestTimestamp
+        const metrics2 = { clientTimestamp: Date.now() };
+        expect(__internal.getTimeInconsistencyScore(context2, metrics2).timeInconsistencyScore).toBe(0);
+    });
+});
 describe('Challenge Page Generation Security (XSS)', () => {
     // Les fonctions sont déjà exportées via __internal
     const { generateCpuTargetChallengePage, generateCombinedPoWChallengePage } = __internal;

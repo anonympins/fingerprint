@@ -841,6 +841,29 @@ function getBehaviorScore(context) {
 }
 
 /**
+ * Calcule un score basé sur l'incohérence temporelle entre le client et le serveur pour détecter les attaques par rejeu.
+ * @param {object} context - Le contexte de la requête, contenant le timestamp de la requête.
+ * @param {object} metrics - Les métriques comportementales parsées depuis le client.
+ * @returns {{timeInconsistencyScore: number}}
+ */
+function getTimeInconsistencyScore(context, metrics) {
+  const REPLAY_THRESHOLD_MS = 5000; // 5 secondes
+  let score = 0;
+
+  if (metrics.clientTimestamp && context.requestTimestamp) {
+    const timeDelta = context.requestTimestamp - metrics.clientTimestamp;
+
+    // Un delta très grand est un signal fort d'attaque par rejeu.
+    // Un delta négatif peut arriver si l'horloge du client est en avance, on l'ignore.
+    if (timeDelta > REPLAY_THRESHOLD_MS) {
+      // La pénalité est proportionnelle au dépassement du seuil.
+      score = Math.min(100, (timeDelta / REPLAY_THRESHOLD_MS - 1) * 50);
+    }
+  }
+  return { timeInconsistencyScore: score };
+}
+
+/**
  * Calcule un score d'incohérence entre les données du fingerprint client et les en-têtes serveur.
  * @param {object} context - Le contexte de la requête.
  * @returns {{crossLayerInconsistencyScore: number}}
@@ -1260,6 +1283,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
   const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
 
+  // NOUVEAU: On calcule le score d'incohérence temporelle.
+  const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'));
+
   // NOUVEAU: On calcule le score d'incohérence entre les couches.
   const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
 
@@ -1275,7 +1301,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, requestPatternScore, crossLayerInconsistencyScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1531,7 +1557,8 @@ export class FingerprintEngine {
             (suspicionVector.inconsistencyScore || 0) * (weights.inconsistencyScore || 0) +
             (suspicionVector.honeypotScore || 0) * (weights.honeypotScore || 0) +
             (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
-            (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0);
+            (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
+            (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0);
 
         return Math.min(100, score);
     }
@@ -2352,6 +2379,7 @@ export const powMiddleware = (securityConfig) => {
       isStatic: isStaticResource(req.path),
       // Pass the original request object for the isApiRequest function
       rawReq: req,
+      requestTimestamp: Date.now(), // Timestamp de début de requête
       // Add the newly required properties for full decoupling
       rawHeaders: req.rawHeaders,
       // Pass the raw request object for advanced inspection (e.g., JA3)
@@ -2413,6 +2441,7 @@ export const __internal = {
     getBehaviorScore, // Expose for testing
     getCrossLayerInconsistency, // Expose for testing
     // Expose page generators for security testing
+    getTimeInconsistencyScore,
     generateCpuTargetChallengePage,
     generateCombinedPoWChallengePage,
 };

@@ -202,6 +202,9 @@ const ClientLibrary = {
      * @returns {ClientBehaviorMetrics}
      */
     getClientBehaviorMetrics() {
+        // Ajoute un timestamp au moment de la collecte pour la détection de rejeu.
+        metrics.clientTimestamp = Date.now();
+
         // Normalise l'entropie de la souris
         if (mouseMovements > 10) {
             metrics.mouseEntropy /= mouseMovements;
@@ -417,6 +420,7 @@ const ClientLibrary = {
  * @property {number} mouseEntropy - Entropie des mouvements de la souris.
  * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
+ * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
  */
 
 /** @type {ClientBehaviorMetrics} */
@@ -424,6 +428,7 @@ const metrics = {
     mouseEntropy: 0,
     keystrokeLatency: 0,
     honeypotInteraction: false,
+    clientTimestamp: 0,
 };
 
 let lastMousePos = { x: 0, y: 0 };
