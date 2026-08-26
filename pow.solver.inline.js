@@ -23,7 +23,7 @@ async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null
     let cpuSolution = 0;
     const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
     while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
-        const msg = clientSecret ?
+        const msg = clientSecret ? // The fingerprint is part of the signed message when a secret is used.
             `${nonce}:${cpuSolution}:${clientSecret}:${fingerprint}` :
             `${ipPart}:${nonce}:${cpuSolution}`;
         const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
@@ -193,7 +193,7 @@ async function solveChallenge(challenge, fingerprint = '') { // fingerprint para
             const memSeed = `:${nonce}:${clientSecret}`;
             const [cpuSol, memSol] = await Promise.all([
                 (async () => {
-                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
+                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property."); // Pass fingerprint to solver
                     return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret, null, fingerprint); // Pass progressCallback as null
                 })(),
                 solveMemory(memSeed, memDifficulty)

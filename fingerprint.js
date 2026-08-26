@@ -190,7 +190,7 @@ function getHeaderSignature(context) {
     for (let i = 0; i < context.rawHeaders.length; i += 2) {
         headerKeys.push(context.rawHeaders[i]);
     }
-    return cyrb53(headerKeys.join(','));
+    return cyrb53(headerKeys.sort().join(','));
 }
 
 /**
@@ -1459,7 +1459,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {}, fingerprint);
         // --- Memory Challenge ---
         document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
-        await new Promise(r => setTimeout(r, 10)); // Yield to update UI
+        await new Promise(r => setTimeout(r, 10)); // Yield to update UI        
         let memSolution = 0;
         try {
             const memSeed = nonce + ":" + clientSecret;

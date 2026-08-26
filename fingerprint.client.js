@@ -341,7 +341,7 @@ const ClientLibrary = {
     
     try {
       const challengeData = await response.json();
-      if (!challengeData.challenge || !challengeData.challenge.type || !challengeData.challenge.cpuTarget) {
+      if (!challengeData.challenge || !challengeData.challenge.type) {
         return response; // Pas un challenge JSON valide
       }
 
