@@ -89,15 +89,14 @@ const securityConfig = {
         inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
         behaviorScore: 0.7,      // Penalizes non-human interactions (no mouse/keyboard activity)
         honeypotScore: 1.0,      // Strongly penalizes bots filling hidden form fields
-        crossLayerInconsistencyScore: 0.4 // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
+        crossLayerInconsistencyScore: 0.4, // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
+        timeInconsistencyScore: 0.9 // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
     },
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued
         medium: 45, // Score for a more difficult combined CPU/Memory challenge
         high: 75,   // Score for a very difficult challenge
         block: 95,  // Score above which the request is blocked outright (HTTP 404)
-        isStaticResource: (req) => req.path.startsWith('/static/'), // Optional: Custom function to identify static resources
-        isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json') // Optional: Custom function to identify API requests
     },
     // (Optional) Configure the duration (in milliseconds) for various temporary data.
     ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
@@ -160,8 +159,10 @@ const securityConfig = {
         ...default_whitelist(), // Use the defaults
         { userAgent: 'MyIndustrySpecificBot', hostnameSuffix: '.my-bot-verifier.com' }, // Add a custom bot
     ],
-    // Or, if you only want the defaults:
-    // whitelist: default_whitelist(),
+    // Optional: Custom function to identify static resources
+    isStaticResource: (req) => req.path.startsWith('/static/'),
+    // Optional: Custom function to identify API requests
+    isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
     // The logger is required for auto-tuning. It collects data on requests.
     logger: (log) => trafficData.push(log),
     // (Optional) Configuration for the automatic threshold and pattern tuning.
@@ -170,6 +171,8 @@ const securityConfig = {
         interval: 1800000,              // Optimization cycle every 30 minutes (in ms).
         minDataPoints: 200              // Minimum requests before starting an optimization cycle.
     },
+    // Enables problem solving for suspicious activity (configurable in problems.config.json)
+    enableUsefulWork: true
 };
 
 // Create an instance of the middleware with your security configuration.

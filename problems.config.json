@@ -1,0 +1,92 @@
+[
+  {
+    "id": "tsp_50_cities_parallel_search",
+    "workUnit": {
+      "type": "run_multiple_parallel",
+      "solverName": "solveTSP",
+      "numCycles": 20
+    },
+    "payload": {
+      "baseSolverArgs": [
+        {
+          "$init": "generate:randomPoints",
+          "params": { "count": 50, "bounds": { "x": 1000, "y": 1000 } }
+        },
+        { "maxIterations": 15000, "initialTemperature": 10000, "coolingRate": 0.999 }
+      ],
+      "workerDataGenerator": {
+        "$init": "generate:parallelArgs",
+        "params": {
+          "baseArgs": "FROM_PAYLOAD",
+          "variations": {
+            "initialSolution": "random"
+          }
+        }
+      },
+      "concurrency": 4,
+      "logProgress": true
+    },
+    "state": {
+      "bestResult": null,
+      "stats": null
+    }
+  },
+  {
+    "id": "portfolio_20_assets_parallel_search",
+    "workUnit": {
+      "type": "run_multiple_parallel",
+      "solverName": "solvePortfolio",
+      "numCycles": 15
+    },
+    "payload": {
+      "baseSolverArgs": [
+        {
+          "$init": "generate:randomAssets",
+          "params": { "count": 20 }
+        },
+        0.25,
+        { "generations": 50, "populationSize": 60 }
+      ],
+      "concurrency": 4,
+      "logProgress": true
+    },
+    "state": {
+      "bestResult": null,
+      "stats": null
+    }
+  },
+  {
+    "id": "facility_location_parallel_search",
+    "workUnit": {
+      "type": "run_multiple_parallel",
+      "solverName": "solveFacilityLocation",
+      "numCycles": 25
+    },
+    "payload": {
+      "baseSolverArgs": [
+        {
+          "$init": "generate:randomPoints",
+          "params": { "count": 100 }
+        },
+        5,
+        { "minX": 0, "maxX": 1000, "minY": 0, "maxY": 1000 },
+        { "fixedCostPerFacility": 5000, "maxIterations": 10000 }
+      ],
+      "workerDataGenerator": {
+        "$init": "generate:parallelArgs",
+        "params": {
+          "baseArgs": "FROM_PAYLOAD",
+          "variations": {
+            "initialSolution": "random"
+          }
+        }
+      },
+      "concurrency": 4,
+      "logProgress": true
+    },
+    "state": {
+      "bestResult": null,
+      "stats": null
+    }
+  }
+]

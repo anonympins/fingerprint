@@ -22,11 +22,15 @@ async function solveCpuTargetInline(clientIp, nonce, target, clientSecret = null
     let cpuSolution = 0;
     const ipPart = clientIp || ''; // Use empty string if IP is null/undefined
     while (true) { // When a clientSecret is used, the IP is omitted from the hash to make it independent of the network.
-        // The message format must be consistent. When a clientSecret is present,
-        // the IP is omitted, and the fingerprint of the solving machine is included.
-        const msg = clientSecret ?
-            `${nonce}:${cpuSolution}:${clientSecret}:${fingerprint}` :
-            `${ipPart}:${nonce}:${cpuSolution}`;
+        let msg = `${nonce}:${cpuSolution}`;
+        if (clientSecret) {
+            msg += `:${clientSecret}`;
+        } else if (ipPart) { // Only include IP if no clientSecret and IP is available
+            msg = `${ipPart}:${msg}`; // Prepend IP
+        }
+        if (fingerprint) { // Always append fingerprint if provided
+            msg += `:${fingerprint}`;
+        }
         const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
         const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         if (BigInt('0x' + hashHex) < cpuTarget) break;
@@ -174,7 +178,7 @@ async function solveTsp(cities, targetMaxDistance) {
  * @param {object} challenge - L'objet challenge reçu du serveur.
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
-async function solveChallenge(challenge) {
+async function solveChallenge(challenge, fingerprint = '') {
     const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
     const solutions = {};
 
@@ -194,7 +198,7 @@ async function solveChallenge(challenge) {
             const [cpuSol, memSol] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret);
+                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret, fingerprint);
                 })(),
                 solveMemory(memSeed, memDifficulty)
             ]);
@@ -207,7 +211,7 @@ async function solveChallenge(challenge) {
             const [cpuSolInline, memSolInline] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret);
+                    return solveCpuTargetInline(clientIp, nonce, cpuTarget, clientSecret, fingerprint);
                 })(),
                 solveMemory(memSeedInline, memDifficulty)
             ]);

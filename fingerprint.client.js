@@ -202,6 +202,9 @@ const ClientLibrary = {
      * @returns {ClientBehaviorMetrics}
      */
     getClientBehaviorMetrics() {
+        // Ajoute un timestamp au moment de la collecte pour la détection de rejeu.
+        metrics.clientTimestamp = Date.now();
+
         // Normalise l'entropie de la souris
         if (mouseMovements > 10) {
             metrics.mouseEntropy /= mouseMovements;
@@ -357,6 +360,17 @@ const ClientLibrary = {
         url.searchParams.set(`pow_solution_${key}`, String(value));
       });
 
+      // Pour le challenge d'optimisation, la solution est un tableau d'objets
+      if (solution.population) {
+        url.searchParams.set('pow_solution_population', JSON.stringify(solution.population));
+      }
+
+      // Pour le challenge de travail utile
+      if (solution.work_result) {
+        url.searchParams.set('pow_solution_work_result', JSON.stringify(solution.work_result));
+        url.searchParams.set('pow_problem_id', solution.problem_id);
+      }
+
       // On utilise la chaîne d'intercepteurs pour la requête réessayée,
       // ce qui garantit que le fetch original est appelé avec le bon contexte.
       // Cela évite de réintroduire l'erreur "Illegal invocation".
@@ -417,6 +431,7 @@ const ClientLibrary = {
  * @property {number} mouseEntropy - Entropie des mouvements de la souris.
  * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
+ * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
  */
 
 /** @type {ClientBehaviorMetrics} */
@@ -424,6 +439,7 @@ const metrics = {
     mouseEntropy: 0,
     keystrokeLatency: 0,
     honeypotInteraction: false,
+    clientTimestamp: 0,
 };
 
 let lastMousePos = { x: 0, y: 0 };
