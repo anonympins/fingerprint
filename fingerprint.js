@@ -1945,8 +1945,19 @@ export class FingerprintEngine {
         await store.set(`device:${cookies.device_id}`, deviceData); // No TTL for condemned status
         return { action: 'block', status: 404, score: 100, vector: { honeypotScore: 100 } };
     }
+    
+    // --- NOUVELLE LOGIQUE DE RE-CHALLENGE ---
+    // Un challenge est nécessaire si :
+    // 1. La requête est suspecte ET il n'y a pas de ticket valide.
+    // OU
+    // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
+    const hasValidTicket = isTicketValid(clientIp, powCookie);
+    const mustReChallenge = isSuspiciousHigh && hasValidTicket;
 
-    if (isSuspicious && !isTicketValid(clientIp, powCookie)) { // The powCookie check is now after the PoW solution check
+    if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
+        if (mustReChallenge) {
+            this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
+        }
         this._log('Suspicious request without valid ticket - issuing challenge', { finalScore, hasPowCookie: !!powCookie });
         // Honeypot: Direct probing of challenge endpoints is highly suspicious.
         // A legitimate user only hits these endpoints via the challenge page itself.
