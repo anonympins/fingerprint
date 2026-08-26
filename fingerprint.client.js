@@ -346,7 +346,10 @@ const ClientLibrary = {
       }
 
       console.log(`[Fingerprint] Received a '${challengeData.challenge.type}' challenge. Solving...`);
-      const solution = await solveChallenge(challengeData.challenge);
+      // --- FIX: Pass the current device fingerprint to the solver ---
+      // This ensures the hash calculation is consistent with the server's verification.
+      const solverFp = this.getDeviceFingerprint();
+      const solution = await solveChallenge(challengeData.challenge, solverFp);
       console.log('[Fingerprint] Challenge solved. Retrying original request.');
 
       // Ajouter la solution aux paramètres de la requête pour le nouvel essai
@@ -372,7 +375,6 @@ const ClientLibrary = {
       }
 
       // --- FIX: Add the solver's fingerprint to the retry request ---
-      const solverFp = this.getDeviceFingerprint();
       url.searchParams.set('pow_fp', solverFp);
 
       // On utilise la chaîne d'intercepteurs pour la requête réessayée,

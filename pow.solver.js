@@ -329,7 +329,7 @@ export async function solveOptimizationTask(initialPopulation, generations) {
  * @param {object} challenge - L'objet challenge reçu du serveur.
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
-export async function solveChallenge(challenge, fingerprint = '') {
+export async function solveChallenge(challenge, fingerprint = '') { // The fingerprint is now passed from the client library
     const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, optimizationTask, usefulWorkTask } = challenge;
     const solutions = {};
 
@@ -350,7 +350,7 @@ export async function solveChallenge(challenge, fingerprint = '') {
             const [cpuSol, memSol] = await Promise.all([
                 (async () => {
                     if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property."); // Pass fingerprint to solver
-                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret, fingerprint);
+                    return solveCpuTargetInline(null, nonce, cpuTarget, clientSecret, null, fingerprint);
                 })(),
                 solveMemory(memSeed, memDifficulty)
             ]);

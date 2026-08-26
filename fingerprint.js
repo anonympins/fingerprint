@@ -1454,6 +1454,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
 
         // --- CPU Challenge ---
         document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';        const cpuSolution = await window.solveCpuChallengeInline(clientIp, nonce, cpuTarget, clientSecret, (progress) => {}, fingerprint);
+
         // --- Memory Challenge ---
         document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
         await new Promise(r => setTimeout(r, 10)); // Yield to update UI        
@@ -1465,7 +1466,10 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
             document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
             return;
         }
-        window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution + "&pow_fp=" + encodeURIComponent(fingerprint);
+
+        // Redirect with both solutions and the fingerprint used to solve.
+        const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution + "&pow_fp=" + encodeURIComponent(fingerprint);
+        window.location.href = finalUrl;
       }
       solve();
     `;
