@@ -165,6 +165,20 @@ const securityConfig = {
         { type: 'hostname_allowlist', entries: [
                 'google.com',      // A specific hostname
             ]},
+        // Option 3: Host + Path Allowlist.
+        // Bypasses checks for specific URL paths on specific hostnames. This is ideal for whitelisting
+        // an API endpoint on one domain but not another. The entry is a combination of the host
+        // header and the path. Supports wildcards (*) at the end of the path.
+        { type: 'host_path_allowlist', entries: [
+                'web.primals.net/api/*', // All paths starting with /api2 on web.primal.net
+            ]},
+        // Option 3: Path Allowlist.
+        // Bypasses checks for specific URL paths. This is useful for trusted API endpoints, webhooks, or static content paths
+        // that don't need protection. Supports wildcards (*) at the end of an entry.
+        { type: 'path_allowlist', entries: [
+                '/api/v1/webhooks/trusted-source', // Exact path
+                '/api/v2/public/*',                // All paths starting with /api/v2/public/
+            ]},
         // Option 2: DNS-verified bots (e.g., search engine crawlers).
         // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
         // The result is cached per IP to avoid repeated DNS lookups.

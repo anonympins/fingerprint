@@ -1568,6 +1568,78 @@ export class FingerprintEngine {
     return this._allowlist.check(clientIp);
   }
   /**
+   * Checks if the request's host and path match an entry in the host+path allowlist.
+   * @private
+   * @param {string} requestHost - The host from the request headers.
+   * @param {string} requestPath - The path of the incoming request.
+   * @returns {boolean} True if the combination is in the allowlist.
+   */
+  _isHostPathInAllowlist(requestHost, requestPath) {
+    const { whitelist = [] } = this.securityConfig;
+    const hostPathRule = whitelist.find(rule => rule.type === 'host_path_allowlist');
+
+    if (!hostPathRule || !hostPathRule.entries || hostPathRule.entries.length === 0) {
+      return false;
+    }
+
+    for (const entry of hostPathRule.entries) {
+      // Find the first slash to separate host and path
+      const firstSlashIndex = entry.indexOf('/');
+      if (firstSlashIndex === -1) continue; // Invalid entry
+
+      const hostPattern = entry.substring(0, firstSlashIndex);
+      const pathPattern = entry.substring(firstSlashIndex);
+
+      // Check if the request host matches the host pattern
+      if (requestHost !== hostPattern) {
+        continue;
+      }
+
+      // Check if the request path matches the path pattern (with wildcard support)
+      if (pathPattern.endsWith('*')) {
+        const basePath = pathPattern.slice(0, -1);
+        if (requestPath.startsWith(basePath)) {
+          return true; // Wildcard match
+        }
+      } else if (requestPath === pathPattern) {
+        return true; // Exact match
+      }
+    }
+    return false;
+  }
+  /**
+   * Checks if the request path matches any entry in the path allowlist.
+   * Supports simple wildcards (*) at the end of a path.
+   * @private
+   * @param {string} requestPath - The path of the incoming request.
+   * @returns {boolean} True if the path is in the allowlist.
+   */
+  _isPathInAllowlist(requestPath) {
+    const { whitelist = [] } = this.securityConfig;
+    const pathAllowlistRule = whitelist.find(rule => rule.type === 'path_allowlist');
+
+    if (!pathAllowlistRule || !pathAllowlistRule.entries || pathAllowlistRule.entries.length === 0) {
+      return false;
+    }
+
+    for (const entry of pathAllowlistRule.entries) {
+      if (entry.endsWith('*')) {
+        // Handle wildcard matching
+        const base = entry.slice(0, -1);
+        if (requestPath.startsWith(base)) {
+          return true;
+        }
+      } else {
+        // Handle exact path matching
+        if (requestPath === entry) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+  /**
    * Verifies if a request comes from a legitimate, whitelisted bot (e.g., Googlebot)
    * using reverse and forward DNS lookups. The result is cached.
    * @private
@@ -1653,6 +1725,19 @@ export class FingerprintEngine {
     if (await this._isIpInHostnameAllowlist(clientIp)) {
       this._log('IP resolves to a whitelisted hostname - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'hostname_allowlist' } };
+    }
+
+    // 3. Check host+path based allowlist.
+    const requestHost = requestContext.headers?.host;
+    if (requestHost && this._isHostPathInAllowlist(requestHost, path)) {
+      this._log('Host and path in allowlist - allowing request', { host: requestHost, path });
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'host_path_allowlist' } };
+    }
+
+    // 3. Check path-based allowlist.
+    if (this._isPathInAllowlist(path)) {
+      this._log('Path in allowlist - allowing request', { path });
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'path_allowlist' } };
     }
 
     const { pow_nonce } = query;
