@@ -921,13 +921,22 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         deviceData.timingHistory.shift();
     }
 
-    // Decay the score over time if behavior becomes normal again.
-    // We can store the score in deviceData and decay it.
-    deviceData.lastPatternScore = Math.min(100, (deviceData.lastPatternScore || 0) * decayFactor + score); // Decay old score and add new, plafonné à 100
+    // --- NOUVELLE LOGIQUE DE DÉCROISSANCE ET DE RÉINITIALISATION ---
+    const timeSincePreviousRequest = history.length > 1 ? now - history[history.length - 2].timestamp : Infinity;
+    const currentPatternScore = deviceData.lastPatternScore || 0;
 
-    // If there hasn't been a request in a while, reset the pattern score.
-    if (history.length > 1 && (now - history[history.length - 2].timestamp > inactivityReset)) { // X ms inactivity
-        deviceData.lastPatternScore = 0;
+    if (timeSincePreviousRequest > inactivityReset) {
+        // Si le temps écoulé est long, on ne réinitialise le score que s'il était déjà bas.
+        // Un score élevé (bot déjà détecté) ne sera pas effacé par une simple pause.
+        if (currentPatternScore < 20) { // Seuil de réinitialisation
+            deviceData.lastPatternScore = 0;
+        } else {
+            // Pour un score élevé, on applique juste une décroissance plus forte.
+            deviceData.lastPatternScore = Math.max(0, currentPatternScore * (decayFactor - 0.2));
+        }
+    } else {
+        // Comportement normal : décroissance + ajout du nouveau score.
+        deviceData.lastPatternScore = Math.min(100, currentPatternScore * decayFactor + score);
     }
 
     return { requestPatternScore: deviceData.lastPatternScore };
