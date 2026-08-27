@@ -822,22 +822,15 @@ function getCrossLayerInconsistency(context) {
 function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     if (!deviceData) return { requestPatternScore: 0 };
 
-    // Default values for the pattern detection logic, which can be overridden by the auto-tuner.
+    // (NOUVEAU) Logique de détection de pattern simplifiée et unifiée.
     const {
-        velocityThreshold = 800, velocityWeight = 30,
-        burstThreshold = 1500, burstWeight = 50,
-        scrapeThreshold = 1000, scrapeWeight = 20, scrapeBurstWeight = 40,
-        historySize = 10,
-        decayFactor = 0.9,
-        inactivityReset = 30000, // 30 secondes
-        // Nouveaux paramètres pour l'analyse de distribution
-        benfordMinSamples = 15, benfordWeight = 50,
-        // Nouveau paramètre pour la détection de séquences
-        sequenceLength = 3, sequenceWeight = 60,
-        // Nouveaux paramètres pour la détection de régularité
-        regularityMinSamples = 10,
-        regularityThreshold = 100, // Écart-type en ms sous lequel le comportement est jugé "trop régulier"
-        regularityWeight = 40      // Pénalité pour la régularité
+        historySize = 20,           // Nombre de requêtes à conserver pour l'analyse.
+        minSamples = 10,            // Nombre d'intervalles de temps à analyser avant de calculer.
+        regularityThreshold = 150,  // Écart-type (ms) en dessous duquel le comportement est "trop régulier".
+        benfordThreshold = 0.15,    // Seuil de déviation de Benford au-dessus duquel la distribution est "non naturelle".
+        patternWeight = 80,         // Pénalité FORTE et unique si un pattern est détecté.
+        decayFactor = 0.95,         // Décroissance du score dans le temps.
+        inactivityReset = 180000    // Réinitialisation du score après 3 minutes d'inactivité.
     } = patternConfig;
 
     const now = Date.now();
@@ -850,114 +843,63 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     params.sort(); // Sort for deterministic order
     const currentQueryString = params.toString();
 
-    // Initialize request history if it doesn't exist
     if (!deviceData.requestHistory) deviceData.requestHistory = [];
-    // NOUVEAU: S'assurer que timingHistory est toujours initialisé.
-    // Cette vérification est séparée car deviceData peut exister avec requestHistory mais sans timingHistory.
     if (!deviceData.timingHistory) deviceData.timingHistory = [];
 
     const history = deviceData.requestHistory;
-    let instantScore = 0;
-
-    // --- Update history FIRST ---
-    // This ensures the current request's timing is included in the analysis below.
     const lastRequest = history.length > 0 ? history[history.length - 1] : null;
     const timeSinceLast = lastRequest ? now - lastRequest.timestamp : Infinity;
 
+    // Mise à jour de l'historique
     history.push({
         timestamp: now,
         path: currentPath,
         queryString: currentQueryString,
     });
-
-    // --- Analyze patterns based on the last few requests ---
     if (lastRequest) {
-
-        // Stocker le délai pour l'analyse de distribution
         deviceData.timingHistory.push(timeSinceLast);
-
-        // 1. Velocity Check: Penalize requests that are too fast to be human.
-        if (timeSinceLast < velocityThreshold) {
-            instantScore += velocityWeight; // score = 30
-        }
-
-        // 2. Burst Check: Add additional penalty for identical requests in a very short time frame.
-        if (currentPath === lastRequest.path && currentQueryString === lastRequest.queryString && timeSinceLast < burstThreshold) {
-            instantScore += burstWeight; // score = 30 + 50 = 80
-        }
-
-        // 3. Sequential Scraping Check: Add additional penalty for same path with different query params (potential scraping).
-        // This is a simplified check, now independent of the burst check.
-        if (currentPath === lastRequest.path && currentQueryString !== lastRequest.queryString && timeSinceLast < scrapeThreshold) { // Corrected logic
-            const previousRequest = history.length > 2 ? history[history.length - 2] : null;
-            if (previousRequest && previousRequest.path === currentPath) {
-                instantScore += scrapeBurstWeight; // This is at least the 3rd request in a sequence to the same path.
-            } else {
-                instantScore += scrapeWeight; // First sign of a potential scraping pattern
-            }
-        }
-
-        // 4. (NOUVEAU) Détection de séquences répétitives (ex: A -> B -> C -> A -> B -> C)
-        if (history.length >= sequenceLength * 2) {
-            const lastSequence = history.slice(-sequenceLength);
-            const previousSequence = history.slice(-sequenceLength * 2, -sequenceLength);
-            
-            const isRepeating = lastSequence.every((req, i) => 
-                req.path === previousSequence[i].path && req.queryString === previousSequence[i].queryString
-            );
-            if (isRepeating) instantScore += sequenceWeight;
-        }
     }
 
-    // --- Statistical analysis (Benford & Regularity) - applied separately ---
-    let statisticalScore = 0;
-    // 5. (NOUVEAU) Analyse de la distribution des délais avec la loi de Benford
-    if (deviceData.timingHistory.length >= benfordMinSamples) {
-        const benfordDeviation = Optimization.Operators.benfordTest(deviceData.timingHistory);
-        statisticalScore += Math.min(100, (benfordDeviation / 0.3) * benfordWeight);
-    }
+    let instantScore = 0;
+    const timings = deviceData.timingHistory;
 
-    // 6. (NOUVEAU) Analyse de la régularité (faible écart-type des délais)
-    if (deviceData.timingHistory.length >= regularityMinSamples) {
+    // Analyse statistique unifiée si nous avons assez de données
+    if (timings.length >= minSamples) {
         const timings = deviceData.timingHistory;
         const mean = timings.reduce((a, b) => a + b, 0) / timings.length;
         const variance = timings.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / timings.length;
         const stdDev = Math.sqrt(variance);
+        const benfordDeviation = Optimization.Operators.benfordTest(timings);
 
+        // Détection de régularité (bots de type "cron")
         if (stdDev < regularityThreshold) {
-            statisticalScore += (1 - (stdDev / regularityThreshold)) * regularityWeight;
+            instantScore = patternWeight;
+        }
+        // Détection de distribution non-naturelle (bots "faussement aléatoires")
+        else if (benfordDeviation > benfordThreshold) {
+            instantScore = patternWeight;
         }
     }
 
-    // Keep history to a reasonable size (e.g., last 10 requests)
+    // Garder l'historique à une taille raisonnable
     if (history.length > historySize) {
         history.shift();
     }
-    if (deviceData.timingHistory.length > benfordMinSamples * 2) { // Garder un historique plus long pour Benford
+    if (deviceData.timingHistory.length > historySize) {
         deviceData.timingHistory.shift();
     }
 
-    // --- LOGIQUE DE DÉCROISSANCE ET DE SCORE FINAL (CORRIGÉE) ---
-    // On récupère le score précédent AVANT de le modifier.
+    // Logique de décroissance et de score final
     let newPatternScore = deviceData.lastPatternScore || 0;
 
-    // 1. Apply decay to the previous score based on elapsed time.
-    // This logic is now applied BEFORE adding the score for the current request.
     if (timeSinceLast > inactivityReset) {
-        // If the time elapsed is long, we apply a stronger decay.
-        // A high score (bot already detected) will not be erased by a simple pause,
-        // but it will decrease. A low score will decay towards zero.
-        newPatternScore *= (decayFactor - 0.2); // Apply a stronger decay factor.
+        newPatternScore = 0; // Réinitialisation complète après une longue inactivité
     } else {
-        // Normal behavior: decay the previous score.
         newPatternScore *= decayFactor;
     }
-    // Ensure score doesn't go below zero
     newPatternScore = Math.max(0, newPatternScore);
 
-    // 2. Ajouter les scores calculés pour la requête actuelle (instantanés + statistiques) au score décrémenté.
-    // Le plafonnement à 100 se fait à la fin.
-    deviceData.lastPatternScore = newPatternScore + instantScore + statisticalScore;
+    deviceData.lastPatternScore = newPatternScore + instantScore;
 
     return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
 }

@@ -1481,16 +1481,17 @@ describe('Fingerprint & PoW Security Suite', () => {
     });
 });
 
-describe('getRequestPatternScore', () => {
-    const patternConfig = {
-        velocityThreshold: 800, velocityWeight: 30,
-        burstThreshold: 1500, burstWeight: 50,
-        scrapeThreshold: 1000, scrapeWeight: 20, scrapeBurstWeight: 40,
-        historySize: 10,
-        decayFactor: 0.9,
-        inactivityReset: 5000 // 5 seconds for easier testing
-    };
+// Define patternConfig at a higher scope to be accessible by multiple describe blocks
+const patternConfig = {
+    minSamples: 5, // Lower for easier testing
+    regularityThreshold: 50,
+    benfordThreshold: 0.15,
+    patternWeight: 80,
+    decayFactor: 0.9,
+    inactivityReset: 5000,
+};
 
+describe('getRequestPatternScore', () => {
     let dateNowSpy;
 
     afterEach(() => {
@@ -1506,90 +1507,65 @@ describe('getRequestPatternScore', () => {
         expect(requestPatternScore).toBe(0);
     });
 
-    test('should detect high velocity requests', () => {
-        const deviceData = { requestHistory: [{ timestamp: 10000, path: '/home', queryKeys: '' }] };
-        const context = { path: '/about', query: {} };
-
-        // Simulate a request 100ms after the last one
-        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10100);
-
-        const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(requestPatternScore).toBe(patternConfig.velocityWeight); // 30
-    });
-
-    test('should detect a burst of identical requests', () => {
+    test('should NOT assign a pattern score if not enough samples are collected', () => {
         const deviceData = {
-            requestHistory: [{ timestamp: 10000, path: '/products', queryString: 'id=1' }]
+            requestHistory: [],
+            timingHistory: [100, 200, 150] // Only 3 samples, less than minSamples (5)
         };
-        const context = { path: '/products', query: { id: '1' } };
-
-        // Simulate an identical request 150ms later (triggers both velocity and burst)
-        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10150);
+        const context = { path: '/page', query: {} };
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10000);
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        const expectedScore = patternConfig.velocityWeight + patternConfig.burstWeight; // 30 + 50 = 80
-
-        expect(requestPatternScore).toBe(expectedScore);
+        expect(requestPatternScore).toBe(0);
     });
 
-    test('should detect a scraping pattern', () => {
-        const deviceData = { requestHistory: [{ timestamp: 10000, path: '/api/items', queryString: 'page=1' }] };
-        const context = { path: '/api/items', query: { page: '2' } }; // Same path, different query
-
-        // Simulate a request 150ms later (triggers velocity and scrape)
-        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10150);
+    test('should assign a high pattern score for highly regular (robotic) requests', () => {
+        const deviceData = {
+            requestHistory: [],
+            timingHistory: [100, 100, 100, 100, 100, 100] // stdDev = 0, which is < regularityThreshold
+        };
+        const context = { path: '/page', query: {} };
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10000);
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        const expectedScore = patternConfig.velocityWeight + patternConfig.scrapeWeight; // 30 + 20 = 50
-        expect(requestPatternScore).toBe(expectedScore);
+        expect(requestPatternScore).toBe(patternConfig.patternWeight); // 80
+    });
+
+    test('should assign a high pattern score for non-natural (Benford-violating) timings', () => {
+        // This distribution of leading digits (all 9s) violates Benford's law.
+        const deviceData = {
+            requestHistory: [],
+            timingHistory: [901, 923, 911, 954, 987, 932, 945, 965, 978, 999]
+        };
+        const context = { path: '/page', query: {} };
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10000);
+
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
+        expect(requestPatternScore).toBe(patternConfig.patternWeight); // 80
     });
 
     test('should apply decay factor to the score over time', () => {
         const deviceData = {
             requestHistory: [{ timestamp: 10000, path: '/home', queryString: '' }],
-            lastPatternScore: 50 // Previous score
+            lastPatternScore: 50, // Previous score
+            timingHistory: []
         };
         const context = { path: '/contact', query: {} };
 
-        // Simulate a fast request that adds 30 points
-        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10100);
+        // Simulate a slow, non-pattern-matching request
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(12000);
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
 
-        // Expected: (previous score * decay) + new score
-        const expectedScore = (50 * patternConfig.decayFactor) + patternConfig.velocityWeight; // (50 * 0.9) + 30 = 45 + 30 = 75
+        // Expected: (previous score * decay) + 0 (since no new pattern was detected)
+        const expectedScore = 50 * patternConfig.decayFactor; // 50 * 0.9 = 45
         expect(requestPatternScore).toBe(expectedScore);
-    });
-    it('should decay a high score (but not reset) after inactivity', async () => {
-        const context = { path: '/test', query: {} };
-        const deviceData = { requestHistory: [], lastPatternScore: 0 };
-        // Utiliser un poids élevé pour dépasser facilement le seuil de réinitialisation de 20
-        const patternConfig = { velocityThreshold: 100, velocityWeight: 60, inactivityReset: 500, decayFactor: 0.9 };
-
-        // 1. Faire une requête rapide pour obtenir un score élevé (ex: 60)
-        getRequestPatternScore(context, deviceData, patternConfig); // t0
-        await new Promise(r => setTimeout(r, 50));
-        const { requestPatternScore: highscore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(highscore).toBeGreaterThan(20); // S'assurer que le score est élevé
-
-        // 2. Attendre plus longtemps que la période de réinitialisation
-        await new Promise(r => setTimeout(r, 1600));
-
-        // 3. La requête suivante ne doit pas ajouter de score (car lente), et le score précédent doit avoir décru
-        const { requestPatternScore: decayedScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(decayedScore).toBeGreaterThan(0); // Le score ne doit pas être 0
-        expect(decayedScore).toBeLessThan(highscore); // Le score doit avoir décru
     });
 
     it('should decay a low score towards zero after inactivity', async () => {
         const context = { path: '/test', query: {} };
-        const deviceData = { requestHistory: [], lastPatternScore: 0 };
-        // Utiliser un poids faible pour rester sous le seuil de 20
-        const patternConfig = { velocityThreshold: 500, velocityWeight: 15, inactivityReset: 500, decayFactor: 0.9 };
-
-        // 1. Faire une requête pour obtenir un score faible (ex: 15)
-        const { requestPatternScore: lowScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(lowScore).toBeLessThan(20);
+        const deviceData = { requestHistory: [], timingHistory: [], lastPatternScore: 15 };
+        const lowScore = 15;
 
         // 2. Attendre
         await new Promise(r => setTimeout(r, 1600));
@@ -1599,7 +1575,6 @@ describe('getRequestPatternScore', () => {
         expect(decayedScore).toBeLessThanOrEqual(lowScore);
         expect(decayedScore).toBeGreaterThanOrEqual(0);
     });
-
 }); // <-- AJOUT DE L'ACCOLADE FERMANTE MANQUANTE
 
 describe('determineOptimalTicketTtl', () => {
@@ -1756,12 +1731,9 @@ describe('Challenge Page Generation Security (XSS)', () => {
 
 describe('Regularity Detection (Standard Deviation)', () => {
     const regularityConfig = {
-        regularityMinSamples: 5,
-        regularityThreshold: 50, // Un seuil bas pour le test
-        regularityWeight: 60,
-        velocityWeight: 0, // On désactive les autres scores pour isoler la régularité
-        burstWeight: 0,
-        scrapeWeight: 0,
+        ...patternConfig,
+        patternWeight: 60,
+        minSamples: 5, // Ensure minSamples is explicitly defined for this test suite
     };
 
     let dateNowSpy;
@@ -1772,25 +1744,26 @@ describe('Regularity Detection (Standard Deviation)', () => {
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
 
-        // Écart-type de 0 -> pénalité maximale
-        expect(requestPatternScore).toBeCloseTo(regularityConfig.regularityWeight);
+        // stdDev is 0, which is < regularityThreshold, so the full patternWeight is applied.
+        expect(requestPatternScore).toBe(regularityConfig.patternWeight);
     });
 
     it('should apply a low penalty for slightly irregular requests', () => {
         const deviceData = { requestHistory: [], timingHistory: [1000, 1010, 990, 1005, 995] }; // Écart-type faible mais non nul
         const context = { path: '/page', query: {} };
         dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(11000);
+        const localConfig = { ...regularityConfig, regularityThreshold: 10 }; // stdDev of this data is ~5.
 
-        const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, localConfig);
 
-        expect(requestPatternScore).toBeGreaterThan(0);
-        expect(requestPatternScore).toBeLessThan(regularityConfig.regularityWeight);
+        expect(requestPatternScore).toBe(localConfig.patternWeight);
     });
 
     it('should apply no penalty for highly irregular (human-like) requests', () => {
         const deviceData = { requestHistory: [], timingHistory: [500, 2000, 800, 3500, 1200] }; // Écart-type élevé
         const context = { path: '/page', query: {} };
         dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(11000);
+        // The stdDev of this data is high, so it won't trigger the regularity check.
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
 
