@@ -1524,6 +1524,46 @@ export class FingerprintEngine {
     }
     return blockList;
   }
+
+  /**
+   * Checks if the client's IP resolves to any of the hostnames in the hostname allowlist.
+   * The result is cached to avoid repeated DNS lookups.
+   * @private
+   * @param {string} clientIp - The IP address of the client.
+   * @returns {Promise<boolean>} True if the IP is in the hostname allowlist.
+   */
+  async _isIpInHostnameAllowlist(clientIp) {
+    const { whitelist = [] } = this.securityConfig;
+    const hostnameRule = whitelist.find(rule => rule.type === 'hostname_allowlist');
+
+    if (!hostnameRule || !hostnameRule.entries || hostnameRule.entries.length === 0) {
+      return false;
+    }
+
+    const cacheKey = `ip-hostname-allowlist:${clientIp}`;
+    const cachedStatus = await store.get(cacheKey);
+
+    if (cachedStatus === 'verified') return true;
+    if (cachedStatus === 'failed') return false;
+
+    try {
+      // Reverse DNS lookup to get hostnames for the IP
+      const hostnames = await dns.reverse(clientIp);
+
+      // Check if any of the resolved hostnames is in our allowlist
+      const isAllowed = hostnames.some(hostname => hostnameRule.entries.includes(hostname));
+
+      if (isAllowed) {
+        await store.set(cacheKey, 'verified', 86400); // Cache success for 24h
+        return true;
+      }
+    } catch (error) {
+      // DNS errors (like no rDNS record) are treated as a failure.
+    }
+
+    await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h
+    return false;
+  }
   _isIpInAllowlist(clientIp) {
     return this._allowlist.check(clientIp);
   }
@@ -1607,6 +1647,12 @@ export class FingerprintEngine {
     if (this._isIpInAllowlist(clientIp)) {
       this._log('IP in allowlist - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'allowlist' } };
+    }
+
+    // 2. Check hostname-based allowlist.
+    if (await this._isIpInHostnameAllowlist(clientIp)) {
+      this._log('IP resolves to a whitelisted hostname - allowing request', { clientIp });
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'hostname_allowlist' } };
     }
 
     const { pow_nonce } = query;
