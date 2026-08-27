@@ -1017,11 +1017,20 @@ describe('Fingerprint & PoW Security Suite', () => {
 
             // Generate mock data where optimal 'low' threshold is around 25
             // Bots with low scores (false negatives)
-            for (let i = 0; i < 50; i++) trafficData.push({ type: 'challenge_issued', deviceId: `bot-${i}`, score: 15 + Math.random() * 5 });
+            for (let i = 0; i < 50; i++) {
+                const score = 15 + Math.random() * 5;
+                trafficData.push({ type: 'challenge_issued', deviceId: `bot-${i}`, score, vector: { historyScore: score, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, requestPatternScore: 0, honeypotScore: 0, behaviorScore: 0, crossLayerInconsistencyScore: 0, timeInconsistencyScore: 0 } });
+            }
             // Humans with slightly higher scores (false positives)
-            for (let i = 0; i < 50; i++) trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 30 + Math.random() * 5 });
+            for (let i = 0; i < 50; i++) {
+                const score = 30 + Math.random() * 5;
+                trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score, vector: { historyScore: score, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, requestPatternScore: 0, honeypotScore: 0, behaviorScore: 0, crossLayerInconsistencyScore: 0, timeInconsistencyScore: 0 } });
+            }
             // Solved challenges (clear humans)
-            for (let i = 0; i < 20; i++) trafficData.push({ type: 'challenge_solved', deviceId: `human-solver-${i}`, score: 40 });
+            for (let i = 0; i < 20; i++) {
+                const score = 40;
+                trafficData.push({ type: 'challenge_solved', deviceId: `human-solver-${i}`, score, vector: { historyScore: score, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0, requestPatternScore: 0, honeypotScore: 0, behaviorScore: 0, crossLayerInconsistencyScore: 0, timeInconsistencyScore: 0 } });
+            }
 
 
             startThresholdAutoTuning({
@@ -1039,7 +1048,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             // We expect 'low' to decrease significantly from 50.
             expect(securityConfig.thresholds.low).toBeLessThanOrEqual(40);
             expect(securityConfig.thresholds.low).toBeGreaterThanOrEqual(10);
-            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Nouveaux seuils optimisés appliqués'), expect.anything());
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.'));
             expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 
             // Stop the tuner and check if the interval is cleared
@@ -1051,12 +1060,15 @@ describe('Fingerprint & PoW Security Suite', () => {
             const trafficData = [];
             const securityConfig = {
                 thresholds: { low: 20, medium: 45, high: 75 },
+                weights: {}, // Add missing properties to prevent TypeError
+                patterns: {}, // Add missing properties to prevent TypeError
                 logger: (log) => trafficData.push(log),
             };
 
             // Generate only 50 data points, less than the minimum of 100
             for (let i = 0; i < 50; i++) {
-                trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score: 10 });
+                const score = 10;
+                trafficData.push({ type: 'request_passed', deviceId: `human-${i}`, score, vector: { historyScore: score } });
             }
 
             startThresholdAutoTuning({
@@ -1077,7 +1089,8 @@ describe('Fingerprint & PoW Security Suite', () => {
 
             // Add more data to meet the threshold
             for (let i = 0; i < 50; i++) {
-                trafficData.push({ type: 'request_passed', deviceId: `human-new-${i}`, score: 10 });
+                const score = 10;
+                trafficData.push({ type: 'request_passed', deviceId: `human-new-${i}`, score, vector: { historyScore: score } });
             }
             // Trigger again
             intervalCallback();
@@ -1560,7 +1573,7 @@ describe('getRequestPatternScore', () => {
         expect(highscore).toBeGreaterThan(20); // S'assurer que le score est élevé
 
         // 2. Attendre plus longtemps que la période de réinitialisation
-        await new Promise(r => setTimeout(r, 600));
+        await new Promise(r => setTimeout(r, 1600));
 
         // 3. La requête suivante ne doit pas ajouter de score (car lente), et le score précédent doit avoir décru
         const { requestPatternScore: decayedScore } = getRequestPatternScore(context, deviceData, patternConfig);
@@ -1568,22 +1581,23 @@ describe('getRequestPatternScore', () => {
         expect(decayedScore).toBeLessThan(highscore); // Le score doit avoir décru
     });
 
-    it('should reset a low score to zero after inactivity', async () => {
+    it('should decay a low score towards zero after inactivity', async () => {
         const context = { path: '/test', query: {} };
         const deviceData = { requestHistory: [], lastPatternScore: 0 };
         // Utiliser un poids faible pour rester sous le seuil de 20
-        const patternConfig = { velocityThreshold: 500, velocityWeight: 15, inactivityReset: 500 };
+        const patternConfig = { velocityThreshold: 500, velocityWeight: 15, inactivityReset: 500, decayFactor: 0.9 };
 
         // 1. Faire une requête pour obtenir un score faible (ex: 15)
         const { requestPatternScore: lowScore } = getRequestPatternScore(context, deviceData, patternConfig);
         expect(lowScore).toBeLessThan(20);
 
         // 2. Attendre
-        await new Promise(r => setTimeout(r, 600));
+        await new Promise(r => setTimeout(r, 1600));
 
-        // 3. Le score doit être réinitialisé à 0
-        const { requestPatternScore: resetScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(resetScore).toBe(0);
+        // 3. Le score doit avoir décru (mais pas forcément être exactement 0)
+        const { requestPatternScore: decayedScore } = getRequestPatternScore(context, deviceData, patternConfig);
+        expect(decayedScore).toBeLessThanOrEqual(lowScore);
+        expect(decayedScore).toBeGreaterThanOrEqual(0);
     });
 
 }); // <-- AJOUT DE L'ACCOLADE FERMANTE MANQUANTE
@@ -1736,5 +1750,50 @@ describe('Challenge Page Generation Security (XSS)', () => {
 
         expect(html).not.toContain(`const path = "test.com";`);
         expect(html).toContain(`const path = ${JSON.stringify(maliciousPath)};`);
+    });
+});
+
+
+describe('Regularity Detection (Standard Deviation)', () => {
+    const regularityConfig = {
+        regularityMinSamples: 5,
+        regularityThreshold: 50, // Un seuil bas pour le test
+        regularityWeight: 60,
+        velocityWeight: 0, // On désactive les autres scores pour isoler la régularité
+        burstWeight: 0,
+        scrapeWeight: 0,
+    };
+
+    let dateNowSpy;
+    it('should apply a high penalty for perfectly regular requests', () => {
+        const deviceData = { requestHistory: [], timingHistory: [1000, 1000, 1000, 1000, 1000] }; // Écart-type = 0
+        const context = { path: '/page', query: {} };
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(11000); // La 6ème requête arrive aussi après 1000ms
+
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
+
+        // Écart-type de 0 -> pénalité maximale
+        expect(requestPatternScore).toBeCloseTo(regularityConfig.regularityWeight);
+    });
+
+    it('should apply a low penalty for slightly irregular requests', () => {
+        const deviceData = { requestHistory: [], timingHistory: [1000, 1010, 990, 1005, 995] }; // Écart-type faible mais non nul
+        const context = { path: '/page', query: {} };
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(11000);
+
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
+
+        expect(requestPatternScore).toBeGreaterThan(0);
+        expect(requestPatternScore).toBeLessThan(regularityConfig.regularityWeight);
+    });
+
+    it('should apply no penalty for highly irregular (human-like) requests', () => {
+        const deviceData = { requestHistory: [], timingHistory: [500, 2000, 800, 3500, 1200] }; // Écart-type élevé
+        const context = { path: '/page', query: {} };
+        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(11000);
+
+        const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
+
+        expect(requestPatternScore).toBe(0);
     });
 });
