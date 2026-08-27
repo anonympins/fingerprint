@@ -170,6 +170,40 @@ class ProblemManager {
         this.saveProblems();
     }
 
+    /**
+     * S'assure qu'un problème a une solution initiale. Si non, en génère une.
+     * @param {object} problem - L'objet problème.
+     * @private
+     */
+    _ensureInitialSolution(problem) {
+        if (problem.state.bestSolution) {
+            return; // Une solution existe déjà
+        }
+
+        console.log(`[ProblemManager] Génération d'une solution initiale pour le problème ${problem.id}...`);
+
+        // On se base sur le type de problème pour générer une solution de base.
+        // Pour l'instant, on gère le cas le plus commun (TSP/points)
+        // qui utilise le recuit simulé.
+        switch (problem.workUnit.type) {
+            case 'simulated_annealing_iterations': {
+                // Pour un TSP, une solution initiale est un ordre des points.
+                // On prend l'ordre initial des points du payload.
+                const initialSolution = problem.payload.points;
+                if (initialSolution && Array.isArray(initialSolution)) {
+                    // On calcule l'énergie (coût) de cette solution initiale.
+                    const energy = Optimization.tsp.calculateEnergy(initialSolution);
+                    problem.state.bestSolution = initialSolution;
+                    problem.state.bestEnergy = energy;
+                    problem.state.lastUpdate = new Date().toISOString();
+                    console.log(`[ProblemManager] Solution initiale pour ${problem.id} générée avec une énergie de ${energy.toFixed(2)}.`);
+                    this.saveProblems(); // On sauvegarde la nouvelle solution
+                }
+                break;
+            }
+            // D'autres types de problèmes (ex: algo génétique) pourraient être ajoutés ici.
+        }
+    }
 
     /**
      * Récupère la meilleure solution actuellement connue pour un ou plusieurs problèmes.
@@ -180,7 +214,14 @@ class ProblemManager {
      * - Si aucun `problemId` n'est fourni, retourne un tableau de ces objets.
      */
     getBestSolutions(problemId) {
+        const problemsToProcess = problemId
+            ? this.problems.filter(p => p.id === problemId)
+            : this.problems;
+
+        problemsToProcess.forEach(p => this._ensureInitialSolution(p));
+
         const formatSolution = (p) => {
+            // Après _ensureInitialSolution, on peut supposer que p.state existe.
             if (!p || !p.state) return null;
             return {
                 id: p.id,
@@ -193,11 +234,11 @@ class ProblemManager {
 
         if (problemId) {
             const problem = this.problems.find(p => p.id === problemId);
-            return problem ? formatSolution(problem) : null;
+            return problem ? formatSolution(problem) : null; // Le filtrage initial a déjà fait le travail
         }
 
         // Retourne un aperçu pour tous les problèmes
-        return this.problems.map(formatSolution).filter(s => s !== null);
+        return this.problems.map(formatSolution).filter(s => s && s.solution);
     }
 
 }
