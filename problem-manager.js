@@ -169,6 +169,37 @@ class ProblemManager {
         }
         this.saveProblems();
     }
+
+
+    /**
+     * Récupère la meilleure solution actuellement connue pour un ou plusieurs problèmes.
+     * @param {string} [problemId] - L'ID optionnel du problème à consulter.
+     * Si non fourni, retourne les meilleures solutions pour tous les problèmes.
+     * @returns {object|Array<object>|null}
+     * - Si un `problemId` est fourni, retourne un objet `{ id, solution, score }` ou `null` si non trouvé.
+     * - Si aucun `problemId` n'est fourni, retourne un tableau de ces objets.
+     */
+    getBestSolutions(problemId) {
+        const formatSolution = (p) => {
+            if (!p || !p.state) return null;
+            return {
+                id: p.id,
+                solution: p.state.bestSolution,
+                // Gère les deux types de scores : 'energy' (recuit simulé) et 'fitness' (algo génétique)
+                score: p.state.bestEnergy !== undefined ? p.state.bestEnergy : p.state.bestFitness,
+                lastUpdate: p.state.lastUpdate,
+            };
+        };
+
+        if (problemId) {
+            const problem = this.problems.find(p => p.id === problemId);
+            return problem ? formatSolution(problem) : null;
+        }
+
+        // Retourne un aperçu pour tous les problèmes
+        return this.problems.map(formatSolution).filter(s => s !== null);
+    }
+
 }
 
 export { ProblemManager }; // Export the class for testing

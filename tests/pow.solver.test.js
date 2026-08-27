@@ -110,8 +110,8 @@ describe('Proof-of-Work Solvers', () => {
             };
 
             const solutions = await solveChallenge(challenge, ''); // Le fingerprint est passé en 2e arg
-            expect(solutions).toHaveProperty('cpu', expect.any(Number));
-            expect(solutions).toHaveProperty('mem', expect.any(Number));
+            expect(solutions.rawSolution).toHaveProperty('cpu', expect.any(Number));
+            expect(solutions.rawSolution).toHaveProperty('mem', expect.any(Number));
         }, 20000);
 
         it('should solve a "cpu_mem_inline" challenge for a browser', async () => {
@@ -126,8 +126,8 @@ describe('Proof-of-Work Solvers', () => {
             };
 
             const solutions = await solveChallenge(challenge, '');
-            expect(solutions).toHaveProperty('cpu', expect.any(Number));
-            expect(solutions).toHaveProperty('mem', expect.any(Number));
+            expect(solutions.rawSolution).toHaveProperty('cpu', expect.any(Number));
+            expect(solutions.rawSolution).toHaveProperty('mem', expect.any(Number));
         }, 20000);
 
         it('should solve a "tsp" challenge', async () => {
@@ -137,7 +137,8 @@ describe('Proof-of-Work Solvers', () => {
                 targetMaxDistance: 300
             };
             const solutions = await solveChallenge(challenge);
-            expect(solutions.tsp).toEqual([0, 1]);
+            // Pour le TSP, la solution brute est directement le chemin
+            expect(solutions.rawSolution).toEqual([0, 1]);
         });
 
         it('should throw an error for an unknown challenge type', async () => {

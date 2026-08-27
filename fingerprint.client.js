@@ -348,25 +348,13 @@ const ClientLibrary = {
       console.log(`[Fingerprint] Received a '${challengeData.challenge.type}' challenge. Solving...`);
       // L'empreinte de l'appareil qui résout le challenge est cruciale.
       const solverFp = this.getDeviceFingerprint();
-      const solution = await solveChallenge(challengeData.challenge, solverFp);
+      const solutionWrapper = await solveChallenge(challengeData.challenge, solverFp);
       console.log('[Fingerprint] Challenge solved. Retrying original request.');
 
       // Ajouter la solution aux paramètres de la requête pour le nouvel essai
       const url = new URL((resource instanceof Request) ? resource.url : String(resource), window.location.origin);
-      // Le type de challenge est maintenant `cpu_mem` pour les API
-      url.searchParams.set('pow_type', 'cpu_mem');
-      url.searchParams.set('pow_nonce', challengeData.challenge.nonce);
-
-      // La solution est un objet { cpu: ..., mem: ... }. Le serveur attend pow_solution_cpu et pow_solution_mem.
-      Object.entries(solution).forEach(([key, value]) => {
-        url.searchParams.set(`pow_solution_${key}`, String(value));
-      });
-
-      // Pour le challenge de travail utile
-      if (solution.work_result) {
-        url.searchParams.set('pow_solution_work_result', JSON.stringify(solution.work_result));
-        url.searchParams.set('pow_problem_id', solution.problem_id);
-      }
+      // La logique de formatage est maintenant cachée dans la classe ChallengeSolution.
+      solutionWrapper.applyToUrl(url);
 
       // On ajoute l'empreinte du solveur à la requête de réessai.
       url.searchParams.set('pow_fp', solverFp);
