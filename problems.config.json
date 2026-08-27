@@ -119,5 +119,73 @@
       "paretoFront": [],
       "lastUpdate": null
     }
+  },
+  {
+    "id": "facility_location_challenge",
+    "workUnit": {
+      "type": "run_solver",
+      "solverName": "facility.solve",
+      "baseIterations": 60000,
+      "scalingFactor": 1.7,
+      "objective": "minimize"
+    },
+    "payload": {
+      "customers": {
+        "$init": "generate:randomPoints",
+        "params": {
+          "count": 100,
+          "bounds": { "x": 2000, "y": 2000 }
+        }
+      },
+      "numFacilities": 5,
+      "bounds": { "minX": 0, "maxX": 2000, "minY": 0, "maxY": 2000 },
+      "options": {
+        "fixedCostPerFacility": 1500,
+        "initialTemperature": 150000,
+        "coolingRate": 0.9995
+      }
+    },
+    "state": {
+      "bestSolution": null,
+      "bestEnergy": "Infinity",
+      "lastUpdate": null
+    }
+  },
+  {
+    "id": "security_auto_tuning",
+    "workUnit": {
+      "type": "multi_objective_genetic_algorithm",
+      "solverName": "security.tune",
+      "baseGenerations": 30,
+      "scalingFactor": 1.4
+    },
+    "payload": {
+      "trafficData": [
+        { "type": "request_passed", "vector": { "historyScore": 5, "rotationScore": 0, "headerAnomalyScore": 0, "inconsistencyScore": 0, "requestPatternScore": 10 } },
+        { "type": "request_passed", "vector": { "historyScore": 10, "rotationScore": 5, "headerAnomalyScore": 0, "inconsistencyScore": 0, "requestPatternScore": 5 } },
+        { "type": "challenge_issued", "vector": { "historyScore": 60, "rotationScore": 20, "headerAnomalyScore": 10, "inconsistencyScore": 0, "requestPatternScore": 30 } },
+        { "type": "challenge_issued", "vector": { "historyScore": 5, "rotationScore": 0, "headerAnomalyScore": 0, "inconsistencyScore": 80, "requestPatternScore": 0 } },
+        { "type": "request_blocked", "vector": { "historyScore": 90, "rotationScore": 50, "headerAnomalyScore": 20, "inconsistencyScore": 40, "requestPatternScore": 70 } },
+        { "type": "request_passed", "vector": { "historyScore": 2, "rotationScore": 0, "headerAnomalyScore": 0, "inconsistencyScore": 0, "requestPatternScore": 0 } },
+        { "type": "challenge_solved", "vector": { "historyScore": 25, "rotationScore": 10, "headerAnomalyScore": 0, "inconsistencyScore": 0, "requestPatternScore": 15 } },
+        { "type": "trap_triggered", "vector": { "honeypotScore": 100 } }
+      ],
+      "options": {
+        "populationSize": 40
+      }
+    },
+    "state": {
+      "paretoFront": [
+        {
+          "solution": {
+            "thresholds": { "low": 25, "medium": 50, "high": 80 },
+            "weights": { "historyScore": 0.3, "rotationScore": 0.4, "headerAnomalyScore": 0.1, "requestPatternScore": 0.5, "inconsistencyScore": 0.8, "honeypotScore": 1.0, "behaviorScore": 0.6 },
+            "patterns": { "velocityThreshold": 700, "decayFactor": 0.95 }
+          },
+          "objectives": [0.15, 0.05]
+        }
+      ],
+      "lastUpdate": null
+    }
   }
 ]

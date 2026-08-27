@@ -52,6 +52,8 @@ FunctionRegistry['portfolio.calculateMetrics'] = (weights, payload) => {
 FunctionRegistry['tsp.solve'] = Optimization.Operators.solveTSP;
 FunctionRegistry['portfolio.solve'] = Optimization.Operators.solvePortfolio;
 FunctionRegistry['fraud.solve'] = Optimization.Operators.solveFraudDetection; // NOUVEAU: Enregistrement du solveur de fraude
+FunctionRegistry['facility.solve'] = Optimization.Operators.solveFacilityLocation;
+FunctionRegistry['security.tune'] = Optimization.Operators.solveFullSecurityTuning;
 
 // --- Fonctions "Utilitaires" ---
 FunctionRegistry['utils.evaluatePathDistance'] = Optimization.Utils.evaluatePathDistance;
