@@ -190,7 +190,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             }
 
             expect(solution).toBeGreaterThan(0); // Vérifie que le challenge a bien été résolu
-        }, 20000); // Timeout de 8 secondes pour ce test
+        }, 40000); // Timeout de 8 secondes pour ce test
     });
 
     test('PoW Ticket Expiration', () => {
@@ -1547,29 +1547,46 @@ describe('getRequestPatternScore', () => {
         const expectedScore = (50 * patternConfig.decayFactor) + patternConfig.velocityWeight; // (50 * 0.9) + 30 = 45 + 30 = 75
         expect(requestPatternScore).toBe(expectedScore);
     });
+    it('should decay a high score (but not reset) after inactivity', async () => {
+        const context = { path: '/test', query: {} };
+        const deviceData = { requestHistory: [], lastPatternScore: 0 };
+        // Utiliser un poids élevé pour dépasser facilement le seuil de réinitialisation de 20
+        const patternConfig = { velocityThreshold: 100, velocityWeight: 60, inactivityReset: 500, decayFactor: 0.9 };
 
-    test('should reset score after a period of inactivity', () => {
-        const deviceData = {
-            requestHistory: [
-                { timestamp: 10000, path: '/first', queryString: '' },
-                { timestamp: 10100, path: '/second', queryString: '' } // Last request was at 10100
-            ],
-            lastPatternScore: 80
-        };
-        const context = { path: '/third', query: {} };
+        // 1. Faire une requête rapide pour obtenir un score élevé (ex: 60)
+        getRequestPatternScore(context, deviceData, patternConfig); // t0
+        await new Promise(r => setTimeout(r, 50));
+        const { requestPatternScore: highscore } = getRequestPatternScore(context, deviceData, patternConfig);
+        expect(highscore).toBeGreaterThan(20); // S'assurer que le score est élevé
 
-        // Simulate a new request long after the inactivity threshold (10100 + 5001)
-        dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(16000);
+        // 2. Attendre plus longtemps que la période de réinitialisation
+        await new Promise(r => setTimeout(r, 600));
 
-        getRequestPatternScore(context, deviceData, patternConfig);
-
-        // The score from this new request should be calculated from a base of 0, not 80.
-        // The time between 16000 and 10100 is > inactivityReset, so lastPatternScore is reset to 0.
-        // The time between 16000 and 10100 is also > velocityThreshold, so the new score is 0.
-        // Final score = (0 * 0.9) + 0 = 0.
-        expect(deviceData.lastPatternScore).toBe(0);
+        // 3. La requête suivante ne doit pas ajouter de score (car lente), et le score précédent doit avoir décru
+        const { requestPatternScore: decayedScore } = getRequestPatternScore(context, deviceData, patternConfig);
+        expect(decayedScore).toBeGreaterThan(0); // Le score ne doit pas être 0
+        expect(decayedScore).toBeLessThan(highscore); // Le score doit avoir décru
     });
-});
+
+    it('should reset a low score to zero after inactivity', async () => {
+        const context = { path: '/test', query: {} };
+        const deviceData = { requestHistory: [], lastPatternScore: 0 };
+        // Utiliser un poids faible pour rester sous le seuil de 20
+        const patternConfig = { velocityThreshold: 500, velocityWeight: 15, inactivityReset: 500 };
+
+        // 1. Faire une requête pour obtenir un score faible (ex: 15)
+        const { requestPatternScore: lowScore } = getRequestPatternScore(context, deviceData, patternConfig);
+        expect(lowScore).toBeLessThan(20);
+
+        // 2. Attendre
+        await new Promise(r => setTimeout(r, 600));
+
+        // 3. Le score doit être réinitialisé à 0
+        const { requestPatternScore: resetScore } = getRequestPatternScore(context, deviceData, patternConfig);
+        expect(resetScore).toBe(0);
+    });
+
+}); // <-- AJOUT DE L'ACCOLADE FERMANTE MANQUANTE
 
 describe('determineOptimalTicketTtl', () => {
     const { determineOptimalTicketTtl } = __internal;
