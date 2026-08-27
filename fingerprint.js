@@ -2527,12 +2527,21 @@ let autoTuningJobId = null;
  * @param {object} securityConfig - The security configuration object to update.
  * @param {Array<object>} trafficData - The array containing traffic logs.
  * @param {number} minDataPoints - The minimum number of data points required to start optimization.
+ * @param {number} maxDataPoints - The maximum number of data points to keep after an optimization cycle.
  */
-function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
+function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints) {
     if (trafficData.length < minDataPoints) {
         console.log(`[AutoTuning] Reporté : ${trafficData.length}/${minDataPoints} points de données.`);
         return;
     }
+
+    // --- GARDE-FOU : Tronquer les données si elles dépassent la limite maximale ---
+    // On ne garde que les `maxDataPoints` entrées les plus récentes.
+    if (trafficData.length > maxDataPoints) {
+        console.log(`[AutoTuning] Le journal de trafic a atteint ${trafficData.length} entrées (max: ${maxDataPoints}). Troncation des données les plus anciennes.`);
+        trafficData.splice(0, trafficData.length - maxDataPoints);
+    }
+
     console.log(`[AutoTuning] Démarrage du cycle d'optimisation avec ${trafficData.length} points de données.`);
 
     // Classify historical requests with a confidence weight.
@@ -2645,7 +2654,8 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
  * @param {object} options.securityConfig - The live security configuration object that will be mutated.
  * @param {Array<object>} options.trafficData - The array where the logger pushes traffic data.
  * @param {number} [options.interval=1800000] - The interval in milliseconds between each optimization cycle (default: 30 minutes).
- * @param {number} [options.minDataPoints=200] - The minimum number of requests to analyze before starting a cycle (default: 200).
+ * @param {number} [options.minDataPoints=200] - The minimum number of requests to have before starting a cycle (default: 200).
+ * @param {number} [options.maxDataPoints=10000] - The maximum number of log entries to keep in memory (default: 10,000).
  */
 export function startThresholdAutoTuning(options) {
     if (autoTuningJobId) {
@@ -2656,8 +2666,9 @@ export function startThresholdAutoTuning(options) {
     const {
         securityConfig,
         trafficData,
-        interval = 1800000,
-        minDataPoints = 200
+        interval = 1800000, // 30 minutes
+        minDataPoints = 200,
+        maxDataPoints = 10000 // Limite par défaut à 10 000 entrées
     } = options;
 
     if (!securityConfig || !trafficData) {
@@ -2667,7 +2678,7 @@ export function startThresholdAutoTuning(options) {
     console.log(`[AutoTuning] Job d'optimisation des seuils démarré. Prochain cycle dans ${interval / 60000} minutes.`);
 
     autoTuningJobId = setInterval(() => {
-        runThresholdOptimization(securityConfig, trafficData, minDataPoints);
+        runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints);
     }, interval);
 }
 
