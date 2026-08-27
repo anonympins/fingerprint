@@ -293,6 +293,18 @@ async function solveUsefulWorkTask(task) {
             // On simule l'appel avec les arguments de base.
             // Note: `baseSolverArgs` peut contenir des options.
             return clientSolver(...baseSolverArgs);
+        
+        case 'multi_objective_genetic_algorithm': {
+            // C'est ici que la connexion se fait !
+            // On cherche le solveur demandé (ex: 'cpc.solve') dans notre registre client.
+            const solverFunction = ClientOptimizers[task.solverName];
+            if (!solverFunction) {
+                throw new Error(`Solver '${task.solverName}' not found on client.`);
+            }
+            // On appelle le solveur en lui passant le payload et les options.
+            // La fonction `solveOptimalCPC` attend le payload comme premier argument.
+            return solverFunction(task.payload, { generations: task.generations, initialFront: task.initialFront });
+        }
 
         default:
             throw new Error(`Unknown useful work type: ${task.type}`);

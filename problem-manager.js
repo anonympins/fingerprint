@@ -2,6 +2,62 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { Optimization } from './library.js';
 
 /**
+ * @namespace FunctionRegistry
+ * @description Registre pour exposer de manière contrôlée les fonctions de la bibliothèque.
+ * Permet de les appeler dynamiquement depuis la configuration des problèmes.
+ * Utilise la notation par points pour accéder aux fonctions imbriquées (ex: 'tsp.calculateEnergy').
+ */
+const FunctionRegistry = {};
+
+// --- Fonctions de "Scoring" (évaluation d'une solution) ---
+// Ces fonctions sont des adaptateurs pour utiliser les utilitaires de la bibliothèque
+// avec la structure attendue par le ProblemManager.
+FunctionRegistry['cpc.solve'] = Optimization.Operators.solveOptimalCPC; // NOUVEAU: Enregistrement du solveur CPC
+
+/**
+/**
+ * Évalue la distance totale d'un chemin pour le problème du voyageur de commerce (TSP).
+ * @param {Array<{x: number, y: number}>} path - Un tableau de points représentant le chemin.
+ * @returns {number} La distance totale du chemin.
+ */
+FunctionRegistry['tsp.calculateEnergy'] = (path) => {
+    // Crée un tableau d'indices [0, 1, 2, ...] pour la fonction evaluatePathDistance.
+    const indices = Array.from({ length: path.length }, (_, i) => i);
+    return Optimization.Utils.evaluatePathDistance(path, indices);
+};
+
+/**
+ * Évalue les métriques d'un portefeuille (rendement et volatilité).
+ * Pour l'instant, retourne le rendement négatif pour correspondre à l'objectif de minimisation
+ * de l'algorithme génétique de la bibliothèque.
+ * @param {Array<number>} weights - Les poids des actifs dans le portefeuille.
+ * @param {object} payload - Le payload du problème, contenant les actifs.
+ * @returns {number} Le rendement négatif du portefeuille.
+ */
+FunctionRegistry['portfolio.calculateMetrics'] = (weights, payload) => {
+    const { assets, maxVolatility } = payload;
+    // On utilise l'opérateur de la bibliothèque pour créer la fonction de fitness
+    // et on l'appelle immédiatement.
+    const fitnessFunction = Optimization.Operators.createPortfolioAllocator({
+        assets,
+        maxVolatility,
+    });
+    // La fonction de fitness retourne le rendement négatif, ce qui est ce que nous voulons
+    // stocker comme "énergie" ou score.
+    return fitnessFunction(weights);
+};
+
+// --- Fonctions de "Résolution" (algorithmes complets) ---
+// Utiles pour les workers qui exécutent une tâche de bout en bout.
+FunctionRegistry['tsp.solve'] = Optimization.Operators.solveTSP;
+FunctionRegistry['portfolio.solve'] = Optimization.Operators.solvePortfolio;
+FunctionRegistry['fraud.solve'] = Optimization.Operators.solveFraudDetection; // NOUVEAU: Enregistrement du solveur de fraude
+
+// --- Fonctions "Utilitaires" ---
+FunctionRegistry['utils.evaluatePathDistance'] = Optimization.Utils.evaluatePathDistance;
+
+
+/**
  * @namespace ProblemInitializers
  * @description Fonctions pour générer dynamiquement les données d'un problème.
  */
@@ -68,11 +124,18 @@ class ProblemManager {
             const problems = JSON.parse(data);
             // Initialisation dynamique des problèmes
             for (const problem of problems) { // eslint-disable-line no-unused-vars
+                // Résolution des fonctions via le registre
+                if (problem.workUnit.scoreFunction) {
+                    problem.workUnit.scoreFunction = FunctionRegistry[problem.workUnit.scoreFunction] || null;
+                }
+
                 for (const key in problem.payload) {
                     const value = problem.payload[key];
                     // On cherche une instruction d'initialisation (ex: { "$init": "generate:randomPoints", ... })
                     if (typeof value === 'object' && value !== null && value.$init) {
                         const initializer = ProblemInitializers[value.$init];
+                        // On cherche une instruction de fonction (ex: { "$func": "tsp.calculateEnergy" })
+                        // Note: Actuellement non utilisé, mais prêt pour une future extension.
                         if (initializer) {
                             // On remplace l'objet d'instruction par les données générées.
                             problem.payload[key] = initializer(value.params || {});
@@ -140,6 +203,18 @@ class ProblemManager {
                 task.logProgress = problem.payload.logProgress || false;
                 task.concurrency = problem.payload.concurrency;
                 break;
+            
+            case 'multi_objective_genetic_algorithm':
+                // La difficulté s'applique au nombre de générations
+                const baseGenerationsMulti = Math.max(30, problem.workUnit.baseGenerations || 0);
+                task.generations = scalingFactor
+                    ? Math.floor(baseGenerationsMulti * Math.pow(scalingFactor, suspicionFactor))
+                    : Math.floor(baseGenerationsMulti * (0.5 + suspicionFactor));
+                task.payload = problem.payload;
+                // L'état initial est le front de Pareto actuel, que le client peut utiliser pour l'élitisme
+                task.initialFront = problem.state.paretoFront;
+                task.solverName = problem.workUnit.solverName; // Le nom du solveur à utiliser (ex: 'cpc.solve')
+                break;
         }
 
         return { problemId: problem.id, task };
@@ -156,15 +231,27 @@ class ProblemManager {
 
         switch (problem.workUnit.type) {
             case 'simulated_annealing_iterations':
-                if (solutionData.energy < (parseFloat(problem.state.bestEnergy) || Infinity)) {
+                const currentBest = parseFloat(problem.state.bestEnergy) || Infinity;
+                const isBetter = problem.workUnit.objective === 'maximize'
+                    ? solutionData.energy > currentBest
+                    : solutionData.energy < currentBest;
+
+                if (isBetter) {
                     problem.state.bestSolution = solutionData.solution;
                     problem.state.bestEnergy = solutionData.energy;
+                    problem.state.lastUpdate = new Date().toISOString();
                     console.log(`[ProblemManager] Nouvelle meilleure solution pour ${problemId}: ${solutionData.energy.toFixed(2)}`);
                 }
                 break;
             case 'genetic_algorithm_generations':
+                // Pour l'algo génétique, on pourrait comparer le meilleur fitness de la nouvelle population
                 problem.state.population = solutionData.population;
                 console.log(`[ProblemManager] Population mise à jour pour ${problemId}.`);
+                break;
+            
+            case 'multi_objective_genetic_algorithm':
+                // Pour le multi-objectifs, on fusionne le front de Pareto existant avec celui du client.
+                this._integrateParetoFront(problem, solutionData.paretoFront);
                 break;
         }
         this.saveProblems();
@@ -182,26 +269,76 @@ class ProblemManager {
 
         console.log(`[ProblemManager] Génération d'une solution initiale pour le problème ${problem.id}...`);
 
-        // On se base sur le type de problème pour générer une solution de base.
-        // Pour l'instant, on gère le cas le plus commun (TSP/points)
-        // qui utilise le recuit simulé.
-        switch (problem.workUnit.type) {
-            case 'simulated_annealing_iterations': {
-                // Pour un TSP, une solution initiale est un ordre des points.
-                // On prend l'ordre initial des points du payload.
-                const initialSolution = problem.payload.points;
-                if (initialSolution && Array.isArray(initialSolution)) {
-                    // On calcule l'énergie (coût) de cette solution initiale.
-                    const energy = Optimization.tsp.calculateEnergy(initialSolution);
-                    problem.state.bestSolution = initialSolution;
-                    problem.state.bestEnergy = energy;
-                    problem.state.lastUpdate = new Date().toISOString();
-                    console.log(`[ProblemManager] Solution initiale pour ${problem.id} générée avec une énergie de ${energy.toFixed(2)}.`);
-                    this.saveProblems(); // On sauvegarde la nouvelle solution
-                }
-                break;
+        // On utilise la fonction de score définie dans la config
+        const scoreFunction = problem.workUnit.scoreFunction;
+        // On suppose que la source de la solution initiale est définie dans la config
+        const initialSolutionSource = problem.payload[problem.workUnit.initialSolutionSource];
+
+        if (scoreFunction && initialSolutionSource && Array.isArray(initialSolutionSource)) {
+            const initialSolution = initialSolutionSource;
+            // On calcule le score (énergie, fitness, etc.) de cette solution initiale.
+            // La fonction de scoring peut nécessiter des arguments supplémentaires du payload.
+            const score = scoreFunction(initialSolution, problem.payload);
+
+            problem.state.bestSolution = initialSolution;
+            // Le nom de la propriété du score dépend du type de problème
+            problem.state.bestEnergy = score; // Pourrait être généralisé si besoin
+            problem.state.lastUpdate = new Date().toISOString();
+
+            console.log(`[ProblemManager] Solution initiale pour ${problem.id} générée avec un score de ${score.toFixed(2)}.`);
+            this.saveProblems(); // On sauvegarde la nouvelle solution
+        }
+    }
+
+    /**
+     * Intègre un nouveau front de Pareto dans l'état du problème.
+     * @param {object} problem - L'objet problème.
+     * @param {Array<object>} newFront - Le front de Pareto renvoyé par un client.
+     * @private
+     */
+    _integrateParetoFront(problem, newFront) {
+        if (!Array.isArray(newFront) || newFront.length === 0) return;
+
+        const currentFront = problem.state.paretoFront || [];
+        const combined = [...currentFront, ...newFront];
+
+        // --- Logique de tri non-dominé pour trouver le nouveau meilleur front ---
+        const paretoDominates = (a, b) => {
+            let aIsBetterInOne = false;
+            // On suppose que les objectifs sont à minimiser
+            for (let i = 0; i < a.objectives.length; i++) {
+                if (a.objectives[i] > b.objectives[i]) return false; // A est pire sur au moins un objectif
+                if (a.objectives[i] < b.objectives[i]) aIsBetterInOne = true; // A est strictement meilleur sur au moins un
             }
-            // D'autres types de problèmes (ex: algo génétique) pourraient être ajoutés ici.
+            return aIsBetterInOne;
+        };
+
+        const nextFront = [];
+        const dominatedIndices = new Set();
+
+        for (let i = 0; i < combined.length; i++) {
+            if (dominatedIndices.has(i)) continue;
+            let isDominated = false;
+            for (let j = 0; j < combined.length; j++) {
+                if (i === j || dominatedIndices.has(j)) continue;
+                if (paretoDominates(combined[j], combined[i])) {
+                    isDominated = true;
+                    break;
+                }
+                if (paretoDominates(combined[i], combined[j])) {
+                    dominatedIndices.add(j);
+                }
+            }
+            if (!isDominated) {
+                nextFront.push(combined[i]);
+            }
+        }
+
+        if (nextFront.length > currentFront.length || !problem.state.paretoFront) {
+            console.log(`[ProblemManager] Nouveau front de Pareto pour ${problem.id} avec ${nextFront.length} solutions (précédemment ${currentFront.length}).`);
+            problem.state.paretoFront = nextFront;
+            problem.state.lastUpdate = new Date().toISOString();
+            this.saveProblems();
         }
     }
 
@@ -218,16 +355,29 @@ class ProblemManager {
             ? this.problems.filter(p => p.id === problemId)
             : this.problems;
 
-        problemsToProcess.forEach(p => this._ensureInitialSolution(p));
+        // On ne génère une solution initiale que pour les problèmes mono-objectif
+        problemsToProcess
+            .filter(p => p.workUnit.type !== 'multi_objective_genetic_algorithm')
+            .forEach(p => this._ensureInitialSolution(p));
 
         const formatSolution = (p) => {
             // Après _ensureInitialSolution, on peut supposer que p.state existe.
             if (!p || !p.state) return null;
+
+            // Cas spécial pour les problèmes multi-objectifs
+            if (p.workUnit.type === 'multi_objective_genetic_algorithm') {
+                return {
+                    id: p.id,
+                    solution: p.state.paretoFront, // La "solution" est l'ensemble du front
+                    score: p.state.paretoFront?.length || 0, // Le "score" est le nombre de points sur le front
+                    lastUpdate: p.state.lastUpdate,
+                };
+            }
+
             return {
                 id: p.id,
                 solution: p.state.bestSolution,
-                // Gère les deux types de scores : 'energy' (recuit simulé) et 'fitness' (algo génétique)
-                score: p.state.bestEnergy !== undefined ? p.state.bestEnergy : p.state.bestFitness,
+                score: p.state.bestEnergy,
                 lastUpdate: p.state.lastUpdate,
             };
         };

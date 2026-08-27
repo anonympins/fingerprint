@@ -1,92 +1,123 @@
 [
   {
-    "id": "tsp_50_cities_parallel_search",
+    "id": "tsp_50_cities_challenge",
     "workUnit": {
-      "type": "run_multiple_parallel",
-      "solverName": "solveTSP",
-      "numCycles": 20
+      "type": "simulated_annealing_iterations",
+      "scoreFunction": "tsp.calculateEnergy",
+      "baseIterations": 50000,
+      "scalingFactor": 1.8,
+      "objective": "minimize",
+      "initialSolutionSource": "points"
     },
     "payload": {
-      "baseSolverArgs": [
-        {
-          "$init": "generate:randomPoints",
-          "params": { "count": 50, "bounds": { "x": 1000, "y": 1000 } }
-        },
-        { "maxIterations": 15000, "initialTemperature": 10000, "coolingRate": 0.999 }
-      ],
-      "workerDataGenerator": {
-        "$init": "generate:parallelArgs",
+      "points": {
+        "$init": "generate:randomPoints",
         "params": {
-          "baseArgs": "FROM_PAYLOAD",
-          "variations": {
-            "initialSolution": "random"
-          }
+          "count": 50
         }
       },
-      "concurrency": 4,
-      "logProgress": true
+      "options": {
+        "initialTemperature": 10000,
+        "coolingRate": 0.999
+      }
     },
     "state": {
-      "bestResult": null,
-      "stats": null
+      "bestSolution": null,
+      "bestEnergy": "Infinity",
+      "lastUpdate": null
     }
   },
   {
-    "id": "portfolio_20_assets_parallel_search",
+    "id": "portfolio_optimization_15_assets",
     "workUnit": {
-      "type": "run_multiple_parallel",
-      "solverName": "solvePortfolio",
-      "numCycles": 15
+      "type": "genetic_algorithm_generations",
+      "solverName": "portfolio.solve",
+      "baseGenerations": 100,
+      "scalingFactor": 1.5,
+      "objective": "minimize"
     },
     "payload": {
-      "baseSolverArgs": [
-        {
-          "$init": "generate:randomAssets",
-          "params": { "count": 20 }
-        },
-        0.25,
-        { "generations": 50, "populationSize": 60 }
-      ],
-      "concurrency": 4,
-      "logProgress": true
+      "assets": {
+        "$init": "generate:randomAssets",
+        "params": {
+          "count": 15
+        }
+      },
+      "maxVolatility": 0.20,
+      "options": {
+        "populationSize": 80
+      }
     },
     "state": {
-      "bestResult": null,
-      "stats": null
+      "bestSolution": null,
+      "bestEnergy": "Infinity",
+      "lastUpdate": null
     }
   },
   {
-    "id": "facility_location_parallel_search",
+    "id": "fraud_detection_tuning",
     "workUnit": {
-      "type": "run_multiple_parallel",
-      "solverName": "solveFacilityLocation",
-      "numCycles": 25
+      "type": "multi_objective_genetic_algorithm",
+      "solverName": "fraud.solve",
+      "baseGenerations": 40,
+      "scalingFactor": 1.6
     },
     "payload": {
-      "baseSolverArgs": [
-        {
-          "$init": "generate:randomPoints",
-          "params": { "count": 100 }
-        },
-        5,
-        { "minX": 0, "maxX": 1000, "minY": 0, "maxY": 1000 },
-        { "fixedCostPerFacility": 5000, "maxIterations": 10000 }
+      "legitimateClicks": [
+        { "fingerprint": "human1", "timeToClick": 1200, "clickX": 150, "clickY": 200, "mouseEntropy": 0.8, "scrollEvents": 5 },
+        { "fingerprint": "human1", "timeToClick": 950, "clickX": 155, "clickY": 203, "mouseEntropy": 0.82, "scrollEvents": 8 },
+        { "fingerprint": "human2", "timeToClick": 2500, "clickX": 800, "clickY": 400, "mouseEntropy": 0.9, "scrollEvents": 12 },
+        { "fingerprint": "human3", "timeToClick": 1800, "clickX": 300, "clickY": 500, "mouseEntropy": 0.75, "scrollEvents": 3 }
       ],
-      "workerDataGenerator": {
-        "$init": "generate:parallelArgs",
-        "params": {
-          "baseArgs": "FROM_PAYLOAD",
-          "variations": {
-            "initialSolution": "random"
-          }
-        }
-      },
-      "concurrency": 4,
-      "logProgress": true
+      "fraudulentClicks": [
+        { "fingerprint": "bot1", "timeToClick": 50, "clickX": 100, "clickY": 100, "mouseEntropy": 0.01, "scrollEvents": 0 },
+        { "fingerprint": "bot1", "timeToClick": 55, "clickX": 100, "clickY": 100, "mouseEntropy": 0.01, "scrollEvents": 0 },
+        { "fingerprint": "bot2", "timeToClick": 200, "clickX": 500, "clickY": 300, "mouseEntropy": 0.1, "scrollEvents": 1 },
+        { "fingerprint": "bot2", "timeToClick": 210, "clickX": 502, "clickY": 301, "mouseEntropy": 0.1, "scrollEvents": 1 },
+        { "fingerprint": "bot3", "timeToClick": 3000, "clickX": 250, "clickY": 450, "mouseEntropy": 0.2, "scrollEvents": 0 }
+      ],
+      "options": {
+        "populationSize": 50
+      }
     },
     "state": {
-      "bestResult": null,
-      "stats": null
+      "paretoFront": [],
+      "lastUpdate": null
+    }
+  },
+  {
+    "id": "cpc_optimization_multi_objective",
+    "workUnit": {
+      "type": "multi_objective_genetic_algorithm",
+      "solverName": "cpc.solve",
+      "baseGenerations": 50,
+      "scalingFactor": 1.5
+    },
+    "payload": {
+      "advertiser": {
+        "credits": 500,
+        "maxCpcBid": 3.5
+      },
+      "ad": {
+        "relevanceScore": 0.85
+      },
+      "competingAds": [
+        { "bid": 2.1, "quality": 0.7 },
+        { "bid": 1.8, "quality": 0.9 },
+        { "bid": 2.5, "quality": 0.6 }
+      ],
+      "website": {
+        "relevanceScore": 75
+      },
+      "platformParams": {
+        "optimalBaseCommission": 0.25,
+        "optimalBonusFactor": 0.15
+      },
+      "estimatedImpressions": 10000
+    },
+    "state": {
+      "paretoFront": [],
+      "lastUpdate": null
     }
   }
 ]
