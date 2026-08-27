@@ -822,18 +822,15 @@ function getCrossLayerInconsistency(context) {
 function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     if (!deviceData) return { requestPatternScore: 0 };
 
-    // Default values for the pattern detection logic, which can be overridden by the auto-tuner.
+    // (NOUVEAU) Logique de détection de pattern simplifiée et unifiée.
     const {
-        velocityThreshold = 800, velocityWeight = 30,
-        burstThreshold = 1500, burstWeight = 50,
-        scrapeThreshold = 1000, scrapeWeight = 20, scrapeBurstWeight = 40,
-        historySize = 10,
-        decayFactor = 0.9,
-        inactivityReset = 30000, // 30 secondes
-        // Nouveaux paramètres pour l'analyse de distribution
-        benfordMinSamples = 15, benfordWeight = 50,
-        // Nouveau paramètre pour la détection de séquences
-        sequenceLength = 3, sequenceWeight = 60
+        historySize = 20,           // Nombre de requêtes à conserver pour l'analyse.
+        minSamples = 10,            // Nombre d'intervalles de temps à analyser avant de calculer.
+        regularityThreshold = 150,  // Écart-type (ms) en dessous duquel le comportement est "trop régulier".
+        benfordThreshold = 0.15,    // Seuil de déviation de Benford au-dessus duquel la distribution est "non naturelle".
+        patternWeight = 80,         // Pénalité FORTE et unique si un pattern est détecté.
+        decayFactor = 0.95,         // Décroissance du score dans le temps.
+        inactivityReset = 180000    // Réinitialisation du score après 3 minutes d'inactivité.
     } = patternConfig;
 
     const now = Date.now();
@@ -846,91 +843,65 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     params.sort(); // Sort for deterministic order
     const currentQueryString = params.toString();
 
-    // Initialize request history if it doesn't exist
     if (!deviceData.requestHistory) deviceData.requestHistory = [];
-    // NOUVEAU: S'assurer que timingHistory est toujours initialisé.
-    // Cette vérification est séparée car deviceData peut exister avec requestHistory mais sans timingHistory.
     if (!deviceData.timingHistory) deviceData.timingHistory = [];
 
     const history = deviceData.requestHistory;
-    let score = 0;
+    const lastRequest = history.length > 0 ? history[history.length - 1] : null;
+    const timeSinceLast = lastRequest ? now - lastRequest.timestamp : Infinity;
 
-    // --- Analyze patterns based on the last few requests ---
-    if (history.length > 0) {
-        const lastRequest = history[history.length - 1];
-        const timeSinceLast = now - lastRequest.timestamp;
-
-        // Stocker le délai pour l'analyse de distribution
-        deviceData.timingHistory.push(timeSinceLast);
-
-        // 1. Velocity Check: Penalize requests that are too fast to be human.
-        if (timeSinceLast < velocityThreshold) { // 150 < 200 -> true
-            score += velocityWeight; // score = 30
-        }
-
-        // 2. Burst Check: Add additional penalty for identical requests in a very short time frame.
-        if (currentPath === lastRequest.path && currentQueryString === lastRequest.queryString && timeSinceLast < burstThreshold) { // 150 < 500 -> true
-            score += burstWeight; // score = 30 + 50 = 80
-        }
-
-        // 3. Sequential Scraping Check: Add additional penalty for same path with different query params (potential scraping).
-        // This is a simplified check, now independent of the burst check.
-        if (currentPath === lastRequest.path && currentQueryString !== lastRequest.queryString && timeSinceLast < scrapeThreshold) {
-            const previousRequest = history.length > 2 ? history[history.length - 2] : null;
-            if (previousRequest && previousRequest.path === currentPath) {
-                score += scrapeBurstWeight; // This is at least the 3rd request in a sequence to the same path.
-            } else {
-                score += scrapeWeight; // First sign of a potential scraping pattern
-            }
-        }
-
-        // 4. (NOUVEAU) Détection de séquences répétitives (ex: A -> B -> C -> A -> B -> C)
-        if (history.length >= sequenceLength * 2) {
-            const lastSequence = history.slice(-sequenceLength);
-            const previousSequence = history.slice(-sequenceLength * 2, -sequenceLength);
-            
-            const isRepeating = lastSequence.every((req, i) => 
-                req.path === previousSequence[i].path && req.queryString === previousSequence[i].queryString
-            );
-            if (isRepeating) score += sequenceWeight;
-        }
-
-        // 5. (NOUVEAU) Analyse de la distribution des délais avec la loi de Benford
-        if (deviceData.timingHistory.length >= benfordMinSamples) {
-            // On concatène tous les délais en une seule chaîne de chiffres.
-            const benfordDeviation = Optimization.Operators.benfordTest(deviceData.timingHistory);
-
-            // Une déviation > 0.15 est suspecte. On peut pondérer la pénalité.
-            // Une déviation de 0.3 (très suspecte) donnerait un score de 100 (0.3 / 0.3 * 100).
-            score += Math.min(100, (benfordDeviation / 0.3) * benfordWeight);
-        }
-    }
-
-    // --- Update history ---
+    // Mise à jour de l'historique
     history.push({
         timestamp: now,
         path: currentPath,
         queryString: currentQueryString,
     });
+    if (lastRequest) {
+        deviceData.timingHistory.push(timeSinceLast);
+    }
 
-    // Keep history to a reasonable size (e.g., last 10 requests)
+    let instantScore = 0;
+    const timings = deviceData.timingHistory;
+
+    // Analyse statistique unifiée si nous avons assez de données
+    if (timings.length >= minSamples) {
+        const timings = deviceData.timingHistory;
+        const mean = timings.reduce((a, b) => a + b, 0) / timings.length;
+        const variance = timings.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / timings.length;
+        const stdDev = Math.sqrt(variance);
+        const benfordDeviation = Optimization.Operators.benfordTest(timings);
+
+        // Détection de régularité (bots de type "cron")
+        if (stdDev < regularityThreshold) {
+            instantScore = patternWeight;
+        }
+        // Détection de distribution non-naturelle (bots "faussement aléatoires")
+        else if (benfordDeviation > benfordThreshold) {
+            instantScore = patternWeight;
+        }
+    }
+
+    // Garder l'historique à une taille raisonnable
     if (history.length > historySize) {
         history.shift();
     }
-    if (deviceData.timingHistory.length > benfordMinSamples * 2) { // Garder un historique plus long pour Benford
+    if (deviceData.timingHistory.length > historySize) {
         deviceData.timingHistory.shift();
     }
 
-    // Decay the score over time if behavior becomes normal again.
-    // We can store the score in deviceData and decay it.
-    deviceData.lastPatternScore = Math.min(100, (deviceData.lastPatternScore || 0) * decayFactor + score); // Decay old score and add new, plafonné à 100
+    // Logique de décroissance et de score final
+    let newPatternScore = deviceData.lastPatternScore || 0;
 
-    // If there hasn't been a request in a while, reset the pattern score.
-    if (history.length > 1 && (now - history[history.length - 2].timestamp > inactivityReset)) { // X ms inactivity
-        deviceData.lastPatternScore = 0;
+    if (timeSinceLast > inactivityReset) {
+        newPatternScore = 0; // Réinitialisation complète après une longue inactivité
+    } else {
+        newPatternScore *= decayFactor;
     }
+    newPatternScore = Math.max(0, newPatternScore);
 
-    return { requestPatternScore: deviceData.lastPatternScore };
+    deviceData.lastPatternScore = newPatternScore + instantScore;
+
+    return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
 }
 
 const trapUrlTemplates = [
@@ -1553,6 +1524,46 @@ export class FingerprintEngine {
     }
     return blockList;
   }
+
+  /**
+   * Checks if the client's IP resolves to any of the hostnames in the hostname allowlist.
+   * The result is cached to avoid repeated DNS lookups.
+   * @private
+   * @param {string} clientIp - The IP address of the client.
+   * @returns {Promise<boolean>} True if the IP is in the hostname allowlist.
+   */
+  async _isIpInHostnameAllowlist(clientIp) {
+    const { whitelist = [] } = this.securityConfig;
+    const hostnameRule = whitelist.find(rule => rule.type === 'hostname_allowlist');
+
+    if (!hostnameRule || !hostnameRule.entries || hostnameRule.entries.length === 0) {
+      return false;
+    }
+
+    const cacheKey = `ip-hostname-allowlist:${clientIp}`;
+    const cachedStatus = await store.get(cacheKey);
+
+    if (cachedStatus === 'verified') return true;
+    if (cachedStatus === 'failed') return false;
+
+    try {
+      // Reverse DNS lookup to get hostnames for the IP
+      const hostnames = await dns.reverse(clientIp);
+
+      // Check if any of the resolved hostnames is in our allowlist
+      const isAllowed = hostnames.some(hostname => hostnameRule.entries.includes(hostname));
+
+      if (isAllowed) {
+        await store.set(cacheKey, 'verified', 86400); // Cache success for 24h
+        return true;
+      }
+    } catch (error) {
+      // DNS errors (like no rDNS record) are treated as a failure.
+    }
+
+    await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h
+    return false;
+  }
   _isIpInAllowlist(clientIp) {
     return this._allowlist.check(clientIp);
   }
@@ -1636,6 +1647,12 @@ export class FingerprintEngine {
     if (this._isIpInAllowlist(clientIp)) {
       this._log('IP in allowlist - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'allowlist' } };
+    }
+
+    // 2. Check hostname-based allowlist.
+    if (await this._isIpInHostnameAllowlist(clientIp)) {
+      this._log('IP resolves to a whitelisted hostname - allowing request', { clientIp });
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'hostname_allowlist' } };
     }
 
     const { pow_nonce } = query;
@@ -1814,7 +1831,7 @@ export class FingerprintEngine {
             this._log('Challenge solution valid - issuing ticket', { ticketMaxAge: finalTtl, isProbationary });
 
             if (logger) {
-                logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now() });
+                logger({ type: 'challenge_solved', deviceId: cookies?.device_id, score: preliminaryScore, challengeType: pow_type, timestamp: Date.now(), vector: preliminaryVector });
             }
 
             // NOUVELLE LOGIQUE DE REDIRECTION (plus robuste)
@@ -1927,6 +1944,9 @@ export class FingerprintEngine {
       if (onDeviceCompromised) {
         onDeviceCompromised({ deviceId: deviceId, clientIp, reason: 'Score exceeded block threshold', score: finalScore, vector: suspicionVector });
       }
+      if (logger) {
+        logger({ type: 'request_blocked', deviceId: deviceId, score: finalScore, vector: suspicionVector, timestamp: Date.now() });
+      }
       return { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
     }
 
@@ -1940,13 +1960,24 @@ export class FingerprintEngine {
             onDeviceCompromised({ deviceId: deviceId, clientIp, reason: 'Triggered signed honeypot trap URL', score: 100, vector: { honeypotScore: 100 } });
         }
         if (logger) {
-            logger({ type: 'trap_triggered', deviceId: cookies?.device_id, score: 100, path: path, timestamp: Date.now() });
+            logger({ type: 'trap_triggered', deviceId: cookies?.device_id, score: 100, path: path, timestamp: Date.now(), vector: { honeypotScore: 100 } });
         }
         await store.set(`device:${cookies.device_id}`, deviceData); // No TTL for condemned status
         return { action: 'block', status: 404, score: 100, vector: { honeypotScore: 100 } };
     }
+    
+    // --- NOUVELLE LOGIQUE DE RE-CHALLENGE ---
+    // Un challenge est nécessaire si :
+    // 1. La requête est suspecte ET il n'y a pas de ticket valide.
+    // OU
+    // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
+    const hasValidTicket = isTicketValid(clientIp, powCookie);
+    const mustReChallenge = isSuspiciousHigh && hasValidTicket;
 
-    if (isSuspicious && !isTicketValid(clientIp, powCookie)) { // The powCookie check is now after the PoW solution check
+    if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
+        if (mustReChallenge) {
+            this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
+        }
         this._log('Suspicious request without valid ticket - issuing challenge', { finalScore, hasPowCookie: !!powCookie });
         // Honeypot: Direct probing of challenge endpoints is highly suspicious.
         // A legitimate user only hits these endpoints via the challenge page itself.
@@ -1956,7 +1987,7 @@ export class FingerprintEngine {
         if (pow_nonce && !isChallengeResponse) {
             this._log('Honeypot probe detected - blocking request', { path, pow_nonce });
             if (logger) {
-                logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now() });
+                logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now(), vector: suspicionVector });
             }
             suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
             // Recalculate the final score with the updated vector.
@@ -2037,7 +2068,7 @@ export class FingerprintEngine {
             });
 
             if (logger) {
-                logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
+                logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
             }
 
             // Check if the request is an API request to return a JSON challenge
@@ -2073,7 +2104,7 @@ export class FingerprintEngine {
     this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie) });
     
     if (logger) {
-        logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now() });
+        logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
     }
 
     return { action: 'next', score: finalScore, vector: suspicionVector };
@@ -2516,115 +2547,58 @@ let autoTuningJobId = null;
  * @param {object} securityConfig - The security configuration object to update.
  * @param {Array<object>} trafficData - The array containing traffic logs.
  * @param {number} minDataPoints - The minimum number of data points required to start optimization.
+ * @param {number} maxDataPoints - The maximum number of data points to keep after an optimization cycle.
  */
-function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
-    if (trafficData.length < minDataPoints) {
-        console.log(`[AutoTuning] Reporté : ${trafficData.length}/${minDataPoints} points de données.`);
-        return;
+function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints) {
+  if (trafficData.length < minDataPoints) {
+    console.log(`[AutoTuning] Reporté : ${trafficData.length}/${minDataPoints} points de données.`);
+    return;
+  }
+
+  if (trafficData.length > maxDataPoints) {
+    console.log(`[AutoTuning] Le journal de trafic a atteint ${trafficData.length} entrées (max: ${maxDataPoints}). Troncation des données les plus anciennes.`);
+    trafficData.splice(0, trafficData.length - maxDataPoints);
+  }
+
+  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${trafficData.length} points de données.`);
+
+  const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData });
+
+  if (!paretoFront || paretoFront.length === 0) {
+    console.warn("[AutoTuning] L'optimisation n'a retourné aucune solution.");
+    return;
+  }
+
+  // Stratégie de sélection : choisir la solution la plus équilibrée du front de Pareto.
+  // On cherche la solution la plus proche de l'origine (0,0) dans l'espace des objectifs.
+  let bestSolution = paretoFront[0];
+  let minDistance = Math.sqrt(Math.pow(bestSolution.objectives[0], 2) + Math.pow(bestSolution.objectives[1], 2));
+
+  for (let i = 1; i < paretoFront.length; i++) {
+    const distance = Math.sqrt(Math.pow(paretoFront[i].objectives[0], 2) + Math.pow(paretoFront[i].objectives[1], 2));
+    if (distance < minDistance) {
+      minDistance = distance;
+      bestSolution = paretoFront[i];
     }
-    console.log(`[AutoTuning] Démarrage du cycle d'optimisation avec ${trafficData.length} points de données.`);
+  }
 
-    // Classify historical requests with a confidence weight.
-    const solvedDevices = new Set(trafficData.filter(e => e.type === 'challenge_solved').map(e => e.deviceId));
-    const challengedDevices = new Set(trafficData.filter(e => e.type === 'challenge_issued').map(e => e.deviceId));
+  // Appliquer la nouvelle configuration optimisée
+  const newConfig = bestSolution.solution;
 
-    const historicalRequests = trafficData.map(log => {
-        // Assign a label ('bot' or 'human') and a confidence weight to each log entry.
-        switch (log.type) {
-            case 'honeypot_probe':
-            case 'trap_triggered':
-                return { score: log.score, label: 'bot', confidence: 10.0 }; // Very high confidence
-            
-            case 'challenge_issued':
-                // A challenge issued to a device that never solved it is a strong bot signal.
-                if (!solvedDevices.has(log.deviceId)) {
-                    return { score: log.score, label: 'bot', confidence: 3.0 }; // High confidence
-                }
-                // If the challenge was eventually solved, this specific log is neutral.
-                return null;
+  // S'assurer que les objets de configuration existent avant d'utiliser Object.assign
+  if (!securityConfig.thresholds) securityConfig.thresholds = {};
+  if (!securityConfig.weights) securityConfig.weights = {};
+  if (!securityConfig.patterns) securityConfig.patterns = {};
 
-            case 'challenge_solved':
-                return { score: log.score, label: 'human', confidence: 5.0 }; // High confidence
+  Object.assign(securityConfig.thresholds, newConfig.thresholds || {});
+  Object.assign(securityConfig.weights, newConfig.weights || {});
+  Object.assign(securityConfig.patterns, newConfig.patterns || {});
 
-            case 'request_passed':
-                // A passed request from a device that was never even challenged is likely a human.
-                if (!challengedDevices.has(log.deviceId)) {
-                    return { score: log.score, label: 'human', confidence: 0.5 }; // Low confidence
-                }
-                // If the device was challenged at some point, this log is ambiguous.
-                return null;
-            
-            default:
-                return null;
-        }
-    }).filter(Boolean); // Remove null entries
-
-    // The "fitness" function evaluates the quality of a set of thresholds.
-    // A lower score is better.
-    const fitnessFunction = (solution) => {
-        const [low, medium, high, velocityThreshold, burstThreshold, scrapeThreshold] = solution;
-        if (low >= medium || medium >= high || low < 10 || high > 90) return Infinity;
-        if (velocityThreshold < 50 || velocityThreshold > burstThreshold || burstThreshold > scrapeThreshold) return Infinity;
-
-        let weightedFalsePositives = 0; // Humans challenged unnecessarily.
-        let weightedFalseNegatives = 0; // Undetected bots.
-
-        for (const req of historicalRequests) {
-            if (req.label === 'bot') {
-                if (req.score < low) weightedFalseNegatives += req.confidence;
-            } else { // 'human'
-                if (req.score >= low) weightedFalsePositives += req.confidence;
-            }
-        }
-        // The penalty for false negatives is implicitly higher due to the higher confidence scores of bot signals.
-        return weightedFalsePositives + weightedFalseNegatives;
-    };
-
-    // Functions for the genetic algorithm.
-    const createIndividual = () => [
-        10 + Math.random() * 20, // low
-        30 + Math.random() * 30, // medium
-        60 + Math.random() * 30, // high
-        100 + Math.random() * 150, // velocityThreshold (100-250ms)
-        300 + Math.random() * 400, // burstThreshold (300-700ms)
-        800 + Math.random() * 700, // scrapeThreshold (800-1500ms)
-    ];
-    const crossover = (p1, p2) => p1.map((val, i) => (val + p2[i]) / 2);
-    const mutate = (s) => {
-        const n = [...s];
-        const i = Math.floor(Math.random() * n.length);
-        // Adjust mutation range based on parameter
-        const mutationRange = i < 3 ? 5 : 50;
-        n[i] += (Math.random() - 0.5) * mutationRange;
-        return n;
-    };
-
-    // Start optimization.
-    const result = Optimization.geneticAlgorithm(createIndividual, fitnessFunction, crossover, mutate, {
-        generations: 50,
-        populationSize: 40
-    });
-
-    const [newLow, newMedium, newHigh, newVelocity, newBurst, newScrape] = result.solution;
-
-    // Update the configuration live.
-    // Ensure thresholds object exists
-    if (!securityConfig.thresholds) securityConfig.thresholds = {};
-    securityConfig.thresholds.low = Math.round(newLow);
-    securityConfig.thresholds.medium = Math.round(newMedium);
-    securityConfig.thresholds.high = Math.round(newHigh);
-
-    // Update pattern detection parameters
-    if (!securityConfig.patterns) securityConfig.patterns = {};
-    securityConfig.patterns.velocityThreshold = Math.round(newVelocity);
-    securityConfig.patterns.burstThreshold = Math.round(newBurst);
-    securityConfig.patterns.scrapeThreshold = Math.round(newScrape);
-    // Weights could also be optimized, but let's keep it to thresholds for now for simplicity.
-
-    console.log("[AutoTuning] Nouveaux seuils optimisés appliqués :", securityConfig.thresholds);
-    if (securityConfig.patterns) {
-        console.log("[AutoTuning] Nouveaux paramètres de pattern appliqués :", securityConfig.patterns);
-    }
+  console.log("[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.");
+  console.log("[AutoTuning] Objectifs atteints :", { falsePositiveRate: bestSolution.objectives[0].toFixed(4), falseNegativeRate: bestSolution.objectives[1].toFixed(4) });
+  console.log("[AutoTuning] Seuils :", securityConfig.thresholds);
+  console.log("[AutoTuning] Poids :", securityConfig.weights);
+  console.log("[AutoTuning] Patterns :", securityConfig.patterns);
 }
 
 /**
@@ -2634,7 +2608,8 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints) {
  * @param {object} options.securityConfig - The live security configuration object that will be mutated.
  * @param {Array<object>} options.trafficData - The array where the logger pushes traffic data.
  * @param {number} [options.interval=1800000] - The interval in milliseconds between each optimization cycle (default: 30 minutes).
- * @param {number} [options.minDataPoints=200] - The minimum number of requests to analyze before starting a cycle (default: 200).
+ * @param {number} [options.minDataPoints=200] - The minimum number of requests to have before starting a cycle (default: 200).
+ * @param {number} [options.maxDataPoints=10000] - The maximum number of log entries to keep in memory (default: 10,000).
  */
 export function startThresholdAutoTuning(options) {
     if (autoTuningJobId) {
@@ -2645,8 +2620,9 @@ export function startThresholdAutoTuning(options) {
     const {
         securityConfig,
         trafficData,
-        interval = 1800000,
-        minDataPoints = 200
+        interval = 1800000, // 30 minutes
+        minDataPoints = 200,
+        maxDataPoints = 10000 // Limite par défaut à 10 000 entrées
     } = options;
 
     if (!securityConfig || !trafficData) {
@@ -2656,7 +2632,7 @@ export function startThresholdAutoTuning(options) {
     console.log(`[AutoTuning] Job d'optimisation des seuils démarré. Prochain cycle dans ${interval / 60000} minutes.`);
 
     autoTuningJobId = setInterval(() => {
-        runThresholdOptimization(securityConfig, trafficData, minDataPoints);
+        runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints);
     }, interval);
 }
 

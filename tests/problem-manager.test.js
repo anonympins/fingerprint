@@ -1,6 +1,7 @@
 import { it, describe, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { ProblemManager } from '../problem-manager.js';
+import { Optimization } from '../library.js';
 
 // Mock the 'fs' module
 vi.mock('node:fs', async () => {
@@ -11,6 +12,15 @@ vi.mock('node:fs', async () => {
         writeFileSync: vi.fn(),
     };
 });
+
+// Mock the Optimization library to have predictable results for energy calculation
+vi.mock('../library.js', () => ({
+    Optimization: {
+        tsp: {
+            calculateEnergy: vi.fn(solution => solution.reduce((sum, val) => sum + val.id, 0))
+        }
+    }
+}));
 
 describe('ProblemManager', () => {
     let mockConfig;
@@ -29,7 +39,9 @@ describe('ProblemManager', () => {
                     "scalingFactor": 2.0
                 },
                 "payload": {
-                    "cities": {
+                    // In tests, we use a more generic 'points' to match the implementation
+                    // of _ensureInitialSolution
+                    "points": {
                         "$init": "generate:randomPoints",
                         "params": { "count": 10 }
                     },
@@ -72,11 +84,11 @@ describe('ProblemManager', () => {
             const tspProblem = manager.problems.find(p => p.id === 'tsp_10_cities');
             const portfolioProblem = manager.problems.find(p => p.id === 'portfolio_5_assets');
 
-            // Check if 'cities' was generated correctly
-            expect(Array.isArray(tspProblem.payload.cities)).toBe(true);
-            expect(tspProblem.payload.cities.length).toBe(10);
-            expect(tspProblem.payload.cities[0]).toHaveProperty('x');
-            expect(tspProblem.payload.cities[0]).toHaveProperty('y');
+            // Check if 'points' was generated correctly
+            expect(Array.isArray(tspProblem.payload.points)).toBe(true);
+            expect(tspProblem.payload.points.length).toBe(10);
+            expect(tspProblem.payload.points[0]).toHaveProperty('x');
+            expect(tspProblem.payload.points[0]).toHaveProperty('y');
 
             // Check if 'assets' was generated correctly
             expect(Array.isArray(portfolioProblem.payload.assets)).toBe(true);
@@ -129,6 +141,105 @@ describe('ProblemManager', () => {
             const expectedBaseGenerations = Math.max(50, mockConfig[1].workUnit.baseGenerations);
             const expectedPortfolioGenerations = Math.floor(expectedBaseGenerations * Math.pow(1.5, suspicionFactor));
             expect(portfolioTask.generations).toBe(expectedPortfolioGenerations);
+        });
+    });
+
+    describe('integrateSolution', () => {
+        it('should update the best solution if a better one is provided', () => {
+            const manager = new ProblemManager('fake/path.json');
+            const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
+            problem.state.bestEnergy = 1000; // Set a high initial energy
+
+            const newBetterSolution = { solution: [{ id: 1 }], energy: 500 };
+            manager.integrateSolution('tsp_10_cities', newBetterSolution);
+
+            expect(problem.state.bestSolution).toEqual(newBetterSolution.solution);
+            expect(problem.state.bestEnergy).toBe(newBetterSolution.energy);
+            expect(writeFileSync).toHaveBeenCalled();
+        });
+
+        it('should not update the best solution if a worse one is provided', () => {
+            const manager = new ProblemManager('fake/path.json');
+            const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
+            const initialSolution = [{ id: 10 }];
+            problem.state.bestSolution = initialSolution;
+            problem.state.bestEnergy = 100;
+
+            const newWorseSolution = { solution: [{ id: 20 }], energy: 200 };
+            manager.integrateSolution('tsp_10_cities', newWorseSolution);
+
+            expect(problem.state.bestSolution).toEqual(initialSolution);
+            expect(problem.state.bestEnergy).toBe(100);
+            // saveProblems is still called, so we check writeFileSync was called
+            expect(writeFileSync).toHaveBeenCalled();
+        });
+
+        it('should handle solutions for non-existent problems gracefully', () => {
+            const manager = new ProblemManager('fake/path.json');
+            // This should not throw an error
+            expect(() => manager.integrateSolution('non_existent_problem', { energy: 1 })).not.toThrow();
+            // And it should not attempt to save
+            expect(writeFileSync).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('getBestSolutions', () => {
+        beforeEach(() => {
+            // Mock the initial solution generation to be predictable
+            mockConfig[0].payload.points = [{ id: 1 }, { id: 2 }, { id: 3 }]; // sum = 6
+            // Mock the calculateEnergy function from the library
+            Optimization.tsp.calculateEnergy.mockReturnValue(6);
+            readFileSync.mockReturnValue(JSON.stringify(mockConfig));
+        });
+
+        it('should generate an initial solution if none exists', () => {
+            const manager = new ProblemManager('fake/path.json');
+            const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
+            problem.state.bestSolution = null; // Ensure no solution exists
+
+            manager.getBestSolutions('tsp_10_cities');
+
+            expect(problem.state.bestSolution).not.toBeNull();
+            expect(problem.state.bestEnergy).toBe(6); // Mocked energy value
+            expect(writeFileSync).toHaveBeenCalled(); // Should save the newly generated solution
+        });
+
+        it('should return the best solution for a specific problem ID', () => {
+            const manager = new ProblemManager('fake/path.json');
+            const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
+            problem.state.bestSolution = [{ id: 'A' }];
+            problem.state.bestEnergy = 123;
+            problem.state.lastUpdate = '2023-01-01T00:00:00.000Z';
+
+            const result = manager.getBestSolutions('tsp_10_cities');
+
+            expect(result).toEqual({
+                id: 'tsp_10_cities',
+                solution: [{ id: 'A' }],
+                score: 123,
+                lastUpdate: '2023-01-01T00:00:00.000Z'
+            });
+        });
+
+        it('should return an array of all best solutions if no ID is provided', () => {
+            const manager = new ProblemManager('fake/path.json');
+            const problem1 = manager.problems.find(p => p.id === 'tsp_10_cities');
+            problem1.state.bestSolution = [{ id: 'A' }];
+            problem1.state.bestEnergy = 123;
+
+            // The portfolio problem has no solution, so it should be filtered out
+            const results = manager.getBestSolutions();
+
+            expect(Array.isArray(results)).toBe(true);
+            expect(results.length).toBe(1);
+            expect(results[0].id).toBe('tsp_10_cities');
+            expect(results[0].score).toBe(123);
+        });
+
+        it('should return null if a non-existent problem ID is requested', () => {
+            const manager = new ProblemManager('fake/path.json');
+            const result = manager.getBestSolutions('non_existent_problem');
+            expect(result).toBeNull();
         });
     });
 });

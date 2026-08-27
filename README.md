@@ -63,6 +63,8 @@ export POW_SECRET="your_secret_key_of_at_least_32_characters"
 
 The `powMiddleware` requires a configuration object defining the weights of suspicion indicators and the challenge trigger thresholds.
 
+All following `securityConfig` parameters are optional.
+
 ```javascript
 import express from 'express';
 import bodyParser from 'body-parser';
@@ -110,11 +112,15 @@ const securityConfig = {
     verbose: process.env.NODE_ENV !== 'production', // Log detailed info in development, but not in production.
     patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
         velocityThreshold: 800,   // ms between requests to be considered "fast"
-        burstThreshold: 1500,      // ms for identical requests to be a "burst"
+        burstThreshold: 1500,     // ms for identical requests to be a "burst"
         scrapeThreshold: 1000,    // ms for sequential requests to be "scraping"
         historySize: 10,          // Number of requests to keep for pattern analysis
-        decayFactor: 0.9,         // How quickly the pattern score decays over time
-        inactivityReset: 30000,   // ms of inactivity after which the pattern score is reset
+        minSamples: 5,            // Minimum number of timings to collect before statistical analysis.
+        regularityThreshold: 50,  // Standard deviation (ms) below which behavior is "too regular".
+        benfordThreshold: 0.15,   // Benford's Law deviation threshold above which the distribution is "unnatural".
+        patternWeight: 80,        // Strong, one-time penalty when a pattern is detected.
+        decayFactor: 0.9,         // Factor by which the pattern score decreases over time.
+        inactivityReset: 5000,    // Time (ms) after which the pattern score is reset.
     },
     honeypot: {
         // List of field names that are traps for bots.
@@ -156,6 +162,9 @@ const securityConfig = {
                 '203.0.113.0/24',     // A partner's network range
                 '2001:db8::/32'       // An IPv6 range
             ]},
+        { type: 'hostname_allowlist', entries: [
+                'google.com',      // A specific hostname
+            ]},
         // Option 2: DNS-verified bots (e.g., search engine crawlers).
         // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
         // The result is cached per IP to avoid repeated DNS lookups.
@@ -173,7 +182,8 @@ const securityConfig = {
     autotuning: {
         trafficData: trafficData,       // The data source for the genetic algorithm.
         interval: 1800000,              // Optimization cycle every 30 minutes (in ms).
-        minDataPoints: 200              // Minimum requests before starting an optimization cycle.
+        minDataPoints: 200,              // Minimum requests before starting an optimization cycle.
+        maxDataPoints: 20000              // Minimum requests before starting an optimization cycle.
     },
     // Enables problem solving for suspicious activity (configurable in problems.config.json)
     enableUsefulWork: true
@@ -539,6 +549,48 @@ While `powMiddleware` is convenient for Express, you can use the `FingerprintEng
 **For concrete examples with Koa and Fastify, see our [Framework Integration Guide](https://github.com/anonympins/fingerprint/blob/main/INTEGRATION.md).**
 
 The engine is a named export from the main module.
+
+### Useful Proof-of-Work (`ProblemManager`)
+
+Instead of issuing a generic Proof-of-Work, the system can dispatch a "useful" computational problem to a suspicious client. This allows harnessing the client's CPU cycles to solve complex problems (like optimization tasks) over time. This feature is managed by the `ProblemManager` class, which is enabled via the `enableUsefulWork: true` flag in the security configuration.
+
+The `ProblemManager` reads its configuration from `problems.config.json`, which defines the problems to be solved, the type of work units, and the current state of the solutions.
+
+While you typically won't interact with it directly, its methods are exported and can be used for monitoring or manual administration. The main instance is exported as `problemManager`.
+
+#### `problemManager.dispatchWork(suspicionFactor)`
+
+Selects a problem and generates a work unit for a client. The difficulty of the task (e.g., number of iterations) is scaled based on the client's `suspicionFactor`.
+
+*   **`suspicionFactor`** (`number`): A factor to adjust the difficulty of the work unit.
+*   **Returns**: (`object|null`) An object containing the `problemId` and the `task` to be sent to the client, or `null` if no problems are available.
+
+#### `problemManager.integrateSolution(problemId, solutionData)`
+
+Integrates a solution returned by a client into the problem's state. If the new solution is better than the existing one, it is saved as the new best solution.
+
+*   **`problemId`** (`string`): The ID of the problem being updated.
+*   **`solutionData`** (`object`): The solution data returned by the client (e.g., `{ solution, energy }`).
+
+#### `problemManager.getBestSolutions([problemId])`
+
+Retrieves the best solution currently known for one or all problems. This is useful for creating an API endpoint to view the progress of the distributed computation.
+
+*   **`problemId`** (`string`, optional): The ID of a specific problem.
+*   **Returns**: (`object|Array<object>|null`)
+    *   If a `problemId` is provided, it returns an object with the best solution for that problem (`{ id, solution, score, lastUpdate }`).
+    *   If no `problemId` is provided, it returns an array of these objects for all problems.
+
+**Example: Creating an API endpoint to view solutions**
+
+```javascript
+import { problemManager } from './fingerprint.js'; // Adjust path
+
+app.get('/api/problems/solutions', (req, res) => {
+    const solutions = problemManager.getBestSolutions();
+    res.json(solutions);
+});
+```
 
 **Workflow:**
 

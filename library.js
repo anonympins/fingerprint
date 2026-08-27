@@ -1583,29 +1583,104 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
  * @returns {Array<{solution: object, objectives: number[]}>} Le front de Pareto des configurations optimales.
  */
 Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
-    const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator(context); // eslint-disable-line
+    const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator(context);
 
     // Un "individu" est un objet de configuration complet
     const createIndividual = () => ({
         thresholds: {
-            low: 10 + Math.random() * 30, // 10-40
-            medium: 40 + Math.random() * 30, // 40-70
-            high: 70 + Math.random() * 25, // 70-95
+            low: 15 + Math.random() * 20, // 15-35
+            medium: 40 + Math.random() * 25, // 40-65
+            high: 70 + Math.random() * 20, // 70-90
         },
         weights: {
             historyScore: Math.random(),
             rotationScore: Math.random(),
             headerAnomalyScore: Math.random(),
-            requestPatternScore: Math.random(),
+            requestPatternScore: 0.5 + Math.random(), // Donner plus d'importance aux patterns
             inconsistencyScore: Math.random(),
             honeypotScore: 1.0, // Garder le honeypot à 1.0 est une bonne pratique
+            behaviorScore: Math.random(),
+            crossLayerInconsistencyScore: Math.random(),
+            timeInconsistencyScore: Math.random(),
         },
-        // On pourrait aussi faire muter les `patterns` ici
+        patterns: {
+            velocityThreshold: 100 + Math.random() * 400, // 100-500ms
+            velocityWeight: 10 + Math.random() * 40,
+            burstThreshold: 300 + Math.random() * 700, // 300-1000ms
+            burstWeight: 20 + Math.random() * 40,
+            scrapeThreshold: 500 + Math.random() * 1000, // 500-1500ms
+            scrapeWeight: 15 + Math.random() * 35,
+            sequenceLength: 3 + Math.floor(Math.random() * 3), // 3-5
+            sequenceWeight: 20 + Math.random() * 50,
+            regularityThreshold: 50 + Math.random() * 200, // 50-250ms
+            regularityWeight: 20 + Math.random() * 40,
+            decayFactor: 0.85 + Math.random() * 0.14, // 0.85-0.99
+            inactivityReset: 15000 + Math.random() * 45000, // 15s-60s
+        }
     });
 
     // Le crossover et la mutation doivent maintenant opérer sur des objets complexes
-    const crossover = (c1, c2) => { /* ... logique de croisement pour les objets de config ... */ return c1; }; // eslint-disable-line
-    const mutate = (c) => { /* ... logique de mutation pour les objets de config ... */ return c; }; // eslint-disable-line
+    const crossover = (c1, c2) => {
+        const child = JSON.parse(JSON.stringify(c1)); // Deep copy
+        // Croisement pour chaque groupe de paramètres
+        for (const key in child.thresholds) {
+            child.thresholds[key] = (c1.thresholds[key] + c2.thresholds[key]) / 2;
+        }
+        for (const key in child.weights) {
+            if (key !== 'honeypotScore') { // Ne pas croiser le poids du honeypot
+                child.weights[key] = (c1.weights[key] + c2.weights[key]) / 2;
+            }
+        }
+        for (const key in child.patterns) {
+            child.patterns[key] = (c1.patterns[key] + c2.patterns[key]) / 2;
+        }
+        return child;
+    };
+
+    const mutate = (c) => {
+        const newConfig = JSON.parse(JSON.stringify(c));
+
+        // --- NOUVELLE LOGIQUE : Sélection de section pondérée ---
+        // On donne plus de poids à la mutation des 'patterns' et des 'weights',
+        // car ils ont un impact plus direct sur la détection que les seuils.
+        const sections = [
+            { name: 'patterns', weight: 0.5 },   // 50% de chance
+            { name: 'weights', weight: 0.35 },   // 35% de chance
+            { name: 'thresholds', weight: 0.15 } // 15% de chance
+        ];
+        const rand = Math.random();
+        let cumulativeWeight = 0;
+        let sectionToMutate = 'patterns'; // Fallback
+        for (const section of sections) {
+            cumulativeWeight += section.weight;
+            if (rand < cumulativeWeight) {
+                sectionToMutate = section.name;
+                break;
+            }
+        }
+
+        const keys = Object.keys(newConfig[sectionToMutate]);
+        const keyToMutate = keys[Math.floor(Math.random() * keys.length)];
+
+        if (keyToMutate === 'honeypotScore') return newConfig; // Ne pas muter le poids du honeypot
+
+        // Appliquer une mutation avec une amplitude variable
+        const mutationAmount = (Math.random() - 0.5) * 0.4; // +/- 20%
+        newConfig[sectionToMutate][keyToMutate] *= (1 + mutationAmount);
+
+        // S'assurer que les valeurs restent dans des limites raisonnables
+        if (sectionToMutate === 'weights') {
+            newConfig[sectionToMutate][keyToMutate] = Math.max(0, Math.min(1.5, newConfig[sectionToMutate][keyToMutate]));
+        }
+        if (keyToMutate === 'decayFactor') {
+            newConfig.patterns.decayFactor = Math.max(0.8, Math.min(0.999, newConfig.patterns.decayFactor));
+        }
+        if (keyToMutate.includes('Threshold') || keyToMutate.includes('Reset')) {
+            newConfig.patterns[keyToMutate] = Math.max(50, newConfig.patterns[keyToMutate]);
+        }
+
+        return newConfig;
+    };
 
     return Optimization.geneticAlgorithmMultiObjective(
         createIndividual,

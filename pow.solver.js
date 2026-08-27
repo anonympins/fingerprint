@@ -340,13 +340,49 @@ export async function solveOptimizationTask(initialPopulation, generations) {
 }
 
 /**
+ * @class ChallengeSolution
+ * @description Encapsule une solution de challenge et fournit des méthodes pour la manipuler.
+ * @private
+ */
+class ChallengeSolution {
+    constructor(type, nonce, rawSolution) {
+        this.type = type;
+        this.nonce = nonce;
+        this.rawSolution = rawSolution;
+    }
+
+    /**
+     * Applique les paramètres de la solution à un objet URL.
+     * @param {URL} url - L'objet URL à modifier.
+     */
+    applyToUrl(url) {
+        url.searchParams.set('pow_type', this.type);
+        url.searchParams.set('pow_nonce', this.nonce);
+
+        // Logique de formatage spécifique à chaque type de challenge
+        if (this.type === 'cpu_mem' || this.type === 'cpu_mem_inline' || this.type === 'cpu_target') {
+            Object.entries(this.rawSolution).forEach(([key, value]) => {
+                url.searchParams.set(`pow_solution_${key}`, String(value));
+            });
+        } else if (this.type === 'useful_work_task') {
+            url.searchParams.set('pow_solution_work_result', JSON.stringify(this.rawSolution.work_result));
+            url.searchParams.set('pow_problem_id', this.rawSolution.problem_id);
+        } else {
+            // Pour les cas simples comme 'tsp' où la solution est une seule valeur
+            url.searchParams.set('pow_solution', JSON.stringify(this.rawSolution));
+        }
+    }
+}
+
+/**
  * Fonction principale qui reçoit un objet challenge et le résout.
  * @param {object} challenge - L'objet challenge reçu du serveur.
- * @returns {Promise<object>} Un objet contenant la ou les solutions.
+ * @param {string} [fingerprint=''] - L'empreinte de l'appareil qui résout le challenge.
+ * @returns {Promise<ChallengeSolution>} Un objet `ChallengeSolution` encapsulant le résultat.
  */
 export async function solveChallenge(challenge, fingerprint = '') { // The fingerprint is now passed from the client library
     const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, optimizationTask, usefulWorkTask } = challenge;
-    const solutions = {};
+    let rawSolution = {};
 
     switch (type) {
         case 'cpu_target':
@@ -357,7 +393,7 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
             const target = cpuTarget; // Keep variable name for consistency below
             // Pour ce challenge simple, le baseBlock est juste le nonce.
             const baseBlockBytes = new TextEncoder().encode(nonce + ":");
-            solutions.cpu = await solveCpuTargetInline(baseBlockBytes, target, null);
+            rawSolution.cpu = await solveCpuTargetInline(baseBlockBytes, target, null);
             break;
         case 'cpu_mem':
             // Pour les appels API, le client IP n'est pas connu, on ne le met pas dans le message
@@ -371,8 +407,8 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
                 })(),
                 solveMemory(memSeed, memDifficulty)
             ]);
-            solutions.cpu = cpuSol;
-            solutions.mem = memSol;
+            rawSolution.cpu = cpuSol;
+            rawSolution.mem = memSol;
             break;
         case 'cpu_mem_inline':
             // Version inline pour compatibilité HTML avec IP incluse
@@ -385,28 +421,28 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
                 })(),
                 solveMemory(memSeedInline, memDifficulty)
             ]);
-            solutions.cpu = cpuSolInline;
-            solutions.mem = memSolInline;
+            rawSolution.cpu = cpuSolInline;
+            rawSolution.mem = memSolInline;
             break;
         case 'tsp':
             const tspResult = await solveTsp(cities, targetMaxDistance);
-            solutions.tsp = tspResult.path;
-            solutions.distance = tspResult.distance;
+            // Pour ce challenge, la solution est juste le chemin.
+            rawSolution = tspResult.path;
             break;
         case 'optimization_task':
             const finalPopulation = await solveOptimizationTask(optimizationTask.population, optimizationTask.generations);
-            solutions.population = finalPopulation.map(p => p.chromosome); // On ne renvoie que les chromosomes
+            rawSolution = finalPopulation.map(p => p.chromosome); // On ne renvoie que les chromosomes
             break;
         case 'useful_work_task':
             const workResult = await solveUsefulWorkTask(usefulWorkTask.task);
-            solutions.work_result = workResult;
-            solutions.problem_id = usefulWorkTask.problemId;
+            rawSolution.work_result = workResult;
+            rawSolution.problem_id = usefulWorkTask.problemId;
             break;
         default:
             throw new Error(`Unknown challenge type: ${type}`);
     }
 
-    return solutions;
+    return new ChallengeSolution(type, nonce, rawSolution);
 }
 
 // --- Compatibilité pour l'injection directe dans le HTML ---
