@@ -110,11 +110,15 @@ const securityConfig = {
     verbose: process.env.NODE_ENV !== 'production', // Log detailed info in development, but not in production.
     patterns: { // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
         velocityThreshold: 800,   // ms between requests to be considered "fast"
-        burstThreshold: 1500,      // ms for identical requests to be a "burst"
+        burstThreshold: 1500,     // ms for identical requests to be a "burst"
         scrapeThreshold: 1000,    // ms for sequential requests to be "scraping"
         historySize: 10,          // Number of requests to keep for pattern analysis
-        decayFactor: 0.9,         // How quickly the pattern score decays over time
-        inactivityReset: 30000,   // ms of inactivity after which the pattern score is reset
+        minSamples: 5,            // Minimum number of timings to collect before statistical analysis.
+        regularityThreshold: 50,  // Standard deviation (ms) below which behavior is "too regular".
+        benfordThreshold: 0.15,   // Benford's Law deviation threshold above which the distribution is "unnatural".
+        patternWeight: 80,        // Strong, one-time penalty when a pattern is detected.
+        decayFactor: 0.9,         // Factor by which the pattern score decreases over time.
+        inactivityReset: 5000,    // Time (ms) after which the pattern score is reset.
     },
     honeypot: {
         // List of field names that are traps for bots.
@@ -155,6 +159,9 @@ const securityConfig = {
                 '192.168.1.100',      // A specific internal IP
                 '203.0.113.0/24',     // A partner's network range
                 '2001:db8::/32'       // An IPv6 range
+            ]},
+        { type: 'hostname_allowlist', entries: [
+                'google.com',      // A specific hostname
             ]},
         // Option 2: DNS-verified bots (e.g., search engine crawlers).
         // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
