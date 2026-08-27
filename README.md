@@ -590,7 +590,21 @@ app.get('/api/problems/solutions', (req, res) => {
     const solutions = problemManager.getBestSolutions();
     res.json(solutions);
 });
+
 ```
+
+
+#### `problemManager.updateProblemPayload(problemId, newPayload)`
+
+Updates the payload (parameters) of a specific problem by its ID. This allows for dynamic adjustment of problem configurations without restarting the server. When the payload is updated, the problem's current best solution and energy are reset, forcing the system to find a new optimal solution for the modified problem.
+
+*   **`problemId`** (`string`): The ID of the problem to update.
+*   **`newPayload`** (`object`): The new payload object that will replace the existing one.
+*   **Returns**: (`boolean`) `true` if the update was successful, `false` otherwise.
+
+**Example: Changing the number of facilities for `facility_location_challenge`**
+
+---
 
 **Workflow:**
 

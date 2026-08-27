@@ -393,6 +393,30 @@ class ProblemManager {
         return this.problems.map(formatSolution).filter(s => s && s.solution);
     }
 
+    /**
+     * Met à jour le payload d'un problème spécifique par son ID.
+     * @param {string} problemId - L'ID du problème à mettre à jour.
+     * @param {object} newPayload - Le nouvel objet payload qui remplacera l'ancien.
+     * @returns {boolean} - True si la mise à jour a réussi, false sinon.
+     */
+    updateProblemPayload(problemId, newPayload) {
+        const problem = this.problems.find(p => p.id === problemId);
+        if (!problem) {
+            console.error(`[ProblemManager] Impossible de mettre à jour : problème avec l'ID '${problemId}' non trouvé.`);
+            return false;
+        }
+
+        console.log(`[ProblemManager] Mise à jour du payload pour le problème '${problemId}'.`);
+        problem.payload = newPayload;
+
+        // Invalider l'état actuel car le problème a changé
+        problem.state.bestSolution = null;
+        problem.state.bestEnergy = "Infinity";
+
+        this.saveProblems();
+        return true;
+    }
+
 }
 
 export { ProblemManager }; // Export the class for testing
