@@ -93,6 +93,11 @@ export class FingerprintBuilder {
      * @param {string} fpString1 - Fingerprint A
      * @param {string} fpString2 - Fingerprint B
      */
+    // Note on `volatileKeys`: These keys are ignored during the comparison between the fingerprint
+    // of the request that *triggered* a challenge and the fingerprint of the request that *submits*
+    // the solution. This is because headers like Client-Hints (ch_*), cookie presence, and upgrade-insecure-requests
+    // can legitimately change or be absent on the subsequent request, especially after a redirect.
+    // By ignoring them, we focus the comparison on more stable identifiers like UA, JA3, GPU, etc.
     static compare(fpString1, fpString2) {
         if (!fpString1 || !fpString2) return 0;
 
@@ -148,7 +153,10 @@ export class FingerprintBuilder {
 
             // On ne compare que les clés qui ont un poids défini.
             const weight = weights[key];
-            if (!weight) return;
+            // FIX: The check must be for `undefined` to include keys that have a weight of 0.
+            // The previous `!weight` check would incorrectly exclude them, leading to a totalWeight of 0
+            // and a similarity score of NaN, which evaluates to 0.
+            if (weight === undefined) return;
 
             totalWeight += weight; // N'incrémenter que si la clé est pertinente.
             if (map1.get(key) === map2.get(key)) {
