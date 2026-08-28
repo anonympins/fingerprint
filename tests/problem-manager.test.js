@@ -17,7 +17,19 @@ vi.mock('node:fs', async () => {
 vi.mock('../library.js', () => ({
     Optimization: {
         tsp: {
-            calculateEnergy: vi.fn(solution => solution.reduce((sum, val) => sum + val.id, 0))
+            // This mock was incorrect for the function it's mocking.
+            // The real function is in `Utils`. Let's keep the mock simple.
+            calculateEnergy: vi.fn(),
+        },
+        Utils: {
+            // This is the function causing the error.
+            evaluatePathDistance: vi.fn(solution => solution.reduce((sum, val) => sum + val.id, 0)),
+        },
+        Operators: { // Add the Operators object to the mock
+            solveTSP: vi.fn(), // Mock solveTSP
+            solvePortfolio: vi.fn(), // Mock solvePortfolio
+            // This function is also used by problem-manager.js
+            createPortfolioAllocator: vi.fn(() => vi.fn()),
         }
     }
 }));
@@ -35,7 +47,9 @@ describe('ProblemManager', () => {
                 "id": "tsp_10_cities",
                 "workUnit": {
                     "type": "simulated_annealing_iterations",
+                    "scoreFunction": "tsp.calculateEnergy", // Add the score function
                     "baseIterations": 1000, // Lower value for testing
+                    "initialSolutionSource": "points", // Specify where to get the initial solution from
                     "scalingFactor": 2.0
                 },
                 "payload": {
@@ -186,9 +200,21 @@ describe('ProblemManager', () => {
     describe('getBestSolutions', () => {
         beforeEach(() => {
             // Mock the initial solution generation to be predictable
-            mockConfig[0].payload.points = [{ id: 1 }, { id: 2 }, { id: 3 }]; // sum = 6
-            // Mock the calculateEnergy function from the library
-            Optimization.tsp.calculateEnergy.mockReturnValue(6);
+            mockConfig[0].payload.points = [
+                { id: 1, x: 10, y: 10 },
+                { id: 2, x: 20, y: 20 },
+                { id: 3, x: 30, y: 30 }
+            ];
+
+            // The function that is actually called is `Optimization.Utils.evaluatePathDistance`.
+            // We need to mock its return value to be predictable for the test.
+            // The mock implementation `solution.reduce(...)` will sum the `id` properties.
+            // For the points above, the sum is 1 + 2 + 3 = 6.
+            Optimization.Utils.evaluatePathDistance.mockReturnValue(6);
+
+            // The `tsp.calculateEnergy` mock is not strictly needed for this test to pass,
+            // but it's good practice to keep mocks aligned with expected behavior.
+            Optimization.tsp.calculateEnergy.mockReturnValue(6); // This is now consistent.
             readFileSync.mockReturnValue(JSON.stringify(mockConfig));
         });
 

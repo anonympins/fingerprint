@@ -10,6 +10,201 @@ import { dirname, join } from "node:path";
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
+
+/**
+ * @private
+ * Deep merges two objects. The `source` object's properties overwrite the `target`'s.
+ * @param {object} target - The target object.
+ * @param {object} source - The source object.
+ * @returns {object} The merged object.
+ */
+function deepMerge(target, source) {
+    const output = { ...target };
+    if (target && typeof target === 'object' && source && typeof source === 'object') {
+        Object.keys(source).forEach(key => {
+            if (source[key] && typeof source[key] === 'object' && key in target) {
+                output[key] = deepMerge(target[key], source[key]);
+            } else {
+                output[key] = source[key];
+            }
+        });
+    }
+    return output;
+}
+
+const securityProfiles = {
+    /**
+     * @summary **Balanced Profile (Default)**
+     * @description A general-purpose configuration suitable for most websites, offering a good mix of security and user experience. It's sensitive enough to catch common bots without being overly aggressive towards legitimate users.
+     */
+    balanced: {
+        weights: {
+            historyScore: 0.3,
+            rotationScore: 0.5,
+            headerAnomalyScore: 0.1,
+            requestPatternScore: 0.6,
+            inconsistencyScore: 0.8,
+            behaviorScore: 0.7,
+            honeypotScore: 1.0,
+            crossLayerInconsistencyScore: 0.4,
+            timeInconsistencyScore: 0.9
+        },
+        thresholds: { low: 20, medium: 45, high: 75, block: 95 },
+        patterns: {
+            velocityThreshold: 800,
+            burstThreshold: 1500,
+            scrapeThreshold: 1000,
+            historySize: 10,
+            minSamples: 5,
+            regularityThreshold: 50,
+            benfordThreshold: 0.15,
+            patternWeight: 80,
+            decayFactor: 0.9,
+            inactivityReset: 5000,
+        },
+    },
+    /**
+     * @summary **Strict Profile**
+     * @description An aggressive configuration for sensitive applications (e.g., financial services, admin panels). It uses lower suspicion thresholds and higher penalties for anomalies, prioritizing security over user convenience. All new devices are challenged by default.
+     */
+    strict: {
+        weights: {
+            historyScore: 0.4,
+            rotationScore: 0.6,
+            headerAnomalyScore: 0.2,
+            requestPatternScore: 0.8,
+            inconsistencyScore: 1.0,
+            behaviorScore: 0.8,
+            honeypotScore: 1.0,
+            crossLayerInconsistencyScore: 0.6,
+            timeInconsistencyScore: 1.0
+        },
+        thresholds: { low: 10, medium: 35, high: 65, block: 90 },
+        patterns: {
+            velocityThreshold: 1000,
+            burstThreshold: 1800,
+            scrapeThreshold: 1200,
+            historySize: 15,
+            minSamples: 4,
+            regularityThreshold: 40,
+            benfordThreshold: 0.12,
+            patternWeight: 90,
+            decayFactor: 0.85,
+            inactivityReset: 4000,
+        },
+        challengeNewDevices: true, // Challenge all new devices
+    },
+    /**
+     * @summary **API Profile**
+     * @description Optimized for protecting API endpoints. This profile is highly sensitive to request patterns (velocity, bursts) and less reliant on browser-specific behavioral metrics. It's designed to quickly identify and throttle scrapers and automated clients.
+     */
+    api: {
+        weights: {
+            historyScore: 0.5,
+            rotationScore: 0.5,
+            headerAnomalyScore: 0.3,
+            requestPatternScore: 1.0, // Very high weight for API patterns
+            inconsistencyScore: 0.7,
+            behaviorScore: 0.2, // Lower weight, as browser behavior is not applicable
+            honeypotScore: 1.0,
+            crossLayerInconsistencyScore: 0.5,
+            timeInconsistencyScore: 0.8
+        },
+        thresholds: { low: 25, medium: 50, high: 80, block: 95 },
+        patterns: {
+            velocityThreshold: 200, // APIs are expected to be fast
+            burstThreshold: 500,
+            scrapeThreshold: 400,
+            historySize: 20,
+            minSamples: 8,
+            regularityThreshold: 20,
+            benfordThreshold: 0.18,
+            patternWeight: 85,
+            decayFactor: 0.9,
+            inactivityReset: 10000,
+        },
+        isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
+    }
+    ,
+    /**
+     * @summary **Blog Profile**
+     * @description Tuned for blogs and content-heavy websites. This profile focuses on detecting content scraping and comment spam by placing a high weight on request patterns and honeypot traps, while being more lenient on behavioral metrics typical of readers.
+     */
+    blog: {
+        weights: {
+            historyScore: 0.2,
+            rotationScore: 0.3,
+            headerAnomalyScore: 0.1,
+            requestPatternScore: 0.8, // High weight to detect content scraping
+            inconsistencyScore: 0.7,
+            behaviorScore: 0.5, // Less emphasis on complex interactions
+            honeypotScore: 1.0, // Crucial for comment spam
+            crossLayerInconsistencyScore: 0.4,
+            timeInconsistencyScore: 0.8
+        },
+        thresholds: { low: 25, medium: 55, high: 80, block: 95 },
+        patterns: {
+            velocityThreshold: 1000, // Readers can be fast
+            burstThreshold: 2000,
+            scrapeThreshold: 800, // Very sensitive to scraping patterns
+            historySize: 12,
+            minSamples: 5,
+            regularityThreshold: 60,
+            benfordThreshold: 0.16,
+            patternWeight: 85,
+            decayFactor: 0.92,
+            inactivityReset: 10000,
+        },
+    },
+    /**
+     * @summary **E-commerce Profile**
+     * @description A strict profile tailored for e-commerce sites. It's designed to combat inventory scalping, price scraping, and account takeover attempts by using high weights for request patterns and fingerprint inconsistency. It also challenges all new devices to increase the cost for bots.
+     */
+    ecommerce: {
+        weights: {
+            historyScore: 0.4,
+            rotationScore: 0.6,
+            headerAnomalyScore: 0.2,
+            // Scission du requestPatternScore pour un contrôle plus fin
+            velocityScore: 0.8,       // Pénalise la vitesse globale
+            burstScore: 1.0,          // Pénalise fortement les rafales sur la même ressource (scalping)
+            scrapeScore: 0.9,         // Pénalise le parcours de pages/produits
+            regularityScore: 0.7,     // Détecte les bots de type "cron"
+            inconsistencyScore: 1.0, // Crucial for preventing account takeover
+            behaviorScore: 0.8, // Important for checkout/login forms
+            honeypotScore: 1.0,
+            crossLayerInconsistencyScore: 0.7,
+            timeInconsistencyScore: 0.9
+        },
+        thresholds: { low: 15, medium: 40, high: 70, block: 90 },
+        patterns: {
+            velocityThreshold: 500, // Bots are very fast
+            burstThreshold: 1000, // Detects rapid retries on the same product/action
+            scrapeThreshold: 600,
+            historySize: 15,
+            minSamples: 6,
+            regularityThreshold: 30,
+            benfordThreshold: 0.14,
+            patternWeight: 95,
+            decayFactor: 0.88,
+            inactivityReset: 3000,
+        },
+        challengeNewDevices: true, // New devices are suspicious in e-commerce
+        isApiRequest: (req) => req.path.startsWith('/api/cart') || req.path.startsWith('/api/stock') || req.path.startsWith('/api/checkout'),
+    }
+};
+
+/**
+ * Creates a security configuration based on a named profile, with optional overrides.
+ * @param {'balanced' | 'strict' | 'api'} [profileName='balanced'] - The name of the profile to use.
+ * @param {object} [overrides={}] - An object to deeply merge with the profile, allowing for customization.
+ * @returns {object} The final security configuration object.
+ */
+export function createSecurityProfile(profileName = 'balanced', overrides = {}) { // eslint-disable-line no-unused-vars
+    const baseProfile = securityProfiles[profileName] || securityProfiles.balanced;
+    return deepMerge(baseProfile, overrides);
+}
+
 /**
  * Retrieves the POW_SECRET from environment variables with appropriate checks.
  * @returns {string} The secret key.
@@ -813,6 +1008,26 @@ function getCrossLayerInconsistency(context) {
 }
 
 /**
+ * Calcule un score basé sur la détection explicite de frameworks d'automatisation.
+ * @param {object} context - Le contexte de la requête.
+ * @returns {{botScore: number}}
+ */
+function getBotScore(context) {
+    const clientFpString = context.headers['x-device-fingerprint'];
+    if (!clientFpString) return { botScore: 0 };
+
+    try {
+        const clientFpMap = new Map(clientFpString.split("|").map(part => part.split(":")));
+        // Pénalité maximale si l'un des marqueurs d'automatisation est présent.
+        if (clientFpMap.has('bot') || clientFpMap.has('cdp')) {
+            return { botScore: 100 };
+        }
+    } catch (e) { /* Ignorer les erreurs de parsing */ }
+
+    return { botScore: 0 };
+}
+
+/**
  * Analyzes server-side request patterns for a given device to detect bot-like behavior.
  * This is a stateful check that looks for repetitive or unnaturally fast requests.
  * @param {object} context - The request context.
@@ -1150,6 +1365,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
   const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
 
+  // NOUVEAU: On appelle getBotScore pour détecter les marqueurs d'automatisation.
+  const { botScore } = getBotScore(context);
+
   // NOUVEAU: On calcule le score d'incohérence temporelle.
   const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'));
 
@@ -1168,7 +1386,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1489,6 +1707,7 @@ export class FingerprintEngine {
             (suspicionVector.inconsistencyScore || 0) * (weights.inconsistencyScore || 0) +
             (suspicionVector.honeypotScore || 0) * (weights.honeypotScore || 0) +
             (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
+            (suspicionVector.botScore || 0) * (weights.botScore || 0) + // Ajout du nouveau score
             (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
             (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0);
 
@@ -1566,6 +1785,78 @@ export class FingerprintEngine {
   }
   _isIpInAllowlist(clientIp) {
     return this._allowlist.check(clientIp);
+  }
+  /**
+   * Checks if the request's host and path match an entry in the host+path allowlist.
+   * @private
+   * @param {string} requestHost - The host from the request headers.
+   * @param {string} requestPath - The path of the incoming request.
+   * @returns {boolean} True if the combination is in the allowlist.
+   */
+  _isHostPathInAllowlist(requestHost, requestPath) {
+    const { whitelist = [] } = this.securityConfig;
+    const hostPathRule = whitelist.find(rule => rule.type === 'host_path_allowlist');
+
+    if (!hostPathRule || !hostPathRule.entries || hostPathRule.entries.length === 0) {
+      return false;
+    }
+
+    for (const entry of hostPathRule.entries) {
+      // Find the first slash to separate host and path
+      const firstSlashIndex = entry.indexOf('/');
+      if (firstSlashIndex === -1) continue; // Invalid entry
+
+      const hostPattern = entry.substring(0, firstSlashIndex);
+      const pathPattern = entry.substring(firstSlashIndex);
+
+      // Check if the request host matches the host pattern
+      if (requestHost !== hostPattern) {
+        continue;
+      }
+
+      // Check if the request path matches the path pattern (with wildcard support)
+      if (pathPattern.endsWith('*')) {
+        const basePath = pathPattern.slice(0, -1);
+        if (requestPath.startsWith(basePath)) {
+          return true; // Wildcard match
+        }
+      } else if (requestPath === pathPattern) {
+        return true; // Exact match
+      }
+    }
+    return false;
+  }
+  /**
+   * Checks if the request path matches any entry in the path allowlist.
+   * Supports simple wildcards (*) at the end of a path.
+   * @private
+   * @param {string} requestPath - The path of the incoming request.
+   * @returns {boolean} True if the path is in the allowlist.
+   */
+  _isPathInAllowlist(requestPath) {
+    const { whitelist = [] } = this.securityConfig;
+    const pathAllowlistRule = whitelist.find(rule => rule.type === 'path_allowlist');
+
+    if (!pathAllowlistRule || !pathAllowlistRule.entries || pathAllowlistRule.entries.length === 0) {
+      return false;
+    }
+
+    for (const entry of pathAllowlistRule.entries) {
+      if (entry.endsWith('*')) {
+        // Handle wildcard matching
+        const base = entry.slice(0, -1);
+        if (requestPath.startsWith(base)) {
+          return true;
+        }
+      } else {
+        // Handle exact path matching
+        if (requestPath === entry) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
   /**
    * Verifies if a request comes from a legitimate, whitelisted bot (e.g., Googlebot)
@@ -1653,6 +1944,19 @@ export class FingerprintEngine {
     if (await this._isIpInHostnameAllowlist(clientIp)) {
       this._log('IP resolves to a whitelisted hostname - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'hostname_allowlist' } };
+    }
+
+    // 3. Check host+path based allowlist.
+    const requestHost = requestContext.headers?.host;
+    if (requestHost && this._isHostPathInAllowlist(requestHost, path)) {
+      this._log('Host and path in allowlist - allowing request', { host: requestHost, path });
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'host_path_allowlist' } };
+    }
+
+    // 3. Check path-based allowlist.
+    if (this._isPathInAllowlist(path)) {
+      this._log('Path in allowlist - allowing request', { path });
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'path_allowlist' } };
     }
 
     const { pow_nonce } = query;
