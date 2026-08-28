@@ -2105,7 +2105,7 @@ export class FingerprintEngine {
         // We compare the fingerprint of the request that triggered the challenge
         // with the fingerprint of the request that is submitting the solution.
         // They should be very similar.
-        similarity = FingerprintBuilder.compare(originalFingerprint, getCompositeDeviceHash(requestContext));
+        similarity = FingerprintBuilder.compare(originalFingerprint, solverFingerprint);
             }
 
             if (similarity < similarityThreshold) {

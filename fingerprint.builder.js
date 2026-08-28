@@ -153,9 +153,9 @@ export class FingerprintBuilder {
 
             // On ne compare que les clés qui ont un poids défini.
             const weight = weights[key];
-            // FIX: The check must be for `undefined` to include keys that have a weight of 0.
-            // The previous `!weight` check would incorrectly exclude them, leading to a totalWeight of 0
-            // and a similarity score of NaN, which evaluates to 0.
+            // The check must be for `undefined` to allow keys that have a legitimate weight of 0.
+            // The previous `!weight` check would incorrectly exclude them, potentially leading to a totalWeight of 0
+            // and a similarity score of NaN, which evaluates to 0. This is the fix.
             if (weight === undefined) return;
 
             totalWeight += weight; // N'incrémenter que si la clé est pertinente.
