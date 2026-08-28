@@ -132,18 +132,34 @@ describe('Proof-of-Work Solvers', () => {
 
         it('should solve a "tsp" challenge', async () => {
             const challenge = {
-                type: 'tsp',
-                cities: [{ x: 0, y: 0 }, { x: 100, y: 100 }],
-                targetMaxDistance: 300
+                type: 'useful_work_task', // The challenge type is now generic
+                nonce: 'tsp-nonce',
+                usefulWorkTask: {
+                    problemId: 'tsp_test',
+                    task: {
+                        type: 'simulated_annealing_iterations',
+                        iterations: 1000, // A small number of iterations for the test
+                        payload: {
+                            cities: [{ x: 0, y: 0 }, { x: 100, y: 100 }],
+                            options: { initialTemperature: 1000, coolingRate: 0.99 }
+                        },
+                        // The client solver uses a random path if initialSolution is null
+                        initialSolution: null
+                    }
+                }
             };
             const solutions = await solveChallenge(challenge);
-            // Pour le TSP, la solution brute est directement le chemin
-            expect(solutions.rawSolution).toEqual([0, 1]);
+            // The result is now nested inside a `work_result` object
+            const workResult = solutions.rawSolution.work_result;
+            expect(workResult).toHaveProperty('solution');
+            expect(workResult).toHaveProperty('energy');
+            expect(workResult.solution).toBeInstanceOf(Array);
+            expect(workResult.solution.length).toBe(2);
         });
 
         it('should throw an error for an unknown challenge type', async () => {
             const challenge = { type: 'unknown' };
-            await expect(solveChallenge(challenge)).rejects.toThrow('Unknown challenge type: unknown');
+            await expect(solveChallenge(challenge)).rejects.toThrow('Unknown or empty challenge type: unknown');
         });
     });
 });
