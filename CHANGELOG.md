@@ -1,3 +1,31 @@
+## Version 0.2.3 (September 03, 2026)
+
+This release introduces major improvements in ease of use and flexibility. It adds pre-configured security profiles for rapid setup, more granular whitelisting controls, and expands the "Useful Proof-of-Work" system with a new range of complex optimization problems.
+
+### ✨ New Features
+
+*   **Security Profiles & Quick Init**:
+    *   To simplify setup, you can now use the `createSecurityProfile()` helper to load pre-configured profiles tailored for common use cases: `balanced` (default), `strict`, `api`, `blog`, and `ecommerce`.
+    *   These profiles provide a solid starting point and can be easily customized with your own overrides.
+
+*   **Advanced Whitelisting Controls**:
+    *   **`path_allowlist`**: A new whitelisting rule to bypass checks for specific URL paths. It's perfect for public API endpoints, webhooks, or static content that doesn't require protection. Supports wildcards (e.g., `/api/public/*`).
+    *   **`host_path_allowlist`**: Provides even more granular control by whitelisting a path only when it's on a specific host. This is ideal for multi-tenant applications or for securing an API on one domain but not another (e.g., `api.example.com/v1/webhooks/*`).
+
+*   **Expanded Useful Proof-of-Work (uPoW) Problems**:
+    *   The `ProblemManager` is now more powerful, with support for a wider range of real-world optimization tasks that can be offloaded to suspicious clients.
+    *   The `problems.config.json` has been updated with new examples, including:
+        *   **Fraud Detection Tuning**: Finding optimal thresholds for fraud detection systems.
+        *   **Facility Location**: Solving complex logistical placement problems.
+        *   **Security Auto-Tuning**: Using client CPU to dynamically optimize the library's own security parameters.
+        *   **CPC Optimization**: Finding optimal Cost-Per-Click values in a simulated ad-tech environment.
+    *   The `FunctionRegistry` in `problem-manager.js` has been updated to support these new problem types.
+
+### 🚀 Improvements
+
+*   **Documentation**: The `README.md` has been updated to reflect the new security profiles and whitelisting options, with clear examples for each.
+
+
 ## Version 0.2.2 (August 27, 2026)
 
 This version marks a significant evolution from simple Proof-of-Work (PoW) to "Useful Proof-of-Work" (uPoW). Instead of solving arbitrary computational puzzles, clients now contribute to solving complex optimization problems, making the work done to verify a client's legitimacy valuable.

@@ -1,7 +1,7 @@
 {
   "name": "@anonympins/fingerprint",
-  "version": "0.2.2",
-  "description": "An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.",
+  "version": "0.2.3",
+  "description": "Advanced anti-bot library for Node.js using multi-layer fingerprinting (JA3, client-side, headers), behavioral analysis, and adaptive Proof-of-Work (PoW) challenges to mitigate scraping, scalping, and automated threats.",
   "main": "fingerprint.js",
   "type": "module",
   "engines": {
@@ -30,18 +30,27 @@
     "url": "git+https://github.com/anonympins/fingerprint.git"
   },
   "keywords": [
-    "fingerprint",
-    "bot",
     "anti-bot",
+    "bot-detection",
     "security",
-    "express",
     "middleware",
+    "express",
+    "nodejs",
+    "fingerprint",
+    "device-fingerprinting",
+    "ja3",
+    "tls-fingerprinting",
     "proof-of-work",
     "pow",
-    "rate-limiting",
+    "useful-proof-of-work",
+    "upow",
+    "waf",
+    "scraping",
+    "scalping",
     "mitigation",
-    "captcha",
-    "dns"
+    "rate-limiting",
+    "honeypot",
+    "behavioral-analysis"
   ],
   "author": "anonympins",
   "license": "MIT",
