@@ -895,6 +895,17 @@ function getBehaviorScore(context) {
       score += 40;
     }
 
+    // 3. (NOUVEAU) Analyse de la longueur de l'historique de navigation.
+    // Un historique court est suspect (nouvel onglet, bot), un historique long est un bon signe.
+    if (typeof metrics.historyLength === 'number') {
+        if (metrics.historyLength === 1) {
+            score += 15; // Légère pénalité pour un historique de session vierge.
+        } else if (metrics.historyLength >= 5) {
+            score -= 20; // Bonus : un historique long est un fort indicateur humain.
+        } else if (metrics.historyLength >= 2) {
+            score -= 10; // Petit bonus pour une navigation de base.
+        }
+    }
     // 3. Vérification de la plausibilité et de la distribution des métriques.
     // Un bot pourrait envoyer des valeurs aléatoires, mais elles ne suivront probablement pas
     // des distributions naturelles (comme la loi de Benford pour les premiers chiffres).
@@ -923,7 +934,7 @@ function getBehaviorScore(context) {
       if (keystrokeDeviation > 0.15) score += 40;
     }
 
-    return { behaviorScore: Math.min(100, score) };
+    return { behaviorScore: Math.max(0, Math.min(100, score)) }; // Assure que le score reste entre 0 et 100
   } catch (e) {
     return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
   }

@@ -220,6 +220,9 @@ const ClientLibrary = {
      * @returns {ClientBehaviorMetrics}
      */
     getClientBehaviorMetrics() {
+        // Add history length as a behavioral signal.
+        metrics.historyLength = window.history.length;
+
         // Ajoute un timestamp au moment de la collecte pour la détection de rejeu.
         metrics.clientTimestamp = Date.now();
 
@@ -438,6 +441,7 @@ const ClientLibrary = {
  * @property {number} mouseEntropy - Entropie des mouvements de la souris.
  * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
+ * @property {number} historyLength - La longueur de l'historique de session du navigateur (`window.history.length`).
  * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
  */
 
@@ -446,6 +450,7 @@ const metrics = {
     mouseEntropy: 0,
     keystrokeLatency: 0,
     honeypotInteraction: false,
+    historyLength: 0,
     clientTimestamp: 0,
 };
 
