@@ -190,60 +190,53 @@ async function solveTsp(cities, targetMaxDistance) {
  * @param {object} challenge - L'objet challenge reçu du serveur.
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
-async function solveChallenge(challenge, fingerprint = '') { // fingerprint parameter was already here, but unused in some calls
-    // FIX: The `cpuTarget` is sometimes nested. We extract it here for consistency.
-    // This makes the solver robust to slight variations in the challenge object structure.
-    challenge.cpuTarget = challenge.cpuTarget || challenge.usefulWorkTask?.task?.cpuTarget;
-
-    const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
+async function solveChallenge(challenge, fingerprint = '') {
+    // FIX: La logique de `pow.solver.js` est plus robuste. On la réplique ici.
+    // Elle gère les challenges hybrides et extrait correctement les paramètres.
+    const { type, nonce, clientSecret, memDifficulty, usefulWorkTask } = challenge;
+    const cpuTarget = challenge.cpuTarget || usefulWorkTask?.task?.cpuTarget;
     const solutions = {};
 
-    switch (type) {
-        case 'cpu_target':
-            // Note: This case is not fully exercised by tests as it relies on Web Workers.
-            if (!cpuTarget) {
-                throw new Error("Challenge data is missing 'cpuTarget' property.");
+    const solvers = [];
+
+    // 1. Y a-t-il un challenge CPU/Mémoire ?
+    if (cpuTarget) {
+        solvers.push(async () => {
+            if (!challenge.baseBlock) {
+                throw new Error("Challenge 'cpu_mem' is missing 'baseBlock'.");
             }
-            const target = cpuTarget; // Keep variable name for consistency below
-            // Pour ce challenge simple, le baseBlock est juste le nonce.
-            const baseBlockBytes = new TextEncoder().encode(nonce + ":");
-            solutions.cpu = await solveCpuTargetInline(baseBlockBytes, target, null);
-            break;
-        case 'cpu_mem':
-            // Pour les appels API, le client IP n'est pas connu, on ne le met pas dans le message
-            const memSeed = `:${nonce}:${clientSecret}`;
-            const [cpuSol, memSol] = await Promise.all([
-                (async () => {
-                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property."); // Pass fingerprint to solver
-                    const baseBlock = new Uint8Array(challenge.baseBlock);
-                    return solveCpuTargetInline(baseBlock, cpuTarget, null);
-                })(),
-                solveMemory(memSeed, memDifficulty)
-            ]);
+            const baseBlock = new Uint8Array(challenge.baseBlock);
+            const cpuSol = await solveCpuTargetInline(baseBlock, cpuTarget, null);
             solutions.cpu = cpuSol;
-            solutions.mem = memSol;
-            break;
-        case 'cpu_mem_inline':
-            // Version inline pour compatibilité HTML avec IP incluse
-            const memSeedInline = `:${nonce}:${clientSecret}`;
-            const [cpuSolInline, memSolInline] = await Promise.all([
-                (async () => {
-                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
-                    const baseBlock = new Uint8Array(challenge.baseBlock);
-                    return solveCpuTargetInline(baseBlock, cpuTarget, null);
-                })(),
-                solveMemory(memSeedInline, memDifficulty)
-            ]);
-            solutions.cpu = cpuSolInline;
-            solutions.mem = memSolInline;
-            break;
-        case 'tsp':
-            const tspResult = await solveTsp(cities, targetMaxDistance);
-            solutions.tsp = tspResult.path;
-            solutions.distance = tspResult.distance;
-            break;
-        default:
-            throw new Error(`Unknown challenge type: ${type}`);
+
+            if (memDifficulty && memDifficulty > 0) {
+                const memSeed = `:${nonce}:${clientSecret}`;
+                const memSol = await solveMemory(memSeed, memDifficulty);
+                solutions.mem = memSol;
+            }
+        });
+    }
+
+    // 2. Y a-t-il un challenge de "travail utile" ?
+    // Note: La version inline n'a pas les solveurs d'optimisation, donc cette partie est omise.
+    // Si des challenges de travail utile devaient être servis via une page HTML,
+    // il faudrait inclure les fonctions de `ClientOptimizers` de `pow.solver.js` ici aussi.
+
+    if (solvers.length === 0) {
+        // On vérifie aussi le type pour les anciens challenges comme 'tsp'
+        if (type === 'tsp') {
+             const { cities, targetMaxDistance } = challenge;
+             const tspResult = await solveTsp(cities, targetMaxDistance);
+             solutions.tsp = tspResult.path;
+             solutions.distance = tspResult.distance;
+        } else {
+            throw new Error(`Unknown or empty challenge type: ${type}`);
+        }
+    }
+
+    // On exécute tous les solveurs nécessaires en parallèle.
+    if (solvers.length > 0) {
+        await Promise.all(solvers.map(s => s()));
     }
 
     return solutions;
