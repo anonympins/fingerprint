@@ -813,99 +813,6 @@ function getCrossLayerInconsistency(context) {
 }
 
 /**
- * Calculates a score based on mismatches between the JA3 fingerprint and the User-Agent.
- * @private
- * @param {object} context - The request context.
- * @returns {{ja3UaMismatchScore: number}}
- */
-function getJa3UaMismatchScore(context) {
-    const ja3 = getJa3Hash(context);
-    const ua = context.headers['user-agent'] || '';
-    let score = 0;
-
-    console.log({score, ua,ja3});
-    if (ja3 && (!ua || ua.length === 0)) {
-        // A JA3 hash exists, but the User-Agent is missing or empty. Highly suspicious.
-        score = 50;
-    } else if (ja3) {
-        // A non-browser JA3 hash (e.g., from Python's `requests` library) combined with a
-        // common browser User-Agent is a classic sign of a spoofed request.
-        // This requires a known list of non-browser JA3s. For this example, we'll use a
-        // placeholder.
-        const knownBotJa3s = new Set(['e7d705a3286e19ea42f587f344ee6ee5']); // Example: Python requests
-        if (knownBotJa3s.has(ja3) && (ua.includes('Chrome') || ua.includes('Firefox'))) {
-            score = 90;
-        }
-    }
-    return { ja3UaMismatchScore: score };
-}
-
-/**
- * Analyzes the Referer header for anomalies.
- * @private
- * @param {object} context - The request context.
- * @returns {{refererAnomalyScore: number}}
- */
-function getRefererAnomalyScore(context) {
-    const referer = context.headers['referer'];
-    const host = context.headers['host'];
-    let score = 0;
-
-    if (referer) {
-        try {
-            const refererUrl = new URL(referer);
-            // High penalty if the referer's host doesn't match the current host for a non-root request.
-            // This can indicate cross-site request forgery attempts or unusual browsing.
-            if (refererUrl.hostname !== host && context.path !== '/') {
-                score = 40;
-            }
-        } catch (e) {
-            // A malformed Referer header is suspicious.
-            score = 30;
-        }
-    }
-    return { refererAnomalyScore: score };
-}
-
-/**
- * Detects signs of browser automation (e.g., Headless Chrome, WebDriver).
- * @private
- * @param {object} context - The request context.
- * @returns {{automationScore: number}}
- */
-function getAutomationScore(context) {
-    const ua = context.headers['user-agent'] || '';
-    const behaviorMetrics = JSON.parse(context.headers['x-behavior-metrics'] || '{}');
-
-    // Check for "Headless" in User-Agent (common with Puppeteer/Playwright).
-    if (/HeadlessChrome/.test(ua)) {
-        return { automationScore: 80 };
-    }
-    // Check for client-side WebDriver detection.
-    if (behaviorMetrics.webdriver) {
-        return { automationScore: 100 };
-    }
-    return { automationScore: 0 };
-}
-
-/**
- * Aggregates multiple technical integrity scores into a single, final score.
- * It takes the *maximum* score from its components, as any single indicator
- * of technical compromise is a strong signal on its own.
- * @private
- */
-function getTechnicalIntegrityScore(context) {
-    const { headerAnomalyScore } = __internal.getHeaderAnomalies(context);
-    const { crossLayerInconsistencyScore } = __internal.getCrossLayerInconsistency(context);
-    const { ja3UaMismatchScore } = __internal.getJa3UaMismatchScore(context);
-    const { refererAnomalyScore } = __internal.getRefererAnomalyScore(context);
-    const { automationScore } = __internal.getAutomationScore(context);
-
-    const technicalIntegrityScore = Math.max(headerAnomalyScore, crossLayerInconsistencyScore, ja3UaMismatchScore, refererAnomalyScore, automationScore);
-    return { technicalIntegrityScore };
-}
-
-/**
  * Analyzes server-side request patterns for a given device to detect bot-like behavior.
  * This is a stateful check that looks for repetitive or unnaturally fast requests.
  * @param {object} context - The request context.
@@ -1203,7 +1110,7 @@ async function getBehavioralIndicators(context, deviceData) {
 /**
  * Returns a vector of raw (unweighted) suspicion scores.
  * @param {object} context - The request context object.
- * @returns {Promise<object>} A vector of all raw suspicion scores.
+ * @returns {Promise<{historyScore: number, rotationScore: number, headerAnomalyScore: number, inconsistencyScore: number, honeypotScore: number}>}
  */
 export const getSuspicionVector = async (context, securityConfig) => {
     // On récupère la configuration du honeypot pour l'utiliser ici.
@@ -1228,21 +1135,28 @@ export const getSuspicionVector = async (context, securityConfig) => {
   }
   deviceData.lastUpdate = Date.now();
 
-  const behavioral = await __internal.getBehavioralIndicators(context, deviceData);
-
-  // The `inconsistencyScore` is based on the similarity between the initial and current fingerprint.
+  const behavioral = await getBehavioralIndicators(context, deviceData);
+  const { headerAnomalyScore } = getHeaderAnomalies(context);
+  // Calculate the inconsistency score here, separately.
   let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
+
+  // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
   if (consistencyScore < 0.7) { // Seuil de rupture
       inconsistencyScore = 100;
   }
 
-  // --- REFACTOR: Consolidate technical scores ---
-  const { technicalIntegrityScore } = __internal.getTechnicalIntegrityScore(context);
+  const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
 
-  const { behaviorScore } = __internal.getBehaviorScore(context);
-  const { honeypotScore } = __internal.getHoneypotScore(context, honeypotConfig);
-  const { timeInconsistencyScore } = __internal.getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'));
-  const { requestPatternScore } = __internal.getRequestPatternScore(context, deviceData, securityConfig.patterns);
+  // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
+  const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
+
+  // NOUVEAU: On calcule le score d'incohérence temporelle.
+  const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'));
+
+  // NOUVEAU: On calcule le score d'incohérence entre les couches.
+  const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
+
+  const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -1253,16 +1167,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Array.isArray(deviceData.ips)) {
       deviceData.ips = new Set(deviceData.ips);
   }
-  // The suspicion vector is now more streamlined.
-  return {
-      ...behavioral,
-      inconsistencyScore,
-      technicalIntegrityScore, // New aggregated score
-      behaviorScore,
-      honeypotScore,
-      requestPatternScore,
-      timeInconsistencyScore
-  };
+  // Le vecteur de suspicion est maintenant complet.
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1578,11 +1484,12 @@ export class FingerprintEngine {
         const score =
             (suspicionVector.historyScore || 0) * (weights.historyScore || 0) +
             (suspicionVector.rotationScore || 0) * (weights.rotationScore || 0) +
-            (suspicionVector.technicalIntegrityScore || 0) * (weights.technicalIntegrityScore || 0) + // Use the new score
+            (suspicionVector.headerAnomalyScore || 0) * (weights.headerAnomalyScore || 0) +
             (suspicionVector.requestPatternScore || 0) * (weights.requestPatternScore || 0) +
             (suspicionVector.inconsistencyScore || 0) * (weights.inconsistencyScore || 0) +
             (suspicionVector.honeypotScore || 0) * (weights.honeypotScore || 0) +
             (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
+            (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
             (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0);
 
         return Math.min(100, score);
@@ -2320,13 +2227,21 @@ export class FingerprintEngine {
     }
     await store.set(`ip:${clientIp}`, ipProfile, 600); // Keep IP profile for 10 minutes
 
-    // Use the same suspicion vector and final score calculation as the main processRequest method for consistency.
-    const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
-    const score = this.calculateFinalScore(suspicionVector);
+    const vector = await __internal.getSuspicionVector(requestContext, this.securityConfig); // Pass the config
+    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
+    const { requestPatternScore } = getRequestPatternScore(requestContext, (await store.get(`device:${requestContext.cookies?.device_id}`)), this.securityConfig.patterns);
+    const score =
+      vector.historyScore * (this.securityConfig.weights.historyScore || 0.3) +
+      vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
+      vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
+      vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
+      honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +
+      requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0) +
+      vector.behaviorScore * (this.securityConfig.weights.behaviorScore || 0);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
-    if (score >= this.securityConfig.thresholds.medium) return `suspicious_medium:${clientIp}`;
     if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
+    if (score >= this.securityConfig.thresholds.medium) return `suspicious_medium:${clientIp}`;
 
     // If a new device_id was created, it's in the context.
     const newDeviceId = requestContext._newCookies?.find(c => c.name === 'device_id')?.value;
@@ -2701,21 +2616,10 @@ export const __internal = {
     getRequestPatternScore, // Expose for testing
     getBehaviorScore, // Expose for testing
     getCrossLayerInconsistency, // Expose for testing
-    // Export helper for mocking
-    getHeaderAnomalies,
-    getHoneypotScore,
-    getBehavioralIndicators,
-    getJa3Hash,
     // Expose page generators for security testing
-    // Expose new scoring functions for testing
-    getTechnicalIntegrityScore,
-    getJa3UaMismatchScore,
-    getRefererAnomalyScore,
-    getAutomationScore,
     getTimeInconsistencyScore,
     generateCpuTargetChallengePage,
     generateCombinedPoWChallengePage,
-    resolveRequestIdentity,
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
