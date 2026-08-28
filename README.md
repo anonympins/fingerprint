@@ -61,15 +61,79 @@ export POW_SECRET="your_secret_key_of_at_least_32_characters"
 
 ### Integration Example
 
-The `powMiddleware` requires a configuration object defining the weights of suspicion indicators and the challenge trigger thresholds.
+To simplify setup, `fingerprint` provides pre-configured security profiles for common use cases. You can use the `createSecurityProfile` helper to load a profile and optionally extend it with your own settings.
 
-All following `securityConfig` parameters are optional.
+Available profiles:
+-   `balanced` (default): A general-purpose configuration suitable for most websites.
+-   `strict`: A more aggressive configuration for sensitive applications.
+-   `api`: Optimized for protecting API endpoints, with a higher sensitivity to request patterns.
+-   `blog`: Tuned to detect content scraping and comment spam.
+-   `ecommerce`: A strict profile focused on preventing inventory scalping, price scraping, and account takeover.
 
 ```javascript
 import express from 'express';
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
-import { powMiddleware, default_whitelist, default_analyzers } from './fingerprint.js'; // Adjust the path
+import { powMiddleware, createSecurityProfile } from './fingerprint.js'; // Adjust the path
+
+const app = express();
+app.use(cookieParser());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Array to store traffic analysis data for the auto-tuner.
+const trafficData = [];
+
+// 1. Choose a base profile (e.g., 'balanced', 'strict', 'api').
+// 2. (Optional) Define your custom overrides. These will be deeply merged with the base profile.
+const securityConfig = createSecurityProfile('api', {
+    // Example of overriding a specific threshold from the 'balanced' profile.
+    thresholds: {
+        low: 25, // Make the initial challenge slightly harder.
+    },
+    // Example of adding a custom whitelisting rule.
+    whitelist: [
+        { type: 'path_allowlist', entries: ['/api/v1/public-stats'] }
+    ],
+    // The logger is required if you enable auto-tuning.
+    logger: (log) => trafficData.push(log),
+    autotuning: {
+        trafficData: trafficData,
+        interval: 1800000, // 30 minutes
+        minDataPoints: 200,
+    }
+});
+
+// Create an instance of the middleware with your security configuration.
+const powMiddlewareInstance = powMiddleware(securityConfig);
+
+// Enable trust proxy if your app is behind a reverse proxy (Nginx, etc.)
+// to correctly retrieve the client's IP.
+app.set('trust proxy', 1);
+
+// Apply the protection middleware to all routes or to specific ones.
+app.use(powMiddlewareInstance);
+
+app.get('/', (req, res) => {
+    res.send('Welcome to the protected page!');
+});
+
+// Example of accessing the suspicion score in a subsequent middleware or route.
+// The `fingerprint` object is attached to the request object by the middleware.
+app.use((req, res, next) => {
+    console.log(`Request from ${req.ip} has a suspicion score of: ${req.fingerprint?.score}`);
+    next();
+});
+
+app.listen(3000, () => console.log('Server started on port 3000'));
+```
+
+### Full Configuration Example
+
+If you prefer to define the entire configuration manually instead of using a profile, you can create a `securityConfig` object with all the parameters. All parameters are optional.
+
+```javascript
+import { default_whitelist, default_analyzers } from './fingerprint.js';
 
 const app = express();
 app.use(cookieParser());
@@ -79,7 +143,7 @@ app.use(bodyParser.urlencoded({ extended: true })); // For parsing application/x
 // Array to store traffic analysis data for the auto-tuner.
 // In a real application, this could be a more robust logging system (e.g., writing to a file or a database).
 const trafficData = [];
-
+ 
 // Configuration of weights and thresholds for calculating the suspicion score.
 // These values should be adjusted based on traffic and expected user behavior.
 const securityConfig = {
@@ -202,29 +266,6 @@ const securityConfig = {
     // Enables problem solving for suspicious activity (configurable in problems.config.json)
     enableUsefulWork: true
 };
-
-// Create an instance of the middleware with your security configuration.
-const powMiddlewareInstance = powMiddleware(securityConfig);
-
-// Enable trust proxy if your app is behind a reverse proxy (Nginx, etc.)
-// to correctly retrieve the client's IP.
-app.set('trust proxy', 1);
-
-// Apply the protection middleware to all routes or to specific ones.
-app.use(powMiddlewareInstance);
-
-app.get('/', (req, res) => {
-    res.send('Welcome to the protected page!');
-});
-
-// Example of accessing the suspicion score in a subsequent middleware or route.
-// The `fingerprint` object is attached to the request object by the middleware.
-app.use((req, res, next) => {
-    console.log(`Request from ${req.ip} has a suspicion score of: ${req.fingerprint?.score}`);
-    next();
-});
-
-app.listen(3000, () => console.log('Server started on port 3000'));
 ```
 
 

@@ -76,6 +76,20 @@ const ClientLibrary = {
             } catch (e) {
             }
 
+            // 7. Détection des artefacts du Chrome DevTools Protocol (CDP)
+            // Ces variables sont souvent injectées par les outils d'automatisation.
+            const cdpFootprints = [
+                'cdc_adoQpoasnfa76pfcZLmcfl_Array',
+                'cdc_adoQpoasnfa76pfcZLmcfl_Promise',
+                'cdc_adoQpoasnfa76pfcZLmcfl_Symbol',
+                '$cdc_asdjflasutopfhvcZLmcfl_',
+                '_selenium',
+                '_driver'
+            ];
+            if (cdpFootprints.some(fp => window[fp])) {
+                this._cachedBuilder.add("cdp", "true");
+            }
+
             // 7. Bot Detection (Indication cachée)
             if (nav.webdriver) this._cachedBuilder.add("bot", "true");
         }
@@ -83,6 +97,10 @@ const ClientLibrary = {
         return this._cachedBuilder.toString();
     },
 
+    /**
+     * Génère une signature de requête incluant le contexte.
+     * @param {object} payload
+     */
     /**
      * Génère une signature de requête incluant le contexte.
      * @param {object} payload
