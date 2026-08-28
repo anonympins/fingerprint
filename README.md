@@ -84,15 +84,14 @@ const trafficData = [];
 // These values should be adjusted based on traffic and expected user behavior.
 const securityConfig = {
     weights: {
-        historyScore: 0.3,       // Penalizes IP rotation (proxy)
-        rotationScore: 0.5,      // Penalizes rapid fingerprint changes (user-agent, etc.)
-        headerAnomalyScore: 0.1, // Penalizes abnormal headers (missing UA, etc.)
-        requestPatternScore: 0.6,// Penalizes bot-like request sequences (scraping, etc.)
-        inconsistencyScore: 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
-        behaviorScore: 0.7,      // Penalizes non-human interactions (no mouse/keyboard activity)
-        honeypotScore: 1.0,      // Strongly penalizes bots filling hidden form fields
-        crossLayerInconsistencyScore: 0.4, // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
-        timeInconsistencyScore: 0.9 // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
+        historyScore: 0.3,          // Penalizes IP rotation (proxy usage).
+        rotationScore: 0.5,         // Penalizes rapid fingerprint changes (UA rotation).
+        inconsistencyScore: 0.8,    // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie).
+        technicalIntegrityScore: 0.7, // Penalizes technical signs of spoofing (header anomalies, JA3/UA mismatch, automation flags).
+        requestPatternScore: 0.6,   // Penalizes bot-like request sequences (scraping, etc.).
+        behaviorScore: 0.7,         // Penalizes non-human interactions (no mouse/keyboard activity).
+        timeInconsistencyScore: 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack).
+        honeypotScore: 1.0,         // Strongly penalizes bots falling into traps.
     },
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued

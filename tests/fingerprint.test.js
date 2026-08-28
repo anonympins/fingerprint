@@ -275,8 +275,14 @@ describe('Fingerprint & PoW Security Suite', () => {
             delete: async (key) => inMemoryStore._map.delete(key),
         };
         const securityConfig = {
-            weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.4, inconsistencyScore: 0.8 },
-            thresholds: { low: 20, medium: 35, high: 75 }
+            weights: {
+                historyScore: 0.3,
+                rotationScore: 0.5,
+                // FIX: Use the correct, modern weight for the aggregated technical score
+                technicalIntegrityScore: 0.7,
+                inconsistencyScore: 0.8
+            },
+            thresholds: { low: 20, medium: 45, high: 75 }
         };
         let engine;
 
@@ -1575,7 +1581,99 @@ describe('getRequestPatternScore', () => {
         expect(decayedScore).toBeLessThanOrEqual(lowScore);
         expect(decayedScore).toBeGreaterThanOrEqual(0);
     });
-}); // <-- AJOUT DE L'ACCOLADE FERMANTE MANQUANTE
+});
+
+describe('getTechnicalIntegrityScore', () => {
+    let getHeaderAnomaliesSpy, getCrossLayerInconsistencySpy, getJa3UaMismatchScoreSpy, getRefererAnomalyScoreSpy, getAutomationScoreSpy;
+
+    beforeEach(() => {
+        // Mock all dependencies of getTechnicalIntegrityScore
+        getHeaderAnomaliesSpy = vi.spyOn(fingerprint.__internal, 'getHeaderAnomalies').mockReturnValue({ headerAnomalyScore: 0 });
+        getCrossLayerInconsistencySpy = vi.spyOn(fingerprint.__internal, 'getCrossLayerInconsistency').mockReturnValue({ crossLayerInconsistencyScore: 0 });
+        getJa3UaMismatchScoreSpy = vi.spyOn(fingerprint.__internal, 'getJa3UaMismatchScore').mockReturnValue({ ja3UaMismatchScore: 0 });
+        getRefererAnomalyScoreSpy = vi.spyOn(fingerprint.__internal, 'getRefererAnomalyScore').mockReturnValue({ refererAnomalyScore: 0 });
+        getAutomationScoreSpy = vi.spyOn(fingerprint.__internal, 'getAutomationScore').mockReturnValue({ automationScore: 0 });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('should return the maximum of all component scores', () => {
+        getHeaderAnomaliesSpy.mockReturnValue({ headerAnomalyScore: 20 });
+        getCrossLayerInconsistencySpy.mockReturnValue({ crossLayerInconsistencyScore: 50 });
+        getJa3UaMismatchScoreSpy.mockReturnValue({ ja3UaMismatchScore: 10 });
+        getRefererAnomalyScoreSpy.mockReturnValue({ refererAnomalyScore: 80 }); // This should be the max
+        getAutomationScoreSpy.mockReturnValue({ automationScore: 30 });
+
+        const context = { headers: {} }; // Context doesn't matter for mocked functions
+        const { technicalIntegrityScore } = fingerprint.__internal.getTechnicalIntegrityScore(context);
+        expect(technicalIntegrityScore).toBe(80);
+    });
+
+    it('should return 0 if all component scores are 0', () => {
+        const context = { headers: {} };
+        const { technicalIntegrityScore } = fingerprint.__internal.getTechnicalIntegrityScore(context);
+        expect(technicalIntegrityScore).toBe(0);
+    });
+
+    it('should correctly integrate into getSuspicionVector and calculateFinalScore', async () => {
+        // Mock all individual score functions to return predictable values
+        vi.spyOn(fingerprint.__internal, 'getBehavioralIndicators').mockResolvedValue({ historyScore: 0, rotationScore: 0 });
+        vi.spyOn(fingerprint.__internal, 'getHeaderAnomalies').mockReturnValue({ headerAnomalyScore: 0 });
+        vi.spyOn(fingerprint.__internal, 'getHoneypotScore').mockReturnValue({ honeypotScore: 0 });
+        vi.spyOn(fingerprint.__internal, 'getBehaviorScore').mockReturnValue({ behaviorScore: 0 });
+        vi.spyOn(fingerprint.__internal, 'getTimeInconsistencyScore').mockReturnValue({ timeInconsistencyScore: 0 });
+        vi.spyOn(fingerprint.__internal, 'getCrossLayerInconsistency').mockReturnValue({ crossLayerInconsistencyScore: 0 });
+        vi.spyOn(fingerprint.__internal, 'getRequestPatternScore').mockReturnValue({ requestPatternScore: 0 });
+        vi.spyOn(fingerprint.__internal, 'resolveRequestIdentity').mockResolvedValue({ deviceId: 'test', deviceData: {}, consistencyScore: 1.0, newCookie: null });
+
+        // Set a specific score for technical integrity
+        getJa3UaMismatchScoreSpy.mockReturnValue({ ja3UaMismatchScore: 0 });
+        getRefererAnomalyScoreSpy.mockReturnValue({ refererAnomalyScore: 0 });
+        getAutomationScoreSpy.mockReturnValue({ automationScore: 70 }); // This will be the technicalIntegrityScore
+
+        const securityConfig = {
+            weights: {
+                historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, inconsistencyScore: 0,
+                honeypotScore: 0, behaviorScore: 0, crossLayerInconsistencyScore: 0, timeInconsistencyScore: 0,
+                technicalIntegrityScore: 1.0 // Give full weight to technical integrity
+            },
+            thresholds: { low: 0, medium: 0, high: 0, block: 0 } // Irrelevant for this test
+        };
+
+        const context = { headers: { 'x-behavior-metrics': '{}' } }; // Required for getBehaviorScore
+        const suspicionVector = await fingerprint.__internal.getSuspicionVector(context, securityConfig);
+
+        expect(suspicionVector.technicalIntegrityScore).toBe(70);
+
+        // The method is on the instance, not the prototype.
+        const engine = new fingerprint.FingerprintEngine(securityConfig);
+        expect(engine.calculateFinalScore(suspicionVector)).toBe(70);
+    });
+});
+
+describe('New Technical Integrity Score Components', () => {
+    beforeEach(() => {
+        vi.restoreAllMocks(); // Ensure clean slate for each test
+    });
+
+    it('getRefererAnomalyScore should penalize malformed referer', () => {
+        const context = { headers: { 'referer': 'not-a-valid-url', 'host': 'example.com' } };
+        expect(fingerprint.__internal.getRefererAnomalyScore(context).refererAnomalyScore).toBe(30);
+    });
+
+    it('getAutomationScore should penalize "headless" in User-Agent', () => {
+        const context = { headers: { 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/100.0.4896.127 Safari/537.36' } };
+        expect(fingerprint.__internal.getAutomationScore(context).automationScore).toBe(80);
+    });
+
+    it('getAutomationScore should penalize webdriver detection', () => {
+        const context = { headers: { 'user-agent': 'Mozilla/5.0', 'x-behavior-metrics': JSON.stringify({ webdriver: true }) } };
+        expect(fingerprint.__internal.getAutomationScore(context).automationScore).toBe(100);
+    });
+
+});
 
 describe('determineOptimalTicketTtl', () => {
     const { determineOptimalTicketTtl } = __internal;
