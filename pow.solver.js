@@ -393,52 +393,66 @@ class ChallengeSolution {
  * @returns {Promise<ChallengeSolution>} Un objet `ChallengeSolution` encapsulant le résultat.
  */
 export async function solveChallenge(challenge, fingerprint = '') { // The fingerprint is now passed from the client library
-    // FIX: The `cpuTarget` is sometimes nested inside the `usefulWorkTask` for older challenge types.
-    // We extract it here to ensure it's always available at the top level for the solvers.
-    challenge.cpuTarget = challenge.cpuTarget || challenge.usefulWorkTask?.task?.cpuTarget;
-
-    const { type, nonce, clientSecret, cpuTarget, memDifficulty, usefulWorkTask } = challenge;
+    const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, optimizationTask, usefulWorkTask } = challenge;
     let rawSolution = {};
 
-    // --- NOUVELLE LOGIQUE ROBUSTE ---
-    // On vérifie la présence des différents types de challenges et on les résout tous.
-    // Cela gère les cas où le serveur envoie un challenge "hybride".
-
-    const solvers = [];
-
-    // 1. Y a-t-il un challenge CPU/Mémoire ?
-    if (cpuTarget) {
-        solvers.push(async () => {
-            if (!challenge.baseBlock) {
-                throw new Error("Challenge 'cpu_mem' is missing 'baseBlock'.");
+    switch (type) {
+        case 'cpu_target':
+            // Note: This case is not fully exercised by tests as it relies on Web Workers.
+            if (!cpuTarget) {
+                throw new Error("Challenge data is missing 'cpuTarget' property.");
             }
-            const baseBlock = new Uint8Array(challenge.baseBlock);
-            const cpuSol = await solveCpuTargetInline(baseBlock, cpuTarget, null);
+            const target = cpuTarget; // Keep variable name for consistency below
+            // Pour ce challenge simple, le baseBlock est juste le nonce.
+            const baseBlockBytes = new TextEncoder().encode(nonce + ":");
+            rawSolution.cpu = await solveCpuTargetInline(baseBlockBytes, target, null);
+            break;
+        case 'cpu_mem':
+            // Pour les appels API, le client IP n'est pas connu, on ne le met pas dans le message
+            const baseMessageCombined = `:${nonce}:${clientSecret}`;
+            const memSeed = `:${nonce}:${clientSecret}`;
+            const [cpuSol, memSol] = await Promise.all([
+                (async () => {
+                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property."); // Pass fingerprint to solver
+                    const baseBlock = new Uint8Array(challenge.baseBlock);
+                    return solveCpuTargetInline(baseBlock, cpuTarget, null);
+                })(),
+                solveMemory(memSeed, memDifficulty)
+            ]);
             rawSolution.cpu = cpuSol;
-
-            if (memDifficulty && memDifficulty > 0) {
-                const memSeed = `:${nonce}:${clientSecret}`;
-                const memSol = await solveMemory(memSeed, memDifficulty);
-                rawSolution.mem = memSol;
-            }
-        });
-    }
-
-    // 2. Y a-t-il un challenge de "travail utile" ?
-    if (usefulWorkTask) {
-        solvers.push(async () => {
+            rawSolution.mem = memSol;
+            break;
+        case 'cpu_mem_inline':
+            // Version inline pour compatibilité HTML avec IP incluse
+            const memSeedInline = `:${nonce}:${clientSecret}`;
+            const [cpuSolInline, memSolInline] = await Promise.all([
+                (async () => {
+                    if (!cpuTarget) throw new Error("Challenge data is missing 'cpuTarget' property.");
+                    const baseBlock = new Uint8Array(challenge.baseBlock);
+                    return solveCpuTargetInline(baseBlock, cpuTarget, null);
+                })(),
+                solveMemory(memSeedInline, memDifficulty)
+            ]);
+            rawSolution.cpu = cpuSolInline;
+            rawSolution.mem = memSolInline;
+            break;
+        case 'tsp':
+            const tspResult = await solveTsp(cities, targetMaxDistance);
+            // Pour ce challenge, la solution est juste le chemin.
+            rawSolution = tspResult.path;
+            break;
+        case 'optimization_task':
+            const finalPopulation = await solveOptimizationTask(optimizationTask.population, optimizationTask.generations);
+            rawSolution = finalPopulation.map(p => p.chromosome); // On ne renvoie que les chromosomes
+            break;
+        case 'useful_work_task':
             const workResult = await solveUsefulWorkTask(usefulWorkTask.task);
             rawSolution.work_result = workResult;
             rawSolution.problem_id = usefulWorkTask.problemId;
-        });
+            break;
+        default:
+            throw new Error(`Unknown challenge type: ${type}`);
     }
-
-    if (solvers.length === 0) {
-        throw new Error(`Unknown or empty challenge type: ${type}`);
-    }
-
-    // On exécute tous les solveurs nécessaires en parallèle.
-    await Promise.all(solvers.map(s => s()));
 
     return new ChallengeSolution(type, nonce, rawSolution);
 }

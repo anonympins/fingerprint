@@ -191,10 +191,6 @@ async function solveTsp(cities, targetMaxDistance) {
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
 async function solveChallenge(challenge, fingerprint = '') { // fingerprint parameter was already here, but unused in some calls
-    // FIX: The `cpuTarget` is sometimes nested. We extract it here for consistency.
-    // This makes the solver robust to slight variations in the challenge object structure.
-    challenge.cpuTarget = challenge.cpuTarget || challenge.usefulWorkTask?.task?.cpuTarget;
-
     const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
     const solutions = {};
 
