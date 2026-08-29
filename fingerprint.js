@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { BlockList } from "node:net";
 import dns from "node:dns/promises";
-import { getProblemManager } from "./problem-manager.js";
+import { getProblemManager, problemManager } from "./problem-manager.js";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
 import { readFileSync } from "node:fs";
@@ -349,7 +349,7 @@ function getCompositeDeviceHash(context) {
     const tcpFingerprint = context.headers['x-tcp-fingerprint'];
     if (tcpFingerprint) srv.add("tcp", tcpFingerprint);
 
-    // 3. SIGNAUX DE HAUT NIVEAU (Applicatif) - Moins fiables, mais utiles pour la corroboration
+    // 3. SIGNAUX DE HAUT NIVEAU (Applicatif) Moins fiables, mais utiles pour la corroboration
     const headersToCapture = {
         "ch_ua": "sec-ch-ua",
         "ch_platform": "sec-ch-ua-platform",
@@ -417,11 +417,6 @@ const tlsFingerprintDb = {
     'b633f21d532d35967c8753c38536b4d3': 'Safari', // Safari 16, macOS
     '4d7a28d5f55b359b69100a311013f03e': ['Safari', 'Chrome', 'Firefox'], // Safari 17, iOS 17 (and other browsers on iOS 17)
     '8dd3d7532873575314df23c447543001': ['Safari', 'Chrome', 'Firefox'], // Safari 17.4, iOS 17.4
-
-    // --- Edge (Desktop) ---
-    // Edge is based on Chromium, so its JA3 is often identical to Chrome's.
-    'd8e35855049321c6042a4325c697858f': ['Chrome', 'Edge'], // Edge 114, Windows 11 (shares with Chrome 114)
-    'a9f90958d44533748c139a5d1895b925': ['Chrome', 'Edge'], // Edge 116, macOS (shares with Chrome 116)
 
     // --- Common Libraries & Bots (for spoofing detection) ---
     '47344a349b75c4e82333475553b5f358': 'Python', // Python 3.10 `requests` library
@@ -2924,7 +2919,7 @@ export const powMiddleware = (securityConfig) => {
 
   // Initialize the problem manager with the configured path, if provided.
   if (securityConfig.enableUsefulWork && securityConfig.usefulWorkConfigPath) {
-    getProblemManager(securityConfig.usefulWorkConfigPath);
+    getProblemManager(securityConfig.usefulWorkConfigPath, store); // This correctly initializes the singleton
   }
 
   if (securityConfig.autotuning) {
@@ -3019,6 +3014,7 @@ export const __internal = {
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
     generateCombinedPoWChallengePage,
+    problemManager, // Re-export the problemManager promise
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
