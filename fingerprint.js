@@ -317,7 +317,7 @@ export function getDeviceHash(context) {
     return getCompositeDeviceHash(context);
 }
 
-export function getCompositeDeviceHash(context) {
+function getCompositeDeviceHash(context) {
     const srv = new FingerprintBuilder();
 
     // Si un fingerprint client est fourni, on l'intègre comme un signal fort,
@@ -335,79 +335,55 @@ export function getCompositeDeviceHash(context) {
     // 1. SIGNAL FORT: User Agent (poids élevé)
     const ua = context.headers["user-agent"];
     if (ua) {
-        srv.add("ua", ua);
+        srv.add("ua", ua); // User-Agent
     }
 
-    // 2. SIGNAL FORT: TLS Fingerprints (JA3, JA4)
+    // 2. SIGNAUX DE BAS NIVEAU (Transport & Réseau) - Très fiables si fournis par un proxy
     const { ja3, ja4 } = getTlsFingerprint(context);
-    if (ja3) srv.add("ja3", ja3); // Add JA3
-    if (ja4) srv.add("ja4", ja4); // Add JA4
+    if (ja3) srv.add("ja3", ja3);
+    if (ja4) srv.add("ja4", ja4);
 
-    // 3. NOUVEAU SIGNAL: HTTP/2 Fingerprint (from header, e.g., Cloudflare, Akamai)
     const h2Fingerprint = context.headers['x-http2-fingerprint'];
-    if (h2Fingerprint) srv.add("h2_settings", h2Fingerprint);
+    if (h2Fingerprint) srv.add("h2", h2Fingerprint);
 
-    // 3. SIGNAL MOYEN: Client Hints (modern browsers)
-    if (context.headers["sec-ch-ua"]) {
-        srv.add("ch_ua", context.headers["sec-ch-ua"]);
-    }
-    if (context.headers["sec-ch-ua-platform"]) {
-        srv.add("ch_platform", context.headers["sec-ch-ua-platform"]);
-    }
-    if (context.headers["sec-ch-ua-mobile"]) {
-        srv.add("ch_mobile", context.headers["sec-ch-ua-mobile"]);
-    }
-    if (context.headers["sec-ch-ua-model"]) {
-        srv.add("ch_model", context.headers["sec-ch-ua-model"]);
-    }
-    if (context.headers["sec-ch-ua-arch"]) {
-        srv.add("ch_arch", context.headers["sec-ch-ua-arch"]);
-    }
-    if (context.headers["sec-ch-ua-bitness"]) {
-        srv.add("ch_bitness", context.headers["sec-ch-ua-bitness"]);
+    const tcpFingerprint = context.headers['x-tcp-fingerprint'];
+    if (tcpFingerprint) srv.add("tcp", tcpFingerprint);
+
+    // 3. SIGNAUX DE HAUT NIVEAU (Applicatif) - Moins fiables, mais utiles pour la corroboration
+    const headersToCapture = {
+        "ch_ua": "sec-ch-ua",
+        "ch_platform": "sec-ch-ua-platform",
+        "ch_mobile": "sec-ch-ua-mobile",
+        "ch_model": "sec-ch-ua-model",
+        "ch_arch": "sec-ch-ua-arch",
+        "ch_bitness": "sec-ch-ua-bitness",
+        "upgrade_req": "upgrade-insecure-requests",
+        "accept_lang": "accept-language",
+        "accept_enc": "accept-encoding",
+        "accept": "accept"
+    };
+
+    for (const [key, headerName] of Object.entries(headersToCapture)) {
+        const headerValue = context.headers[headerName];
+        if (headerValue) {
+            srv.add(key, headerValue);
+        }
     }
 
-    // 4. SIGNAL MOYEN: HTTP Version et protocole
+    // 4. SIGNAUX DE CONTEXTE (HTTP Version, Cookies)
     if (context.httpVersion) {
         srv.add("http_ver", context.httpVersion);
     }
-    if (context.headers["upgrade-insecure-requests"]) {
-        srv.add("upgrade", context.headers["upgrade-insecure-requests"]);
-    }
-    // 5. NOUVEAU SIGNAL: TCP/IP Fingerprint (from header, e.g., specialized proxy)
-    const tcpFingerprint = context.headers['x-tcp-fingerprint'];
-    if (tcpFingerprint) srv.add("tcp_fp", tcpFingerprint);
-
-
-    // 11. SIGNAL AVANCÉ: Cookies (si disponible)
     if (context.cookies) {
         const cookieKeys = Object.keys(context.cookies).sort().join(',');
-        srv.add("cookie_keys", cookieKeys);
-    }
-
-    // 12. SIGNAL AVANCÉ: Format de la requête
-    if (context.rawHeaders) {
-        // Vérifier des headers spécifiques qui indiquent le client
-        const clientHeaders = ['x-requested-with', 'x-forwarded-for', 'x-real-ip', 'cf-connecting-ip'];
-        clientHeaders.forEach(h => {
-            if (context.headers[h]) {
-                srv.add(h.replace(/-/g, '_'), context.headers[h]);
-            }
-        });
-    }
-
-    // 13. OPTIONNEL: IP (version simplifiée pour les réseaux partagés)
-    // Ne pas inclure l'IP complète, mais un hash du réseau /24 ou /16
-    // pour détecter les changements de réseau tout en protégeant la vie privée
-    const ip = context.clientIp || context.headers['x-forwarded-for']?.split(',')[0]?.trim();
-    if (ip && isPrivateIp(ip)) {
-        // Pour les IP privées, on peut prendre le /24
-        const networkHash = hashNetwork(ip, 24);
-        srv.add("network", networkHash);
+        if (cookieKeys) {
+            srv.add("cookie_keys", cookieKeys);
+        }
     }
 
     return srv.toString();
 }
+export { getCompositeDeviceHash };
 
 // Fonctions utilitaires
 function parseUserAgent(ua) {
