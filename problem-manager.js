@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { Optimization } from './library.js';
 
 /**
@@ -114,23 +114,46 @@ const ProblemInitializers = {
 };
 
 class ProblemManager {
-    constructor(configPath) {
+    /**
+     * @private
+     * Le constructeur est privé. Utilisez la méthode de fabrique asynchrone `create()`.
+     * @param {string} configPath - Le chemin vers le fichier de configuration.
+     * @param {Array<object>} problems - Les problèmes pré-chargés.
+     */
+    constructor(configPath, problems) {
         this.configPath = configPath;
-        this.problems = this.loadProblems();
+        this.problems = problems;
         this.currentProblemIndex = 0;
+        this.saveTimeout = null;
+        this.isSavePending = false;
+        this.saveDebounceTime = 5000; // 5 secondes
     }
 
-    loadProblems() {
+    /**
+     * Méthode de fabrique asynchrone pour créer et initialiser une instance de ProblemManager.
+     * @param {string} configPath - Le chemin vers le fichier de configuration.
+     * @returns {Promise<ProblemManager>}
+     */
+    static async create(configPath) {
+        const problems = await this.loadProblems(configPath);
+        return new ProblemManager(configPath, problems);
+    }
+
+    /**
+     * Charge et parse les problèmes depuis le fichier de configuration de manière asynchrone.
+     * @param {string} configPath - Le chemin vers le fichier de configuration.
+     * @returns {Promise<Array<object>>}
+     */
+    static async loadProblems(configPath) {
         try {
-            const data = readFileSync(this.configPath, 'utf-8');
+            const data = await fs.readFile(configPath, 'utf-8');
             const problems = JSON.parse(data);
             // Initialisation dynamique des problèmes
-            for (const problem of problems) { // eslint-disable-line no-unused-vars
+            for (const problem of problems) {
                 // Résolution des fonctions via le registre
                 if (problem.workUnit.scoreFunction) {
                     problem.workUnit.scoreFunction = FunctionRegistry[problem.workUnit.scoreFunction] || null;
                 }
-
                 for (const key in problem.payload) {
                     const value = problem.payload[key];
                     // On cherche une instruction d'initialisation (ex: { "$init": "generate:randomPoints", ... })
@@ -152,10 +175,30 @@ class ProblemManager {
         }
     }
 
-    saveProblems() {
+    /**
+     * Planifie une sauvegarde des problèmes sur le disque après un court délai (debounce).
+     * Regroupe plusieurs appels rapprochés en une seule écriture.
+     */
+    scheduleSave() {
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+        }
+        this.isSavePending = true;
+        this.saveTimeout = setTimeout(() => {
+            this._saveNow();
+            this.saveTimeout = null;
+            this.isSavePending = false;
+        }, this.saveDebounceTime);
+    }
+
+    /**
+     * Sauvegarde l'état actuel des problèmes sur le disque de manière asynchrone.
+     * @private
+     */
+    async _saveNow() {
         // Note: Dans un vrai scénario, utilisez une base de données pour éviter les race conditions.
         try {
-            writeFileSync(this.configPath, JSON.stringify(this.problems, null, 2));
+            await fs.writeFile(this.configPath, JSON.stringify(this.problems, null, 2));
         } catch (error) {
             console.error(`[ProblemManager] Erreur lors de la sauvegarde du fichier de problèmes: ${error.message}`);
         }
@@ -283,7 +326,7 @@ class ProblemManager {
                 this._integrateParetoFront(problem, solutionData.paretoFront);
                 break;
         }
-        this.saveProblems();
+        this.scheduleSave();
     }
 
     /**
@@ -315,7 +358,7 @@ class ProblemManager {
             problem.state.lastUpdate = new Date().toISOString();
 
             console.log(`[ProblemManager] Solution initiale pour ${problem.id} générée avec un score de ${score.toFixed(2)}.`);
-            this.saveProblems(); // On sauvegarde la nouvelle solution
+            this.scheduleSave(); // On planifie la sauvegarde de la nouvelle solution
         }
     }
 
@@ -328,7 +371,7 @@ class ProblemManager {
     _integrateParetoFront(problem, newFront) {
         if (!Array.isArray(newFront) || newFront.length === 0) return;
 
-        const currentFront = problem.state.paretoFront || [];
+        const currentFront = problem.state.paretoFront || []; // eslint-disable-line no-unused-vars
         const combined = [...currentFront, ...newFront];
 
         // --- Logique de tri non-dominé pour trouver le nouveau meilleur front ---
@@ -367,7 +410,7 @@ class ProblemManager {
             console.log(`[ProblemManager] Nouveau front de Pareto pour ${problem.id} avec ${nextFront.length} solutions (précédemment ${currentFront.length}).`);
             problem.state.paretoFront = nextFront;
             problem.state.lastUpdate = new Date().toISOString();
-            this.saveProblems();
+            this.scheduleSave();
         }
     }
 
@@ -440,7 +483,7 @@ class ProblemManager {
         problem.state.bestSolution = null;
         problem.state.bestEnergy = "Infinity";
 
-        this.saveProblems();
+        this.scheduleSave();
         return true;
     }
 
@@ -452,16 +495,20 @@ export { ProblemManager }; // Export the class for testing
  * @type {ProblemManager | null}
  */
 let problemManagerInstance = null;
+let managerPromise = null;
 
 /**
  * Gets or creates the singleton instance of the ProblemManager.
  * @param {string} [configPath] - The path to the problems configuration file. If not provided, uses the existing instance or a default path.
- * @returns {ProblemManager} The singleton instance.
+ * @returns {Promise<ProblemManager>} The singleton instance.
  */
-export function getProblemManager(configPath) {
-    if (!problemManagerInstance || (configPath && problemManagerInstance.configPath !== configPath)) {
-        problemManagerInstance = new ProblemManager(configPath || './problems.config.json');
+export function getProblemManager(configPath = './problems.config.json') {
+    if (!managerPromise || (problemManagerInstance && problemManagerInstance.configPath !== configPath)) {
+        managerPromise = ProblemManager.create(configPath).then(manager => {
+            problemManagerInstance = manager;
+            return manager;
+        });
     }
-    return problemManagerInstance;
+    return managerPromise;
 }
-export const problemManager = getProblemManager();
+export const problemManager = getProblemManager(); // This now exports a Promise
