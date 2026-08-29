@@ -1046,9 +1046,9 @@ function getCrossLayerInconsistency(context) {
  * @param {object} context - Le contexte de la requête.
  * @returns {{tlsSpoofingScore: number}}
  */
-function getTlsSpoofingScore(context) {
+function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
     let score = 0;
-    const { ja3, ja4 } = getTlsFingerprint(context) || { ja3: null, ja4: null }; // Defensive check
+    const { ja3, ja4 } = getTlsFingerprintFn(context) || { ja3: null, ja4: null }; // Defensive check
     const ua = context.headers["user-agent"] || '';
 
     // Si un fingerprint TLS est présent, mais le User-Agent est générique ou manquant.

@@ -161,7 +161,8 @@ const securityConfig = {
         behaviorScore: 0.7,      // Penalizes non-human interactions (no mouse/keyboard activity)
         honeypotScore: 1.0,      // Strongly penalizes bots filling hidden form fields
         crossLayerInconsistencyScore: 0.4, // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
-        timeInconsistencyScore: 0.9 // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
+        timeInconsistencyScore: 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
+        tlsSpoofingScore: 0.8      // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
     },
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued
