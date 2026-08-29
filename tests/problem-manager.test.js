@@ -165,10 +165,14 @@ describe('ProblemManager', () => {
             problem.state.bestEnergy = 1000; // Set a high initial energy
 
             const newBetterSolution = { solution: [{ id: 1 }], energy: 500 };
+            // Le mock de `evaluatePathDistance` va retourner 1 (la somme des IDs).
+            // C'est cette valeur qui doit être stockée, pas 500.
+            const expectedRecalculatedEnergy = 1;
+
             manager.integrateSolution('tsp_10_cities', newBetterSolution);
 
             expect(problem.state.bestSolution).toEqual(newBetterSolution.solution);
-            expect(problem.state.bestEnergy).toBe(newBetterSolution.energy);
+            expect(problem.state.bestEnergy).toBe(expectedRecalculatedEnergy); // Vérifier le score recalculé
             expect(writeFileSync).toHaveBeenCalled();
         });
 
@@ -177,13 +181,16 @@ describe('ProblemManager', () => {
             const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
             const initialSolution = [{ id: 10 }];
             problem.state.bestSolution = initialSolution;
-            problem.state.bestEnergy = 100;
+            problem.state.bestEnergy = 10; // Le score initial est 10 (calculé à partir de l'ID)
 
             const newWorseSolution = { solution: [{ id: 20 }], energy: 200 };
+            // Le mock de `evaluatePathDistance` va retourner 20.
+            // Comme 20 n'est pas meilleur que 10, la solution ne doit pas changer.
+
             manager.integrateSolution('tsp_10_cities', newWorseSolution);
 
             expect(problem.state.bestSolution).toEqual(initialSolution);
-            expect(problem.state.bestEnergy).toBe(100);
+            expect(problem.state.bestEnergy).toBe(10);
             // saveProblems is still called, so we check writeFileSync was called
             expect(writeFileSync).toHaveBeenCalled();
         });
