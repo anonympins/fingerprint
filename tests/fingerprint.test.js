@@ -1129,13 +1129,21 @@ describe('Fingerprint & PoW Security Suite', () => {
             // Thresholds should not have changed
             expect(securityConfig.thresholds).toEqual({ low: 20, medium: 45, high: 75 });
 
-            // Add more data to meet the threshold
-            for (let i = 0; i < 50; i++) {
+            // Add more data to meet the minDataPoints and MIN_CONFIDENCE_RATIO thresholds
+            // 1. Add enough low-confidence data to reach the minDataPoints
+            for (let i = 0; i < 45; i++) { // Add 45 more to reach 95
                 const score = 10;
                 trafficData.push({ type: 'request_passed', deviceId: `human-new-${i}`, score, vector: { historyScore: score } });
             }
+            // 2. Add high-confidence data to pass the ratio check (5% of 100 is 5)
+            for (let i = 0; i < 5; i++) {
+                const score = 30;
+                trafficData.push({ type: 'challenge_solved', deviceId: `solver-${i}`, score, vector: { historyScore: score } });
+            }
+
             // Trigger again
             intervalCallback();
+            // Now that both conditions (minDataPoints and confidence ratio) are met, optimization should start.
             expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Démarrage du cycle d\'optimisation'));
         });
     });

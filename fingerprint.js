@@ -2909,8 +2909,16 @@ let autoTuningJobId = null;
  * @param {number} maxDataPoints - The maximum number of data points to keep after an optimization cycle.
  */
 function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints) {
-  if (trafficData.length < minDataPoints) {
+  const highConfidenceLogs = trafficData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
+  const highConfidenceRatio = trafficData.length > 0 ? highConfidenceLogs / trafficData.length : 0;
+  const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
+
+  if (trafficData.length < minDataPoints || highConfidenceRatio < MIN_CONFIDENCE_RATIO) {
+    if (trafficData.length < minDataPoints) {
     console.log(`[AutoTuning] Reporté : ${trafficData.length}/${minDataPoints} points de données.`);
+    } else {
+      console.log(`[AutoTuning] Reporté : Ratio de confiance insuffisant (${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}%).`);
+    }
     return;
   }
 

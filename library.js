@@ -1533,6 +1533,8 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
     let falseNegatives = 0; // Bots qui sont passés
     let totalHumans = 0;
     let totalBots = 0;
+    let totalChallenges = 0;
+    let totalChallengeCost = 0; // NOUVEAU: Coût cumulé des challenges
 
     // Simule le calcul du score pour chaque point de données avec la configuration testée
     const calculateScore = (log) => {
@@ -1568,6 +1570,11 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
         // Faux négatif : un bot qui aurait dû être challengé mais ne l'a pas été
         if (score < config.thresholds.low) {
           falseNegatives += confidence;
+        } else {
+          totalChallenges += confidence; // Un bot correctement challengé
+          // Calculer le coût de ce challenge (proportionnel à la difficulté)
+          const suspicionFactor = (score - config.thresholds.low) / (config.thresholds.high - config.thresholds.low);
+          totalChallengeCost += Math.min(1, Math.max(0, suspicionFactor)) * confidence;
         }
       } else if (isLikelyHuman) {
         totalHumans++;
@@ -1575,15 +1582,23 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
         // Faux positif : un humain qui a été challengé inutilement
         if (score >= config.thresholds.low) {
           falsePositives += confidence;
+          totalChallenges += confidence; // Un humain incorrectement challengé
+          const suspicionFactor = (score - config.thresholds.low) / (config.thresholds.high - config.thresholds.low);
+          totalChallengeCost += Math.min(1, Math.max(0, suspicionFactor)) * confidence;
         }
       }
     }
 
     const falsePositiveRate = totalHumans > 0 ? falsePositives / totalHumans : 0;
     const falseNegativeRate = totalBots > 0 ? falseNegatives / totalBots : 0;
+    // NOUVEAU: Taux de challenge global
+    const challengeRate = (totalHumans + totalBots) > 0 ? totalChallenges / (totalHumans + totalBots) : 0;
+    // NOUVEAU: Coût moyen par challenge émis
+    const averageChallengeCost = totalChallenges > 0 ? totalChallengeCost / totalChallenges : 0;
 
     // L'algorithme doit minimiser ces deux objectifs
-    return [falsePositiveRate, falseNegativeRate];
+    // On a maintenant 4 objectifs à minimiser !
+    return [falsePositiveRate, falseNegativeRate, challengeRate, averageChallengeCost];
   };
 };
 
