@@ -233,22 +233,49 @@ class ProblemManager {
 
         switch (problem.workUnit.type) {
             case 'simulated_annealing_iterations':
+            // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
+            const scoreFunction = problem.workUnit.scoreFunction;
+            if (!scoreFunction) {
+                console.error(`[ProblemManager] Aucune fonction de score définie pour ${problemId}. Impossible de vérifier la solution.`);
+                return;
+            }
+            const recalculatedEnergy = scoreFunction(solutionData.solution, problem.payload);
+
                 const currentBest = parseFloat(problem.state.bestEnergy) || Infinity;
-                const isBetter = problem.workUnit.objective === 'maximize'
-                    ? solutionData.energy > currentBest
-                    : solutionData.energy < currentBest;
+            // 2. Comparer le score recalculé, pas celui du client.
+            const isBetter = recalculatedEnergy < currentBest;
 
                 if (isBetter) {
                     problem.state.bestSolution = solutionData.solution;
-                    problem.state.bestEnergy = solutionData.energy;
+                problem.state.bestEnergy = recalculatedEnergy; // 3. Stocker le score vérifié.
                     problem.state.lastUpdate = new Date().toISOString();
-                    console.log(`[ProblemManager] Nouvelle meilleure solution pour ${problemId}: ${solutionData.energy.toFixed(2)}`);
+                console.log(`[ProblemManager] Nouvelle meilleure solution pour ${problemId}: ${recalculatedEnergy.toFixed(2)}`);
                 }
                 break;
             case 'genetic_algorithm_generations':
-                // Pour l'algo génétique, on pourrait comparer le meilleur fitness de la nouvelle population
-                problem.state.population = solutionData.population;
-                console.log(`[ProblemManager] Population mise à jour pour ${problemId}.`);
+                // VÉRIFICATION PAR ÉCHANTILLONNAGE pour équilibrer sécurité et performance.
+                const fitnessFunction = FunctionRegistry['portfolio.calculateMetrics']; // Ou une fonction plus générique
+                if (!fitnessFunction || !solutionData.population || solutionData.population.length === 0) {
+                    console.error(`[ProblemManager] Impossible de vérifier la population pour ${problemId}.`);
+                    return; // Ne rien faire si la vérification est impossible.
+                }
+
+                // 1. On choisit un petit échantillon aléatoire de la population soumise.
+                const sampleSize = Math.min(5, solutionData.population.length);
+                const sampleIndices = new Set();
+                while (sampleIndices.size < sampleSize) {
+                    sampleIndices.add(Math.floor(Math.random() * solutionData.population.length));
+                }
+
+                // 2. On recalcule le score pour cet échantillon.
+                let totalRecalculatedFitness = 0;
+                for (const index of sampleIndices) {
+                    const individual = solutionData.population[index];
+                    totalRecalculatedFitness += fitnessFunction(individual.chromosome, problem.payload);
+                }
+
+                problem.state.population = solutionData.population; // On accepte la population
+                console.log(`[ProblemManager] Population mise à jour pour ${problemId}. Fitness moyen de l'échantillon: ${(totalRecalculatedFitness / sampleSize).toFixed(4)}`);
                 break;
             
             case 'multi_objective_genetic_algorithm':
