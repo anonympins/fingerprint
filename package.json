@@ -16,6 +16,7 @@
     "fingerprint.builder.js",
     "pow.solver.js",
     "pow.worker.js",
+    "pow.solver.inline.js",
     "problem-manager.js",
     "optimization.worker.js",
     "library.js",
