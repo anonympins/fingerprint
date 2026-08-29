@@ -11,8 +11,15 @@
  *
  */
 
-import { Worker } from "worker_threads";
-import os from "os";
+import { Worker } from "node:worker_threads";
+import os from "node:os";
+import crypto from "node:crypto";
+
+/**
+ * Génère un nombre flottant aléatoire cryptographiquement sûr entre 0 (inclus) et 1 (exclus).
+ * @returns {number}
+ */
+const secureRandom = () => crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
 
 const Optimization = {
   // eslint-disable-line no-unused-vars
@@ -55,7 +62,7 @@ const Optimization = {
       );
 
       // Décide si on se déplace vers la nouvelle solution.
-      if (newEnergy < currentEnergy || Math.random() < acceptanceProbability) {
+      if (newEnergy < currentEnergy || secureRandom() < acceptanceProbability) {
         currentSolution = newSolution;
         currentEnergy = newEnergy;
       }
@@ -135,7 +142,7 @@ const Optimization = {
 
         let offspringChromosome;
         // 4. Croisement
-        if (Math.random() < crossoverRate) {
+        if (secureRandom() < crossoverRate) {
           offspringChromosome = crossover(
             parent1.chromosome,
             parent2.chromosome,
@@ -145,7 +152,7 @@ const Optimization = {
         }
 
         // 5. Mutation
-        if (Math.random() < mutationRate) {
+        if (secureRandom() < mutationRate) {
           offspringChromosome = mutate(offspringChromosome);
         }
 
@@ -513,10 +520,10 @@ Optimization.geneticAlgorithmMultiObjective = function (
     const offspring = [];
     for (let i = 0; i < populationSize; i++) {
       // Sélection simple pour l'exemple
-      const parent1 = population[Math.floor(Math.random() * population.length)];
-      const parent2 = population[Math.floor(Math.random() * population.length)];
+      const parent1 = population[Math.floor(secureRandom() * population.length)];
+      const parent2 = population[Math.floor(secureRandom() * population.length)];
       let childIndividual = crossover(parent1.individual, parent2.individual);
-      if (Math.random() < mutationRate) {
+      if (secureRandom() < mutationRate) {
         childIndividual = mutate(childIndividual);
       }
       const child = { individual: childIndividual };
@@ -660,7 +667,7 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
         }
 
         for (let i = 0; i < populationSize; i++) {
-            const z = Array.from({ length: n }, () => Math.random() * 2 - 1); // Vecteur normal standard
+            const z = Array.from({ length: n }, () => secureRandom() * 2 - 1); // Vecteur normal standard
             const y = Array(n).fill(0); // z transformé par L
             for (let r = 0; r < n; r++) {
                 for (let c = 0; c < n; c++) {
@@ -741,7 +748,7 @@ Optimization.Operators.createTournamentSelection = (options = {}) => {
 
     for (let i = 0; i < tournamentSize; i++) {
       const individual =
-        population[Math.floor(Math.random() * population.length)];
+        population[Math.floor(secureRandom() * population.length)];
       if (!best || individual.fitness < best.fitness) {
         best = individual;
       }
@@ -749,7 +756,7 @@ Optimization.Operators.createTournamentSelection = (options = {}) => {
     // Retourne le meilleur trouvé. Dans le pire des cas (tous les scores sont Infinity),
     // on retourne le premier candidat sélectionné au lieu de null.
     if (!best) {
-      return population[Math.floor(Math.random() * population.length)];
+      return population[Math.floor(secureRandom() * population.length)];
     }
     return best;
   };
@@ -903,8 +910,8 @@ Optimization.Operators.solveTSP = (cities, options = {}) => {
   // Voisinage : génère un chemin voisin en inversant une sous-séquence (heuristique 2-opt).
   const pathNeighbor = (path) => {
     const newPath = [...path];
-    let i = Math.floor(Math.random() * newPath.length);
-    let j = Math.floor(Math.random() * newPath.length);
+    let i = Math.floor(secureRandom() * newPath.length);
+    let j = Math.floor(secureRandom() * newPath.length);
     if (i === j) j = (j + 1) % newPath.length;
     const [start, end] = [Math.min(i, j), Math.max(i, j)];
 
@@ -915,7 +922,7 @@ Optimization.Operators.solveTSP = (cities, options = {}) => {
 
   // Solution initiale : un chemin aléatoire.
   const initialPath = Array.from({ length: cities.length }, (_, i) => i).sort(
-    () => Math.random() - 0.5,
+    () => secureRandom() - 0.5,
   );
 
   // Paramètres par défaut pour le TSP, pouvant être surchargés par `options`.
@@ -957,14 +964,14 @@ Optimization.Operators.solvePortfolio = (
 
   // Fonctions spécifiques au problème pour l'AG, maintenant encapsulées.
   const createIndividual = () =>
-    Array.from({ length: assets.length }, () => Math.random());
+    Array.from({ length: assets.length }, () => secureRandom());
 
   const crossover = (p1, p2) => p1.map((w1, i) => (w1 + p2[i]) / 2); // Moyenne des poids
 
   const mutate = (p) => {
     const newP = [...p];
-    const i = Math.floor(Math.random() * newP.length);
-    newP[i] += (Math.random() - 0.5) * 0.2; // Mutation douce
+    const i = Math.floor(secureRandom() * newP.length);
+    newP[i] += (secureRandom() - 0.5) * 0.2; // Mutation douce
     newP[i] = Math.max(0, newP[i]); // Les poids ne peuvent être négatifs
     return newP;
   };
@@ -1097,9 +1104,9 @@ Optimization.Operators.solveFacilityLocation = (
   // Voisinage : déplace légèrement une infrastructure au hasard.
   const facilityNeighbor = (facilities) => {
     const newFacilities = facilities.map((f) => ({ ...f }));
-    const i = Math.floor(Math.random() * numFacilities);
-    const moveX = (Math.random() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
-    const moveY = (Math.random() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
+    const i = Math.floor(secureRandom() * numFacilities);
+    const moveX = (secureRandom() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
+    const moveY = (secureRandom() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
 
     newFacilities[i].x = Math.max(
       bounds.minX,
@@ -1115,8 +1122,8 @@ Optimization.Operators.solveFacilityLocation = (
 
   // Solution initiale : place les infrastructures au hasard sur la carte.
   const initialFacilities = Array.from({ length: numFacilities }, () => ({
-    x: bounds.minX + Math.random() * (bounds.maxX - bounds.minX),
-    y: bounds.minY + Math.random() * (bounds.maxY - bounds.minY),
+    x: bounds.minX + secureRandom() * (bounds.maxX - bounds.minX),
+    y: bounds.minY + secureRandom() * (bounds.maxY - bounds.minY),
   }));
 
   const saOptions = {
@@ -1233,7 +1240,7 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
   // Un "individu" est simplement une valeur de CPC.
   const createIndividual = () => {
     // Le CPC peut varier, par exemple, entre 0.5 et 5 PRIM'S.
-    return 0.5 + Math.random() * 4.5;
+    return 0.5 + secureRandom() * 4.5;
   };
 
   // Croisement : moyenne des CPC des parents.
@@ -1243,7 +1250,7 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
 
   // Mutation : légère variation aléatoire du CPC.
   const mutate = (cpc) => {
-    const newCpc = cpc + (Math.random() - 0.5) * 0.5;
+    const newCpc = cpc + (secureRandom() - 0.5) * 0.5;
     return Math.max(0.1, newCpc); // Assurer un CPC minimum.
   };
 
@@ -1474,10 +1481,10 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
 
   // Un "individu" est un tableau de 4 seuils : [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents]
   const createIndividual = () => {
-    const minTimeToClick = 100 + Math.random() * 4900; // entre 100ms et 5s
-    const maxClickVariance = 1 + Math.random() * 9999; // entre 1 et 10000
-    const minMouseEntropy = Math.random() * 0.5; // entre 0 et 0.5
-    const minScrollEvents = Math.floor(Math.random() * 10); // entre 0 et 10
+    const minTimeToClick = 100 + secureRandom() * 4900; // entre 100ms et 5s
+    const maxClickVariance = 1 + secureRandom() * 9999; // entre 1 et 10000
+    const minMouseEntropy = secureRandom() * 0.5; // entre 0 et 0.5
+    const minScrollEvents = Math.floor(secureRandom() * 10); // entre 0 et 10
     return [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents];
   };
 
@@ -1494,11 +1501,11 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
   // Mutation : légère variation aléatoire d'un des seuils
   const mutate = (solution) => {
     const newSolution = [...solution];
-    const i = Math.floor(Math.random() * 4);
+    const i = Math.floor(secureRandom() * 4);
     // Amplitudes de mutation différentes pour chaque seuil
     const mutationFactors = [500, 1000, 0.1, 2];
     const mutationFactor = mutationFactors[i];
-    newSolution[i] += (Math.random() - 0.5) * mutationFactor;
+    newSolution[i] += (secureRandom() - 0.5) * mutationFactor;
     return newSolution;
   };
 
@@ -1614,34 +1621,34 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     // Un "individu" est un objet de configuration complet
     const createIndividual = () => ({
         thresholds: {
-            low: 15 + Math.random() * 20, // 15-35
-            medium: 40 + Math.random() * 25, // 40-65
-            high: 70 + Math.random() * 20, // 70-90
+            low: 15 + secureRandom() * 20, // 15-35
+            medium: 40 + secureRandom() * 25, // 40-65
+            high: 70 + secureRandom() * 20, // 70-90
         },
         weights: {
-            historyScore: Math.random(),
-            rotationScore: Math.random(),
-            headerAnomalyScore: Math.random(),
-            requestPatternScore: 0.5 + Math.random(), // Donner plus d'importance aux patterns
-            inconsistencyScore: Math.random(),
+            historyScore: secureRandom(),
+            rotationScore: secureRandom(),
+            headerAnomalyScore: secureRandom(),
+            requestPatternScore: 0.5 + secureRandom(), // Donner plus d'importance aux patterns
+            inconsistencyScore: secureRandom(),
             honeypotScore: 1.0, // Garder le honeypot à 1.0 est une bonne pratique
-            behaviorScore: Math.random(),
-            crossLayerInconsistencyScore: Math.random(),
-            timeInconsistencyScore: Math.random(),
+            behaviorScore: secureRandom(),
+            crossLayerInconsistencyScore: secureRandom(),
+            timeInconsistencyScore: secureRandom(),
         },
         patterns: {
-            velocityThreshold: 100 + Math.random() * 400, // 100-500ms
-            velocityWeight: 10 + Math.random() * 40,
-            burstThreshold: 300 + Math.random() * 700, // 300-1000ms
-            burstWeight: 20 + Math.random() * 40,
-            scrapeThreshold: 500 + Math.random() * 1000, // 500-1500ms
-            scrapeWeight: 15 + Math.random() * 35,
-            sequenceLength: 3 + Math.floor(Math.random() * 3), // 3-5
-            sequenceWeight: 20 + Math.random() * 50,
-            regularityThreshold: 50 + Math.random() * 200, // 50-250ms
-            regularityWeight: 20 + Math.random() * 40,
-            decayFactor: 0.85 + Math.random() * 0.14, // 0.85-0.99
-            inactivityReset: 15000 + Math.random() * 45000, // 15s-60s
+            velocityThreshold: 100 + secureRandom() * 400, // 100-500ms
+            velocityWeight: 10 + secureRandom() * 40,
+            burstThreshold: 300 + secureRandom() * 700, // 300-1000ms
+            burstWeight: 20 + secureRandom() * 40,
+            scrapeThreshold: 500 + secureRandom() * 1000, // 500-1500ms
+            scrapeWeight: 15 + secureRandom() * 35,
+            sequenceLength: 3 + Math.floor(secureRandom() * 3), // 3-5
+            sequenceWeight: 20 + secureRandom() * 50,
+            regularityThreshold: 50 + secureRandom() * 200, // 50-250ms
+            regularityWeight: 20 + secureRandom() * 40,
+            decayFactor: 0.85 + secureRandom() * 0.14, // 0.85-0.99
+            inactivityReset: 15000 + secureRandom() * 45000, // 15s-60s
         }
     });
 
@@ -1674,7 +1681,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
             { name: 'weights', weight: 0.35 },   // 35% de chance
             { name: 'thresholds', weight: 0.15 } // 15% de chance
         ];
-        const rand = Math.random();
+        const rand = secureRandom();
         let cumulativeWeight = 0;
         let sectionToMutate = 'patterns'; // Fallback
         for (const section of sections) {
@@ -1686,12 +1693,12 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         }
 
         const keys = Object.keys(newConfig[sectionToMutate]);
-        const keyToMutate = keys[Math.floor(Math.random() * keys.length)];
+        const keyToMutate = keys[Math.floor(secureRandom() * keys.length)];
 
         if (keyToMutate === 'honeypotScore') return newConfig; // Ne pas muter le poids du honeypot
 
         // Appliquer une mutation avec une amplitude variable
-        const mutationAmount = (Math.random() - 0.5) * 0.4; // +/- 20%
+        const mutationAmount = (secureRandom() - 0.5) * 0.4; // +/- 20%
         newConfig[sectionToMutate][keyToMutate] *= (1 + mutationAmount);
 
         // S'assurer que les valeurs restent dans des limites raisonnables

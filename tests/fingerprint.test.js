@@ -1561,7 +1561,7 @@ describe('getTlsSpoofingScore', () => {
     });
 
     it('should return a high score if TLS fingerprint is present but User-Agent is generic/missing', () => {
-        getTlsFingerprintMock.mockReturnValue({ ja3: 'some-ja3-hash', ja4: null });
+        getTlsFingerprintMock.mockReturnValue({ ja3: 'e188a442b87f422c5a1e80b05399435b', ja4: null }); // A known Chrome JA3
         const context1 = { headers: { 'user-agent': 'curl/7.64.1' } };
         const { tlsSpoofingScore: score1 } = getTlsSpoofingScore(context1, getTlsFingerprintMock);
         expect(score1).toBe(50);
@@ -1576,14 +1576,14 @@ describe('getTlsSpoofingScore', () => {
     });
 
     it('should return a high score for browser/OS mismatch between JA3 and User-Agent', () => {
-        // Simulate JA3 typical of Chrome, but User-Agent claims Firefox
-        getTlsFingerprintMock.mockReturnValue({ ja3: 'e123456789abcdef', ja4: null });
+        // Use a known JA3 for Chrome, but a User-Agent for Firefox
+        getTlsFingerprintMock.mockReturnValue({ ja3: 'e188a442b87f422c5a1e80b05399435b', ja4: null });
         const context1 = { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0' } };
         const { tlsSpoofingScore: score1 } = getTlsSpoofingScore(context1, getTlsFingerprintMock);
         expect(score1).toBe(80);
 
-        // Simulate JA3 typical of Firefox, but User-Agent claims Chrome
-        getTlsFingerprintMock.mockReturnValue({ ja3: 'c123456789abcdef', ja4: null });
+        // Use a known JA3 for Firefox, but a User-Agent for Chrome
+        getTlsFingerprintMock.mockReturnValue({ ja3: 'b386946a5a586163c7c533636b45c355', ja4: null });
         const context2 = { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36' } };
         const { tlsSpoofingScore: score2 } = getTlsSpoofingScore(context2, getTlsFingerprintMock);
         expect(score2).toBe(80);
@@ -1591,13 +1591,13 @@ describe('getTlsSpoofingScore', () => {
 
     it('should return 0 for consistent JA3 and User-Agent', () => {
         // Consistent Chrome
-        getTlsFingerprintMock.mockReturnValue({ ja3: 'e123456789abcdef', ja4: null });
+        getTlsFingerprintMock.mockReturnValue({ ja3: 'e188a442b87f422c5a1e80b05399435b', ja4: null });
         const context1 = { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36' } };
         const { tlsSpoofingScore: score1 } = getTlsSpoofingScore(context1, getTlsFingerprintMock);
         expect(score1).toBe(0);
 
         // Consistent Firefox
-        getTlsFingerprintMock.mockReturnValue({ ja3: 'c123456789abcdef', ja4: null });
+        getTlsFingerprintMock.mockReturnValue({ ja3: 'b386946a5a586163c7c533636b45c355', ja4: null });
         const context2 = { headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0' } };
         const { tlsSpoofingScore: score2 } = getTlsSpoofingScore(context2, getTlsFingerprintMock);
         expect(score2).toBe(0);
