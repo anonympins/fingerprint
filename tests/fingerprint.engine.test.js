@@ -192,3 +192,96 @@ describe('FingerprintEngine Challenge Validation', () => {
         // but the key is that the `redirect` action was not taken.
     }, 20000);
 });
+
+describe('FingerprintEngine GraphQL Support', () => {
+    let engine;
+    const {FingerprintEngine} = fingerprint;
+    const graphqlSecurityConfig = {
+        weights: {honeypotScore: 1.0},
+        thresholds: {low: 10, medium: 40, high: 75, block: 95},
+        whitelist: [
+            {
+                type: 'graphql_operation_allowlist',
+                entries: [
+                    'query:GetPublicData',
+                    'mutation:UpdateUser',
+                    'query:Search*',
+                    'mutation:*'
+                ]
+            }
+        ]
+    };
+    beforeEach(() => {
+        fingerprint.configureStore(inMemoryStore);
+        inMemoryStore.clear();
+        engine = new FingerprintEngine(graphqlSecurityConfig);
+    });
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    const createGqlContext = (operationType, operationName) => ({
+        clientIp: '127.0.0.1',
+        path: '/graphql',
+        cookies: {},
+        query: {},
+        headers: { 'user-agent': 'test' },
+        isStatic: false,
+        graphqlOperationType: operationType,
+        graphqlOperationName: operationName,
+    });
+
+    it('should allow a specifically whitelisted GraphQL query', async () => {
+        const context = createGqlContext('query', 'GetPublicData');
+        const decision = await engine.processRequest(context);
+        expect(decision.action).toBe('next');
+        expect(decision.vector.whitelisted).toBe(100);
+        expect(decision.vector.type).toBe('graphql_operation_allowlist');
+    });
+
+    it('should allow any mutation due to wildcard whitelisting', async () => {
+        const context = createGqlContext('mutation', 'CreateNewThing');
+        const decision = await engine.processRequest(context);
+        expect(decision.action).toBe('next');
+        expect(decision.vector.whitelisted).toBe(100);
+    });
+
+    it('should protect a GraphQL query that is not in the allowlist', async () => {
+        vi.spyOn(engine, 'calculateFinalScore').mockReturnValue(100);
+        const context = createGqlContext('query', 'GetSensitiveAdminData');
+        const decision = await engine.processRequest(context);
+        expect(decision.action).toBe('block');
+        expect(decision.vector.whitelisted).toBeUndefined();
+    });
+
+    it('should protect an anonymous query if not explicitly allowed', async () => {
+        vi.spyOn(engine, 'calculateFinalScore').mockReturnValue(100);
+        const context = createGqlContext('query', 'Anonymous');
+        const decision = await engine.processRequest(context);
+        expect(decision.action).toBe('block');
+    });
+
+    it('should allow an anonymous query if "query:Anonymous" is in the allowlist', async () => {
+        const configWithAnonymous = {
+            ...graphqlSecurityConfig,
+            whitelist: [
+                {
+                    type: 'graphql_operation_allowlist',
+                    entries: ['query:Anonymous', 'mutation:*']
+                }
+            ]
+        };
+        const specificEngine = new FingerprintEngine(configWithAnonymous);
+        const context = createGqlContext('query', 'Anonymous');
+        const decision = await specificEngine.processRequest(context);
+        expect(decision.action).toBe('next');
+        expect(decision.vector.type).toBe('graphql_operation_allowlist');
+    });
+
+    it('should allow a GraphQL query matching a wildcard name', async () => {
+        const context = createGqlContext('query', 'SearchPosts');
+        const decision = await engine.processRequest(context);
+        expect(decision.action).toBe('next');
+        expect(decision.vector.type).toBe('graphql_operation_allowlist');
+    });
+});

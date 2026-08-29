@@ -1794,6 +1794,29 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   return null;
 }
 
+/**
+ * @private
+ * Parses a GraphQL query string to extract the operation type and name.
+ * Uses a lightweight regex to avoid pulling in a heavy AST parser.
+ * @param {object} body - The request body, which might contain the query.
+ * @returns {{type: string, name: string}|null}
+ */
+function parseGraphQLQuery(body) {
+    const query = body?.query;
+    if (typeof query !== 'string') {
+        return null;
+    }
+    // Regex to capture operation type (query, mutation, subscription) and optional operation name.
+    // Handles whitespace and potential comments.
+    const match = query.match(/(?:^|\s)(query|mutation|subscription)\s+([_A-Za-z][_0-9A-Za-z]*)?/);
+    if (match) {
+        return {
+            type: match[1],
+            name: match[2] || 'Anonymous', // Default to 'Anonymous' if name is missing
+        };
+    }
+    return null;
+}
 export class FingerprintEngine {
   constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
@@ -1819,7 +1842,7 @@ export class FingerprintEngine {
       'weights', 'thresholds', 'cpu', 'ticketMaxAge', 'challengeTtl',
       'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
       'honeypot', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger',
-      'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices',
+      'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist',
       'similarityThreshold'
     ]);
 
@@ -2009,6 +2032,41 @@ export class FingerprintEngine {
     return false;
   }
   /**
+   * Checks if the GraphQL operation matches an entry in the GraphQL operation allowlist.
+   * Supports wildcards for operation names.
+   * @private
+   * @param {string} operationType - The type of the GraphQL operation (e.g., 'query', 'mutation').
+   * @param {string} operationName - The name of the GraphQL operation.
+   * @returns {boolean} True if the operation is in the allowlist.
+   */
+  _isGraphqlOperationInAllowlist(operationType, operationName) {
+    const { whitelist = [] } = this.securityConfig;
+    const graphqlRule = whitelist.find(rule => rule.type === 'graphql_operation_allowlist');
+
+    if (!graphqlRule || !graphqlRule.entries || !operationType || !operationName) {
+      return false;
+    }
+
+    for (const entry of graphqlRule.entries) {
+      const [entryType, entryName] = entry.split(':');
+      if (entryType !== operationType) {
+        continue;
+      }
+
+      // Check for exact name match or full wildcard
+      if (entryName === operationName || entryName === '*') {
+        return true;
+      }
+      // Check for partial wildcard (e.g., "Search*")
+      if (entryName.endsWith('*') && operationName.startsWith(entryName.slice(0, -1))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Verifies if a request comes from a legitimate, whitelisted bot (e.g., Googlebot)
    * using reverse and forward DNS lookups. The result is cached.
    * @private
@@ -2074,7 +2132,7 @@ export class FingerprintEngine {
 
   async processRequest(requestContext) {
 
-    const { clientIp = "unknown", path, cookies, query, isStatic } = requestContext;
+    const { clientIp = "unknown", path, cookies, query, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     
     this._log('Processing request', { clientIp, path, isStatic });
@@ -2107,6 +2165,12 @@ export class FingerprintEngine {
     if (this._isPathInAllowlist(path)) {
       this._log('Path in allowlist - allowing request', { path });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'path_allowlist' } };
+    }
+
+    // 5. Check GraphQL operation allowlist.
+    if (graphqlOperationType && this._isGraphqlOperationInAllowlist(graphqlOperationType, graphqlOperationName)) {
+      this._log('GraphQL operation in allowlist - allowing request', { operation: `${graphqlOperationType}:${graphqlOperationName}` });
+      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'graphql_operation_allowlist' } };
     }
 
     const { pow_nonce } = query;
@@ -2954,6 +3018,15 @@ export const powMiddleware = (securityConfig) => {
       httpVersion: req.httpVersion,
     };
 
+    // New GraphQL parsing logic
+    // It's common for GraphQL endpoints to be at '/graphql'
+    if (req.path === '/graphql' && req.body) {
+        const gqlInfo = parseGraphQLQuery(req.body);
+        if (gqlInfo) {
+            requestContext.graphqlOperationType = gqlInfo.type;
+            requestContext.graphqlOperationName = gqlInfo.name;
+        }
+    }
     const decision = await engine.processRequest(requestContext);
 
     // Attach the fingerprinting result to the request object for downstream middlewares.

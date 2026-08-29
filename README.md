@@ -250,6 +250,11 @@ const securityConfig = {
                 '/api/v1/webhooks/trusted-source', // Exact path
                 '/api/v2/public/*',                // All paths starting with /api/v2/public/
             ]},
+
+        // Allows a specific GraphQL query and all mutations•  
+        {type: 'graphql_operation_allowlist',entries: [
+            'query:GetPublicPosts',
+                'mutation:*']},
         // Option 2: DNS-verified bots (e.g., search engine crawlers).
         // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
         // The result is cached per IP to avoid repeated DNS lookups.
