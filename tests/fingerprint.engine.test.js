@@ -42,6 +42,11 @@ describe('FingerprintEngine Challenge Validation', () => {
         // Configure the engine to use our mock store before each test
         fingerprint.configureStore(inMemoryStore);
         inMemoryStore.clear();
+        // Mock getTlsFingerprint to prevent destructuring errors in tests
+        // where clientHello is not relevant.
+        vi.spyOn(fingerprint.__internal, 'getTlsFingerprint').mockReturnValue({
+            ja3: 'mock-ja3', ja4: 'mock-ja4'
+        });
         engine = new fingerprint.FingerprintEngine(securityConfig);
     });
 

@@ -6,7 +6,7 @@ export const cyrb53 = (str, seed = 0) => {
         h2 = 0x41c6ce57 ^ seed;
     for (let i = 0, ch; i < str.length; i++) {
         ch = str.charCodeAt(i);
-        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h1 = Math.imul(h1 ^ ch, 2654435761); // Use Math.imul for 32-bit multiplication
         h2 = Math.imul(h2 ^ ch, 1597334677);
     }
     h1 =
@@ -126,6 +126,9 @@ export class FingerprintBuilder {
             cvs: 5.0,   // Canvas: Très haute entropie (Rendu unique du GPU/driver)
             gpu: 4.0,   // GPU: Haute entropie (Matériel spécifique)
             ja3: 3.5,   // JA3: Identifie la librairie TLS (très stable pour un client donné)
+            ja4: 4.0,   // JA4: Plus moderne, inclut HTTP/2
+            h2_settings: 3.0, // HTTP/2 settings frame fingerprint
+            tcp_fp: 2.5, // TCP/IP fingerprint
             ua: 2.0,    // User-Agent: Signal fort, bien que modifiable
             
             // --- Signaux composites et dérivés ---
