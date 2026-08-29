@@ -6,7 +6,7 @@ export const cyrb53 = (str, seed = 0) => {
         h2 = 0x41c6ce57 ^ seed;
     for (let i = 0, ch; i < str.length; i++) {
         ch = str.charCodeAt(i);
-        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h1 = Math.imul(h1 ^ ch, 2654435761); // Use Math.imul for 32-bit multiplication
         h2 = Math.imul(h2 ^ ch, 1597334677);
     }
     h1 =
@@ -93,6 +93,11 @@ export class FingerprintBuilder {
      * @param {string} fpString1 - Fingerprint A
      * @param {string} fpString2 - Fingerprint B
      */
+    // Note on `volatileKeys`: These keys are ignored during the comparison between the fingerprint
+    // of the request that *triggered* a challenge and the fingerprint of the request that *submits*
+    // the solution. This is because headers like Client-Hints (ch_*), cookie presence, and upgrade-insecure-requests
+    // can legitimately change or be absent on the subsequent request, especially after a redirect.
+    // By ignoring them, we focus the comparison on more stable identifiers like UA, JA3, GPU, etc.
     static compare(fpString1, fpString2) {
         if (!fpString1 || !fpString2) return 0;
 
@@ -121,6 +126,9 @@ export class FingerprintBuilder {
             cvs: 5.0,   // Canvas: Très haute entropie (Rendu unique du GPU/driver)
             gpu: 4.0,   // GPU: Haute entropie (Matériel spécifique)
             ja3: 3.5,   // JA3: Identifie la librairie TLS (très stable pour un client donné)
+            ja4: 4.0,   // JA4: Plus moderne, inclut HTTP/2
+            h2_settings: 3.0, // HTTP/2 settings frame fingerprint
+            tcp_fp: 2.5, // TCP/IP fingerprint
             ua: 2.0,    // User-Agent: Signal fort, bien que modifiable
             
             // --- Signaux composites et dérivés ---
@@ -148,7 +156,10 @@ export class FingerprintBuilder {
 
             // On ne compare que les clés qui ont un poids défini.
             const weight = weights[key];
-            if (!weight) return;
+            // The check must be for `undefined` to allow keys that have a legitimate weight of 0.
+            // The previous `!weight` check would incorrectly exclude them, potentially leading to a totalWeight of 0
+            // and a similarity score of NaN, which evaluates to 0. This is the fix.
+            if (weight === undefined) return;
 
             totalWeight += weight; // N'incrémenter que si la clé est pertinente.
             if (map1.get(key) === map2.get(key)) {

@@ -108,6 +108,7 @@ describe('Fingerprint Client-Side Library', () => {
                     resolvedOptions: () => ({ timeZone: 'Europe/Paris' }),
                 }),
             },
+            history: { length: 1 }, // Mock the history object
         };
 
         // Stub the global objects that the client script expects

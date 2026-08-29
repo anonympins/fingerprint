@@ -14,6 +14,10 @@ This system identifies and slows down bots and automated scripts by evaluating t
 The process unfolds in three steps:
 
 1.  **Identification & Fingerprinting**: A unique fingerprint is generated for each device. This combines a client-side browser fingerprint, server-side request headers, and the **JA3 fingerprint** from the TLS handshake, which reliably identifies the underlying HTTP client library (e.g., Chrome vs. a Python script). A `device_id` cookie is used to track the device over time.
+    *   **Advanced TLS Fingerprinting (JA4/JA4H)**: Beyond JA3, the system can leverage JA4/JA4H (if provided by a reverse proxy like Cloudflare or Akamai) for a more robust and modern TLS fingerprint, especially for HTTP/2 traffic.
+    *   **HTTP/2 Fingerprinting**: Analyzes HTTP/2 specific characteristics (settings frame, priority, window update) to identify client libraries.
+    *   **TCP/IP Fingerprinting**: If available (e.g., from a specialized reverse proxy), low-level TCP/IP stack characteristics (TTL, window size, options) are used for identification.
+    *   A `device_id` cookie is used to track the device over time.
 2.  **Suspicion Score Calculation**: Several indicators are analyzed to calculate a suspicion score:
     *   **Header Anomalies**: Missing `User-Agent`, `Accept-Language`, etc.
     *   **Device Behavior**: Rapid fingerprint changes (User-Agent rotation).
@@ -22,6 +26,7 @@ The process unfolds in three steps:
     *   **Cross-Layer Inconsistency**: Mismatches between client-side data (e.g., OS reported by the browser) and server-side headers (e.g., `User-Agent`).
     *   **Request Patterns**: Repetitive, rapid-fire, or sequential requests typical of scraping bots. The parameters for detecting these patterns (e.g., request velocity, burst detection) are dynamically adjusted by the auto-tuner for optimal performance.
     *   **Honeypot Trap**: Detection of bots that automatically fill hidden form fields or probe for common but unused URL parameters (e.g., `?debug=true`).
+    *   **TLS Fingerprint Spoofing**: Detects inconsistencies between the TLS fingerprint (JA3/JA4) and other HTTP headers (e.g., User-Agent), indicating an attempt to disguise the client.
 3.  **Dynamic Challenge**: If the suspicion score exceeds a certain threshold, a challenge is presented to the user. The difficulty and type of challenge depend on the score:
     *   **Low to Medium Suspicion**: A combined **CPU and Memory Proof-of-Work (PoW)** challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
     *   **High Suspicion**: For the most suspicious requests, the system issues a high-difficulty combined CPU/Memory challenge. The architecture allows for plugging in more complex challenges like CAPTCHAs if needed.
@@ -156,7 +161,8 @@ const securityConfig = {
         behaviorScore: 0.7,      // Penalizes non-human interactions (no mouse/keyboard activity)
         honeypotScore: 1.0,      // Strongly penalizes bots filling hidden form fields
         crossLayerInconsistencyScore: 0.4, // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
-        timeInconsistencyScore: 0.9 // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
+        timeInconsistencyScore: 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
+        tlsSpoofingScore: 0.8      // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
     },
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued
@@ -661,6 +667,7 @@ Updates the payload (parameters) of a specific problem by its ID. This allows fo
 
 ---
 
+## NodeJS raw integration
 **Workflow:**
 
 1.  **Instantiate the Engine**: Create an instance with your `securityConfig`.

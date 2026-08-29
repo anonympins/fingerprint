@@ -47,7 +47,8 @@ const securityProfiles = {
             behaviorScore: 0.7,
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.4,
-            timeInconsistencyScore: 0.9
+            timeInconsistencyScore: 0.9,
+            tlsSpoofingScore: 0.8 // NOUVEAU: Poids pour la détection de spoofing TLS
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -77,7 +78,8 @@ const securityProfiles = {
             behaviorScore: 0.8,
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.6,
-            timeInconsistencyScore: 1.0
+            timeInconsistencyScore: 1.0,
+            tlsSpoofingScore: 1.0 // NOUVEAU: Plus agressif pour le spoofing TLS
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -108,7 +110,8 @@ const securityProfiles = {
             behaviorScore: 0.2, // Lower weight, as browser behavior is not applicable
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.5,
-            timeInconsistencyScore: 0.8
+            timeInconsistencyScore: 0.8,
+            tlsSpoofingScore: 0.7 // NOUVEAU: Important pour les API
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -140,7 +143,8 @@ const securityProfiles = {
             behaviorScore: 0.5, // Less emphasis on complex interactions
             honeypotScore: 1.0, // Crucial for comment spam
             crossLayerInconsistencyScore: 0.4,
-            timeInconsistencyScore: 0.8
+            timeInconsistencyScore: 0.8,
+            tlsSpoofingScore: 0.6 // NOUVEAU: Moins critique pour les blogs
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -174,7 +178,8 @@ const securityProfiles = {
             behaviorScore: 0.8, // Important for checkout/login forms
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.7,
-            timeInconsistencyScore: 0.9
+            timeInconsistencyScore: 0.9,
+            tlsSpoofingScore: 0.9 // NOUVEAU: Très important pour l'e-commerce
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -231,48 +236,56 @@ const getPowSolverCode = () => {
 };
 
 /**
- * Calculates the JA3 fingerprint hash from the TLS Client Hello message.
- * JA3 is a more reliable way to identify client applications (e.g., a specific browser or a script)
- * based on the specifics of its TLS handshake.
+ * Extracts TLS fingerprints (JA3 and JA4) from request context.
+ * Prioritizes headers from reverse proxies (x-ja4-hash) and falls back to JA3 calculation
+ * from raw socket data if available.
  * @param {object} context - The request context, containing the raw request object.
- * @returns {string|null} The MD5 hash of the JA3 string, or null if it cannot be computed.
+ * @returns {{ja3: string|null, ja4: string|null}} An object containing JA3 and JA4 hashes.
  */
-function getJa3Hash(context) {
-    // 1. Prefer the JA3 hash from a trusted reverse proxy (e.g., Nginx, Cloudflare).
-    const ja3FromHeader = context.headers['x-ja3-hash'];
+function getTlsFingerprint(context) {
+    let ja3 = null;
+    let ja4 = null;
+
+    // 1. Prefer JA4 hash from a trusted reverse proxy header.
+    const ja4FromHeader = context.headers['x-ja4-hash'];
+    if (ja4FromHeader) {
+        ja4 = ja4FromHeader;
+    }
+    // 2. Prefer JA3 hash from a trusted reverse proxy header.
+    const ja3FromHeader = context.headers['x-ja3-hash']; // Assuming a proxy might provide JA3 too
     if (ja3FromHeader) {
-        return ja3FromHeader;
+        ja3 = ja3FromHeader;
     }
 
-    // 2. Fallback to calculating from the raw socket if available (requires Node.js to handle TLS).
+    // 3. Fallback to calculating from the raw socket if available and if headers were not present.
     const clientHello = context.rawReq?.socket?.clientHello;
-    if (!clientHello) {
-        return null;
+    if (clientHello && !ja3) { // Only calculate if ja3 is not already set
+        try {
+            const { version, ciphers, extensions, ellipticCurves, ellipticCurvePointFormats } = clientHello;
+
+            // The official JA3 spec includes the TLS version.
+            // Node.js provides it as a string like 'TLSv1.3', we need the corresponding decimal value.
+            const tlsVersionMap = {
+                'TLSv1': 769, 'TLSv1.1': 770, 'TLSv1.2': 771, 'TLSv1.3': 772
+            };
+            const tlsVersionId = tlsVersionMap[version] || 0;
+
+            const ja3String = [
+                tlsVersionId,
+                // The ciphers array from clientHello is an array of objects, not just IDs.
+                Array.isArray(ciphers) ? ciphers.join('-') : '',
+                extensions?.join('-') || '',
+                ellipticCurves?.join('-') || '',
+                ellipticCurvePointFormats?.join('-') || ''
+            ].join(',');
+
+            ja3 = crypto.createHash('md5').update(ja3String).digest('hex');
+        } catch (e) {
+            // Could fail if clientHello structure is unexpected.
+            ja3 = null;
+        }
     }
-
-    try {
-        const { version, ciphers, extensions, ellipticCurves, ellipticCurvePointFormats } = clientHello;
-
-        // The official JA3 spec includes the TLS version.
-        // Node.js provides it as a string like 'TLSv1.3', we need the corresponding decimal value.
-        const tlsVersionMap = {
-            'TLSv1': 769, 'TLSv1.1': 770, 'TLSv1.2': 771, 'TLSv1.3': 772
-        };
-        const tlsVersionId = tlsVersionMap[version] || 0;
-
-        const ja3String = [
-            tlsVersionId,
-            // The ciphers array from clientHello is an array of objects, not just IDs.
-            Array.isArray(ciphers) ? ciphers.join('-') : '',
-            extensions?.join('-') || '',
-            ellipticCurves?.join('-') || '',
-            ellipticCurvePointFormats?.join('-') || ''
-        ].join(',');
-
-        return crypto.createHash('md5').update(ja3String).digest('hex');
-    } catch (e) {
-        return null; // Could fail if clientHello structure is unexpected.
-    }
+    return { ja3, ja4 };
 }
 /**
  * Creates a stable hash based on device characteristics, independent of the IP.
@@ -304,7 +317,7 @@ export function getDeviceHash(context) {
     return getCompositeDeviceHash(context);
 }
 
-export function getCompositeDeviceHash(context) {
+function getCompositeDeviceHash(context) {
     const srv = new FingerprintBuilder();
 
     // Si un fingerprint client est fourni, on l'intègre comme un signal fort,
@@ -322,70 +335,55 @@ export function getCompositeDeviceHash(context) {
     // 1. SIGNAL FORT: User Agent (poids élevé)
     const ua = context.headers["user-agent"];
     if (ua) {
-        srv.add("ua", ua);
+        srv.add("ua", ua); // User-Agent
     }
 
-    // 2. SIGNAL FORT: JA3 TLS Fingerprint
-    const ja3 = getJa3Hash(context);
+    // 2. SIGNAUX DE BAS NIVEAU (Transport & Réseau) - Très fiables si fournis par un proxy
+    const { ja3, ja4 } = getTlsFingerprint(context);
     if (ja3) srv.add("ja3", ja3);
+    if (ja4) srv.add("ja4", ja4);
 
-    // 3. SIGNAL MOYEN: Client Hints (modern browsers)
-    if (context.headers["sec-ch-ua"]) {
-        srv.add("ch_ua", context.headers["sec-ch-ua"]);
-    }
-    if (context.headers["sec-ch-ua-platform"]) {
-        srv.add("ch_platform", context.headers["sec-ch-ua-platform"]);
-    }
-    if (context.headers["sec-ch-ua-mobile"]) {
-        srv.add("ch_mobile", context.headers["sec-ch-ua-mobile"]);
-    }
-    if (context.headers["sec-ch-ua-model"]) {
-        srv.add("ch_model", context.headers["sec-ch-ua-model"]);
-    }
-    if (context.headers["sec-ch-ua-arch"]) {
-        srv.add("ch_arch", context.headers["sec-ch-ua-arch"]);
-    }
-    if (context.headers["sec-ch-ua-bitness"]) {
-        srv.add("ch_bitness", context.headers["sec-ch-ua-bitness"]);
+    const h2Fingerprint = context.headers['x-http2-fingerprint'];
+    if (h2Fingerprint) srv.add("h2", h2Fingerprint);
+
+    const tcpFingerprint = context.headers['x-tcp-fingerprint'];
+    if (tcpFingerprint) srv.add("tcp", tcpFingerprint);
+
+    // 3. SIGNAUX DE HAUT NIVEAU (Applicatif) - Moins fiables, mais utiles pour la corroboration
+    const headersToCapture = {
+        "ch_ua": "sec-ch-ua",
+        "ch_platform": "sec-ch-ua-platform",
+        "ch_mobile": "sec-ch-ua-mobile",
+        "ch_model": "sec-ch-ua-model",
+        "ch_arch": "sec-ch-ua-arch",
+        "ch_bitness": "sec-ch-ua-bitness",
+        "upgrade_req": "upgrade-insecure-requests",
+        "accept_lang": "accept-language",
+        "accept_enc": "accept-encoding",
+        "accept": "accept"
+    };
+
+    for (const [key, headerName] of Object.entries(headersToCapture)) {
+        const headerValue = context.headers[headerName];
+        if (headerValue) {
+            srv.add(key, headerValue);
+        }
     }
 
-    // 4. SIGNAL MOYEN: HTTP Version et protocole
+    // 4. SIGNAUX DE CONTEXTE (HTTP Version, Cookies)
     if (context.httpVersion) {
         srv.add("http_ver", context.httpVersion);
     }
-    if (context.headers["upgrade-insecure-requests"]) {
-        srv.add("upgrade", context.headers["upgrade-insecure-requests"]);
-    }
-
-    // 11. SIGNAL AVANCÉ: Cookies (si disponible)
     if (context.cookies) {
         const cookieKeys = Object.keys(context.cookies).sort().join(',');
-        srv.add("cookie_keys", cookieKeys);
-    }
-
-    // 12. SIGNAL AVANCÉ: Format de la requête
-    if (context.rawHeaders) {
-        // Vérifier des headers spécifiques qui indiquent le client
-        const clientHeaders = ['x-requested-with', 'x-forwarded-for', 'x-real-ip', 'cf-connecting-ip'];
-        clientHeaders.forEach(h => {
-            if (context.headers[h]) {
-                srv.add(h.replace(/-/g, '_'), context.headers[h]);
-            }
-        });
-    }
-
-    // 13. OPTIONNEL: IP (version simplifiée pour les réseaux partagés)
-    // Ne pas inclure l'IP complète, mais un hash du réseau /24 ou /16
-    // pour détecter les changements de réseau tout en protégeant la vie privée
-    const ip = context.clientIp || context.headers['x-forwarded-for']?.split(',')[0]?.trim();
-    if (ip && isPrivateIp(ip)) {
-        // Pour les IP privées, on peut prendre le /24
-        const networkHash = hashNetwork(ip, 24);
-        srv.add("network", networkHash);
+        if (cookieKeys) {
+            srv.add("cookie_keys", cookieKeys);
+        }
     }
 
     return srv.toString();
 }
+export { getCompositeDeviceHash };
 
 // Fonctions utilitaires
 function parseUserAgent(ua) {
@@ -895,6 +893,17 @@ function getBehaviorScore(context) {
       score += 40;
     }
 
+    // 3. (NOUVEAU) Analyse de la longueur de l'historique de navigation.
+    // Un historique court est suspect (nouvel onglet, bot), un historique long est un bon signe.
+    if (typeof metrics.historyLength === 'number') {
+        if (metrics.historyLength === 1) {
+            score += 15; // Légère pénalité pour un historique de session vierge.
+        } else if (metrics.historyLength >= 5) {
+            score -= 20; // Bonus : un historique long est un fort indicateur humain.
+        } else if (metrics.historyLength >= 2) {
+            score -= 10; // Petit bonus pour une navigation de base.
+        }
+    }
     // 3. Vérification de la plausibilité et de la distribution des métriques.
     // Un bot pourrait envoyer des valeurs aléatoires, mais elles ne suivront probablement pas
     // des distributions naturelles (comme la loi de Benford pour les premiers chiffres).
@@ -923,7 +932,7 @@ function getBehaviorScore(context) {
       if (keystrokeDeviation > 0.15) score += 40;
     }
 
-    return { behaviorScore: Math.min(100, score) };
+    return { behaviorScore: Math.max(0, Math.min(100, score)) }; // Assure que le score reste entre 0 et 100
   } catch (e) {
     return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
   }
@@ -1006,6 +1015,46 @@ function getCrossLayerInconsistency(context) {
         return { crossLayerInconsistencyScore: 10 }; // Erreur de parsing = suspect.
     }
 }
+
+/**
+ * Calcule un score d'incohérence entre les données du fingerprint TLS (JA3/JA4) et les en-têtes serveur (User-Agent).
+ * Cela permet de détecter le spoofing de fingerprint TLS.
+ * @param {object} context - Le contexte de la requête.
+ * @returns {{tlsSpoofingScore: number}}
+ */
+function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
+    let score = 0;
+    const { ja3, ja4 } = getTlsFingerprintFn(context) || { ja3: null, ja4: null }; // Defensive check
+    const ua = context.headers["user-agent"] || '';
+
+    // Si un fingerprint TLS est présent, mais le User-Agent est générique ou manquant.
+    if ((ja3 || ja4) && (!ua || ua.length < 10 || ua.toLowerCase().includes('python') || ua.toLowerCase().includes('curl'))) {
+        score += 50; // Forte suspicion
+    }
+
+    // Plus complexe: Comparer le navigateur/OS déduit du JA3/JA4 avec le User-Agent.
+    // Ceci nécessiterait une base de données de JA3/JA4 connus ou une logique de parsing avancée.
+    // Pour l'instant, une implémentation simplifiée:
+    // Si JA3/JA4 est présent et le UA est un navigateur connu, mais ils ne correspondent pas.
+    if (ja3 && ua) {
+        // Exemple très simplifié: si JA3 est typique de Chrome, mais UA est Firefox.
+        // Ceci est une heuristique et peut générer des faux positifs sans une base de données robuste.
+        // JA3 de Chrome commence souvent par 'e' (TLS 1.3) ou 'd' (TLS 1.2)
+        const isJa3Chrome = ja3.startsWith('e') || ja3.startsWith('d');
+        const isUaChrome = ua.includes('Chrome') && !ua.includes('Edg');
+        // JA3 de Firefox commence souvent par 'c' (TLS 1.3) ou 'b' (TLS 1.2)
+        const isJa3Firefox = ja3.startsWith('c') || ja3.startsWith('b');
+        const isUaFirefox = ua.includes('Firefox');
+
+        if ((isJa3Chrome && isUaFirefox) || (isJa3Firefox && isUaChrome)) {
+            score += 80; // Très forte incohérence
+        }
+    }
+    // On pourrait ajouter des vérifications similaires pour JA4 si on avait une base de données de JA4.
+
+    return { tlsSpoofingScore: Math.min(100, score) };
+}
+
 
 /**
  * Calcule un score basé sur la détection explicite de frameworks d'automatisation.
@@ -1365,6 +1414,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
   const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
 
+  // NOUVEAU: On calcule le score de spoofing TLS.
+  const { tlsSpoofingScore } = getTlsSpoofingScore(context);
+
   // NOUVEAU: On appelle getBotScore pour détecter les marqueurs d'automatisation.
   const { botScore } = getBotScore(context);
 
@@ -1386,7 +1438,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1709,6 +1761,7 @@ export class FingerprintEngine {
             (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
             (suspicionVector.botScore || 0) * (weights.botScore || 0) + // Ajout du nouveau score
             (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
+            (suspicionVector.tlsSpoofingScore || 0) * (weights.tlsSpoofingScore || 0) + // NOUVEAU: TLS Spoofing
             (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0);
 
         return Math.min(100, score);
@@ -2094,7 +2147,7 @@ export class FingerprintEngine {
         // We compare the fingerprint of the request that triggered the challenge
         // with the fingerprint of the request that is submitting the solution.
         // They should be very similar.
-        similarity = FingerprintBuilder.compare(originalFingerprint, getCompositeDeviceHash(requestContext));
+        similarity = FingerprintBuilder.compare(originalFingerprint, solverFingerprint);
             }
 
             if (similarity < similarityThreshold) {
@@ -2837,6 +2890,8 @@ export const __internal = {
     getCrossLayerInconsistency, // Expose for testing
     // Expose page generators for security testing
     getTimeInconsistencyScore,
+    getTlsFingerprint, // NOUVEAU: Expose pour les tests
+    getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
     generateCombinedPoWChallengePage,
 };
