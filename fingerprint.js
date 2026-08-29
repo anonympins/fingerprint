@@ -1805,7 +1805,43 @@ export class FingerprintEngine {
     this.securityConfig = securityConfig;
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();
+    this._validateConfig(securityConfig); // Validate the configuration
     this.verbose = securityConfig.verbose || false;
+  }
+
+  /**
+   * Validates the security configuration object to detect potential typos or missing essential keys.
+   * @private
+   * @param {object} config - The security configuration object.
+   */
+  _validateConfig(config) {
+    if (!config) {
+      console.warn('[Fingerprint] Warning: No securityConfig provided. Using default behaviors, which may not be secure.');
+      return;
+    }
+
+    const knownKeys = new Set([
+      'weights', 'thresholds', 'cpu', 'ticketMaxAge', 'challengeTtl',
+      'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
+      'honeypot', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger',
+      'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices',
+      'similarityThreshold'
+    ]);
+
+    // 1. Check for essential keys
+    if (!config.weights) {
+      console.warn('[Fingerprint] Warning: `securityConfig.weights` is not defined. Suspicion scores will be 0.');
+    }
+    if (!config.thresholds) {
+      console.warn('[Fingerprint] Warning: `securityConfig.thresholds` is not defined. Challenges may not be issued correctly.');
+    }
+
+    // 2. Check for unknown (potentially misspelled) keys
+    for (const key in config) {
+      if (!knownKeys.has(key)) {
+        console.warn(`[Fingerprint] Warning: Unknown key '${key}' found in securityConfig. This might be a typo.`);
+      }
+    }
   }
 
   _log(message, data = {}) {
