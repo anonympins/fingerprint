@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { BlockList } from "node:net";
 import dns from "node:dns/promises";
-import { problemManager } from "./problem-manager.js";
+import { getProblemManager, problemManager } from "./problem-manager.js";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
 import { readFileSync } from "node:fs";
@@ -349,7 +349,7 @@ function getCompositeDeviceHash(context) {
     const tcpFingerprint = context.headers['x-tcp-fingerprint'];
     if (tcpFingerprint) srv.add("tcp", tcpFingerprint);
 
-    // 3. SIGNAUX DE HAUT NIVEAU (Applicatif) - Moins fiables, mais utiles pour la corroboration
+    // 3. SIGNAUX DE HAUT NIVEAU (Applicatif) Moins fiables, mais utiles pour la corroboration
     const headersToCapture = {
         "ch_ua": "sec-ch-ua",
         "ch_platform": "sec-ch-ua-platform",
@@ -384,6 +384,46 @@ function getCompositeDeviceHash(context) {
     return srv.toString();
 }
 export { getCompositeDeviceHash };
+
+/**
+ * @private
+ * A knowledge base of known TLS (JA3) fingerprints for common browsers.
+ * This helps in detecting inconsistencies between the TLS layer and the HTTP User-Agent.
+ * The key is the JA3 hash, and the value is the browser family.
+ * This list is not exhaustive but covers many common cases.
+ */
+const tlsFingerprintDb = {
+    // --- Chrome (Desktop) ---
+    'e188a442b87f422c5a1e80b05399435b': 'Chrome', // Chrome 107, Windows 10
+    'd8e35855049321c6042a4325c697858f': 'Chrome', // Chrome 114, Windows 11
+    'a9f90958d44533748c139a5d1895b925': 'Chrome', // Chrome 116, macOS
+    '3b5379916d2b3882253c42885956a350': 'Chrome', // Chrome 124, Linux
+
+    // --- Chrome (Mobile) ---
+    '59822058c95c33d2d06e52f410855c8c': 'Chrome', // Chrome 120, Android 13
+
+    // --- Firefox (Desktop) ---
+    'b386946a5a586163c7c533636b45c355': 'Firefox', // Firefox 102, Windows 10
+    '66236495a523c1785f8f3a105b248b11': 'Firefox', // Firefox 115, Windows 11
+    'b73d470006575b5e35167a0b5a8540e2': 'Firefox', // Firefox 121, macOS
+    '8443d7562933834333943465d52363cf': 'Firefox', // Firefox 125, Linux
+
+    // --- Firefox (Mobile) ---
+    '02720628957d38c6111a18433abe833f': 'Firefox', // Firefox 125, Android 14
+
+    // --- Safari & iOS (Shared TLS Stack) ---
+    // On iOS, all browsers (Chrome, Firefox, etc.) must use WebKit, which uses Apple's TLS stack.
+    // Therefore, they all share the same JA3 fingerprint as Safari on that OS version.
+    'b633f21d532d35967c8753c38536b4d3': 'Safari', // Safari 16, macOS
+    '4d7a28d5f55b359b69100a311013f03e': ['Safari', 'Chrome', 'Firefox'], // Safari 17, iOS 17 (and other browsers on iOS 17)
+    '8dd3d7532873575314df23c447543001': ['Safari', 'Chrome', 'Firefox'], // Safari 17.4, iOS 17.4
+
+    // --- Common Libraries & Bots (for spoofing detection) ---
+    '47344a349b75c4e82333475553b5f358': 'Python', // Python 3.10 `requests` library
+    'b29587b8a143c42546133ad7704b3310': 'Go',     // Go 1.19 `http` library
+    'd435b5223b2884c5a832b842637e245f': 'Java',   // Java 11 `HttpClient`
+    'c72366b9551263d990b7fa574225332c': 'curl',   // curl 7.81.0
+};
 
 // Fonctions utilitaires
 function parseUserAgent(ua) {
@@ -520,7 +560,10 @@ export const verifyTspChallenge = (
   targetMaxDistance,
   cities,
 ) => {
-  try {
+    // Input validation: ensure the solution is a non-empty string before trying to parse it.
+    if (typeof solutionPathJson !== 'string' || solutionPathJson.length === 0) return false;
+
+    try {
     const solutionPath = JSON.parse(solutionPathJson);
     if (!Array.isArray(solutionPath) || solutionPath.length !== numCities)
       return false;
@@ -701,6 +744,13 @@ export const verifyPoWAndGenerateTicket = (
  * The server performs the same calculation to validate.
  */
 export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret = '') => {
+  // Hard cap on memory difficulty to prevent DoS attacks from malicious clients
+  // submitting an arbitrarily large difficulty value.
+  const MAX_ALLOWED_MEM_DIFFICULTY = 128; // 128MB
+  if (difficulty > MAX_ALLOWED_MEM_DIFFICULTY) {
+    console.warn(`[Security] Memory PoW verification attempt with excessive difficulty: ${difficulty}MB. Denied.`);
+    return false;
+  }
   const size = difficulty * 1024 * 1024;
   const iterations = size / 16;
   const buffer = new Uint32Array(size / 4);
@@ -720,8 +770,9 @@ export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret =
   return finalHash === parseInt(solution, 10);
 };
 export const isTicketValid = (ip, ticket) => {
-  if (!ticket) return false;
-  const [expiry, sig] = ticket.split(":");
+  // Input validation: ensure the ticket is a non-empty string with the correct format.
+  if (typeof ticket !== 'string' || !ticket.includes(':')) return false;
+  const [expiry, sig] = ticket.split(':');
   if (!expiry || !sig || Date.now() > parseInt(expiry, 10)) return false;
   const expectedSig = crypto
     .createHmac("sha256", getPowSecret())
@@ -1023,36 +1074,46 @@ function getCrossLayerInconsistency(context) {
  * @returns {{tlsSpoofingScore: number}}
  */
 function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
-    let score = 0;
     const { ja3, ja4 } = getTlsFingerprintFn(context) || { ja3: null, ja4: null }; // Defensive check
     const ua = context.headers["user-agent"] || '';
 
-    // Si un fingerprint TLS est présent, mais le User-Agent est générique ou manquant.
+    // 1. Penalize if a TLS fingerprint is present but the User-Agent is generic or missing.
+    // This is a strong indicator of a non-browser client trying to look legitimate.
     if ((ja3 || ja4) && (!ua || ua.length < 10 || ua.toLowerCase().includes('python') || ua.toLowerCase().includes('curl'))) {
-        score += 50; // Forte suspicion
+        return { tlsSpoofingScore: 50 };
     }
 
-    // Plus complexe: Comparer le navigateur/OS déduit du JA3/JA4 avec le User-Agent.
-    // Ceci nécessiterait une base de données de JA3/JA4 connus ou une logique de parsing avancée.
-    // Pour l'instant, une implémentation simplifiée:
-    // Si JA3/JA4 est présent et le UA est un navigateur connu, mais ils ne correspondent pas.
+    // 2. If no JA3 hash is available, we cannot perform the consistency check.
     if (ja3 && ua) {
-        // Exemple très simplifié: si JA3 est typique de Chrome, mais UA est Firefox.
-        // Ceci est une heuristique et peut générer des faux positifs sans une base de données robuste.
-        // JA3 de Chrome commence souvent par 'e' (TLS 1.3) ou 'd' (TLS 1.2)
-        const isJa3Chrome = ja3.startsWith('e') || ja3.startsWith('d');
-        const isUaChrome = ua.includes('Chrome') && !ua.includes('Edg');
-        // JA3 de Firefox commence souvent par 'c' (TLS 1.3) ou 'b' (TLS 1.2)
-        const isJa3Firefox = ja3.startsWith('c') || ja3.startsWith('b');
-        const isUaFirefox = ua.includes('Firefox');
+        // Look up the expected browser family (or families) from our database.
+        let expectedBrowsers = tlsFingerprintDb[ja3];
 
-        if ((isJa3Chrome && isUaFirefox) || (isJa3Firefox && isUaChrome)) {
-            score += 80; // Très forte incohérence
+        if (expectedBrowsers) {
+            // Ensure it's always an array for consistent logic.
+            if (!Array.isArray(expectedBrowsers)) {
+                expectedBrowsers = [expectedBrowsers];
+            }
+
+            // Parse the User-Agent to get the claimed browser.
+            const { browser: claimedBrowser } = parseUserAgent(ua);
+
+            // Check if the claimed browser is one of the legitimate possibilities for this JA3 hash.
+            // We use `some` to see if the claimed browser starts with any of the expected browser names.
+            // (e.g., "Chrome/116" starts with "Chrome").
+            const isMatch = expectedBrowsers.some(expected => claimedBrowser?.startsWith(expected));
+
+            if (claimedBrowser && !isMatch) {
+                return { tlsSpoofingScore: 80 }; // High score for a clear mismatch.
+            }
         }
     }
-    // On pourrait ajouter des vérifications similaires pour JA4 si on avait une base de données de JA4.
 
-    return { tlsSpoofingScore: Math.min(100, score) };
+    // If we reach here, either:
+    // - No JA3 was available.
+    // - The JA3 was not in our database (we can't make a decision).
+    // - The JA3 and User-Agent were consistent.
+    // In all these cases, the score is 0.
+    return { tlsSpoofingScore: 0 };
 }
 
 
@@ -1739,7 +1800,43 @@ export class FingerprintEngine {
     this.securityConfig = securityConfig;
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();
+    this._validateConfig(securityConfig); // Validate the configuration
     this.verbose = securityConfig.verbose || false;
+  }
+
+  /**
+   * Validates the security configuration object to detect potential typos or missing essential keys.
+   * @private
+   * @param {object} config - The security configuration object.
+   */
+  _validateConfig(config) {
+    if (!config) {
+      console.warn('[Fingerprint] Warning: No securityConfig provided. Using default behaviors, which may not be secure.');
+      return;
+    }
+
+    const knownKeys = new Set([
+      'weights', 'thresholds', 'cpu', 'ticketMaxAge', 'challengeTtl',
+      'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
+      'honeypot', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger',
+      'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices',
+      'similarityThreshold'
+    ]);
+
+    // 1. Check for essential keys
+    if (!config.weights) {
+      console.warn('[Fingerprint] Warning: `securityConfig.weights` is not defined. Suspicion scores will be 0.');
+    }
+    if (!config.thresholds) {
+      console.warn('[Fingerprint] Warning: `securityConfig.thresholds` is not defined. Challenges may not be issued correctly.');
+    }
+
+    // 2. Check for unknown (potentially misspelled) keys
+    for (const key in config) {
+      if (!knownKeys.has(key)) {
+        console.warn(`[Fingerprint] Warning: Unknown key '${key}' found in securityConfig. This might be a typo.`);
+      }
+    }
   }
 
   _log(message, data = {}) {
@@ -2181,6 +2278,15 @@ export class FingerprintEngine {
             }
         } else {
             this._log('Challenge context not found or expired', { pow_nonce });
+            // --- NOUVELLE MESURE DE SÉCURITÉ ---
+            // Si un client soumet un nonce invalide ou expiré, c'est une tentative de probing.
+            // On applique une pénalité maximale pour bloquer ou re-challenger lourdement.
+            suspicionVector.honeypotScore = 100;
+            finalScore = this.calculateFinalScore(suspicionVector);
+            this._log('Invalid nonce submitted (probing attempt) - applying max penalty', { newFinalScore: finalScore });
+            // La logique continue vers la section `if (isValid)` qui échouera,
+            // puis le score élevé sera utilisé pour bloquer ou re-challenger.
+            isValid = false; // On s'assure que la validation échoue.
         }
         if (isValid) {
             // La solution est valide. On supprime le secret et on redirige.
@@ -2278,7 +2384,7 @@ export class FingerprintEngine {
         if (challengeContext) {
             try {
                 const workResult = JSON.parse(pow_solution_work_result);
-                problemManager.integrateSolution(pow_problem_id, workResult);
+                getProblemManager(this.securityConfig.usefulWorkConfigPath).integrateSolution(pow_problem_id, workResult);
 
                 await store.delete(`secret:${pow_nonce}`);
                 // Accorder un ticket de passage comme pour un PoW normal
@@ -2358,10 +2464,13 @@ export class FingerprintEngine {
 
         // Pour les scores élevés, on choisit aléatoirement entre un challenge de travail utile et un PoW classique.
         // Cela rend l'automatisation plus difficile pour un attaquant.
-        if (isSuspicious && this.securityConfig.enableUsefulWork && Math.random() > 0.5) {
+        // Utilisation de crypto pour un choix plus sécurisé.
+        const shouldUseUsefulWork = this.securityConfig.enableUsefulWork && crypto.randomBytes(1).readUInt8(0) / 255 > 0.5;
+
+        if (isSuspicious && shouldUseUsefulWork) {
             this._log('Issuing a useful work challenge', { finalScore });
 
-            const { problemId, task } = problemManager.dispatchWork(suspicionFactor);
+            const { problemId, task } = getProblemManager(this.securityConfig.usefulWorkConfigPath).dispatchWork(suspicionFactor);
 
             await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
 
@@ -2664,6 +2773,7 @@ export const xss_analyzer = async (data) => {
  */
 export const modsecurity_analyzer = (rulesPath) => {
     let wafInstance = null; // Singleton instance for the WAF
+    let isModSecurityAvailable = true; // Flag specific to this analyzer instance
 
     return async (data) => {
         if (!rulesPath) {
@@ -2671,8 +2781,12 @@ export const modsecurity_analyzer = (rulesPath) => {
             return false;
         }
 
+        if (!isModSecurityAvailable) {
+            return false; // Skip if the module is known to be unavailable
+        }
+
         try {
-            if (!wafInstance) {
+            if (!wafInstance && isModSecurityAvailable) {
                 // Dynamically import the library only when needed.
                 const { ModSecurity } = await import('modsecurity-nodejs');
                 wafInstance = new ModSecurity();
@@ -2687,7 +2801,8 @@ export const modsecurity_analyzer = (rulesPath) => {
             return result !== null; // A non-null result means a threat was detected.
         } catch (error) {
             if (error.code === 'ERR_MODULE_NOT_FOUND') {
-                console.warn('[Fingerprint] Warning: "modsecurity-nodejs" is not installed. The WAF analyzer is disabled. Run "npm install modsecurity-nodejs" to enable it.');
+                console.warn('[Fingerprint] Warning: "modsecurity-nodejs" is not installed. The WAF analyzer is now disabled. Run "npm install modsecurity-nodejs" to enable it.');
+                isModSecurityAvailable = false; // Disable for future calls
             }
             return false; // Assume data is safe if any error occurs.
         }
@@ -2802,6 +2917,11 @@ export const default_whitelist = () => [
 export const powMiddleware = (securityConfig) => {
   const engine = new FingerprintEngine(securityConfig);
 
+  // Initialize the problem manager with the configured path, if provided.
+  if (securityConfig.enableUsefulWork && securityConfig.usefulWorkConfigPath) {
+    getProblemManager(securityConfig.usefulWorkConfigPath, store); // This correctly initializes the singleton
+  }
+
   if (securityConfig.autotuning) {
     startThresholdAutoTuning({
       securityConfig: securityConfig,
@@ -2894,6 +3014,7 @@ export const __internal = {
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
     generateCombinedPoWChallengePage,
+    problemManager, // Re-export the problemManager promise
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
@@ -2909,8 +3030,16 @@ let autoTuningJobId = null;
  * @param {number} maxDataPoints - The maximum number of data points to keep after an optimization cycle.
  */
 function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints) {
-  if (trafficData.length < minDataPoints) {
+  const highConfidenceLogs = trafficData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
+  const highConfidenceRatio = trafficData.length > 0 ? highConfidenceLogs / trafficData.length : 0;
+  const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
+
+  if (trafficData.length < minDataPoints || highConfidenceRatio < MIN_CONFIDENCE_RATIO) {
+    if (trafficData.length < minDataPoints) {
     console.log(`[AutoTuning] Reporté : ${trafficData.length}/${minDataPoints} points de données.`);
+    } else {
+      console.log(`[AutoTuning] Reporté : Ratio de confiance insuffisant (${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}%).`);
+    }
     return;
   }
 
@@ -2941,23 +3070,43 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     }
   }
 
-  // Appliquer la nouvelle configuration optimisée
+  // --- NOUVEAU : Logique d'inertie pour l'application de la configuration ---
+  // Au lieu d'appliquer directement la nouvelle configuration, on fait "glisser"
+  // l'ancienne vers la nouvelle, avec une vélocité de changement maximale.
   const newConfig = bestSolution.solution;
+  const MAX_CHANGE_VELOCITY = 0.15; // 15% de changement maximum par cycle
 
-  // S'assurer que les objets de configuration existent avant d'utiliser Object.assign
-  if (!securityConfig.thresholds) securityConfig.thresholds = {};
-  if (!securityConfig.weights) securityConfig.weights = {};
-  if (!securityConfig.patterns) securityConfig.patterns = {};
+  /**
+   * Met à jour un objet de configuration (ex: thresholds, weights) en douceur.
+   * @param {object} currentConfig - La configuration actuelle à modifier.
+   * @param {object} targetConfig - La configuration cible proposée par l'optimiseur.
+   */
+  const applyInertialUpdate = (currentConfig, targetConfig) => {
+      if (!currentConfig || !targetConfig) return; // Vérifier aussi currentConfig
+      for (const key in targetConfig) {
+          if (Object.hasOwnProperty.call(currentConfig, key)) {
+              const currentValue = currentConfig[key];
+              const targetValue = targetConfig[key];
+              const delta = targetValue - currentValue;
+              const maxChange = Math.abs(currentValue * MAX_CHANGE_VELOCITY);
 
-  Object.assign(securityConfig.thresholds, newConfig.thresholds || {});
-  Object.assign(securityConfig.weights, newConfig.weights || {});
-  Object.assign(securityConfig.patterns, newConfig.patterns || {});
+              // Limite le changement à la vélocité maximale
+              const change = Math.max(-maxChange, Math.min(maxChange, delta));
+              
+              currentConfig[key] += change;
+          }
+      }
+  };
+
+  applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds);
+  applyInertialUpdate(securityConfig.weights, newConfig.weights);
+  applyInertialUpdate(securityConfig.patterns, newConfig.patterns);
 
   console.log("[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.");
   console.log("[AutoTuning] Objectifs atteints :", { falsePositiveRate: bestSolution.objectives[0].toFixed(4), falseNegativeRate: bestSolution.objectives[1].toFixed(4) });
-  console.log("[AutoTuning] Seuils :", securityConfig.thresholds);
-  console.log("[AutoTuning] Poids :", securityConfig.weights);
-  console.log("[AutoTuning] Patterns :", securityConfig.patterns);
+  console.log("[AutoTuning] Nouveaux seuils :", securityConfig.thresholds);
+  console.log("[AutoTuning] Nouveaux poids :", securityConfig.weights);
+  console.log("[AutoTuning] Nouveaux patterns :", securityConfig.patterns);
 }
 
 /**

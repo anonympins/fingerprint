@@ -1,4 +1,28 @@
-## Version 0.2.3 (September 03, 2026)
+## Version 0.3.0 
+
+This is a major release focused on security hardening, distributed system capabilities, and overall robustness. It introduces advanced TLS spoofing detection, protection against various resource exhaustion and data poisoning attacks, and makes the "Useful Proof-of-Work" system truly scalable.
+
+### 🔒 Security Enhancements
+
+*   **Advanced TLS Spoofing Detection**: The engine now performs a much deeper analysis to detect when a client is faking its identity. It cross-references the TLS JA3 fingerprint against an internal database of known browser and library signatures. A request with a `User-Agent` for Chrome but a JA3 fingerprint for a Python `requests` library will now be heavily penalized.
+*   **uPoW Resource Drain Protection**: Implemented a hard cap on the difficulty of "Useful Proof-of-Work" (uPoW) tasks. This prevents a malicious client from being assigned a computationally impossible task that could drain server resources during verification.
+*   **Memory PoW DoS Protection**: A hard cap has been added to the memory allocation size for the memory-based PoW challenge, preventing a malicious client from forcing the server to allocate excessive amounts of memory.
+*   **Auto-Tuner Data Poisoning Protection**: The auto-tuner is now more robust against data poisoning attacks. It better distinguishes between legitimate traffic patterns and malicious attempts to skew its learning process, ensuring the optimized parameters remain effective.
+*   **Invalid Nonce Protection**: The challenge-response mechanism is now hardened. Any attempt to submit a solution for an invalid or expired nonce is immediately flagged as a high-risk honeypot interaction, resulting in a block or a maximum-difficulty challenge.
+*   **Cryptographically Secure Randomness**: The internal library now uses `crypto.randomBytes` instead of `Math.random` for all security-sensitive operations, ensuring higher quality randomness for tasks like genetic algorithm mutations and selection.
+
+### ✨ New Features
+
+*   **Distributed uPoW State**: The state of "Useful Proof-of-Work" problems (e.g., the best solution found for a TSP problem) is now persisted through the configured datastore (e.g., Redis, MongoDB). This allows a cluster of server instances to collaborate on solving the same complex problems, making the system truly distributed and more powerful.
+
+### 🚀 Improvements
+
+*   **Smarter Fingerprint Comparison**: The `FingerprintBuilder.compare()` method is now more precise. It applies a penalty for unknown or missing keys in a fingerprint, making it better at detecting subtle differences between a legitimate user and an attacker attempting to mimic a fingerprint.
+*   **Configuration Validation**: The engine now checks for unknown keys in the `securityConfig` object upon initialization and will log a warning. This helps developers quickly identify typos or misconfigurations.
+*   **Asynchronous Problem Loading**: The `problems.config.json` file is now read asynchronously and debounced at startup, improving application start time and preventing race conditions.
+*   **Optional Peer Dependencies**: The `package.json` has been updated to mark datastore drivers (`ioredis`, `mongodb`, `knex`, `sqlite3`) as optional `peerDependencies`. This provides a cleaner installation for users who do not need a specific external store.
+
+## Version 0.2.3
 
 This release introduces major improvements in ease of use and flexibility. It adds pre-configured security profiles for rapid setup, more granular whitelisting controls, and expands the "Useful Proof-of-Work" system with a new range of complex optimization problems.
 
@@ -26,7 +50,7 @@ This release introduces major improvements in ease of use and flexibility. It ad
 *   **Documentation**: The `README.md` has been updated to reflect the new security profiles and whitelisting options, with clear examples for each.
 
 
-## Version 0.2.2 (August 27, 2026)
+## Version 0.2.2 
 
 This version marks a significant evolution from simple Proof-of-Work (PoW) to "Useful Proof-of-Work" (uPoW). Instead of solving arbitrary computational puzzles, clients now contribute to solving complex optimization problems, making the work done to verify a client's legitimacy valuable.
 

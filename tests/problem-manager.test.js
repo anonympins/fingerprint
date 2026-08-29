@@ -1,45 +1,49 @@
 import { it, describe, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { ProblemManager } from '../problem-manager.js';
+import { promises as fs } from 'node:fs';
+import { getProblemManager, problemManager as problemManagerPromise, __internal as problemManagerInternal } from '../problem-manager.js';
 import { Optimization } from '../library.js';
+
+// Mock the in-memory store for testing
+const inMemoryStore = {
+    _map: new Map(),
+    async get(key) { return this._map.get(key); },
+    async set(key, value, ttl) { this._map.set(key, value); },
+    async has(key) { return this._map.has(key); },
+    async delete(key) { this._map.delete(key); },
+    clear() { this._map.clear(); }
+};
 
 // Mock the 'fs' module
 vi.mock('node:fs', async () => {
-    const originalFs = await vi.importActual('node:fs');
+    const actualFs = await vi.importActual('node:fs');
     return {
-        ...originalFs,
-        readFileSync: vi.fn(),
-        writeFileSync: vi.fn(),
+        ...actualFs, // Import all actual functions first
+        promises: {
+            ...actualFs.promises, // Spread the actual promises implementation
+            readFile: vi.fn()
+        },
     };
 });
 
-// Mock the Optimization library to have predictable results for energy calculation
-vi.mock('../library.js', () => ({
-    Optimization: {
-        tsp: {
-            // This mock was incorrect for the function it's mocking.
-            // The real function is in `Utils`. Let's keep the mock simple.
-            calculateEnergy: vi.fn(),
-        },
-        Utils: {
-            // This is the function causing the error.
-            evaluatePathDistance: vi.fn(solution => solution.reduce((sum, val) => sum + val.id, 0)),
-        },
-        Operators: { // Add the Operators object to the mock
-            solveTSP: vi.fn(), // Mock solveTSP
-            solvePortfolio: vi.fn(), // Mock solvePortfolio
-            // This function is also used by problem-manager.js
-            createPortfolioAllocator: vi.fn(() => vi.fn()),
-        }
-    }
-}));
+// Mock the specific utility function used for energy calculation
+vi.spyOn(Optimization.Utils, 'evaluatePathDistance').mockImplementation(path => {
+    // For tests, the energy is the sum of the IDs in the solution path.
+    return path.reduce((sum, val) => sum + (val.id || 0), 0);
+});
 
 describe('ProblemManager', () => {
+    let manager;
     let mockConfig;
+    const configPath = 'fake/path.json';
+    const store = inMemoryStore;
 
-    beforeEach(() => {
+    beforeEach(async () => {
         // Reset mocks before each test
+        // This also resets the singleton instance of the problem manager.
+        problemManagerInternal.resetManager();
+
         vi.clearAllMocks();
+        store.clear();
 
         // Default mock config for most tests
         mockConfig = [
@@ -81,54 +85,51 @@ describe('ProblemManager', () => {
             }
         ];
 
-        // Mock readFileSync to return our config
-        readFileSync.mockReturnValue(JSON.stringify(mockConfig));
+        // Mock readFile to return our config. This needs to be in the top-level
+        // beforeEach to apply to all test suites within this describe block.
+        fs.readFile.mockResolvedValue(JSON.stringify(mockConfig));
+        manager = await getProblemManager(configPath, store);
     });
 
     describe('Initialization and Loading', () => {
-        it('should load and parse problems from the config file', () => {
-            const manager = new ProblemManager('fake/path.json');
-            expect(readFileSync).toHaveBeenCalledWith('fake/path.json', 'utf-8');
-            expect(manager.problems.length).toBe(2);
+        it('should load and parse problems from the config file', async () => {
+            expect(fs.readFile).toHaveBeenCalledWith(configPath, 'utf-8');
+            expect(manager.problems.length).toBe(mockConfig.length);
             expect(manager.problems[0].id).toBe('tsp_10_cities');
+            // Check if initial state was saved to the store
+            const storedState = await store.get('problem-state:tsp_10_cities');
+            expect(storedState).toEqual(mockConfig[0].state);
         });
 
-        it('should dynamically generate cities and assets', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should dynamically generate cities and assets', async () => {
             const tspProblem = manager.problems.find(p => p.id === 'tsp_10_cities');
             const portfolioProblem = manager.problems.find(p => p.id === 'portfolio_5_assets');
 
-            // Check if 'points' was generated correctly
-            expect(Array.isArray(tspProblem.payload.points)).toBe(true);
             expect(tspProblem.payload.points.length).toBe(10);
             expect(tspProblem.payload.points[0]).toHaveProperty('x');
             expect(tspProblem.payload.points[0]).toHaveProperty('y');
 
-            // Check if 'assets' was generated correctly
             expect(Array.isArray(portfolioProblem.payload.assets)).toBe(true);
             expect(portfolioProblem.payload.assets.length).toBe(5);
             expect(portfolioProblem.payload.assets[0]).toHaveProperty('expectedReturn');
             expect(portfolioProblem.payload.assets[0]).toHaveProperty('volatility');
         });
 
-        it('should handle file read errors gracefully', () => {
-            readFileSync.mockImplementation(() => {
-                throw new Error('File not found');
-            });
-            const manager = new ProblemManager('nonexistent.json');
+        it('should handle file read errors gracefully', async () => {
+            fs.readFile.mockRejectedValue(new Error('File not found'));
+            const manager = await getProblemManager('nonexistent.json', store);
             expect(manager.problems).toEqual([]);
         });
     });
 
     describe('dispatchWork', () => {
-        it('should return null if no problems are loaded', () => {
-            readFileSync.mockImplementation(() => { throw new Error('err'); });
-            const manager = new ProblemManager('bad.json');
+        it('should return null if no problems are loaded', async () => {
+            fs.readFile.mockRejectedValue(new Error('err'));
+            const manager = await getProblemManager('bad.json', store);
             expect(manager.dispatchWork(0.5)).toBeNull();
         });
 
-        it('should cycle through problems in a round-robin fashion', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should cycle through problems in a round-robin fashion', async () => {
             const work1 = manager.dispatchWork(0.1);
             const work2 = manager.dispatchWork(0.1);
             const work3 = manager.dispatchWork(0.1);
@@ -138,8 +139,7 @@ describe('ProblemManager', () => {
             expect(work3.problemId).toBe('tsp_10_cities'); // Cycled back
         });
 
-        it('should calculate exponential difficulty based on suspicionFactor', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should calculate exponential difficulty based on suspicionFactor', async () => {
             const suspicionFactor = 0.5;
 
             // Test for TSP problem
@@ -159,46 +159,79 @@ describe('ProblemManager', () => {
     });
 
     describe('integrateSolution', () => {
-        it('should update the best solution if a better one is provided', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should update the best solution if a better one is provided', async () => {
             const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
             problem.state.bestEnergy = 1000; // Set a high initial energy
 
             const newBetterSolution = { solution: [{ id: 1 }], energy: 500 };
-            manager.integrateSolution('tsp_10_cities', newBetterSolution);
+            // Le mock de `evaluatePathDistance` va retourner 1 (la somme des IDs).
+            // C'est cette valeur qui doit être stockée, pas 500.
+            const expectedRecalculatedEnergy = 1;
+
+            await manager.integrateSolution('tsp_10_cities', newBetterSolution);
 
             expect(problem.state.bestSolution).toEqual(newBetterSolution.solution);
-            expect(problem.state.bestEnergy).toBe(newBetterSolution.energy);
-            expect(writeFileSync).toHaveBeenCalled();
+            expect(problem.state.bestEnergy).toBe(expectedRecalculatedEnergy); // Vérifier le score recalculé
+            const storedState = await store.get('problem-state:tsp_10_cities');
+            expect(storedState.bestEnergy).toBe(expectedRecalculatedEnergy);
         });
 
-        it('should not update the best solution if a worse one is provided', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should not update the best solution if a worse one is provided', async () => {
             const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
             const initialSolution = [{ id: 10 }];
             problem.state.bestSolution = initialSolution;
-            problem.state.bestEnergy = 100;
+            problem.state.bestEnergy = 10; // Le score initial est 10 (calculé à partir de l'ID)
 
             const newWorseSolution = { solution: [{ id: 20 }], energy: 200 };
-            manager.integrateSolution('tsp_10_cities', newWorseSolution);
+            // Le mock de `evaluatePathDistance` va retourner 20.
+            // Comme 20 n'est pas meilleur que 10, la solution ne doit pas changer.
+
+            await manager.integrateSolution('tsp_10_cities', newWorseSolution);
 
             expect(problem.state.bestSolution).toEqual(initialSolution);
-            expect(problem.state.bestEnergy).toBe(100);
-            // saveProblems is still called, so we check writeFileSync was called
-            expect(writeFileSync).toHaveBeenCalled();
+            expect(problem.state.bestEnergy).toBe(10);
+            const storedState = await store.get('problem-state:tsp_10_cities');
+            expect(storedState.bestEnergy).toBe(10);
         });
 
-        it('should handle solutions for non-existent problems gracefully', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should handle solutions for non-existent problems gracefully', async () => {
             // This should not throw an error
-            expect(() => manager.integrateSolution('non_existent_problem', { energy: 1 })).not.toThrow();
-            // And it should not attempt to save
-            expect(writeFileSync).not.toHaveBeenCalled();
+            await manager.integrateSolution('non_existent_problem', { energy: 1 });
+            expect(await store.has('problem-state:non_existent_problem')).toBe(false);
+        });
+
+        it('should integrate a new Pareto front for multi-objective problems', async () => {
+            // **LA CORRECTION** : Réinitialiser le singleton avant de modifier la configuration.
+            problemManagerInternal.resetManager();
+
+            // Add a multi-objective problem to the config for this test
+            mockConfig.push({
+                "id": "multi_obj_test",
+                "workUnit": { "type": "multi_objective_genetic_algorithm" },
+                "state": { "paretoFront": [{ solution: 'A', objectives: [10, 20] }] }
+            });
+            fs.readFile.mockResolvedValue(JSON.stringify(mockConfig));
+            manager = await getProblemManager(configPath, store);
+
+            const problem = manager.problems.find(p => p.id === 'multi_obj_test');
+
+            // The new front contains a solution that dominates the old one.
+            const newFrontFromClient = [{ solution: 'B', objectives: [5, 15] }];
+
+            await manager.integrateSolution('multi_obj_test', { paretoFront: newFrontFromClient });
+
+            // The new front should contain only the new, dominant solution.
+            // We check the content instead of object equality for robustness.
+            expect(problem.state.paretoFront).toHaveLength(1);
+            expect(problem.state.paretoFront[0]).toEqual({ solution: 'B', objectives: [5, 15] });
+            expect(problem.state.lastUpdate).toBeDefined();
+            const storedState = await store.get('problem-state:multi_obj_test');
+            expect(storedState.paretoFront[0].solution).toBe('B');
         });
     });
 
     describe('getBestSolutions', () => {
-        beforeEach(() => {
+        beforeEach(async () => {
             // Mock the initial solution generation to be predictable
             mockConfig[0].payload.points = [
                 { id: 1, x: 10, y: 10 },
@@ -210,34 +243,28 @@ describe('ProblemManager', () => {
             // We need to mock its return value to be predictable for the test.
             // The mock implementation `solution.reduce(...)` will sum the `id` properties.
             // For the points above, the sum is 1 + 2 + 3 = 6.
-            Optimization.Utils.evaluatePathDistance.mockReturnValue(6);
-
-            // The `tsp.calculateEnergy` mock is not strictly needed for this test to pass,
-            // but it's good practice to keep mocks aligned with expected behavior.
-            Optimization.tsp.calculateEnergy.mockReturnValue(6); // This is now consistent.
-            readFileSync.mockReturnValue(JSON.stringify(mockConfig));
+            vi.spyOn(Optimization.Utils, 'evaluatePathDistance').mockReturnValue(6);
         });
 
-        it('should generate an initial solution if none exists', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should generate an initial solution if none exists', async () => {
             const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
             problem.state.bestSolution = null; // Ensure no solution exists
 
-            manager.getBestSolutions('tsp_10_cities');
+            await manager.getBestSolutions('tsp_10_cities');
 
             expect(problem.state.bestSolution).not.toBeNull();
             expect(problem.state.bestEnergy).toBe(6); // Mocked energy value
-            expect(writeFileSync).toHaveBeenCalled(); // Should save the newly generated solution
+            const storedState = await store.get('problem-state:tsp_10_cities');
+            expect(storedState.bestEnergy).toBe(6);
         });
 
-        it('should return the best solution for a specific problem ID', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should return the best solution for a specific problem ID', async () => {
             const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
             problem.state.bestSolution = [{ id: 'A' }];
             problem.state.bestEnergy = 123;
             problem.state.lastUpdate = '2023-01-01T00:00:00.000Z';
 
-            const result = manager.getBestSolutions('tsp_10_cities');
+            const result = await manager.getBestSolutions('tsp_10_cities');
 
             expect(result).toEqual({
                 id: 'tsp_10_cities',
@@ -247,14 +274,13 @@ describe('ProblemManager', () => {
             });
         });
 
-        it('should return an array of all best solutions if no ID is provided', () => {
-            const manager = new ProblemManager('fake/path.json');
+        it('should return an array of all best solutions if no ID is provided', async () => {
             const problem1 = manager.problems.find(p => p.id === 'tsp_10_cities');
             problem1.state.bestSolution = [{ id: 'A' }];
             problem1.state.bestEnergy = 123;
 
             // The portfolio problem has no solution, so it should be filtered out
-            const results = manager.getBestSolutions();
+            const results = await manager.getBestSolutions();
 
             expect(Array.isArray(results)).toBe(true);
             expect(results.length).toBe(1);
@@ -262,10 +288,36 @@ describe('ProblemManager', () => {
             expect(results[0].score).toBe(123);
         });
 
-        it('should return null if a non-existent problem ID is requested', () => {
-            const manager = new ProblemManager('fake/path.json');
-            const result = manager.getBestSolutions('non_existent_problem');
+        it('should return null if a non-existent problem ID is requested', async () => {
+            const result = await manager.getBestSolutions('non_existent_problem');
             expect(result).toBeNull();
+        });
+    });
+
+    describe('updateProblemPayload', () => {
+        it('should update the payload of a specific problem', async () => {
+            const newPayload = {
+                "points": [{ "x": 0, "y": 0 }],
+                "options": { "initialTemperature": 500 }
+            };
+
+            const success = await manager.updateProblemPayload('tsp_10_cities', newPayload);
+            expect(success).toBe(true);
+
+            const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
+            expect(problem.payload).toEqual(newPayload);
+        });
+
+        it('should reset the state of the updated problem', async () => {
+            const problem = manager.problems.find(p => p.id === 'tsp_10_cities');
+            problem.state.bestSolution = [{ id: 1 }];
+            problem.state.bestEnergy = 10;
+
+            await manager.updateProblemPayload('tsp_10_cities', { new: 'payload' });
+            expect(problem.state.bestSolution).toBeNull();
+            expect(problem.state.bestEnergy).toBe("Infinity");
+            const storedState = await store.get('problem-state:tsp_10_cities');
+            expect(storedState.bestEnergy).toBe("Infinity");
         });
     });
 });

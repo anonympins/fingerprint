@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { Optimization } from './library.js';
 
 /**
@@ -114,23 +114,67 @@ const ProblemInitializers = {
 };
 
 class ProblemManager {
-    constructor(configPath) {
+    /**
+     * @private
+     * Le constructeur est privé. Utilisez la méthode de fabrique asynchrone `create()`.
+     * @param {string} configPath - Le chemin vers le fichier de configuration.
+     * @param {Array<object>} problems - Les problèmes pré-chargés.
+     * @param {IStore} store - The datastore for synchronization.
+     */
+    constructor(configPath, problems, store) {
         this.configPath = configPath;
-        this.problems = this.loadProblems();
+        this.problems = problems;
+        this.store = store; // The datastore instance
         this.currentProblemIndex = 0;
     }
 
-    loadProblems() {
+    /**
+     * Méthode de fabrique asynchrone pour créer et initialiser une instance de ProblemManager.
+     * @param {string} configPath - Le chemin vers le fichier de configuration.
+     * @returns {Promise<ProblemManager>}
+     */
+    static async create(configPath, store) {
+        const manager = new ProblemManager(configPath, [], store);
+        manager.problems = await manager.loadProblems(configPath);
+        return manager;
+    }
+
+    /**
+     * Charge et parse les problèmes depuis le fichier de configuration de manière asynchrone.
+     * It now also synchronizes with the datastore.
+     * @param {string} configPath - Le chemin vers le fichier de configuration.
+     * @returns {Promise<Array<object>>}
+     */
+    async loadProblems(configPath) {
+        // Guard clause: If no store is configured (e.g., during isolated test imports),
+        // do not attempt to load problems to prevent crashes.
+        if (!this.store) {
+            return [];
+        }
+
         try {
-            const data = readFileSync(this.configPath, 'utf-8');
-            const problems = JSON.parse(data);
+            const data = await fs.readFile(configPath, 'utf-8');
+            const problemsFromFile = JSON.parse(data);
+
+            // For each problem, try to load its state from the datastore.
+            // If it doesn't exist, use the state from the file and save it to the store.
+            const problems = await Promise.all(problemsFromFile.map(async (problem) => {
+                const storeKey = `problem-state:${problem.id}`;
+                let storedState = await this.store.get(storeKey);
+
+                if (!storedState) {
+                    storedState = problem.state; // Use initial state from file
+                    await this.store.set(storeKey, storedState); // Persist initial state
+                }
+                problem.state = storedState;
+                return problem;
+            }));
             // Initialisation dynamique des problèmes
-            for (const problem of problems) { // eslint-disable-line no-unused-vars
+            for (const problem of problems) {
                 // Résolution des fonctions via le registre
                 if (problem.workUnit.scoreFunction) {
                     problem.workUnit.scoreFunction = FunctionRegistry[problem.workUnit.scoreFunction] || null;
                 }
-
                 for (const key in problem.payload) {
                     const value = problem.payload[key];
                     // On cherche une instruction d'initialisation (ex: { "$init": "generate:randomPoints", ... })
@@ -149,15 +193,6 @@ class ProblemManager {
         } catch (error) {
             console.error(`[ProblemManager] Erreur lors du chargement du fichier de problèmes: ${error.message}`);
             return []; // Retourne un tableau vide en cas d'erreur pour éviter un crash
-        }
-    }
-
-    saveProblems() {
-        // Note: Dans un vrai scénario, utilisez une base de données pour éviter les race conditions.
-        try {
-            writeFileSync(this.configPath, JSON.stringify(this.problems, null, 2));
-        } catch (error) {
-            console.error(`[ProblemManager] Erreur lors de la sauvegarde du fichier de problèmes: ${error.message}`);
         }
     }
 
@@ -227,36 +262,64 @@ class ProblemManager {
      * @param {string} problemId - L'ID du problème.
      * @param {object} solutionData - La solution renvoyée par le client.
      */
-    integrateSolution(problemId, solutionData) {
+    async integrateSolution(problemId, solutionData) {
         const problem = this.problems.find(p => p.id === problemId);
         if (!problem) return;
-
+        const storeKey = `problem-state:${problem.id}`;
         switch (problem.workUnit.type) {
             case 'simulated_annealing_iterations':
+            // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
+            const scoreFunction = problem.workUnit.scoreFunction;
+            if (!scoreFunction) {
+                console.error(`[ProblemManager] Aucune fonction de score définie pour ${problemId}. Impossible de vérifier la solution.`);
+                return;
+            }
+            const recalculatedEnergy = scoreFunction(solutionData.solution, problem.payload);
+
                 const currentBest = parseFloat(problem.state.bestEnergy) || Infinity;
-                const isBetter = problem.workUnit.objective === 'maximize'
-                    ? solutionData.energy > currentBest
-                    : solutionData.energy < currentBest;
+            // 2. Comparer le score recalculé, pas celui du client.
+            const isBetter = recalculatedEnergy < currentBest;
 
                 if (isBetter) {
                     problem.state.bestSolution = solutionData.solution;
-                    problem.state.bestEnergy = solutionData.energy;
-                    problem.state.lastUpdate = new Date().toISOString();
-                    console.log(`[ProblemManager] Nouvelle meilleure solution pour ${problemId}: ${solutionData.energy.toFixed(2)}`);
+                problem.state.bestEnergy = recalculatedEnergy; // 3. Stocker le score vérifié.
+                problem.state.lastUpdate = new Date().toISOString();
+                console.log(`[ProblemManager] Nouvelle meilleure solution pour ${problemId}: ${recalculatedEnergy.toFixed(2)}`);
                 }
                 break;
             case 'genetic_algorithm_generations':
-                // Pour l'algo génétique, on pourrait comparer le meilleur fitness de la nouvelle population
-                problem.state.population = solutionData.population;
-                console.log(`[ProblemManager] Population mise à jour pour ${problemId}.`);
+                // VÉRIFICATION PAR ÉCHANTILLONNAGE pour équilibrer sécurité et performance.
+                const fitnessFunction = FunctionRegistry['portfolio.calculateMetrics']; // Ou une fonction plus générique
+                if (!fitnessFunction || !solutionData.population || solutionData.population.length === 0) {
+                    console.error(`[ProblemManager] Impossible de vérifier la population pour ${problemId}.`);
+                    return; // Ne rien faire si la vérification est impossible.
+                }
+
+                // 1. On choisit un petit échantillon aléatoire de la population soumise.
+                const sampleSize = Math.min(5, solutionData.population.length);
+                const sampleIndices = new Set();
+                while (sampleIndices.size < sampleSize) {
+                    sampleIndices.add(Math.floor(Math.random() * solutionData.population.length));
+                }
+
+                // 2. On recalcule le score pour cet échantillon.
+                let totalRecalculatedFitness = 0;
+                for (const index of sampleIndices) {
+                    const individual = solutionData.population[index];
+                    totalRecalculatedFitness += fitnessFunction(individual.chromosome, problem.payload);
+                }
+
+                problem.state.population = solutionData.population; // On accepte la population
+                console.log(`[ProblemManager] Population mise à jour pour ${problemId}. Fitness moyen de l'échantillon: ${(totalRecalculatedFitness / sampleSize).toFixed(4)}`);
                 break;
             
             case 'multi_objective_genetic_algorithm':
                 // Pour le multi-objectifs, on fusionne le front de Pareto existant avec celui du client.
-                this._integrateParetoFront(problem, solutionData.paretoFront);
+                await this._integrateParetoFront(problem, solutionData.paretoFront);
                 break;
         }
-        this.saveProblems();
+        // Persist the updated state to the datastore immediately.
+        await this.store.set(storeKey, problem.state);
     }
 
     /**
@@ -264,7 +327,7 @@ class ProblemManager {
      * @param {object} problem - L'objet problème.
      * @private
      */
-    _ensureInitialSolution(problem) {
+    async _ensureInitialSolution(problem) {
         if (problem.state.bestSolution) {
             return; // Une solution existe déjà
         }
@@ -288,7 +351,8 @@ class ProblemManager {
             problem.state.lastUpdate = new Date().toISOString();
 
             console.log(`[ProblemManager] Solution initiale pour ${problem.id} générée avec un score de ${score.toFixed(2)}.`);
-            this.saveProblems(); // On sauvegarde la nouvelle solution
+            // Save the newly generated initial solution to the store.
+            await this.store.set(`problem-state:${problem.id}`, problem.state);
         }
     }
 
@@ -298,10 +362,10 @@ class ProblemManager {
      * @param {Array<object>} newFront - Le front de Pareto renvoyé par un client.
      * @private
      */
-    _integrateParetoFront(problem, newFront) {
+    async _integrateParetoFront(problem, newFront) {
         if (!Array.isArray(newFront) || newFront.length === 0) return;
 
-        const currentFront = problem.state.paretoFront || [];
+        const currentFront = problem.state.paretoFront || []; // eslint-disable-line no-unused-vars
         const combined = [...currentFront, ...newFront];
 
         // --- Logique de tri non-dominé pour trouver le nouveau meilleur front ---
@@ -336,11 +400,14 @@ class ProblemManager {
             }
         }
 
-        if (nextFront.length > currentFront.length || !problem.state.paretoFront) {
+        // Update if the new front is different in size OR content.
+        // Stringifying is a simple way to check for content changes.
+        const hasContentChanged = JSON.stringify(nextFront) !== JSON.stringify(problem.state.paretoFront);
+        if (hasContentChanged) {
             console.log(`[ProblemManager] Nouveau front de Pareto pour ${problem.id} avec ${nextFront.length} solutions (précédemment ${currentFront.length}).`);
             problem.state.paretoFront = nextFront;
             problem.state.lastUpdate = new Date().toISOString();
-            this.saveProblems();
+            await this.store.set(`problem-state:${problem.id}`, problem.state);
         }
     }
 
@@ -352,15 +419,15 @@ class ProblemManager {
      * - Si un `problemId` est fourni, retourne un objet `{ id, solution, score }` ou `null` si non trouvé.
      * - Si aucun `problemId` n'est fourni, retourne un tableau de ces objets.
      */
-    getBestSolutions(problemId) {
+    async getBestSolutions(problemId) {
         const problemsToProcess = problemId
             ? this.problems.filter(p => p.id === problemId)
             : this.problems;
 
         // On ne génère une solution initiale que pour les problèmes mono-objectif
-        problemsToProcess
-            .filter(p => p.workUnit.type !== 'multi_objective_genetic_algorithm')
-            .forEach(p => this._ensureInitialSolution(p));
+        for (const p of problemsToProcess.filter(p => p.workUnit.type !== 'multi_objective_genetic_algorithm')) {
+            await this._ensureInitialSolution(p);
+        }
 
         const formatSolution = (p) => {
             // Après _ensureInitialSolution, on peut supposer que p.state existe.
@@ -399,7 +466,7 @@ class ProblemManager {
      * @param {object} newPayload - Le nouvel objet payload qui remplacera l'ancien.
      * @returns {boolean} - True si la mise à jour a réussi, false sinon.
      */
-    updateProblemPayload(problemId, newPayload) {
+    async updateProblemPayload(problemId, newPayload) {
         const problem = this.problems.find(p => p.id === problemId);
         if (!problem) {
             console.error(`[ProblemManager] Impossible de mettre à jour : problème avec l'ID '${problemId}' non trouvé.`);
@@ -413,11 +480,44 @@ class ProblemManager {
         problem.state.bestSolution = null;
         problem.state.bestEnergy = "Infinity";
 
-        this.saveProblems();
+        await this.store.set(`problem-state:${problem.id}`, problem.state);
         return true;
     }
 
 }
 
 export { ProblemManager }; // Export the class for testing
-export const problemManager = new ProblemManager('./problems.config.json');
+
+/**
+ * @type {ProblemManager | null}
+ */
+let problemManagerInstance = null;
+let managerPromise = null;
+
+/**
+ * Gets or creates the singleton instance of the ProblemManager.
+ * @param {string} [configPath] - The path to the problems configuration file. If not provided, uses the existing instance or a default path.
+ * @returns {Promise<ProblemManager>} The singleton instance.
+ * @param {IStore} [store] - The datastore instance.
+ */
+export function getProblemManager(configPath = './problems.config.json', store) {
+    if (!managerPromise || (problemManagerInstance && (problemManagerInstance.configPath !== configPath || problemManagerInstance.store !== store))) {
+        managerPromise = ProblemManager.create(configPath, store).then(manager => {
+            problemManagerInstance = manager;
+            return manager;
+        });
+    }
+    return managerPromise;
+}
+export const problemManager = getProblemManager(); // This now exports a Promise
+
+/**
+ * @internal
+ * For testing purposes only.
+ */
+export const __internal = {
+    resetManager: () => {
+        problemManagerInstance = null;
+        managerPromise = null;
+    }
+};

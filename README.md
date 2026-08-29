@@ -27,10 +27,10 @@ The process unfolds in three steps:
     *   **Request Patterns**: Repetitive, rapid-fire, or sequential requests typical of scraping bots. The parameters for detecting these patterns (e.g., request velocity, burst detection) are dynamically adjusted by the auto-tuner for optimal performance.
     *   **Honeypot Trap**: Detection of bots that automatically fill hidden form fields or probe for common but unused URL parameters (e.g., `?debug=true`).
     *   **TLS Fingerprint Spoofing**: Detects inconsistencies between the TLS fingerprint (JA3/JA4) and other HTTP headers (e.g., User-Agent), indicating an attempt to disguise the client.
-3.  **Dynamic Challenge**: If the suspicion score exceeds a certain threshold, a challenge is presented to the user. The difficulty and type of challenge depend on the score:
+3.  **Dynamic Challenge**: If the suspicion score exceeds a certain threshold, a challenge is presented. The difficulty and type of challenge depend on the score:
     *   **Low to Medium Suspicion**: A combined **CPU and Memory Proof-of-Work (PoW)** challenge is issued. The difficulty of both the CPU (hash calculation) and Memory (allocation and computation) components scales progressively with the suspicion score. For low scores, the memory challenge is negligible, making it primarily a CPU task.
-    *   **High Suspicion**: For the most suspicious requests, the system issues a high-difficulty combined CPU/Memory challenge. The architecture allows for plugging in more complex challenges like CAPTCHAs if needed.
-    *   **New Devices**: To increase the cost for bots that simply clear their cookies, new (unseen) devices are systematically presented with a minimal, almost imperceptible challenge on their first visit, even if their suspicion score is low.
+    *   **High Suspicion**: For the most suspicious requests, the system issues a high-difficulty combined CPU/Memory challenge or a "Useful Proof-of-Work" task (see below). The architecture allows for plugging in more complex challenges like CAPTCHAs if needed.
+    *   **New Devices**: To increase the cost for bots that simply clear their cookies, new (unseen) devices are systematically presented with a minimal, almost imperceptible challenge on their first visit. This behavior is enabled by default in `strict` and `ecommerce` profiles and can be configured with the `challengeNewDevices` option.
 
 Once the challenge is solved, a clearance "ticket" is issued via a secure cookie, exempting the user from new challenges. The duration of this ticket is dynamic:
 - **Probationary Ticket**: If the request was moderately suspicious, a very short-lived "probationary" ticket (e.g., 30 seconds) is issued. This forces the client to be re-evaluated quickly, increasing security.
@@ -43,10 +43,11 @@ For API clients, the challenge is delivered as a `404` JSON response, and the cl
 -   **Multi-Factor Fingerprinting**: Combines client-side data (`hardwareConcurrency`, `deviceMemory`, `screen`, `canvas`, `webgl`) and server-side data (`User-Agent`, `Client-Hints`).
 -   **Secure Ticket System**: Uses HMAC-SHA256 signatures to validate clearances and prevent tampering.
 -   **Pluggable Datastore**: Supports external datastores like Redis for state persistence and scalability across multiple server instances.
--   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`. The datastore must support setting a Time-To-Live (TTL) for challenge secrets.
+-   **Express.js Middleware**: Easy integration into an Express application with `powMiddleware`.
 -   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure validation of tickets and other signatures.
 -   **Bot Whitelisting**: Includes a DNS-based verification mechanism to reliably identify and whitelist legitimate crawlers like Googlebot and Bingbot, preventing them from being challenged. The results are cached for optimal performance.
--   **Automatic Parameter Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust not only suspicion thresholds (`low`, `medium`, `high`) but also the parameters for behavioral pattern detection, improving accuracy and reducing false positives over time.
+-   **Automatic Parameter Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust suspicion thresholds, weights, and behavioral pattern detection parameters, improving accuracy and reducing false positives over time. The tuner is hardened against data poisoning attempts.
+-   **Hardened Security**: Protects against various attacks, including DoS via memory exhaustion, invalid nonce submission, and uses cryptographically secure randomness for all sensitive operations.
 
 ## Installation and Usage
 
@@ -135,7 +136,7 @@ app.listen(3000, () => console.log('Server started on port 3000'));
 
 ### Full Configuration Example
 
-If you prefer to define the entire configuration manually instead of using a profile, you can create a `securityConfig` object with all the parameters. All parameters are optional.
+If you prefer to define the entire configuration manually instead of using a profile, you can create a `securityConfig` object with all the parameters. All parameters are optional, but it is highly recommended to review and adjust them for your specific needs. The engine will warn you about any unknown keys in this configuration, helping you catch typos.
 
 ```javascript
 import { default_whitelist, default_analyzers } from './fingerprint.js';
@@ -270,7 +271,8 @@ const securityConfig = {
         maxDataPoints: 20000              // Minimum requests before starting an optimization cycle.
     },
     // Enables problem solving for suspicious activity (configurable in problems.config.json)
-    enableUsefulWork: true
+    enableUsefulWork: true,
+    usefulWorkConfigPath: './path/to/your/problems.config.json' // (Optional) Path to the useful work configuration.
 };
 ```
 
@@ -613,9 +615,9 @@ The engine is a named export from the main module.
 
 ### Useful Proof-of-Work (`ProblemManager`)
 
-Instead of issuing a generic Proof-of-Work, the system can dispatch a "useful" computational problem to a suspicious client. This allows harnessing the client's CPU cycles to solve complex problems (like optimization tasks) over time. This feature is managed by the `ProblemManager` class, which is enabled via the `enableUsefulWork: true` flag in the security configuration.
+Instead of issuing a generic Proof-of-Work, the system can dispatch a "useful" computational problem to a suspicious client. This allows harnessing the client's CPU cycles to solve complex problems (like optimization tasks) over time. This feature is managed by the `ProblemManager` class, which is enabled via the `enableUsefulWork: true` flag in the security configuration. The state of these problems is persisted via the configured datastore, allowing a cluster of servers to collaborate on solving them.
 
-The `ProblemManager` reads its configuration from `problems.config.json`, which defines the problems to be solved, the type of work units, and the current state of the solutions.
+The `ProblemManager` reads its configuration asynchronously from `problems.config.json`, which defines the problems to be solved, the type of work units, and the initial state of the solutions.
 
 While you typically won't interact with it directly, its methods are exported and can be used for monitoring or manual administration. The main instance is exported as `problemManager`.
 
