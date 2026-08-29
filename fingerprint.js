@@ -2941,23 +2941,43 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     }
   }
 
-  // Appliquer la nouvelle configuration optimisée
+  // --- NOUVEAU : Logique d'inertie pour l'application de la configuration ---
+  // Au lieu d'appliquer directement la nouvelle configuration, on fait "glisser"
+  // l'ancienne vers la nouvelle, avec une vélocité de changement maximale.
   const newConfig = bestSolution.solution;
+  const MAX_CHANGE_VELOCITY = 0.15; // 15% de changement maximum par cycle
 
-  // S'assurer que les objets de configuration existent avant d'utiliser Object.assign
-  if (!securityConfig.thresholds) securityConfig.thresholds = {};
-  if (!securityConfig.weights) securityConfig.weights = {};
-  if (!securityConfig.patterns) securityConfig.patterns = {};
+  /**
+   * Met à jour un objet de configuration (ex: thresholds, weights) en douceur.
+   * @param {object} currentConfig - La configuration actuelle à modifier.
+   * @param {object} targetConfig - La configuration cible proposée par l'optimiseur.
+   */
+  const applyInertialUpdate = (currentConfig, targetConfig) => {
+      if (!currentConfig || !targetConfig) return; // Vérifier aussi currentConfig
+      for (const key in targetConfig) {
+          if (Object.hasOwnProperty.call(currentConfig, key)) {
+              const currentValue = currentConfig[key];
+              const targetValue = targetConfig[key];
+              const delta = targetValue - currentValue;
+              const maxChange = Math.abs(currentValue * MAX_CHANGE_VELOCITY);
 
-  Object.assign(securityConfig.thresholds, newConfig.thresholds || {});
-  Object.assign(securityConfig.weights, newConfig.weights || {});
-  Object.assign(securityConfig.patterns, newConfig.patterns || {});
+              // Limite le changement à la vélocité maximale
+              const change = Math.max(-maxChange, Math.min(maxChange, delta));
+              
+              currentConfig[key] += change;
+          }
+      }
+  };
+
+  applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds);
+  applyInertialUpdate(securityConfig.weights, newConfig.weights);
+  applyInertialUpdate(securityConfig.patterns, newConfig.patterns);
 
   console.log("[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.");
   console.log("[AutoTuning] Objectifs atteints :", { falsePositiveRate: bestSolution.objectives[0].toFixed(4), falseNegativeRate: bestSolution.objectives[1].toFixed(4) });
-  console.log("[AutoTuning] Seuils :", securityConfig.thresholds);
-  console.log("[AutoTuning] Poids :", securityConfig.weights);
-  console.log("[AutoTuning] Patterns :", securityConfig.patterns);
+  console.log("[AutoTuning] Nouveaux seuils :", securityConfig.thresholds);
+  console.log("[AutoTuning] Nouveaux poids :", securityConfig.weights);
+  console.log("[AutoTuning] Nouveaux patterns :", securityConfig.patterns);
 }
 
 /**

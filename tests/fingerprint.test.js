@@ -1050,7 +1050,9 @@ describe('Fingerprint & PoW Security Suite', () => {
         test('should start, run an optimization cycle, and update thresholds', () => {
             const trafficData = [];
             const securityConfig = {
-                thresholds: { low: 50, medium: 70, high: 90 }, // Intentionally bad initial thresholds
+                thresholds: { low: 50, medium: 70, high: 90 }, // Mauvais seuils initiaux intentionnels
+                weights: { historyScore: 0.5, rotationScore: 0.5, requestPatternScore: 0.5 }, // Poids initiaux
+                patterns: { velocityThreshold: 1000, decayFactor: 0.9 }, // Patterns initiaux
                 logger: (log) => trafficData.push(log),
             };
 
@@ -1085,8 +1087,9 @@ describe('Fingerprint & PoW Security Suite', () => {
 
             // The genetic algorithm should find better thresholds.
             // We expect 'low' to decrease significantly from 50.
-            expect(securityConfig.thresholds.low).toBeLessThanOrEqual(40);
-            expect(securityConfig.thresholds.low).toBeGreaterThanOrEqual(10);
+            // With inertia, the change is gradual. We check that it has decreased but not jumped to the final value.
+            expect(securityConfig.thresholds.low).toBeLessThan(50); // It must have decreased.
+            expect(securityConfig.thresholds.low).toBeGreaterThan(30); // It shouldn't have jumped all the way down.
             expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.'));
             expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 

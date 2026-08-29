@@ -1546,7 +1546,18 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
       return score;
     };
 
+    // Pondération de la confiance : un challenge résolu est un signal humain plus fort.
+    const confidenceWeights = {
+        request_passed: 0.7,
+        challenge_issued: 1.0,
+        request_blocked: 1.0,
+        challenge_solved: 1.5, // Signal "humain" de très haute confiance
+        trap_triggered: 2.0,   // Signal "bot" de confiance absolue
+    };
+
     for (const log of trafficData) {
+      const confidence = confidenceWeights[log.type] || 1.0;
+
       // On se base sur le comportement observé pour déterminer la nature "réelle" de la requête
       const isLikelyBot = log.type === 'challenge_issued' || log.type === 'request_blocked';
       const isLikelyHuman = log.type === 'request_passed' || log.type === 'challenge_solved';
@@ -1556,14 +1567,14 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
         const score = calculateScore(log);
         // Faux négatif : un bot qui aurait dû être challengé mais ne l'a pas été
         if (score < config.thresholds.low) {
-          falseNegatives++;
+          falseNegatives += confidence;
         }
       } else if (isLikelyHuman) {
         totalHumans++;
         const score = calculateScore(log);
         // Faux positif : un humain qui a été challengé inutilement
         if (score >= config.thresholds.low) {
-          falsePositives++;
+          falsePositives += confidence;
         }
       }
     }
