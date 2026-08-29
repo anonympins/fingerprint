@@ -447,4 +447,21 @@ class ProblemManager {
 }
 
 export { ProblemManager }; // Export the class for testing
-export const problemManager = new ProblemManager('./problems.config.json');
+
+/**
+ * @type {ProblemManager | null}
+ */
+let problemManagerInstance = null;
+
+/**
+ * Gets or creates the singleton instance of the ProblemManager.
+ * @param {string} [configPath] - The path to the problems configuration file. If not provided, uses the existing instance or a default path.
+ * @returns {ProblemManager} The singleton instance.
+ */
+export function getProblemManager(configPath) {
+    if (!problemManagerInstance || (configPath && problemManagerInstance.configPath !== configPath)) {
+        problemManagerInstance = new ProblemManager(configPath || './problems.config.json');
+    }
+    return problemManagerInstance;
+}
+export const problemManager = getProblemManager();

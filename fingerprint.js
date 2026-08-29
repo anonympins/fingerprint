@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { BlockList } from "node:net";
 import dns from "node:dns/promises";
-import { problemManager } from "./problem-manager.js";
+import { getProblemManager } from "./problem-manager.js";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
 import { readFileSync } from "node:fs";
@@ -2278,7 +2278,7 @@ export class FingerprintEngine {
         if (challengeContext) {
             try {
                 const workResult = JSON.parse(pow_solution_work_result);
-                problemManager.integrateSolution(pow_problem_id, workResult);
+                getProblemManager(this.securityConfig.usefulWorkConfigPath).integrateSolution(pow_problem_id, workResult);
 
                 await store.delete(`secret:${pow_nonce}`);
                 // Accorder un ticket de passage comme pour un PoW normal
@@ -2361,7 +2361,7 @@ export class FingerprintEngine {
         if (isSuspicious && this.securityConfig.enableUsefulWork && Math.random() > 0.5) {
             this._log('Issuing a useful work challenge', { finalScore });
 
-            const { problemId, task } = problemManager.dispatchWork(suspicionFactor);
+            const { problemId, task } = getProblemManager(this.securityConfig.usefulWorkConfigPath).dispatchWork(suspicionFactor);
 
             await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
 
@@ -2801,6 +2801,11 @@ export const default_whitelist = () => [
 // --- Proof-of-Work Middleware (The Tollbooth) ---
 export const powMiddleware = (securityConfig) => {
   const engine = new FingerprintEngine(securityConfig);
+
+  // Initialize the problem manager with the configured path, if provided.
+  if (securityConfig.enableUsefulWork && securityConfig.usefulWorkConfigPath) {
+    getProblemManager(securityConfig.usefulWorkConfigPath);
+  }
 
   if (securityConfig.autotuning) {
     startThresholdAutoTuning({

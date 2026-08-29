@@ -270,7 +270,8 @@ const securityConfig = {
         maxDataPoints: 20000              // Minimum requests before starting an optimization cycle.
     },
     // Enables problem solving for suspicious activity (configurable in problems.config.json)
-    enableUsefulWork: true
+    enableUsefulWork: true,
+    usefulWorkConfigPath: './path/to/your/problems.config.json' // (Optional) Path to the useful work configuration.
 };
 ```
 
