@@ -51,14 +51,96 @@ For API clients, the challenge is delivered as a `404` JSON response, and the cl
 
 ## Installation and Usage
 
-This module is designed for a Node.js environment.
+This library is available for both **Node.js** and **PHP**.
+
+*   [Node.js (Express) Quickstart](#nodejs-express)
+*   [PHP Quickstart](#php)
+    *   [PHP Quickstart (Direct Integration)](#php-quickstart-direct-integration)
+    *   [PHP Quickstart (PSR-15 Middleware)](#php-quickstart-psr-15-middleware)
 
 ### Prerequisites
 
-Ensure you have middleware for parsing cookies (like `cookie-parser`) and request bodies (like `express.json` and `express.urlencoded`) set up in your Express application *before* the `powMiddleware`.
+*   **PHP 7.4+**
+*   The **GMP** extension (`php-gmp`) is required for handling the large-integer arithmetic used in cryptographic challenges.
+*   **Composer** for package management.
+
+---
+
+### Prerequisites
+
+## PHP Quickstart (Direct Integration)
+
+This guide shows the simplest way to integrate the library into any PHP application, without requiring a framework. It interacts directly with PHP's native functions and superglobals.
+
+### Prerequisites
+
+*   **PHP 7.4+**
+*   The **GMP** extension (`php-gmp`) is required for handling the large-integer arithmetic used in cryptographic challenges.
+*   **Composer** for package management.
+
+### Installation
+
+Install the main library via Composer:
+
+```bash
+composer require anonympins/fingerprint
+```
 
 ### Configuration
 
+Define a secret key for signing Proof-of-Work tickets in your environment variables or your `.env` file. This is **required** for production environments.
+
+```bash
+POW_SECRET="your_secret_key_of_at_least_32_characters"
+```
+
+### Integration Example
+
+This example shows how to protect an application's entry point (e.g., `index.php`) by calling the `protect()` method at the very beginning of your script.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+use Anonympins\Fingerprint\Config\SecurityProfiles;
+use Anonympins\Fingerprint\DirectFingerprint;
+
+// 1. Choose a security profile and customize it if necessary.
+$securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
+    // Enable verbose mode for development
+    'verbose' => true,
+]);
+
+// 2. Create an instance of the DirectFingerprint protector.
+$protector = new DirectFingerprint($securityConfig);
+
+// 3. Protect the script.
+// This method will analyze the request. If it's suspicious, it will
+// send a challenge or block response and then call `exit()`.
+// If the request is allowed, it returns the fingerprint data.
+$fingerprint = $protector->protect();
+
+// --- If the script continues, the request was allowed ---
+
+$score = $fingerprint['score'] ?? 0;
+
+header('Content-Type: text/html; charset=utf-8');
+echo "<h1>Welcome to the protected page!</h1>";
+echo "<p>Your suspicion score was: " . round($score, 2) . "</p>";
+
+?>
+```
+
+### [NodeJS Configuration](nodejs-express)
+
+#### Prerequisites for Node.js
+
+Ensure you have middleware for parsing cookies (like `cookie-parser`) and request bodies (like `express.json` and `express.urlencoded`) set up in your Express application *before* the `powMiddleware`.
+
+#### Configuration
 Define a secret key for signing PoW tickets in your environment variables.
 
 ```bash
@@ -250,6 +332,11 @@ const securityConfig = {
                 '/api/v1/webhooks/trusted-source', // Exact path
                 '/api/v2/public/*',                // All paths starting with /api/v2/public/
             ]},
+
+        // Allows a specific GraphQL query and all mutations•  
+        {type: 'graphql_operation_allowlist',entries: [
+            'query:GetPublicPosts',
+                'mutation:*']},
         // Option 2: DNS-verified bots (e.g., search engine crawlers).
         // This uses a secure DNS lookup (reverse then forward) to verify the bot's identity.
         // The result is cached per IP to avoid repeated DNS lookups.
