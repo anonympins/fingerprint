@@ -1,3 +1,30 @@
+## Version 0.3.1
+
+This release marks a major expansion of the library, introducing a full-featured PHP version that mirrors the capabilities of the Node.js module. It also adds GraphQL operation whitelisting and an obfuscated client build for enhanced security.
+
+### ✨ New Features
+
+*   **Full PHP Support**: The library is now available for PHP 7.4+ with a feature set equivalent to the Node.js version.
+    *   **Direct Integration**: A `DirectFingerprint` class allows for easy integration into any PHP application, including legacy codebases, by interacting directly with PHP's superglobals.
+    *   **PSR-15 Middleware**: A `FingerprintMiddleware` is provided for modern, framework-agnostic integration with applications that follow PSR-7, PSR-15, and PSR-17 standards (e.g., Slim, Laminas).
+    *   **Pluggable Datastores**: The PHP version supports the same pluggable store architecture, allowing state to be persisted in Redis, databases, or other external systems.
+    *   **Security Profiles**: The same pre-configured security profiles (`balanced`, `strict`, `api`, etc.) are available in PHP via `SecurityProfiles::createSecurityProfile()`.
+    *   **Client-Side Helper**: A `FingerprintClient` class is included to simplify the injection of the client-side JavaScript library and honeypot fields into PHP-rendered HTML pages.
+
+*   **GraphQL Whitelisting**: You can now whitelist specific GraphQL operations to bypass security checks. This is ideal for allowing public queries (like `GetPublicPosts`) while protecting sensitive mutations. This is supported in both Node.js and PHP.
+    *   Example rule: `{ type: 'graphql_operation_allowlist', entries: ['query:GetPublicPosts', 'mutation:*'] }`
+
+### 🚀 Improvements
+
+*   **Obfuscated Client Script**: The build process now generates an obfuscated version of the client-side JavaScript library (`fingerprint.client.obfuscated.js`). This makes it significantly more difficult for attackers to reverse-engineer the client-side fingerprinting and behavioral analysis logic.
+*   **Expanded PHP Test Coverage**: The new PHP module includes a comprehensive suite of PHPUnit tests, ensuring the reliability and correctness of the `FingerprintEngine`, challenge verification, and scoring logic.
+*   **Unified Documentation**: The `README.md` has been updated with dedicated sections and quick-start guides for both Node.js and the new PHP integrations, providing clear instructions for both platforms.
+
+### 📦 Build & Internals
+
+*   The project structure now includes a `src/php` directory containing the full PHP library implementation.
+*   A `phpunit.xml` configuration has been added to manage the PHP test suite.
+
 ## Version 0.3.0 
 
 This is a major release focused on security hardening, distributed system capabilities, and overall robustness. It introduces advanced TLS spoofing detection, protection against various resource exhaustion and data poisoning attacks, and makes the "Useful Proof-of-Work" system truly scalable.

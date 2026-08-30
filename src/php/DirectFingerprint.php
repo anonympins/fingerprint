@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint;
 
-use Random\RandomException;
-
 /**
  * Intégration directe du moteur de fingerprinting pour les applications PHP sans framework PSR.
  * Cette classe interagit directement avec les superglobales PHP et les fonctions de réponse.
@@ -28,7 +26,6 @@ class DirectFingerprint
      * Si la requête est autorisée, la méthode retourne simplement et le reste du script peut s'exécuter.
      *
      * @return array{score: float, vector: array}|null Les données du fingerprint si la requête est autorisée, null sinon.
-     * @throws RandomException
      */
     public function protect(): ?array
     {

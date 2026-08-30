@@ -61,4 +61,12 @@ class InMemoryStore implements IStore
     {
         unset($this->data[$key]);
     }
+
+    /**
+     * Efface toutes les données du store. Utile pour les tests.
+     */
+    public function clear(): void
+    {
+        $this->data = [];
+    }
 }

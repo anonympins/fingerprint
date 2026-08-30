@@ -1,2 +1,6 @@
 /node_modules
 /.idea
+/vendor
+composer.phar
+composer-setup.php
+*.cache

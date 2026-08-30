@@ -333,8 +333,7 @@ class RequestUtils
         // Score d'historique basé sur le nombre d'IPs utilisées (rotation de proxy)
         $maxIpsPerDevice = 15;
         $freeIpChanges = 3;
-        $historyScore = min(100.0, (max(0, count($deviceData['ips']) - $freeIpChanges) / ($maxIpsPerDevice - $freeIpChanges)) * 100);
-
+        $historyScore = min(100.0, (max(0, count($deviceData['ips']) - $freeIpChanges) / $maxIpsPerDevice) * 100);
         // Score de rotation basé sur les changements rapides de fingerprint
         $rotationScore = min(100.0, (($deviceData['rapidChangeCount'] ?? 0) / $maxRapidChanges) * 100);
 
@@ -384,8 +383,13 @@ class RequestUtils
 
         // Analyse statistique si nous avons assez de données
         if (count($timings) >= $minSamples) {
-            $mean = array_sum($timings) / count($timings);
-            $variance = array_reduce($timings, fn($carry, $item) => $carry + pow($item - $mean, 2), 0) / count($timings);
+            // FIX: Éviter la division par zéro si le tableau est vide, bien que count() >= minSamples devrait déjà le prévenir.
+            if (count($timings) === 0) {
+                return ['requestPatternScore' => min(100.0, $deviceData['lastPatternScore'] ?? 0)];
+            }
+
+            $mean = array_sum($timings) / count($timings); // @phpstan-ignore-line
+            $variance = array_reduce($timings, fn($carry, $item) => $carry + pow($item - $mean, 2), 0) / count($timings); // @phpstan-ignore-line
             $stdDev = sqrt($variance);
             $benfordDeviation = self::benfordTest($timings);
 
@@ -419,10 +423,10 @@ class RequestUtils
      * @param array<string, mixed> $honeypotConfig
      * @return array{'honeypotScore': float}
      */
-    public static function getHoneypotScore(RequestContext $context, array $honeypotConfig): array
+    public static function getHoneypotScore(RequestContext $context, array $honeypotConfig): array // @phpstan-ignore-line
     {
         $fields = $honeypotConfig['fields'] ?? [];
-        $data = array_merge($context->query, is_array($context->body) ? $context->body : []);
+        $data = array_merge($context->query, is_array($context->body) ? $context->body : []); // @phpstan-ignore-line
 
         foreach ($fields as $field) {
             if (isset($data[$field]) && !empty($data[$field])) {

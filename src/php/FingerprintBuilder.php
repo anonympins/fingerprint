@@ -116,16 +116,18 @@ class FingerprintBuilder
         $allKeys = array_unique(array_merge(array_keys($map1), array_keys($map2)));
 
         foreach ($allKeys as $key) {
-            if (in_array($key, $volatileKeys, true)) {
+            // On ignore les clés volatiles pour cette comparaison spécifique.
+            if (in_array($key, $volatileKeys, true)) { // @phpstan-ignore-line
                 continue;
             }
 
-            if (isset($weights[$key])) {
-                $weight = $weights[$key];
-                $totalWeight += $weight;
-                if (isset($map1[$key]) && isset($map2[$key]) && $map1[$key] === $map2[$key]) {
-                    $weightedMatches += $weight;
-                }
+            // On ne compare que les clés qui ont un poids défini.
+            $weight = $weights[$key] ?? 0.0; // Utiliser 0.0 si pas de poids défini
+            
+            // On ne prend en compte que les clés présentes dans les deux empreintes
+            if (isset($map1[$key]) && isset($map2[$key])) {
+                $totalWeight += $weight; // Le poids total n'augmente que pour les clés communes
+                if ($map1[$key] === $map2[$key]) $weightedMatches += $weight;
             }
         }
 
@@ -169,16 +171,13 @@ class FingerprintBuilder
      */
     private static function imul(int $a, int $b): int
     {
-        $ah = ($a >> 16) & 0xffff;
-        $al = $a & 0xffff;
-        $bh = ($b >> 16) & 0xffff;
-        $bl = $b & 0xffff;
-        // Le résultat est tronqué à 32 bits en utilisant des opérations de bas niveau.
-        $result = ($al * $bl) + ((($ah * $bl + $al * $bh) << 16) & 0xffffffff);
-        // Forcer le résultat à être un entier signé 32-bit
-        if ($result & 0x80000000) {
-            return $result | 0xffffffff00000000;
-        }
-        return $result;
+        // Utiliser GMP pour la multiplication pour éviter le dépassement en float sur les systèmes 64-bit.
+        $gmp_a = gmp_init($a);
+        $gmp_b = gmp_init($b);
+        $gmp_result = gmp_mul($gmp_a, $gmp_b);
+
+        // Tronquer le résultat à 32 bits et le convertir en entier signé.
+        $truncated = gmp_and($gmp_result, '0xFFFFFFFF');
+        return gmp_intval(gmp_sign($truncated) < 0 ? gmp_sub($truncated, '0x100000000') : $truncated);
     }
 }

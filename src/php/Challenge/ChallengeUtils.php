@@ -110,13 +110,22 @@ class ChallengeUtils
         $hashAsInt = BigInt::fromHex($hash);
         $targetAsInt = BigInt::fromHex($cpuTargetHex);
 
-        if ($hashAsInt->compareTo($targetAsInt) < 0) { // @phpstan-ignore-line
+        $isValid = $hashAsInt->compareTo($targetAsInt) < 0;
+
+        if ($isValid) {
+            error_log('[FP Server Verify] CPU PoW verification PASSED.');
             $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
             $signature = hash_hmac('sha256', "{$clientIp}:{$expiry}", self::getPowSecret());
             return "{$expiry}:{$signature}";
         }
 
-        error_log('[FP Server Verify] CPU PoW verification FAILED.');
+        // Log details on failure
+        error_log(sprintf(
+            '[FP Server Verify] CPU PoW verification FAILED. Details: hashCalculated=0x%s, target=0x%s',
+            $hash,
+            $cpuTargetHex
+        ));
+
         return null;
     }
 
@@ -236,7 +245,7 @@ class ChallengeUtils
     private static function getPowSolverCode(): string
     {
         // Le chemin doit être relatif à ce fichier ou absolu.
-        $solverPath = __DIR__ . '/../../../../../pow.solver.inline.js';
+        $solverPath = __DIR__ . '/../../../pow.solver.inline.js';
         if (!file_exists($solverPath)) {
             error_log("[ChallengeUtils] Erreur: Le fichier pow.solver.inline.js n'a pas été trouvé à l'emplacement attendu.");
             return '';

@@ -28,6 +28,9 @@ class RequestContext
     /** @var ?array{type: string, name: string} */
     public ?array $graphqlOperation = null;
 
+    /** @var ?array<string, mixed> */
+    public ?array $newCookieForResponse = null;
+
     // Propriétés spécifiques qui peuvent être fournies par un proxy inverse
     public ?string $ja3;
     public ?string $ja4;
