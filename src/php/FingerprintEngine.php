@@ -27,9 +27,9 @@
      {
          $this->isProduction = ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production';
          $this->securityConfig = $securityConfig;
+         $this->verbose = $securityConfig['verbose'] ?? false;
          $this->allowlist = $this->buildAllowlist();
          $this->validateConfig($securityConfig);
-         $this->verbose = $securityConfig['verbose'] ?? false;
          $this->logger = isset($securityConfig['logger']) && is_callable($securityConfig['logger']) ? new Logger($securityConfig['logger']) : null;
      }
 
@@ -569,7 +569,9 @@
                  $clientSecret = bin2hex(random_bytes(16));
  
                  // --- NOUVELLE LOGIQUE uPoW ---
-                 $shouldUseUsefulWork = ($this->securityConfig['enableUsefulWork'] ?? false) && (random_int(0, 255) / 255) > 0.5;
+                 $shouldUseUsefulWork = ($this->securityConfig['enableUsefulWork'] ?? false) && (
+                     ($this->securityConfig['forceUsefulWork'] ?? false) || (random_int(0, 255) / 255) > 0.5
+                 );
 
                  // Déterminer si c'est une requête API avant de choisir le type de challenge
                  $isApiRequest = false;
@@ -792,4 +794,12 @@
          return false;
      }
 
+    /**
+     * @internal For testing purposes only.
+     */
+    public function getProblems(): array
+    {
+        $problemManager = ProblemManager::getInstance();
+        return $problemManager->getProblems();
+    }
  }

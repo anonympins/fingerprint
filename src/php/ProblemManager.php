@@ -217,4 +217,12 @@ class ProblemManager
     public static function __internal_resetInstance(): void {
         self::$instance = null;
     }
+
+    /**
+     * @internal For testing purposes only.
+     */
+    public function getProblems(): array
+    {
+        return $this->problems;
+    }
 }

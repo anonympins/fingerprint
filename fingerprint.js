@@ -983,7 +983,7 @@ function getBehaviorScore(context) {
       if (keystrokeDeviation > 0.15) score += 40;
     }
 
-    return { behaviorScore: Math.max(0, Math.min(100, score)) }; // Assure que le score reste entre 0 et 100
+    return { behaviorScore: Math.min(100, score) }; // Assure que le score ne dépasse pas 100, mais peut être négatif (bonus)
   } catch (e) {
     return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
   }
