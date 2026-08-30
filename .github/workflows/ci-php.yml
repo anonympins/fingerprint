@@ -17,7 +17,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.1' # ou la version que vous utilisez
+          php-version: '8.4' # Update to a version compatible with your lock file
           extensions: mbstring, gmp, bcmath # Assurez-vous d'inclure les extensions requises (gmp, bcmath)
           tools: composer:v2
 
