@@ -81,7 +81,7 @@ class ChallengeUtils
         $filteredParts = array_filter($parts);
         sort($filteredParts);
         $sortedFingerprint = implode('|', $filteredParts);
-
+        
         return "{$nonce}:{$clientSecret}:{$sortedFingerprint}:";
     }
 
@@ -249,7 +249,7 @@ class ChallengeUtils
         string $originalFingerprint
     ): string {
         $nonce = $cpuChallengeDetails['nonce'];
-        $target = $cpuChallengeDetails['target'];
+        $target = $cpuChallengeDetails['target']; // @phpstan-ignore-line
         $path = $cpuChallengeDetails['path'];
 
         $solverCode = self::getPowSolverCode();

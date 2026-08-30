@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Anonympins\Fingerprint\ProblemManager;
 use Anonympins\Fingerprint\Store\IStore;
 use Anonympins\Fingerprint\Store\InMemoryStore;
+use Anonympins\Fingerprint\Optimization\FunctionRegistry;
 
 class ProblemManagerTest extends TestCase
 {
@@ -17,12 +18,14 @@ class ProblemManagerTest extends TestCase
     {
         // Réinitialise le singleton avant chaque test pour garantir l'isolation
         ProblemManager::__internal_resetInstance();
+        FunctionRegistry::__internal_resetRegistry(); // Assure un registre de fonctions propre
         $this->configPath = dirname(__FILE__).'/problems.config.json';
     }
 
     protected function tearDown(): void
     {
         ProblemManager::__internal_resetInstance();
+        FunctionRegistry::__internal_resetRegistry();
     }
 
     private function createConfigFile(array $content): void
@@ -158,11 +161,21 @@ class ProblemManagerTest extends TestCase
 
         $this->createConfigFile([
             [
-                "id" => "problem-1",
-                "workUnit" => ["type" => "simulated_annealing_iterations", "baseIterations" => 10000]
+                "id" => $problemId,
+                "workUnit" => [
+                    "type" => "simulated_annealing_iterations",
+                    "baseIterations" => 10000,
+                    // **LA CORRECTION** : La fonction de score est requise pour la vérification.
+                    "scoreFunction" => "test.calculateEnergy"
+                ]
             ]
         ]);
-        // Simule que le store a déjà un état pour ce problème
+
+        // Enregistrer une fonction de score factice pour le test.
+        FunctionRegistry::register('test.calculateEnergy', function ($solution, $payload) {
+            return 800.0; // Retourne la nouvelle "meilleure" énergie attendue.
+        });
+
         $storeMock->method('get')
             ->with("problem-state:{$problemId}")
             ->willReturn(['bestEnergy' => 1000.0]);
@@ -194,11 +207,21 @@ class ProblemManagerTest extends TestCase
 
         $this->createConfigFile([
             [
-                "id" => "problem-1",
-                "workUnit" => ["type" => "simulated_annealing_iterations", "baseIterations" => 10000]
+                "id" => $problemId,
+                "workUnit" => [
+                    "type" => "simulated_annealing_iterations",
+                    "baseIterations" => 10000,
+                    "scoreFunction" => "test.calculateEnergy"
+                ]
             ]
         ]);
-        $storeMock->method('get')
+
+        // La fonction de score factice retourne une énergie *pire* que celle existante.
+        FunctionRegistry::register('test.calculateEnergy', function ($solution, $payload) {
+            return 1200.0;
+        });
+
+        $storeMock->method('get') // @phpstan-ignore-line
             ->with("problem-state:{$problemId}")
             ->willReturn(['bestEnergy' => 1000.0]);
 
@@ -208,7 +231,7 @@ class ProblemManagerTest extends TestCase
         $manager = ProblemManager::getInstance($this->configPath, $storeMock);
 
         $worseSolution = [
-            'solution' => [3, 2, 1],
+            'solution' => [3, 2, 1], // Le contenu de la solution n'a pas d'importance pour ce test
             'energy' => 1200.0 // C'est une moins bonne solution
         ];
         $manager->integrateSolution($problemId, $worseSolution);

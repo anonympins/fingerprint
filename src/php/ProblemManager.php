@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint;
 
 use Anonympins\Fingerprint\Store\IStore;
+use Anonympins\Fingerprint\Optimization\FunctionRegistry;
+use Anonympins\Fingerprint\Optimization\ProblemInitializers;
 
 class ProblemManager
 {
     private static ?ProblemManager $instance = null;
     private string $configPath;
     private IStore $store;
+    /** @var array<int, array<string, mixed>> */
     private array $problems = [];
     private int $currentProblemIndex = 0;
     private bool $initialized = false;
@@ -66,19 +69,38 @@ class ProblemManager
             return;
         }
 
-        $loadedProblems = [];
         foreach ($problemsFromFile as $problem) {
             $storeKey = "problem-state:{$problem['id']}";
             $storedState = $this->store->get($storeKey);
 
             if ($storedState === null) {
-                $storedState = $problem['state'] ?? []; // Use initial state from file
+                $storedState = $problem['state'] ?? [];
                 $this->store->set($storeKey, $storedState); // Persist initial state
             }
             $problem['state'] = $storedState;
-            $loadedProblems[] = $problem;
+
+            // Résolution dynamique des fonctions et des données
+            if (isset($problem['workUnit']['scoreFunction'])) {
+                $problem['workUnit']['scoreFunction'] = FunctionRegistry::get($problem['workUnit']['scoreFunction']);
+                if ($problem['workUnit']['scoreFunction'] === null) {
+                    // @codeCoverageIgnoreStart
+                    error_log("[ProblemManager] Warning: scoreFunction '{$problem['workUnit']['scoreFunction']}' not found in registry for problem '{$problem['id']}'.");
+                    // @codeCoverageIgnoreEnd
+                }
+            }
+
+            if (isset($problem['payload']) && is_array($problem['payload'])) {
+                foreach ($problem['payload'] as $key => &$value) {
+                    if (is_array($value) && isset($value['$init'])) {
+                        $initializer = ProblemInitializers::get($value['$init']);
+                        if ($initializer) {
+                            $value = $initializer($value['params'] ?? []);
+                        }
+                    }
+                }
+            }
+            $this->problems[] = $problem;
         }
-        $this->problems = $loadedProblems;
         $this->initialized = true; // Marquer comme initialisé seulement après un chargement réussi
     }
 
@@ -147,16 +169,21 @@ class ProblemManager
         // La logique d'intégration dépend du type de problème.
         switch ($problem['workUnit']['type']) {
             case 'simulated_annealing_iterations':
-                // Pour le recuit simulé, on vérifie si la nouvelle "énergie" est meilleure.
                 if (isset($solutionData['solution']) && isset($solutionData['energy'])) {
-                    // Ne jamais faire confiance au score du client. Idéalement, il faudrait le recalculer ici.
-                    // Pour cet exemple, nous faisons confiance au score pour la simplicité.
-                    $recalculatedEnergy = (float)$solutionData['energy']; 
+                    $scoreFunction = $problem['workUnit']['scoreFunction'] ?? null;
+                    if (!$scoreFunction) {
+                        error_log("[ProblemManager] Aucune fonction de score définie pour {$problemId}.");
+                        return;
+                    }
+                    // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
+                    $recalculatedEnergy = $scoreFunction($solutionData['solution'], $problem['payload'] ?? []);
+
                     $currentBest = (float)($problem['state']['bestEnergy'] ?? INF);
 
-                    if ($recalculatedEnergy < $currentBest) {
+                    // 2. Comparer le score recalculé, pas celui du client.
+                    if ($recalculatedEnergy < $currentBest) { // @phpstan-ignore-line
                         $problem['state']['bestSolution'] = $solutionData['solution'];
-                        $problem['state']['bestEnergy'] = $recalculatedEnergy;
+                        $problem['state']['bestEnergy'] = $recalculatedEnergy; // 3. Stocker le score vérifié.
                         $problem['state']['lastUpdate'] = (new \DateTime())->format(\DateTime::ATOM);
                         $stateChanged = true;
                         error_log("[ProblemManager] New best solution for {$problemId}: {$recalculatedEnergy}"); // @phpstan-ignore-line
