@@ -3148,29 +3148,40 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   // l'ancienne vers la nouvelle, avec une vélocité de changement maximale.
   const newConfig = bestSolution.solution;
   const MAX_CHANGE_VELOCITY = 0.15; // 15% de changement maximum par cycle
-
+  
   /**
    * Met à jour un objet de configuration (ex: thresholds, weights) en douceur.
+   * Cette nouvelle version préserve la proportionnalité des valeurs initiales.
    * @param {object} currentConfig - La configuration actuelle à modifier.
    * @param {object} targetConfig - La configuration cible proposée par l'optimiseur.
    */
   const applyInertialUpdate = (currentConfig, targetConfig) => {
-      if (!currentConfig || !targetConfig) return; // Vérifier aussi currentConfig
-      for (const key in targetConfig) {
-          if (Object.hasOwnProperty.call(currentConfig, key)) {
-              const currentValue = currentConfig[key];
-              const targetValue = targetConfig[key];
-              const delta = targetValue - currentValue;
-              const maxChange = Math.abs(currentValue * MAX_CHANGE_VELOCITY);
-
-              // Limite le changement à la vélocité maximale
-              const change = Math.max(-maxChange, Math.min(maxChange, delta));
-              
-              currentConfig[key] += change;
-          }
+    if (!currentConfig || !targetConfig) return;
+  
+    let totalCurrent = 0;
+    let totalTarget = 0;
+  
+    // 1. Calculer la somme des valeurs actuelles et cibles pour les clés communes.
+    for (const key in targetConfig) {
+      if (Object.hasOwnProperty.call(currentConfig, key)) {
+        totalCurrent += currentConfig[key];
+        totalTarget += targetConfig[key];
       }
+    }
+  
+    if (totalCurrent === 0) return; // Éviter la division par zéro.
+  
+    // 2. Déterminer le facteur d'ajustement global, limité par la vélocité maximale.
+    const globalChangeRatio = (totalTarget - totalCurrent) / totalCurrent;
+    const adjustmentFactor = Math.max(-MAX_CHANGE_VELOCITY, Math.min(MAX_CHANGE_VELOCITY, globalChangeRatio));
+  
+    // 3. Appliquer l'ajustement proportionnellement à chaque valeur.
+    for (const key in currentConfig) {
+      if (Object.hasOwnProperty.call(targetConfig, key)) {
+        currentConfig[key] *= (1 + adjustmentFactor);
+      }
+    }
   };
-
   applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds);
   applyInertialUpdate(securityConfig.weights, newConfig.weights);
   applyInertialUpdate(securityConfig.patterns, newConfig.patterns);
