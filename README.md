@@ -112,6 +112,11 @@ $securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
     'verbose' => true,
 ]);
 
+// IMPORTANT: For PHP environments, TLS fingerprinting (JA3/JA4) requires a reverse proxy
+// (like Nginx, HAProxy, or a cloud load balancer) to inspect the TLS handshake and
+// pass the fingerprint hashes to the PHP application via HTTP headers
+// (e.g., `X-JA3-Hash`, `X-JA4-Hash`).
+
 // 2. Create an instance of the DirectFingerprint protector.
 $protector = new DirectFingerprint($securityConfig);
 

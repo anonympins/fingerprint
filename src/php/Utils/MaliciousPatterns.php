@@ -14,7 +14,7 @@ class MaliciousPatterns
      */
     private const INJECTION_PATTERNS = [
         // SQL/NoSQL injections, including time-based attacks
-        'sql' => '/(\$ne|\' *OR *\'1\'=\'1|[\'";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|(?:SLEEP|BENCHMARK|WAITFOR DELAY)\s*\()/i',
+        'sql' => '/(\$ne|\' *OR *\'1\'=\'1|[\'";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|(?:SLEEP|BENCHMARK)\s*\(|WAITFOR DELAY)/i',
         // Log4Shell (JNDI injection)
         'log4shell' => '/\$\{jndi:(ldap|rmi|dns):/i',
         // Server-Side Template Injection (SSTI) for engines like Jinja2, Twig, etc.

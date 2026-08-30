@@ -236,6 +236,38 @@ const getPowSolverCode = () => {
 };
 
 /**
+ * @private
+ * A mapping of IANA cipher suite names (as used by Node.js) to their decimal IDs.
+ * This is essential for correct JA3 fingerprint calculation.
+ * The list is not exhaustive but covers the most common cipher suites.
+ */
+const cipherSuiteMap = {
+    'TLS_AES_128_GCM_SHA256': 4865,
+    'TLS_AES_256_GCM_SHA384': 4866,
+    'TLS_CHACHA20_POLY1305_SHA256': 4867,
+    'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256': 49195,
+    'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256': 49199,
+    'TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384': 49196,
+    'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384': 49200,
+    'TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256': 52393,
+    'TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256': 52392,
+    'TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA': 49171,
+    'TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA': 49172,
+    'TLS_RSA_WITH_AES_128_GCM_SHA256': 156,
+    'TLS_RSA_WITH_AES_256_GCM_SHA384': 157,
+    'TLS_RSA_WITH_AES_128_CBC_SHA': 47,
+    'TLS_RSA_WITH_AES_256_CBC_SHA': 53,
+    // Older/Less common suites
+    'TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA': 49161,
+    'TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA': 49162,
+    'TLS_DHE_RSA_WITH_AES_128_GCM_SHA256': 158,
+    'TLS_DHE_RSA_WITH_AES_256_GCM_SHA384': 159,
+    'TLS_DHE_RSA_WITH_AES_128_CBC_SHA': 51,
+    'TLS_DHE_RSA_WITH_AES_256_CBC_SHA': 57,
+    'TLS_RSA_WITH_3DES_EDE_CBC_SHA': 10,
+};
+
+/**
  * Extracts TLS fingerprints (JA3 and JA4) from request context.
  * Prioritizes headers from reverse proxies (x-ja4-hash) and falls back to JA3 calculation
  * from raw socket data if available.
@@ -265,15 +297,19 @@ function getTlsFingerprint(context) {
 
             // The official JA3 spec includes the TLS version.
             // Node.js provides it as a string like 'TLSv1.3', we need the corresponding decimal value.
-            const tlsVersionMap = {
+            const tlsVersionMap = { // NOSONAR
                 'TLSv1': 769, 'TLSv1.1': 770, 'TLSv1.2': 771, 'TLSv1.3': 772
             };
             const tlsVersionId = tlsVersionMap[version] || 0;
 
+            // Convert cipher suite names to their decimal IDs.
+            const cipherIds = Array.isArray(ciphers)
+                ? ciphers.map(c => cipherSuiteMap[c.name] || c).join('-') // Use the raw ID if name is not in map
+                : '';
+
             const ja3String = [
                 tlsVersionId,
-                // The ciphers array from clientHello is an array of objects, not just IDs.
-                Array.isArray(ciphers) ? ciphers.join('-') : '',
+                cipherIds,
                 extensions?.join('-') || '',
                 ellipticCurves?.join('-') || '',
                 ellipticCurvePointFormats?.join('-') || ''
@@ -906,7 +942,7 @@ function getHoneypotScore(context, honeypotConfig = {}) {
  */
 const injectionPatterns = {
     // SQL/NoSQL injections, including time-based attacks
-    sql: /(\$ne|' *OR *'1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i,
+    sql: /(\$ne|\' *OR *\'1\'=\'1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|(?:SLEEP|BENCHMARK)\s*\(|WAITFOR DELAY)/i,
     // Log4Shell (JNDI injection)
     log4shell: /\$\{jndi:(ldap|rmi|dns):/i,
     // Server-Side Template Injection (SSTI) for engines like Jinja2, Twig, etc.

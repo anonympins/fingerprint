@@ -73,6 +73,12 @@ class RequestContext
         $this->http2Fingerprint = $this->headers['x-http2-fingerprint'] ?? null;
         $this->tcpFingerprint = $this->headers['x-tcp-fingerprint'] ?? null;
     }
+    /**
+     * Récupère la valeur d'un en-tête HTTP de manière insensible à la casse.
+     *
+     * @param string $name Le nom de l'en-tête.
+     * @return string|null La valeur de l'en-tête ou null si non trouvé.
+     */
 
     public function getHeader(string $name): ?string
     {
