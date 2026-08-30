@@ -5,7 +5,7 @@
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)
 [![Watchers](https://img.shields.io/github/watchers/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/watchers)
 
-An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.
+An HTTP(S) client mitigation and anti-bot protection library for both PHP and Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.
 
 ## How It Works
 
