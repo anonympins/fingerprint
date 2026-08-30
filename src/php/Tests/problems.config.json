@@ -1,0 +1,9 @@
+[
+    {
+        "id": "problem-1",
+        "workUnit": {
+            "type": "simulated_annealing_iterations",
+            "baseIterations": 10000
+        }
+    }
+]

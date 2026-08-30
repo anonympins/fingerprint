@@ -130,24 +130,6 @@ class ChallengeUtils
     }
 
     /**
-     * Régénère un ticket avec un nouveau TTL sans re-vérifier le PoW.
-     * Utile pour appliquer un TTL probatoire après une vérification réussie.
-     * @param string|null $validTicket Le ticket original déjà validé.
-     * @param string $clientIp L'IP du client.
-     * @param int $newTtlMs Le nouveau TTL en millisecondes.
-     * @return string|null Le nouveau ticket.
-     */
-    public static function regenerateTicketWithTtl(?string $validTicket, string $clientIp, int $newTtlMs): ?string
-    {
-        if ($validTicket === null) {
-            return null;
-        }
-        $newExpiry = (int)floor(microtime(true) * 1000) + $newTtlMs;
-        $newSignature = hash_hmac('sha256', "{$clientIp}:{$newExpiry}", self::getPowSecret());
-        return "{$newExpiry}:{$newSignature}";
-    }
-
-    /**
      * Vérifie une solution de PoW mémoire.
      */
     public static function verifyMemoryPoW(

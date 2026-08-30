@@ -426,13 +426,37 @@ class RequestUtils
     public static function getHoneypotScore(RequestContext $context, array $honeypotConfig): array // @phpstan-ignore-line
     {
         $fields = $honeypotConfig['fields'] ?? [];
-        $data = array_merge($context->query, is_array($context->body) ? $context->body : []); // @phpstan-ignore-line
+        $trapUrls = $honeypotConfig['trapUrls'] ?? [];
+        $data = array_merge($context->query, is_array($context->body) ? $context->body : []);
 
+        // 1. Vérifier les champs de formulaire pièges
         foreach ($fields as $field) {
-            if (isset($data[$field]) && !empty($data[$field])) {
+            // Ignorer les paramètres de solution de challenge pour éviter les faux positifs.
+            if (str_starts_with($field, 'pow_')) {
+                continue;
+            }
+            if (!empty($data[$field])) {
                 return ['honeypotScore' => 100.0];
             }
         }
+
+        // 2. Vérifier l'accès aux URL pièges
+        foreach ($trapUrls as $trap) {
+            if (str_starts_with($context->path, $trap)) {
+                return ['honeypotScore' => 100.0];
+            }
+        }
+
+        // 3. (Optionnel) Détection d'injections
+        if ($honeypotConfig['detectInjections'] ?? false) {
+            $typesToDetect = is_array($honeypotConfig['detectInjections']) ? $honeypotConfig['detectInjections'] : [];
+            foreach ($data as $value) {
+                if (is_string($value) && MaliciousPatterns::isMalicious($value, $typesToDetect)) {
+                    return ['honeypotScore' => 100.0];
+                }
+            }
+        }
+
         return ['honeypotScore' => 0.0];
     }
 
