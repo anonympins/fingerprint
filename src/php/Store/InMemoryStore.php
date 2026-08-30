@@ -27,24 +27,16 @@ class InMemoryStore implements IStore
             return null;
         }
 
-        // Gère la conversion des tableaux en Set pour 'ips' comme dans la version JS
-        if (is_array($item['value']) && isset($item['value']['ips']) && is_array($item['value']['ips'])) {
-            $item['value']['ips'] = new \SplFixedArray(count($item['value']['ips']));
-            foreach ($item['value']['ips'] as $i => $ip) {
-                $item['value']['ips'][$i] = $ip;
-            }
-        }
-
         return $item['value'];
     }
 
     public function set(string $key, $value, ?int $ttl = null): void
     {
         $expiresAt = $ttl !== null ? time() + $ttl : null;
-
-        // Gère la conversion des Set en tableaux pour 'ips' comme dans la version JS
-        if (is_object($value) && property_exists($value, 'ips') && $value->ips instanceof \SplFixedArray) {
-            $value->ips = $value->ips->toArray();
+        // En PHP, on travaille avec des tableaux, donc pas de conversion de Set nécessaire,
+        // mais on s'assure que la valeur est un tableau si elle contient des clés comme 'ips'.
+        if (is_array($value) && isset($value['ips']) && $value['ips'] instanceof \SplFixedArray) {
+            $value['ips'] = $value['ips']->toArray();
         }
 
         $this->data[$key] = ['value' => $value, 'expiresAt' => $expiresAt];

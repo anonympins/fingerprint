@@ -299,29 +299,248 @@ class RequestUtils
         return ['crossLayerInconsistencyScore' => min(100.0, $score)];
     }
 
-    // Les fonctions suivantes sont des placeholders pour les fonctionnalités qui dépendent d'un état
-    // ou d'une logique plus complexe qui sera entièrement gérée par FingerprintEngine.
-    // Elles sont ici pour la complétude de l'API de RequestUtils.
-
+    /**
+     * Calcule les indicateurs comportementaux liés à l'historique de l'appareil.
+     * @param array<string, mixed> $deviceData
+     * @return array{'historyScore': float, 'rotationScore': float}
+     */
     public static function getBehavioralIndicators(RequestContext $context, array &$deviceData): array
     {
-        // La logique de cette fonction (rotation d'IP, etc.) est complexe et dépend de l'état
-        // stocké. Elle sera implémentée directement dans FingerprintEngine ou une classe dédiée à l'état.
-        return ['historyScore' => 0.0, 'rotationScore' => 0.0];
+        $now = time() * 1000;
+        $clientIp = $context->clientIp;
+        $currentFpHash = self::getCompositeDeviceHash($context);
+
+        // Analyse de la fréquence de changement du fingerprint
+        $rapidChangeThresholdMs = 2000; // 2 secondes
+        $maxRapidChanges = 3;
+
+        if (isset($deviceData['lastFpHash']) && $currentFpHash !== $deviceData['lastFpHash']) {
+            $timeSinceLastChange = $now - ($deviceData['lastChangeTimestamp'] ?? 0);
+            if ($timeSinceLastChange < $rapidChangeThresholdMs) {
+                $deviceData['rapidChangeCount'] = ($deviceData['rapidChangeCount'] ?? 0) + 1;
+            } else {
+                $deviceData['rapidChangeCount'] = max(0, ($deviceData['rapidChangeCount'] ?? 0) - 1);
+            }
+            $deviceData['lastChangeTimestamp'] = $now;
+        }
+        $deviceData['lastFpHash'] = $currentFpHash;
+
+        // Enregistrement de l'IP
+        if (!in_array($clientIp, $deviceData['ips'])) {
+            $deviceData['ips'][] = $clientIp;
+        }
+
+        // Score d'historique basé sur le nombre d'IPs utilisées (rotation de proxy)
+        $maxIpsPerDevice = 15;
+        $freeIpChanges = 3;
+        $historyScore = min(100.0, (max(0, count($deviceData['ips']) - $freeIpChanges) / ($maxIpsPerDevice - $freeIpChanges)) * 100);
+
+        // Score de rotation basé sur les changements rapides de fingerprint
+        $rotationScore = min(100.0, (($deviceData['rapidChangeCount'] ?? 0) / $maxRapidChanges) * 100);
+
+        return ['historyScore' => $historyScore, 'rotationScore' => $rotationScore];
     }
 
+    /**
+     * Analyse les patterns de requêtes pour détecter les comportements de bot.
+     * @param array<string, mixed> $deviceData
+     * @param array<string, mixed> $patternConfig
+     * @return array{'requestPatternScore': float}
+     */
     public static function getRequestPatternScore(RequestContext $context, array &$deviceData, array $patternConfig): array
     {
-        return ['requestPatternScore' => 0.0];
+        // Configuration avec valeurs par défaut robustes
+        $historySize = $patternConfig['historySize'] ?? 20;
+        $minSamples = $patternConfig['minSamples'] ?? 10;
+        $regularityThreshold = $patternConfig['regularityThreshold'] ?? 150; // ms
+        $benfordThreshold = $patternConfig['benfordThreshold'] ?? 0.15;
+        $patternWeight = $patternConfig['patternWeight'] ?? 80;
+        $decayFactor = $patternConfig['decayFactor'] ?? 0.95;
+        $inactivityReset = $patternConfig['inactivityReset'] ?? 180000;
+
+        $now = time() * 1000;
+        $history = $deviceData['requestHistory'] ?? [];
+        $deviceData['timingHistory'] = $deviceData['timingHistory'] ?? [];
+
+        $lastRequest = end($history) ?: null;
+        $timeSinceLast = $lastRequest ? $now - $lastRequest['timestamp'] : PHP_INT_MAX;
+
+        // Mise à jour de l'historique
+        $history[] = ['timestamp' => $now, 'path' => $context->path];
+        if ($lastRequest) {
+            $deviceData['timingHistory'][] = $timeSinceLast;
+        }
+
+        if (count($history) > $historySize) {
+            array_shift($history);
+        }
+        if (count($deviceData['timingHistory']) > $historySize) {
+            array_shift($deviceData['timingHistory']);
+        }
+        $deviceData['requestHistory'] = $history;
+
+        $instantScore = 0;
+        $timings = $deviceData['timingHistory'];
+
+        // Analyse statistique si nous avons assez de données
+        if (count($timings) >= $minSamples) {
+            $mean = array_sum($timings) / count($timings);
+            $variance = array_reduce($timings, fn($carry, $item) => $carry + pow($item - $mean, 2), 0) / count($timings);
+            $stdDev = sqrt($variance);
+            $benfordDeviation = self::benfordTest($timings);
+
+            // Détection de régularité (bots de type "cron")
+            if ($stdDev < $regularityThreshold) {
+                $instantScore = $patternWeight;
+            }
+            // Détection de distribution non-naturelle (bots "faussement aléatoires")
+            elseif ($benfordDeviation > $benfordThreshold) {
+                $instantScore = $patternWeight;
+            }
+        }
+
+        // Logique de décroissance et de score final
+        $newPatternScore = $deviceData['lastPatternScore'] ?? 0;
+
+        if ($timeSinceLast > $inactivityReset) {
+            $newPatternScore = 0; // Réinitialisation après inactivité
+        } else {
+            $newPatternScore *= $decayFactor;
+        }
+        $newPatternScore = max(0, $newPatternScore);
+
+        $deviceData['lastPatternScore'] = $newPatternScore + $instantScore;
+
+        return ['requestPatternScore' => min(100.0, $deviceData['lastPatternScore'])];
     }
 
+    /**
+     * Vérifie la soumission de champs honeypot.
+     * @param array<string, mixed> $honeypotConfig
+     * @return array{'honeypotScore': float}
+     */
     public static function getHoneypotScore(RequestContext $context, array $honeypotConfig): array
     {
+        $fields = $honeypotConfig['fields'] ?? [];
+        $data = array_merge($context->query, is_array($context->body) ? $context->body : []);
+
+        foreach ($fields as $field) {
+            if (isset($data[$field]) && !empty($data[$field])) {
+                return ['honeypotScore' => 100.0];
+            }
+        }
         return ['honeypotScore' => 0.0];
     }
 
     public static function getThreatIntelScore(RequestContext $context, array $threatIntelConfig): array
     {
         return ['threatIntelScore' => 0.0];
+    }
+
+    /**
+     * Calcule la déviation d'une série de chiffres par rapport à la loi de Benford.
+     * Un score élevé indique une distribution non naturelle, potentiellement frauduleuse.
+     * @param array<int|float> $numbers La série de nombres à analyser.
+     * @return float Un score de déviation (0 = parfait, > 0.15 = suspect).
+     */
+    private static function benfordTest(array $numbers): float
+    {
+        $leadingDigits = array_map(function ($n) {
+            $str = (string)$n;
+            return $str[0] ?? '';
+        }, $numbers);
+
+        $leadingDigits = array_filter($leadingDigits, fn($d) => $d >= '1' && $d <= '9');
+
+        if (count($leadingDigits) < 10) {
+            return 0.0; // Pas assez de données pour un test fiable
+        }
+
+        $counts = array_fill(1, 9, 0);
+        foreach ($leadingDigits as $digit) {
+            $counts[(int)$digit]++;
+        }
+
+        // Distribution attendue selon la loi de Benford pour le premier chiffre
+        $benfordDistribution = [
+            1 => 30.1, 2 => 17.6, 3 => 12.5, 4 => 9.7, 5 => 7.9,
+            6 => 6.7, 7 => 5.8, 8 => 5.1, 9 => 4.6
+        ];
+
+        $totalDeviation = 0.0;
+        for ($i = 1; $i <= 9; $i++) {
+            $observedFrequency = ($counts[$i] / count($leadingDigits)) * 100;
+            $expectedFrequency = $benfordDistribution[$i];
+            $totalDeviation += pow($observedFrequency - $expectedFrequency, 2);
+        }
+
+        // Normalise la déviation pour obtenir un score plus interprétable.
+        return sqrt($totalDeviation) / 50.0;
+    }
+
+    /**
+     * Parse une chaîne de requête GraphQL pour extraire le type et le nom de l'opération.
+     * @param array<string, mixed> $body Le corps de la requête.
+     * @return array{type: string, name: string}|null
+     */    
+    public static function parseGraphQLQuery(array $body): ?array
+    {
+        $query = $body['query'] ?? null;
+        if (!is_string($query)) {
+            return null;
+        }
+
+        // Regex pour capturer le type d'opération et le nom optionnel.
+        if (preg_match('/(?:^|\s)(query|mutation|subscription)\s*([_A-Za-z][_0-9A-Za-z]*)?/', $query, $matches)) {
+            return [
+                'type' => $matches[1],
+                'name' => $matches[2] ?? 'Anonymous',
+            ];
+        }
+        return null;
+    }
+
+    /**
+     * Nettoie une URL de tous les paramètres de requête liés au PoW.
+     * @param string $originalPath Le chemin original, potentiellement avec des query params.
+     * @param array<string, mixed> $incomingQuery Le tableau de la query string de la requête entrante.
+     * @return string Le chemin final nettoyé.
+     */
+    public static function cleanUrlFromPowParams(string $originalPath, array $incomingQuery): string
+    {
+        $urlParts = parse_url($originalPath);
+        $path = $urlParts['path'] ?? '/';
+        $finalQuery = $incomingQuery;
+
+        $powParams = [
+            'pow_type', 'pow_nonce', 'pow_solution', 'pow_solution_cpu',
+            'pow_solution_mem', 'pow_fp', 'pow_solution_population',
+            'pow_solution_work_result', 'pow_problem_id'
+        ];
+
+        foreach ($powParams as $param) {
+            unset($finalQuery[$param]);
+        }
+
+        if (!empty($finalQuery)) {
+            return $path . '?' . http_build_query($finalQuery);
+        }
+        return $path;
+    }
+
+    /**
+     * Vérifie si un host et un path de requête correspondent à une entrée de liste blanche.
+     */
+    public static function hostPathMatches(string $requestHost, string $requestPath, string $entry): bool
+    {
+        $firstSlashIndex = strpos($entry, '/');
+        if ($firstSlashIndex === false) return false;
+
+        $hostPattern = substr($entry, 0, $firstSlashIndex);
+        $pathPattern = substr($entry, $firstSlashIndex);
+
+        if ($requestHost !== $hostPattern) return false;
+
+        return self::pathMatches($requestPath, $pathPattern);
     }
 }

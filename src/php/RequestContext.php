@@ -25,6 +25,9 @@ class RequestContext
     public ?string $httpVersion;
     public int $requestTimestamp;
 
+    /** @var ?array{type: string, name: string} */
+    public ?array $graphqlOperation = null;
+
     // Propriétés spécifiques qui peuvent être fournies par un proxy inverse
     public ?string $ja3;
     public ?string $ja4;
