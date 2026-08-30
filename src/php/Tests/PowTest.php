@@ -30,6 +30,11 @@ final class PowTest extends TestCase
         $securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
             'enableUsefulWork' => true,
             'usefulWorkConfigPath' => __DIR__ . '/problems.config.json',
+            // FIX: Forcer les challenges à être retournés en JSON pour ce test.
+            // Cela garantit que, que ce soit un uPoW ou un PoW standard qui soit émis,
+            // le corps de la réponse sera un tableau et non une chaîne HTML.
+            'isApiRequest' => fn($context) => true,
+            'verbose' => false, // Garder les logs désactivés pour les tests
         ]);
         $this->engine = new FingerprintEngine($securityConfig);
 

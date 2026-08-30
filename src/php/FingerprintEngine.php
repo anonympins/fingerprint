@@ -192,6 +192,11 @@
              $this->log('Host and path in allowlist - allowing request', ['host' => $context->getHeader('host'), 'path' => $context->path]);
              return true;
          }
+         // NOUVEAU: Vérifier la liste blanche GraphQL
+         if ($context->graphqlOperation && $this->isGraphqlOperationInAllowlist($context->graphqlOperation['type'], $context->graphqlOperation['name'])) {
+             $this->log('GraphQL operation in allowlist - allowing request', ['operation' => "{$context->graphqlOperation['type']}:{$context->graphqlOperation['name']}"]);
+             return true;
+         }
          if ($this->verifyWhitelistedBot($context)) {
              $this->log('Whitelisted bot verified - allowing request', ['clientIp' => $context->clientIp]);
              return true;
@@ -697,7 +702,7 @@
          if (empty($operationType) || empty($operationName)) {
              return false;
          }
-
+ 
          $whitelistRules = $this->securityConfig['whitelist'] ?? [];
          $graphqlRule = null;
          foreach ($whitelistRules as $rule) {
@@ -706,27 +711,23 @@
                  break;
              }
          }
-
+ 
          if (empty($graphqlRule['entries'])) {
              return false;
          }
-
+ 
          foreach ($graphqlRule['entries'] as $entry) {
              [$entryType, $entryName] = explode(':', $entry, 2);
-             if ($entryType !== $operationType) {
-                 continue;
-             }
-
-             if ($entryName === $operationName || $entryName === '*') {
-                 return true;
-             }
-             if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) {
-                 return true;
-             }
+             if ($entryType !== $operationType) continue;
+ 
+             if ($entryName === $operationName || $entryName === '*') return true;
+ 
+             if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) return true;
          }
+ 
          return false;
      }
-
+ 
      /**
       * Vérifie si une requête provient d'un bot légitime et whitelisté (ex: Googlebot)
       * en utilisant des recherches DNS inversées et directes. Le résultat est mis en cache.

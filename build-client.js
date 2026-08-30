@@ -16,10 +16,15 @@ async function buildClientScript() {
     console.log('Obfuscating client script...');
     const obfuscationResult = JavaScriptObfuscator.obfuscate(clientScriptContent, {
       compact: true,
-      controlFlowFlattening: true,
-      deadCodeInjection: true,
+      controlFlowFlattening: true, // Aplatit le flux de contrôle
+      deadCodeInjection: true, // Injecte du code mort
       stringArray: true,
-      rotateStringArray: true,
+      stringArrayRotate: true, // Fait tourner le tableau de chaînes
+      stringArrayShuffle: true, // Mélange le tableau de chaînes
+      // L'utilisation d'une graine (seed) de 0 signifie que l'obfuscation sera déterministe
+      // pour une même entrée. Pour une obfuscation unique à chaque build, on peut utiliser
+      // une graine aléatoire, par exemple : seed: Math.random()
+      seed: Math.random(),
       selfDefending: true,
     });
 
