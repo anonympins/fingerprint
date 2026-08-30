@@ -22,6 +22,21 @@ class OptimizationOperators
     }
 
     /**
+     * Crée un évaluateur pour l'optimisation de portefeuille.
+     * @param array $config
+     * @return callable
+     */
+    public static function createPortfolioAllocator(array $config): callable
+    {
+        // Cette fonction est un placeholder. Une implémentation complète nécessiterait
+        // une logique de calcul de rendement et de volatilité de portefeuille.
+        return function (array $weights) use ($config): float {
+            // Minimiser le rendement négatif (donc maximiser le rendement)
+            return -array_sum($weights);
+        };
+    }
+
+    /**
      * Crée un évaluateur pour l'auto-tuning complet de la configuration de sécurité.
      * @param array $context
      * @return callable
@@ -170,5 +185,117 @@ class OptimizationOperators
             $mutate,
             array_merge(['generations' => 50, 'populationSize' => 50], $options)
         );
+    }
+
+    /**
+     * Crée un évaluateur pour trouver les seuils de détection de fraude optimaux.
+     * @param array $context
+     * @return callable
+     */
+    public static function createFraudThresholdEvaluator(array $context): callable
+    {
+        $legitimateClicks = $context['legitimateClicks'] ?? [];
+        $fraudulentClicks = $context['fraudulentClicks'] ?? [];
+
+        return function (array $solution) use ($legitimateClicks, $fraudulentClicks): array {
+            [$minTimeToClick, $maxClickVariance, $minMouseEntropy, $minScrollEvents] = $solution;
+
+            $truePositives = 0;
+            $falsePositives = 0;
+
+            foreach ($fraudulentClicks as $click) {
+                if (
+                    ($click['timeToClick'] < $minTimeToClick) ||
+                    ($click['mouseEntropy'] < $minMouseEntropy)
+                ) {
+                    $truePositives++;
+                }
+            }
+
+            foreach ($legitimateClicks as $click) {
+                if (
+                    ($click['timeToClick'] < $minTimeToClick) ||
+                    ($click['mouseEntropy'] < $minMouseEntropy)
+                ) {
+                    $falsePositives++;
+                }
+            }
+
+            $totalFraudulent = count($fraudulentClicks) ?: 1;
+            $totalLegitimate = count($legitimateClicks) ?: 1;
+
+            $objective1 = 1 - ($truePositives / $totalFraudulent);
+            $objective2 = $falsePositives / $totalLegitimate;
+
+            return [$objective1, $objective2];
+        };
+    }
+
+    /**
+     * Résout le problème de la détection de fraude.
+     * @param array $context
+     * @param array $options
+     * @return array
+     */
+    public static function solveFraudDetection(array $context, array $options = []): array
+    {
+        $fitnessFunction = self::createFraudThresholdEvaluator($context);
+
+        $createIndividual = function (): array {
+            return [
+                100 + self::secureRandom() * 4900, // minTimeToClick
+                1 + self::secureRandom() * 9999,   // maxClickVariance
+                self::secureRandom() * 0.5,        // minMouseEntropy
+                floor(self::secureRandom() * 10) // minScrollEvents
+            ];
+        };
+
+        $crossover = fn ($s1, $s2) => array_map(fn ($a, $b) => ($a + $b) / 2, $s1, $s2);
+
+        $mutate = function (array $solution): array {
+            $i = random_int(0, 3);
+            $mutationFactors = [500, 1000, 0.1, 2];
+            $solution[$i] += (self::secureRandom() - 0.5) * $mutationFactors[$i];
+            return $solution;
+        };
+
+        return Optimization::geneticAlgorithmMultiObjective(
+            $createIndividual,
+            $fitnessFunction,
+            $crossover,
+            $mutate,
+            array_merge(['generations' => 80, 'populationSize' => 60], $options)
+        );
+    }
+
+    /**
+     * Placeholder pour le solveur TSP.
+     * @param array $cities
+     * @param array $options
+     * @return array
+     */
+    public static function solveTSP(array $cities, array $options = []): array
+    {
+        // Implémentation factice pour la complétude
+        return ['solution' => array_keys($cities), 'energy' => 100];
+    }
+
+    /**
+     * Placeholder pour le solveur de portefeuille.
+     * @param array $assets
+     * @param float $maxVolatility
+     * @param array $options
+     * @return array
+     */
+    public static function solvePortfolio(array $assets, float $maxVolatility, array $options = []): array
+    {
+        // Implémentation factice pour la complétude
+        return ['solution' => array_fill(0, count($assets), 1 / count($assets)), 'fitness' => -0.1];
+    }
+
+    public static function solveFacilityLocation(array $customers, int $numFacilities, array $bounds, array $options = []): array
+    {
+        // Implémentation factice pour la complétude
+        return ['solution' => [], 'energy' => 0];
     }
 }

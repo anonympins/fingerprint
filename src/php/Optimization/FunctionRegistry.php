@@ -25,6 +25,8 @@ class FunctionRegistry
             // Fonctions de "Résolution"
             self::$functions['tsp.solve'] = [OptimizationOperators::class, 'solveTSP'];
             self::$functions['portfolio.solve'] = [OptimizationOperators::class, 'solvePortfolio'];
+            self::$functions['fraud.solve'] = [OptimizationOperators::class, 'solveFraudDetection'];
+            self::$functions['facility.solve'] = [OptimizationOperators::class, 'solveFacilityLocation'];
             self::$functions['security.tune'] = [OptimizationOperators::class, 'solveFullSecurityTuning'];
         }
     }
