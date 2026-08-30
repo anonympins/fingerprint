@@ -742,6 +742,11 @@ app.get('/api/problems/solutions', (req, res) => {
 
 ```
 
+#### `getBestTuningSolution()`
+
+Returns the last best solution object found by the auto-tuner. This is particularly useful for "FinOps" or for auditing the tuner's performance, as it allows you to log the exact configuration that the genetic algorithm identified as optimal.
+
+*   **Returns**: (`object|null`) The best solution object `{ solution, objectives }` or `null` if no tuning cycle has completed yet. The `solution` property contains the optimized `weights`, `thresholds`, and `patterns`, while `objectives` contains the performance scores (e.g., false positive/negative rates) for that solution.
 
 #### `problemManager.updateProblemPayload(problemId, newPayload)`
 

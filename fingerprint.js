@@ -3093,6 +3093,7 @@ export const __internal = {
 // --- THRESHOLD AUTO-TUNING SECTION ---
 
 let autoTuningJobId = null;
+let lastBestSolution = null; // NOUVEAU: Stocke la meilleure solution trouvée
 
 /**
  * Executes a threshold optimization pass using collected traffic data.
@@ -3148,7 +3149,7 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   // l'ancienne vers la nouvelle, avec une vélocité de changement maximale.
   const newConfig = bestSolution.solution;
   const MAX_CHANGE_VELOCITY = 0.15; // 15% de changement maximum par cycle
-  
+
   /**
    * Met à jour un objet de configuration (ex: thresholds, weights) en douceur.
    * Cette nouvelle version préserve la proportionnalité des valeurs initiales.
@@ -3156,26 +3157,29 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
    * @param {object} targetConfig - La configuration cible proposée par l'optimiseur.
    */
   const applyInertialUpdate = (currentConfig, targetConfig) => {
-    if (!currentConfig || !targetConfig) return;
-  
-    let totalCurrent = 0;
-    let totalTarget = 0;
-  
-    // 1. Calculer la somme des valeurs actuelles et cibles pour les clés communes.
-    for (const key in targetConfig) {
-      if (Object.hasOwnProperty.call(currentConfig, key)) {
-        totalCurrent += currentConfig[key];
-        totalTarget += targetConfig[key];
+    if (!currentConfig || !targetConfig) return; // Vérifier aussi currentConfig
+
+    // --- NOUVELLE LOGIQUE PROPORTIONNELLE ---
+    let totalCurrentWeight = 0;
+    let totalTargetWeight = 0;
+
+    // 1. Calculer la somme des poids actuels et cibles pour les clés communes.
+    for (const key in currentConfig) {
+      if (Object.hasOwnProperty.call(targetConfig, key)) {
+        totalCurrentWeight += currentConfig[key];
+        totalTargetWeight += targetConfig[key];
       }
     }
-  
-    if (totalCurrent === 0) return; // Éviter la division par zéro.
-  
-    // 2. Déterminer le facteur d'ajustement global, limité par la vélocité maximale.
-    const globalChangeRatio = (totalTarget - totalCurrent) / totalCurrent;
+
+    if (totalCurrentWeight === 0) return; // Éviter la division par zéro
+
+    // 2. Déterminer le ratio de changement global et le limiter par la vélocité.
+    // Cela crée un "facteur d'ajustement" unique pour l'ensemble de la configuration.
+    const globalChangeRatio = (totalTargetWeight - totalCurrentWeight) / totalCurrentWeight;
     const adjustmentFactor = Math.max(-MAX_CHANGE_VELOCITY, Math.min(MAX_CHANGE_VELOCITY, globalChangeRatio));
-  
-    // 3. Appliquer l'ajustement proportionnellement à chaque valeur.
+
+    // 3. Appliquer ce facteur à chaque valeur de la configuration actuelle.
+    // Cela fait "glisser" l'ensemble de la configuration tout en préservant les proportions.
     for (const key in currentConfig) {
       if (Object.hasOwnProperty.call(targetConfig, key)) {
         currentConfig[key] *= (1 + adjustmentFactor);
@@ -3185,6 +3189,9 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds);
   applyInertialUpdate(securityConfig.weights, newConfig.weights);
   applyInertialUpdate(securityConfig.patterns, newConfig.patterns);
+
+  // NOUVEAU: Stocker la meilleure solution pour une consultation externe
+  lastBestSolution = bestSolution;
 
   console.log("[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.");
   console.log("[AutoTuning] Objectifs atteints :", { falsePositiveRate: bestSolution.objectives[0].toFixed(4), falseNegativeRate: bestSolution.objectives[1].toFixed(4) });
@@ -3238,4 +3245,14 @@ export function stopThresholdAutoTuning() {
         autoTuningJobId = null;
         console.log("[AutoTuning] Job d'optimisation des seuils arrêté.");
     }
+}
+
+/**
+ * Returns the last best solution found by the auto-tuner.
+ * This is useful for logging or creating a "finops" security configuration.
+ * @export
+ * @returns {object|null} The best solution object { solution, objectives } or null if no tuning has run.
+ */
+export function getBestTuningSolution() {
+    return lastBestSolution;
 }
