@@ -5,7 +5,7 @@
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)
 [![Watchers](https://img.shields.io/github/watchers/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/watchers)
 
-An HTTP(S) client mitigation and anti-bot protection library for Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.
+An HTTP(S) client mitigation and anti-bot protection library for both PHP and Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.
 
 ## How It Works
 
@@ -53,10 +53,8 @@ For API clients, the challenge is delivered as a `404` JSON response, and the cl
 
 This library is available for both **Node.js** and **PHP**.
 
-*   [Node.js (Express) Quickstart](#nodejs-express)
-*   [PHP Quickstart](#php)
-    *   [PHP Quickstart (Direct Integration)](#php-quickstart-direct-integration)
-    *   [PHP Quickstart (PSR-15 Middleware)](#php-quickstart-psr-15-middleware)
+*   [PHP Quickstart](#php-quickstart)
+*   [Node.js Quickstart](#nodejs-quickstart)
 
 ### Prerequisites
 
@@ -66,7 +64,7 @@ This library is available for both **Node.js** and **PHP**.
 
 ---
 
-### Prerequisites
+<a id="php-quickstart"></a>
 
 ## PHP Quickstart (Direct Integration)
 
@@ -134,7 +132,8 @@ echo "<p>Your suspicion score was: " . round($score, 2) . "</p>";
 ?>
 ```
 
-### [NodeJS Configuration](nodejs-express)
+<a id="nodejs-quickstart"></a>
+### NodeJS Configuration
 
 #### Prerequisites for Node.js
 
