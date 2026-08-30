@@ -8,6 +8,7 @@
  use Anonympins\Fingerprint\Store\StoreManager;
  use Anonympins\Fingerprint\Challenge\ChallengeUtils;
  use Anonympins\Fingerprint\Utils\BlockList;
+ use Anonympins\Fingerprint\Utils\Logger;
  use Anonympins\Fingerprint\Utils\RequestUtils; 
 
  /**
@@ -20,6 +21,7 @@
      private bool $isProduction;
      private BlockList $allowlist;
      private bool $verbose;
+     private ?Logger $logger;
 
      public function __construct(array $securityConfig)
      {
@@ -28,6 +30,7 @@
          $this->allowlist = $this->buildAllowlist();
          $this->validateConfig($securityConfig);
          $this->verbose = $securityConfig['verbose'] ?? false;
+         $this->logger = isset($securityConfig['logger']) && is_callable($securityConfig['logger']) ? new Logger($securityConfig['logger']) : null;
      }
 
      private function validateConfig(array $config): void
@@ -62,11 +65,14 @@
      private function log(string $message, array $data = [], string $level = 'info'): void
      {
          if ($this->verbose) {
-             $logMessage = "[FingerprintEngine] {$message}";
-             if (!empty($data)) {
-                 $logMessage .= ' ' . json_encode($data);
+             // Utilise le logger s'il est configuré, sinon error_log
+             if ($this->logger) {
+                 $this->logger->log($level, "[FingerprintEngine] " . $message, $data);
+             } else {
+                 $logMessage = "[FingerprintEngine] {$message}";
+                 if (!empty($data)) $logMessage .= ' ' . json_encode($data);
+                 error_log($logMessage);
              }
-             error_log($logMessage); // Écrit sur stderr, visible dans la console PHPUnit
          }
      }
 
@@ -458,6 +464,10 @@
                      $this->log('Challenge solution valid - issuing ticket', ['ticketMaxAge' => $ticketTtl]);
  
                      return [
+                 // ... (le reste de la logique de redirection)
+                 'action' => 'redirect',
+                 'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
+                 'score' => 0.0,
                          'action' => 'redirect',
                          'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
                          'score' => 0.0,
@@ -512,6 +522,9 @@
          // Vérifier les URL pièges (après calcul du score)
          $lastNonce = $deviceData['lastChallengeNonce'] ?? null;
          if ($lastNonce && ChallengeUtils::verifyTrapUrl($context->path, $context->query['sig'] ?? '', $lastNonce)) {
+             if ($this->logger) {
+                 $this->logger->log('info', 'trap_triggered', ['deviceId' => $deviceId, 'score' => 100, 'path' => $context->path, 'vector' => ['honeypotScore' => 100]]);
+             }
              $this->log('Honeypot trap URL triggered - condemning device', ['path' => $context->path, 'deviceId' => $deviceId]);
              $deviceData['condemned'] = true; // @phpstan-ignore-line
              $store->set("device:{$deviceId}", $deviceData); // Persiste le statut condamné
@@ -521,6 +534,9 @@
          // 5. Prendre une décision basée sur le score - Vérifier le blocage d'abord.
          $blockThreshold = $thresholds['block'] ?? 95;
          if ($finalScore >= $blockThreshold) {
+             if ($this->logger) {
+                 $this->logger->log('info', 'request_blocked', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
+             }
              $response = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector]; // @phpstan-ignore-line
          } else {
              // Logique de re-challenge
@@ -626,6 +642,10 @@
                  $trapUrls = [ChallengeUtils::generateTrapUrl($nonce), ChallengeUtils::generateTrapUrl($nonce)];
                  $this->log('Challenge issued', ['nonce' => $nonce, 'ttl' => $this->securityConfig['challengeTtl'] ?? 300]);
  
+                 if ($this->logger) {
+                     $this->logger->log('info', 'challenge_issued', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
+                 }
+ 
                  // Pour les API, retourner un challenge JSON
                  if ($isApiRequest) {
                      $challengePayload = [
@@ -654,6 +674,9 @@
              } else {
                  // 6. Si le score est bas et qu'il n'y a pas de ticket, autoriser la requête
                  $this->log('Request passed - no challenge required', ['finalScore' => $finalScore]);
+                 if ($this->logger) {
+                     $this->logger->log('info', 'request_passed', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
+                 }
                  $response = ['action' => 'next', 'score' => $finalScore, 'vector' => $suspicionVector]; // @phpstan-ignore-line
              }
          }

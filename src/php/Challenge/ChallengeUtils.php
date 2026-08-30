@@ -158,7 +158,7 @@ class ChallengeUtils
         }
 
         for ($i = 0; $i < count($buffer); $i++) {
-            $h = self::imul($h ^ $i, 1597334677);
+            $h = self::gmp_imul($h ^ $i, 1597334677);
             $buffer[$i] = $h;
         }
 
@@ -175,17 +175,15 @@ class ChallengeUtils
     /**
      * Émule la multiplication 32-bit `Math.imul` de JavaScript.
      */
-    private static function imul(int $a, int $b): int
+    private static function gmp_imul(int $a, int $b): int
     {
-        $ah = ($a >> 16) & 0xffff;
-        $al = $a & 0xffff;
-        $bh = ($b >> 16) & 0xffff;
-        $bl = $b & 0xffff;
-        $result = ($al * $bl) + ((($ah * $bl + $al * $bh) << 16) & 0xffffffff);
-        if ($result & 0x80000000) {
-            return $result | (int)0xffffffff00000000;
-        }
-        return $result;
+        $gmp_a = gmp_init($a);
+        $gmp_b = gmp_init($b);
+        $gmp_result = gmp_mul($gmp_a, $gmp_b);
+
+        // Tronquer le résultat à 32 bits et le convertir en entier signé.
+        $truncated = gmp_and($gmp_result, '0xFFFFFFFF');
+        return gmp_intval(gmp_sign($truncated) < 0 ? gmp_sub($truncated, '0x100000000') : $truncated);
     }
 
     /**
