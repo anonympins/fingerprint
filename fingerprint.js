@@ -1224,6 +1224,7 @@ function getClickVarianceScore(context) {
     return { clickVarianceScore: score };
 }
 
+
 /**
  * Calcule un score basé sur la détection explicite de frameworks d'automatisation.
  * @param {object} context - Le contexte de la requête.
@@ -1607,7 +1608,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore: clickVarianceScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -1945,6 +1946,7 @@ export class FingerprintEngine {
     this._allowlist = this._buildAllowlist();
     this._validateConfig(securityConfig); // Validate the configuration
     this.verbose = securityConfig.verbose || false;
+    this.dryRun = securityConfig.dryRun || false;
   }
 
   /**
@@ -1962,7 +1964,7 @@ export class FingerprintEngine {
       'weights', 'thresholds', 'cpu', 'ticketMaxAge', 'challengeTtl',
       'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
       'honeypot', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger',
-      'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist',
+      'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
       'similarityThreshold'
     ]);
 
@@ -2002,7 +2004,8 @@ export class FingerprintEngine {
             (suspicionVector.botScore || 0) * (weights.botScore || 0) + // Ajout du nouveau score
             (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
             (suspicionVector.tlsSpoofingScore || 0) * (weights.tlsSpoofingScore || 0) + // NOUVEAU: TLS Spoofing
-            (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0);
+            (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0) +
+            (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0);
 
         return Math.min(100, score);
     }
@@ -2323,7 +2326,15 @@ export class FingerprintEngine {
         if (onDeviceCompromised) {
             onDeviceCompromised({ deviceId: deviceId, clientIp, reason: 'Previously condemned', score: 100, vector: { honeypotScore: 100 } });
         }
-        return { action: 'block', status: 404, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+        const decision = { action: 'block', status: 404, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+        if (this.dryRun) {
+            this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+            decision.intendedAction = decision.action;
+            decision.action = 'next';
+            delete decision.status;
+            delete decision.body;
+        }
+        return decision;
     }
 
     // The engine now works with the context directly, no more rawReq dependency here.
@@ -2524,7 +2535,15 @@ export class FingerprintEngine {
             const newBlockThreshold = thresholds.block ?? 95;
             if (finalScore >= newBlockThreshold) {
                 this._log('Request blocked after invalid challenge solution', { finalScore, newBlockThreshold });
-                return { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+                const decision = { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+                if (this.dryRun) {
+                    this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+                    decision.intendedAction = decision.action;
+                    decision.action = 'next';
+                    delete decision.status;
+                    delete decision.body;
+                }
+                return decision;
             }
             // If not blocked, the request will proceed to be re-challenged.
         }
@@ -2594,7 +2613,15 @@ export class FingerprintEngine {
       if (logger) {
         logger({ type: 'request_blocked', deviceId: deviceId, score: finalScore, vector: suspicionVector, timestamp: Date.now() });
       }
-      return { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+      const decision = { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+      if (this.dryRun) {
+          this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+          decision.intendedAction = decision.action;
+          decision.action = 'next';
+          delete decision.status;
+          delete decision.body;
+      }
+      return decision;
     }
 
     // Honeypot: Check if the request is for a trap URL generated in a previous challenge.
@@ -2610,7 +2637,15 @@ export class FingerprintEngine {
             logger({ type: 'trap_triggered', deviceId: cookies?.device_id, score: 100, path: path, timestamp: Date.now(), vector: { honeypotScore: 100 } });
         }
         await store.set(`device:${cookies.device_id}`, deviceData); // No TTL for condemned status
-        return { action: 'block', status: 404, score: 100, vector: { honeypotScore: 100 } };
+        const decision = { action: 'block', status: 404, score: 100, vector: { honeypotScore: 100 } };
+        if (this.dryRun) {
+            this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+            decision.intendedAction = decision.action;
+            decision.action = 'next';
+            delete decision.status;
+            delete decision.body;
+        }
+        return decision;
     }
     
     // --- NOUVELLE LOGIQUE DE RE-CHALLENGE ---
@@ -2639,7 +2674,15 @@ export class FingerprintEngine {
             suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
             // Recalculate the final score with the updated vector.
             const newFinalScore = this.calculateFinalScore(suspicionVector);
-            return { action: 'block', status: 404, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
+            const decision = { action: 'block', status: 404, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
+            if (this.dryRun) {
+                this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+                decision.intendedAction = decision.action;
+                decision.action = 'next';
+                delete decision.status;
+                delete decision.body;
+            }
+            return decision;
         }
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
@@ -2667,7 +2710,15 @@ export class FingerprintEngine {
                 }
             };
             return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
-        } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi
+            } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi                
+                const decision = { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404 };
+                if (this.dryRun) {
+                    this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+                    decision.intendedAction = decision.action;
+                    decision.action = 'next';
+                    delete decision.status;
+                    return decision;
+                }
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce)); // Génère les URL
@@ -2736,16 +2787,17 @@ export class FingerprintEngine {
                     }
                 };
                 this._log('API challenge response generated', { challengePayload });
-                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
+                decision.body = challengePayload;
             } else {
                 // For browsers, send the HTML page.
                 const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapUrls, originalFingerprint);
-                this._log('Browser challenge page generated', { 
-                    pageLength: page.length, 
+                this._log('Browser challenge page generated', {
+                    pageLength: page.length,
                     trapUrlsInjected: trapUrls.length
                 });
-                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: page };
+                decision.body = page;
             }
+            return decision;
         }
     }
 
@@ -2756,7 +2808,7 @@ export class FingerprintEngine {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
     }
 
-    return { action: 'next', score: finalScore, vector: suspicionVector };
+    return { action: 'next', score: finalScore, vector: suspicionVector, intendedAction: 'next' };
   }
 
   /**
@@ -3152,6 +3204,7 @@ export const powMiddleware = (securityConfig) => {
     req.fingerprint = {
       score: decision.score,
       vector: decision.vector,
+      intendedAction: decision.intendedAction, // Add intended action for logging
     };
 
     // After getSuspicionVector runs, it might have attached cookies to be set.
@@ -3222,8 +3275,9 @@ let lastBestSolution = null; // NOUVEAU: Stocke la meilleure solution trouvée
  * @param {Array<object>} trafficData - The array containing traffic logs.
  * @param {number} minDataPoints - The minimum number of data points required to start optimization.
  * @param {number} maxDataPoints - The maximum number of data points to keep after an optimization cycle.
+ * @param {string} [savePath] - Optional path to save the best configuration to a file.
  */
-function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints) {
+function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath) {
   const highConfidenceLogs = trafficData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
   const highConfidenceRatio = trafficData.length > 0 ? highConfidenceLogs / trafficData.length : 0;
   const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
@@ -3318,6 +3372,17 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   console.log("[AutoTuning] Nouveaux seuils :", securityConfig.thresholds);
   console.log("[AutoTuning] Nouveaux poids :", securityConfig.weights);
   console.log("[AutoTuning] Nouveaux patterns :", securityConfig.patterns);
+
+  // NOUVEAU: Sauvegarder la meilleure configuration si un chemin est fourni.
+  if (savePath) {
+      try {
+          const configToSave = JSON.stringify(bestSolution.solution, null, 2);
+          fs.writeFileSync(savePath, configToSave, 'utf-8');
+          console.log(`[AutoTuning] Meilleure configuration sauvegardée dans : ${savePath}`);
+      } catch (error) {
+          console.error(`[AutoTuning] Erreur lors de la sauvegarde de la configuration optimisée : ${error.message}`);
+      }
+  }
 }
 
 /**
@@ -3329,6 +3394,7 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
  * @param {number} [options.interval=1800000] - The interval in milliseconds between each optimization cycle (default: 30 minutes).
  * @param {number} [options.minDataPoints=200] - The minimum number of requests to have before starting a cycle (default: 200).
  * @param {number} [options.maxDataPoints=10000] - The maximum number of log entries to keep in memory (default: 10,000).
+ * @param {string} [options.savePath] - Optional. If provided, the best configuration found will be saved to this file path.
  */
 export function startThresholdAutoTuning(options) {
     if (autoTuningJobId) {
@@ -3341,7 +3407,8 @@ export function startThresholdAutoTuning(options) {
         trafficData,
         interval = 1800000, // 30 minutes
         minDataPoints = 200,
-        maxDataPoints = 10000 // Limite par défaut à 10 000 entrées
+        maxDataPoints = 10000, // Limite par défaut à 10 000 entrées
+        savePath, // NOUVEAU: Chemin de sauvegarde optionnel
     } = options;
 
     if (!securityConfig || !trafficData) {
@@ -3351,7 +3418,7 @@ export function startThresholdAutoTuning(options) {
     console.log(`[AutoTuning] Job d'optimisation des seuils démarré. Prochain cycle dans ${interval / 60000} minutes.`);
 
     autoTuningJobId = setInterval(() => {
-        runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints);
+        runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath);
     }, interval);
 }
 

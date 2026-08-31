@@ -544,27 +544,6 @@ class RequestUtils
     }
 
     /**
-     * Parse une chaîne de requête GraphQL pour extraire le type et le nom de l'opération.
-     * @param array<string, mixed> $body Le corps de la requête.
-     * @return array{type: string, name: string}|null
-     */    
-    public static function parseGraphQLQuery(array $body): ?array
-    {
-        $query = $body['query'] ?? null;
-        if (!is_string($query)) {
-            return null;
-        }
-
-        // Regex pour capturer le type d'opération et le nom optionnel.
-        if (preg_match('/(?:^|\s)(query|mutation|subscription)\s*([_A-Za-z][_0-9A-Za-z]*)?/', $query, $matches)) {
-            return [
-                'type' => $matches[1],
-                'name' => $matches[2] ?? 'Anonymous',
-            ];
-        }
-        return null;
-    }
-    /**
      * @private
      * Analyzes click positions to detect unnaturally low variance.
      * @param array<int, array{x: int, y: int, targetId: string}>|null $history
@@ -627,6 +606,27 @@ class RequestUtils
         return ['clickVarianceScore' => $score];
     }
 
+    /**
+     * Parse une chaîne de requête GraphQL pour extraire le type et le nom de l'opération.
+     * @param array<string, mixed> $body Le corps de la requête.
+     * @return array{type: string, name: string}|null
+     */    
+    public static function parseGraphQLQuery(array $body): ?array
+    {
+        $query = $body['query'] ?? null;
+        if (!is_string($query)) {
+            return null;
+        }
+
+        // Regex pour capturer le type d'opération et le nom optionnel.
+        if (preg_match('/(?:^|\s)(query|mutation|subscription)\s*([_A-Za-z][_0-9A-Za-z]*)?/', $query, $matches)) {
+            return [
+                'type' => $matches[1],
+                'name' => $matches[2] ?? 'Anonymous',
+            ];
+        }
+        return null;
+    }
     /**
      * Nettoie une URL de tous les paramètres de requête liés au PoW.
      * @param string $originalPath Le chemin original, potentiellement avec des query params.

@@ -274,7 +274,8 @@ $securityConfig = [
         'trafficData' => &$trafficData, // Pass the data source by reference.
         'interval' => 1800,              // Optimization cycle every 30 minutes (in seconds for a cron job).
         'minDataPoints' => 200,
-        'maxDataPoints' => 20000
+        'maxDataPoints' => 20000,
+        'savePath' => './security-config.optimized.json' // (Optional) Save the best config found.
     ],
     // Enables "Useful Proof-of-Work" for suspicious activity.
     'enableUsefulWork' => true,
@@ -424,7 +425,8 @@ const securityConfig = createSecurityProfile('api', {
         trafficData: trafficData,
         interval: 1800000, // 30 minutes
         minDataPoints: 200,
-    }
+        savePath: './security-config.optimized.json' // (Optional) Save the best config found.
+    },
 });
 
 // Create an instance of the middleware with your security configuration.
@@ -591,11 +593,15 @@ const securityConfig = {
         trafficData: trafficData,       // The data source for the genetic algorithm.
         interval: 1800000,              // Optimization cycle every 30 minutes (in ms).
         minDataPoints: 200,              // Minimum requests before starting an optimization cycle.
-        maxDataPoints: 20000              // Minimum requests before starting an optimization cycle.
+        maxDataPoints: 20000,             // Maximum log entries to keep in memory.
+        savePath: './security-config.optimized.json' // (Optional) Save the best config found.
     },
     // Enables problem solving for suspicious activity (configurable in problems.config.json)
     enableUsefulWork: true,
-    usefulWorkConfigPath: './path/to/your/problems.config.json' // (Optional) Path to the useful work configuration.
+    usefulWorkConfigPath: './path/to/your/problems.config.json', // (Optional) Path to the useful work configuration.
+    // (Optional) Enable "dry run" mode. The engine will calculate scores and log intended actions
+    // but will never actually block or challenge a request. Useful for testing new configs in production.
+    dryRun: false,
 };
 
 
