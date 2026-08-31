@@ -1,3 +1,28 @@
+## Version 0.3.2
+
+This release brings major new capabilities to both the Node.js and PHP versions of the library. Key highlights include the full implementation of the "Useful Proof-of-Work" (uPoW) system in PHP, client-side acceleration via WebAssembly (WASM), direct JA3 fingerprinting in Node.js, and significant reliability improvements to the auto-tuner.
+
+### ✨ New Features
+
+*   **Useful Proof-of-Work (uPoW) in PHP**: The PHP version now has full feature parity with Node.js for uPoW.
+    *   The `ProblemManager` is now fully implemented in PHP, allowing it to load, manage, and dispatch complex optimization problems (e.g., TSP, Portfolio Allocation) to suspicious clients.
+    *   Client solutions are integrated back into the system, enabling distributed, collaborative problem-solving.
+
+*   **WASM-Accelerated Client**: The client-side library can now be accelerated with a WebAssembly module for high-performance hashing.
+    *   The build process (`build-client.js`) now includes a step to compile the C++ hashing utility into a WASM module.
+    *   The client library (`fingerprint.client.js`) can dynamically load the WASM module if available, falling back gracefully to the pure JavaScript implementation. This makes client-side fingerprinting faster and harder to tamper with.
+
+*   **Direct JA3 Fingerprinting in Node.js**: The Node.js engine can now calculate the JA3 fingerprint directly from the raw TLS `clientHello` object. This is a major enhancement, as it removes the hard dependency on a reverse proxy (like Nginx or Cloudflare) to provide the JA3 hash, making the library more versatile and easier to deploy in various environments.
+
+*   **Auto-Tuner Solution API**: A new `getBestTuningSolution()` function has been added to the Node.js version. This allows developers to programmatically retrieve and inspect the optimal configuration (`weights`, `thresholds`, `patterns`) found by the auto-tuner, which is useful for auditing and "FinOps".
+
+### 🚀 Improvements
+
+*   **Probationary Tickets in PHP**: The PHP engine now supports issuing short-lived "probationary" tickets for moderately suspicious users who solve a challenge. This forces a quicker re-evaluation, increasing security for borderline cases.
+*   **Auto-Tuner Reliability**: The auto-tuning mechanism has been made more robust, with fixes to default score calculations to improve its initial learning phase and overall stability.
+*   **PHP 64-Bit Compatibility**: The PHP implementation of the `cyrb53` hashing algorithm and other arithmetic operations has been improved using the `gmp` extension to ensure correct and consistent results on 64-bit systems, matching the JavaScript output.
+*   **Expanded PHP Test Coverage**: The PHPUnit test suite has been significantly expanded to cover the new `ProblemManager`, uPoW logic, and other core engine features, increasing overall reliability.
+
 ## Version 0.3.1
 
 This release marks a major expansion of the library, introducing a full-featured PHP version that mirrors the capabilities of the Node.js module. It also adds GraphQL operation whitelisting and an obfuscated client build for enhanced security.
