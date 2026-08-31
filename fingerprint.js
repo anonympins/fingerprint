@@ -44,7 +44,7 @@ const securityProfiles = {
             headerAnomalyScore: 0.1,
             requestPatternScore: 0.6,
             inconsistencyScore: 0.8,
-            behaviorScore: 0.7,
+            behaviorScore: 0.7, // Poids pour les métriques comportementales (souris, clavier)
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.9,
@@ -79,7 +79,7 @@ const securityProfiles = {
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.6,
             timeInconsistencyScore: 1.0,
-            tlsSpoofingScore: 1.0 // NOUVEAU: Plus agressif pour le spoofing TLS
+            tlsSpoofingScore: 1.0 // Plus agressif pour le spoofing TLS
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -111,7 +111,7 @@ const securityProfiles = {
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.5,
             timeInconsistencyScore: 0.8,
-            tlsSpoofingScore: 0.7 // NOUVEAU: Important pour les API
+            tlsSpoofingScore: 0.7 // Important pour les API
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -144,7 +144,7 @@ const securityProfiles = {
             honeypotScore: 1.0, // Crucial for comment spam
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.8,
-            tlsSpoofingScore: 0.6 // NOUVEAU: Moins critique pour les blogs
+            tlsSpoofingScore: 0.6 // Moins critique pour les blogs
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -169,17 +169,14 @@ const securityProfiles = {
             historyScore: 0.4,
             rotationScore: 0.6,
             headerAnomalyScore: 0.2,
-            // Scission du requestPatternScore pour un contrôle plus fin
-            velocityScore: 0.8,       // Pénalise la vitesse globale
-            burstScore: 1.0,          // Pénalise fortement les rafales sur la même ressource (scalping)
-            scrapeScore: 0.9,         // Pénalise le parcours de pages/produits
-            regularityScore: 0.7,     // Détecte les bots de type "cron"
+            // Utilisation d'un score de pattern unifié avec un poids très élevé
+            requestPatternScore: 0.9,
             inconsistencyScore: 1.0, // Crucial for preventing account takeover
             behaviorScore: 0.8, // Important for checkout/login forms
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.7,
             timeInconsistencyScore: 0.9,
-            tlsSpoofingScore: 0.9 // NOUVEAU: Très important pour l'e-commerce
+            tlsSpoofingScore: 0.9 // Très important pour l'e-commerce
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -661,12 +658,12 @@ export const verifyTspChallenge = (
  * Generates the HTML content for the CPU PoW challenge (SHA-256).
  */
 const generateCpuPoWChallenge = (
-  clientIp,
-  nonce,
-  difficulty = 4,
-  path = "",
+    clientIp,
+    nonce,
+    difficulty = 4,
+    path = "",
 ) => {
-  return `
+    return `
       <html>
         <head><title>Security Check</title></head>
         <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
@@ -674,23 +671,23 @@ const generateCpuPoWChallenge = (
           <p>We are verifying that you are not a bot. This takes a few seconds.</p>
           <div id="loader" style="margin:20px;">⚙️ Performing CPU security calculation...</div>
           <script>
-            async function solve() {
-              const ip = "${clientIp}";
-              const nonce = "${nonce}";
-              const diff = ${difficulty};
-              const target = "0".repeat(diff);
-              let solution = 0;
-              
-              while (true) {
-                const msg = "${ip}" + ":" + "${nonce}" + ":" + solution;
-                const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg));
-                const hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-                if (hash.startsWith(target)) break;
-                solution++;
-                if (solution % 100000 === 0) await new Promise(resolve => setTimeout(resolve, 0)); // To avoid freezing the browser
-              }
-              window.location.href = "${path}" + "?pow_type=cpu&pow_nonce=" + nonce + "&pow_solution=" + solution;
-            }
+            async function solve() { 
+              const ip = ${JSON.stringify(clientIp)};
+              const nonce = ${JSON.stringify(nonce)};
+              const diff = ${JSON.stringify(difficulty)};
+              const target = "0".repeat(diff); 
+              let solution = 0; 
+               
+              while (true) { 
+                const msg = ip + ":" + nonce + ":" + solution; 
+                const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg)); 
+                const hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join(''); 
+                if (hash.startsWith(target)) break; 
+                solution++; 
+                if (solution % 100000 === 0) await new Promise(resolve => setTimeout(resolve, 0)); 
+              } 
+              window.location.href = ${JSON.stringify(path)} + "?pow_type=cpu&pow_nonce=" + nonce + "&pow_solution=" + solution; 
+            } 
             solve();
           </script>
         </body>
@@ -1511,10 +1508,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
   const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
 
-  // NOUVEAU: On calcule le score de spoofing TLS.
   const { tlsSpoofingScore } = getTlsSpoofingScore(context);
 
-  // NOUVEAU: On appelle getBotScore pour détecter les marqueurs d'automatisation.
   const { botScore } = getBotScore(context);
 
   // NOUVEAU: On calcule le score d'incohérence temporelle.
@@ -1698,7 +1693,7 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  * @param {string} clientIp - The client's IP address.
  * @returns {string} HTML content.
  */
-function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapContainerHtml, originalFingerprint) {
+function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapUrls, originalFingerprint) { // eslint-disable-line max-len
     const { nonce, target, path } = cpuChallengeDetails;
     const solverCode = getPowSolverCode();
     // On prépare le baseBlock pour le client. Il sera envoyé sous forme de tableau d'octets.
@@ -1706,6 +1701,13 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     const fingerprint = originalFingerprint;
     const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint);
     const baseBlockBytes = `[${baseBlock.toString('utf8').split('').map(c => c.charCodeAt(0)).join(',')}]`;
+
+    // Prépare la configuration pour l'initialisation du client, y compris les URL pièges.
+    const clientInitConfig = {
+        mouse: true,
+        keystrokes: true,
+        trapUrls: trapUrls // On passe directement le tableau d'URL
+    };
 
     const challengeScript = `
       async function solve() {
@@ -1738,6 +1740,12 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
         window.location.href = finalUrl;
       }
+
+      // Initialise la bibliothèque client avec les URL pièges
+      // On crée un alias pour un appel plus propre, tout en s'assurant que la bibliothèque est chargée.
+      const initializeClient = window.ClientLibrary?.initializeClient;
+      if (initializeClient) initializeClient(${JSON.stringify(clientInitConfig)});
+      
       solve();
     `;
 
@@ -1753,13 +1761,12 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     }
 
     if (!htmlTemplate) {
-        htmlTemplate = `<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>`;
+        htmlTemplate = `<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script></body></html>`; // eslint-disable-line max-len
     }
 
     return htmlTemplate
         .replace('<!-- FINGERPRINT_SOLVER_SCRIPT -->', solverCode)
-        .replace('<!-- FINGERPRINT_CHALLENGE_SCRIPT -->', challengeScript)
-        .replace('<!-- FINGERPRINT_TRAPS -->', trapContainerHtml);
+        .replace('<!-- FINGERPRINT_CHALLENGE_SCRIPT -->', challengeScript);
 }
 
 /**
@@ -2586,8 +2593,7 @@ export class FingerprintEngine {
         } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
-            const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce));
-            const trapLinksHtml = trapUrls.map(url => `<a href="${url}" tabindex="-1">config</a>`).join(' ');
+            const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce)); // Génère les URL
 
             // On passe la configuration pour que la difficulté soit calculée correctement.
             const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
@@ -2656,10 +2662,10 @@ export class FingerprintEngine {
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
                 // For browsers, send the HTML page.
-                const trapContainer = `<div style="position:absolute;left:-9999px;top:-9999px;" aria-hidden="true">${trapLinksHtml}</div>`;                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapContainer, originalFingerprint);
+                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapUrls, originalFingerprint);
                 this._log('Browser challenge page generated', { 
                     pageLength: page.length, 
-                    hasTrapContainer: true 
+                    trapUrlsInjected: trapUrls.length
                 });
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: page };
             }

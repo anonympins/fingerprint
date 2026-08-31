@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Anonympins\Fingerprint\ProblemManager;
 use Anonympins\Fingerprint\Store\IStore;
 use Anonympins\Fingerprint\Store\InMemoryStore;
-use Anonympins\Fingerprint\Optimization\FunctionRegistry;
+use Anonympins\Fingerprint\Optimization\FunctionRegistry; // Assurez-vous que cette classe est autoloadable
 
 class ProblemManagerTest extends TestCase
 {
@@ -163,7 +163,7 @@ class ProblemManagerTest extends TestCase
             [
                 "id" => $problemId,
                 "workUnit" => [
-                    "type" => "simulated_annealing_iterations",
+                    "type" => "simulated_annealing_iterations", // @phpstan-ignore-line
                     "baseIterations" => 10000,
                     // **LA CORRECTION** : La fonction de score est requise pour la vérification.
                     "scoreFunction" => "test.calculateEnergy"
@@ -172,7 +172,7 @@ class ProblemManagerTest extends TestCase
         ]);
 
         // Enregistrer une fonction de score factice pour le test.
-        FunctionRegistry::register('test.calculateEnergy', function ($solution, $payload) {
+        FunctionRegistry::register('test.calculateEnergy', function ($solution, $payload) { // @phpstan-ignore-line
             return 800.0; // Retourne la nouvelle "meilleure" énergie attendue.
         });
 
@@ -209,14 +209,14 @@ class ProblemManagerTest extends TestCase
             [
                 "id" => $problemId,
                 "workUnit" => [
-                    "type" => "simulated_annealing_iterations",
+                    "type" => "simulated_annealing_iterations", // @phpstan-ignore-line
                     "baseIterations" => 10000,
                     "scoreFunction" => "test.calculateEnergy"
                 ]
             ]
         ]);
 
-        // La fonction de score factice retourne une énergie *pire* que celle existante.
+        // La fonction de score factice retourne une énergie *pire* que celle existante. // @phpstan-ignore-line
         FunctionRegistry::register('test.calculateEnergy', function ($solution, $payload) {
             return 1200.0;
         });

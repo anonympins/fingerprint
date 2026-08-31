@@ -464,24 +464,25 @@ const powMiddlewareInstance = powMiddleware(securityConfig);
 
 ## Advanced Behavioral Analysis
 
-The FingerprintEngine includes sophisticated behavioral analysis to detect non-human patterns. This analysis is performed by the `getRequestPatternScore` function, which is a stateful check that looks for repetitive or unnaturally fast requests from a single device.
+The `FingerprintEngine` includes sophisticated behavioral analysis to detect non-human patterns. This analysis is performed by the `getRequestPatternScore` function, which is a stateful check that looks for repetitive or unnaturally fast requests from a single device.
 
 This function uses several configurable parameters to identify suspicious behavior:
 
-### Core Pattern Detection
-
-These parameters form the basis of the request pattern analysis:
-
-*   `velocityThreshold`: (Default: 800ms) Penalizes requests that are too fast to be humanly possible. If the time since the last request from a device is less than this value, the suspicion score increases.
-*   `burstThreshold`: (Default: 1500ms) Adds a significant penalty for multiple identical requests (same path and query parameters) occurring in a very short time frame. This is a strong indicator of automated retries or brute-force attacks.
-*   `scrapeThreshold`: (Default: 1000ms) Penalizes sequential requests to the same path but with different query parameters. This pattern is typical of scraping bots that iterate through pages or product IDs.
-*   `sequenceLength`: (Default: 3) Detects repetitive sequences of requests (e.g., A -> B -> C -> A -> B -> C), which is a common pattern for scripted bots navigating a site.
-
-### Statistical Analysis (Benford's Law)
+### Statistical Analysis (Regularity and Benford's Law)
 
 To counter more advanced bots that might try to randomize their request timings, the engine employs statistical analysis based on Benford's Law.
 
 *   **How it works**: Benford's Law states that in many naturally occurring sets of numbers, the leading digit is more likely to be small. For example, the number 1 appears as the leading digit about 30% of the time, while 9 appears less than 5% of the time. The timings between a human's requests tend to follow this natural distribution, whereas a bot's randomized delays often do not.
+*   **Regularity Detection**: The system also calculates the standard deviation of the time intervals between requests. A very low standard deviation indicates an unnaturally regular, "cron-like" behavior, which is a strong signal of automation.
+
+### Core Pattern Detection Parameters
+
+These parameters form the basis of the statistical request pattern analysis:
+
+*   `minSamples`: (Default: 5) The minimum number of request timings to collect before performing statistical analysis.
+*   `regularityThreshold`: (Default: 50ms) The standard deviation in milliseconds below which the request timing is considered "too regular" and robotic.
+*   `benfordThreshold`: (Default: 0.15) The deviation score from Benford's Law above which the timing distribution is considered "unnatural".
+*   `patternWeight`: (Default: 80) A strong, one-time penalty applied to the suspicion score if either a regularity or Benford's Law anomaly is detected.
 
 *   `benfordMinSamples`: (Default: 15) The minimum number of request timings to collect before performing a Benford's Law test.
 *   `benfordWeight`: (Default: 50) The weight applied to the suspicion score if the distribution of timings significantly deviates from Benford's Law.
@@ -713,6 +714,10 @@ initializeClient({
  
   // (Optional) An array of `name` attributes for hidden form fields that act as bot traps.
   honeypots: ['email_confirm', 'user_nickname', 'website_url'],
+
+  // (Optional) An array of signed trap URLs provided by the server. The client will
+  // dynamically inject these into the DOM to trap bots that parse the live DOM.
+  trapUrls: ['/backups/db.sql.gz?sig=...', '/.env?sig=...'],
  
   // (Optional) Path to the WebAssembly loader script (`fp.js`) for accelerated hashing.
   // If provided, the client will attempt to load the WASM module. If it fails or is not available,

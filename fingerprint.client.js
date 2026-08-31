@@ -360,6 +360,32 @@ const ClientLibrary = {
   }, // <-- VIRGULE AJOUTÉE ICI
   
   /**
+   * Injects visually hidden "honeypot" links into the DOM to trap bots.
+   * @param {string[]} urls - An array of trap URLs to inject.
+   * @private
+   */
+  injectTrapLinks(urls) {
+    if (!urls || urls.length === 0 || typeof document === 'undefined') {
+      return;
+    }
+
+    const trapContainer = document.createElement('div');
+    trapContainer.setAttribute('aria-hidden', 'true');
+    trapContainer.style.position = 'absolute';
+    trapContainer.style.left = '-9999px';
+    trapContainer.style.top = '-9999px';
+
+    urls.forEach(url => {
+      const link = document.createElement('a');
+      link.href = url;
+      link.tabIndex = -1; // Make it unfocusable
+      link.textContent = 'config'; // Some plausible text
+      trapContainer.appendChild(link);
+    });
+
+    document.body.appendChild(trapContainer);
+  },
+  /**
    * Intercepte une réponse de challenge JSON, le résout, et réessaie la requête.
    * @param {Response} response - La réponse initiale (potentiellement 429).
    * @param {RequestInfo} resource - La ressource de la requête originale.
@@ -413,6 +439,7 @@ const ClientLibrary = {
         mouse = true,
         keystrokes = true,
         honeypots = [],
+        trapUrls = [], // Nouveau paramètre pour les URL pièges
         wasmPath, // Nouveau paramètre
         fetch: fetchConfig = {}
     } = config;
@@ -430,6 +457,11 @@ const ClientLibrary = {
     }
     if (honeypots.length > 0) {
         this.initializeHoneypots(honeypots);
+    }
+
+    // Injection dynamique des liens pièges au démarrage
+    if (trapUrls.length > 0) {
+        this.injectTrapLinks(trapUrls);
     }
     // On active l'interception si `fetch` est configuré, même avec un objet vide.
     if (config.fetch) {
@@ -497,6 +529,7 @@ const ClientLibrary = {
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
  * @property {number} historyLength - La longueur de l'historique de session du navigateur (`window.history.length`).
  * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
+ * @property {string[]} [trapUrls] - URLs pièges à injecter dynamiquement.
  */
 
 /** @type {ClientBehaviorMetrics} */
@@ -532,7 +565,14 @@ export const patchGlobalFetch = ClientLibrary.patchGlobalFetch.bind(ClientLibrar
 export const initializeFetch = ClientLibrary.initializeFetch.bind(ClientLibrary);
 export const initializeClient = ClientLibrary.initializeClient.bind(ClientLibrary);
 export const initializeWasm = ClientLibrary.initializeWasm.bind(ClientLibrary);
+export const injectTrapLinks = ClientLibrary.injectTrapLinks.bind(ClientLibrary);
 export const solveChallengeAndRetry = ClientLibrary.solveChallengeAndRetry.bind(ClientLibrary);
 
 // Export the internal object for testing purposes
 export default ClientLibrary;
+
+// --- Global Export for Browser ---
+// Attach the library to the window object to make it accessible from inline scripts.
+if (typeof window !== 'undefined') {
+    window.ClientLibrary = ClientLibrary;
+}
