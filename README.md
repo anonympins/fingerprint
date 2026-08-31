@@ -369,7 +369,7 @@ This architecture is common in high-performance environments and offers great fl
 ---
 
 <a id="nodejs-quickstart"></a>
-## NodeJS Configuration
+## NodeJS Quickstart
 
 ### Prerequisites for Node.js
 
