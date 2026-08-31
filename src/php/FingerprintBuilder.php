@@ -122,12 +122,14 @@ class FingerprintBuilder
             }
 
             // On ne compare que les clés qui ont un poids défini.
-            $weight = $weights[$key] ?? 0.0; // Utiliser 0.0 si pas de poids défini
-            
-            // On ne prend en compte que les clés présentes dans les deux empreintes
+            $weight = $weights[$key] ?? null;
+            if ($weight === null) continue;
+
+            $totalWeight += $weight;
             if (isset($map1[$key]) && isset($map2[$key])) {
-                $totalWeight += $weight; // Le poids total n'augmente que pour les clés communes
-                if ($map1[$key] === $map2[$key]) $weightedMatches += $weight;
+                if ($map1[$key] === $map2[$key]) {
+                    $weightedMatches += $weight;
+                }
             }
         }
 

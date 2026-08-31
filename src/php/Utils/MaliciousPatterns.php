@@ -14,7 +14,7 @@ class MaliciousPatterns
      */
     private const INJECTION_PATTERNS = [
         // SQL/NoSQL injections, including time-based attacks
-        'sql' => '/(\$ne|\' *OR *\'1\'=\'1|[\'";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i',
+        'sql' => '/(\$ne|\' *OR *\'1\'=\'1|[\'";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|(?:SLEEP|BENCHMARK)\s*\(|WAITFOR DELAY)/i',
         // Log4Shell (JNDI injection)
         'log4shell' => '/\$\{jndi:(ldap|rmi|dns):/i',
         // Server-Side Template Injection (SSTI) for engines like Jinja2, Twig, etc.
@@ -22,9 +22,11 @@ class MaliciousPatterns
         // XML External Entity (XXE) injection
         'xxe' => '/<!ENTITY\s+.*SYSTEM/i',
         // Path Traversal
-        'traversal' => '/(\.\.\/|\.\.\\)/',
+        'traversal' => '/(\.\.\/|\.\.)/',
         // Remote Command Execution (RCE)
-        'rce' => '/`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i',
+        // The original regex had an issue with `|cmd` being interpreted as a modifier in some PCRE versions.
+        // Using a non-capturing group (?:...) makes it more robust and fixes the compilation error.
+        'rce' => '/`.*`|(?:^|[\n;&|]\s*)(?:ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i',
     ];
 
     /**
@@ -41,8 +43,13 @@ class MaliciousPatterns
 
         foreach ($typesToDetect as $type) {
             if (isset(self::INJECTION_PATTERNS[$type])) {
-                if (preg_match(self::INJECTION_PATTERNS[$type], $str)) {
-                    return true;
+               try {
+                   if (preg_match(self::INJECTION_PATTERNS[$type], $str)) {
+                       return true;
+                   }
+               }catch (\Exception $e){
+                   error_log($type);
+                   error_log($e->getMessage());
                 }
             }
         }

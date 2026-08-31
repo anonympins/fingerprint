@@ -33,11 +33,6 @@ class InMemoryStore implements IStore
     public function set(string $key, $value, ?int $ttl = null): void
     {
         $expiresAt = $ttl !== null ? time() + $ttl : null;
-        // En PHP, on travaille avec des tableaux, donc pas de conversion de Set nécessaire,
-        // mais on s'assure que la valeur est un tableau si elle contient des clés comme 'ips'.
-        if (is_array($value) && isset($value['ips']) && $value['ips'] instanceof \SplFixedArray) {
-            $value['ips'] = $value['ips']->toArray();
-        }
 
         $this->data[$key] = ['value' => $value, 'expiresAt' => $expiresAt];
     }

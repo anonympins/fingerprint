@@ -8,6 +8,7 @@
  use Anonympins\Fingerprint\Store\StoreManager;
  use Anonympins\Fingerprint\Challenge\ChallengeUtils;
  use Anonympins\Fingerprint\Utils\BlockList;
+ use Anonympins\Fingerprint\Utils\Logger;
  use Anonympins\Fingerprint\Utils\RequestUtils; 
 
  /**
@@ -20,14 +21,16 @@
      private bool $isProduction;
      private BlockList $allowlist;
      private bool $verbose;
+     private ?Logger $logger;
 
      public function __construct(array $securityConfig)
      {
          $this->isProduction = ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production';
          $this->securityConfig = $securityConfig;
+         $this->verbose = $securityConfig['verbose'] ?? false;
          $this->allowlist = $this->buildAllowlist();
          $this->validateConfig($securityConfig);
-         $this->verbose = $securityConfig['verbose'] ?? false;
+         $this->logger = isset($securityConfig['logger']) && is_callable($securityConfig['logger']) ? new Logger($securityConfig['logger']) : null;
      }
 
      private function validateConfig(array $config): void
@@ -62,11 +65,14 @@
      private function log(string $message, array $data = [], string $level = 'info'): void
      {
          if ($this->verbose) {
-             $logMessage = "[FingerprintEngine] {$message}";
-             if (!empty($data)) {
-                 $logMessage .= ' ' . json_encode($data);
+             // Utilise le logger s'il est configuré, sinon error_log
+             if ($this->logger) {
+                 $this->logger->log($level, "[FingerprintEngine] " . $message, $data);
+             } else {
+                 $logMessage = "[FingerprintEngine] {$message}";
+                 if (!empty($data)) $logMessage .= ' ' . json_encode($data);
+                 error_log($logMessage);
              }
-             error_log($logMessage); // Écrit sur stderr, visible dans la console PHPUnit
          }
      }
 
@@ -186,6 +192,11 @@
              $this->log('Host and path in allowlist - allowing request', ['host' => $context->getHeader('host'), 'path' => $context->path]);
              return true;
          }
+         // NOUVEAU: Vérifier la liste blanche GraphQL
+         if ($context->graphqlOperation && $this->isGraphqlOperationInAllowlist($context->graphqlOperation['type'], $context->graphqlOperation['name'])) {
+             $this->log('GraphQL operation in allowlist - allowing request', ['operation' => "{$context->graphqlOperation['type']}:{$context->graphqlOperation['name']}"]);
+             return true;
+         }
          if ($this->verifyWhitelistedBot($context)) {
              $this->log('Whitelisted bot verified - allowing request', ['clientIp' => $context->clientIp]);
              return true;
@@ -275,6 +286,10 @@
          $identity = $this->resolveRequestIdentity($context, $suspicionVector);
          $deviceData = $identity['deviceData'];
          $deviceId = $identity['deviceId'];
+         if ($deviceData && ($deviceData['condemned'] ?? false)) {
+             $suspicionVector['honeypotScore'] = 100;
+             return $suspicionVector;
+         }
  
          // Si un nouveau cookie doit être défini, on le stocke temporairement dans le contexte
          // pour que le code appelant puisse le gérer.
@@ -291,17 +306,13 @@
          $deviceData['lastUpdate'] = time() * 1000;
  
          // --- Calcul des différents scores de suspicion ---
-
-         // Score d'incohérence du fingerprint. Pour un nouvel appareil, le score est de 0.
-         $inconsistencyScore = 0.0;
-         if (isset($deviceData['initialDeviceHash'])) {
-             $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
-             $consistencyScore = FingerprintBuilder::compare($deviceData['initialDeviceHash'], $currentDeviceHash);
-             $inconsistencyScore = min(100.0, max(0.0, (1 - $consistencyScore) * 200));
-             if ($consistencyScore < ($this->securityConfig['similarityThreshold'] ?? 0.7)) {
-                 $inconsistencyScore = 100.0;
-             }
-             $this->log('Inconsistency score calculated', ['initial' => $deviceData['initialDeviceHash'], 'current' => $currentDeviceHash, 'consistency' => $consistencyScore, 'score' => $inconsistencyScore]);
+ 
+         // Score d'incohérence du fingerprint (déplacé ici pour être avec les autres)
+         $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
+         $consistencyScore = FingerprintBuilder::compare($deviceData['initialDeviceHash'] ?? '', $currentDeviceHash);
+         $inconsistencyScore = min(100.0, max(0.0, (1 - $consistencyScore) * 200));
+         if ($consistencyScore < ($this->securityConfig['similarityThreshold'] ?? 0.7)) {
+             $inconsistencyScore = 100.0;
          }
 
          $behavioral = RequestUtils::getBehavioralIndicators($context, $deviceData);
@@ -362,6 +373,9 @@
       */
      public function processRequest(RequestContext $context): array
      {
+         // Initialiser le vecteur de suspicion pour éviter les erreurs de type.
+         $suspicionVector = [];
+
          $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
  
          // Parse GraphQL query if applicable
@@ -378,55 +392,24 @@
          }
  
          // Initialiser le vecteur de suspicion
-         $suspicionVector = [];
- 
-         // Résoudre l'identité et vérifier le statut "condamné"
-         $identity = $this->resolveRequestIdentity($context, $suspicionVector);
-         $deviceId = $identity['deviceId'];
-         $deviceData = $identity['deviceData'];
-         if ($deviceData && ($deviceData['condemned'] ?? false)) {
-             $this->log('Device condemned - blocking request', ['deviceId' => $deviceId], 'warn');
-             return ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => 100, 'vector' => ['honeypotScore' => 100]];
-         }
- 
-         $store = StoreManager::getStore();
          $thresholds = $this->securityConfig['thresholds'];
  
-         // 2. Gérer la soumission d'une solution de challenge
+         // 2. Gérer la soumission d'une solution de challenge (PRIORITÉ HAUTE)
          $powNonce = $context->query['pow_nonce'] ?? null;
-         if ($powNonce) {
-             $this->log('Challenge solution submitted', ['pow_type' => $context->query['pow_type'] ?? 'unknown', 'nonce' => $powNonce]); // @phpstan-ignore-line
+         $isChallengeSubmission = $powNonce && (
+             isset($context->query['pow_solution']) || 
+             isset($context->query['pow_solution_cpu']) ||
+             (isset($context->query['pow_type']) && $context->query['pow_type'] === 'useful_work_task')
+         );
+         if ($isChallengeSubmission) {
+             $this->log('Challenge solution submitted', ['pow_type' => $context->query['pow_type'] ?? 'unknown', 'nonce' => $powNonce]);
+             $store = StoreManager::getStore();
              $challengeContext = $store->get("secret:{$powNonce}");
+             $powType = $context->query['pow_type'] ?? null;
  
              if ($challengeContext) {
                  $isValid = false;
                  $ticket = null;
- 
-                 $powType = $context->query['pow_type'] ?? null;
-                 if ($powType === 'cpu_target' || $powType === 'cpu_mem') {
-                     $cpuSolution = $context->query['pow_solution_cpu'] ?? $context->query['pow_solution'] ?? null;
-                    if ($cpuSolution) {
-                        $ticket = ChallengeUtils::verifyCpuTargetPoWAndGenerateTicket(
-                            $context->clientIp,
-                            3600000, // TTL temporaire, sera ajusté
-                            $powNonce,
-                            $cpuSolution,
-                            $challengeContext
-                        );
-                         $isValid = $ticket !== null;
- 
-                         if ($powType === 'cpu_mem') {
-                             $memSolution = $context->query['pow_solution_mem'] ?? null;
-                             $isMemValid = $memSolution ? ChallengeUtils::verifyMemoryPoW(
-                                 $powNonce,
-                                 $memSolution,
-                                 $challengeContext['memDifficulty'] ?? 0,
-                                 $challengeContext['clientSecret'] ?? ''
-                             ) : false;
-                             $isValid = $isValid && $isMemValid;
-                         }
-                     }
-                 }
  
                  // Vérification de la cohérence du fingerprint
                  $solverFingerprint = $context->query['pow_fp'] ?? RequestUtils::getCompositeDeviceHash($context);
@@ -440,42 +423,67 @@
                          'threshold' => $similarityThreshold
                      ], 'warn');
                      $isValid = false;
+                 } else {
+                     // Le fingerprint est cohérent, on peut valider la solution
+                     if ($powType === 'cpu_target' || $powType === 'cpu_mem') {
+                         $cpuSolution = $context->query['pow_solution_cpu'] ?? $context->query['pow_solution'] ?? null;
+                         if ($cpuSolution) {
+                             $ticket = ChallengeUtils::verifyCpuTargetPoWAndGenerateTicket($context->clientIp, 3600000, $powNonce, $cpuSolution, $challengeContext);
+                             $isValid = $ticket !== null;
+ 
+                             if ($powType === 'cpu_mem') {
+                                 $memSolution = $context->query['pow_solution_mem'] ?? null;
+                                 $isMemValid = $memSolution ? ChallengeUtils::verifyMemoryPoW($powNonce, $memSolution, $challengeContext['memDifficulty'] ?? 0, $challengeContext['clientSecret'] ?? '') : false;
+                                 $isValid = $isValid && $isMemValid;
+                             }
+                         }
+                     } elseif ($powType === 'useful_work_task') {
+                         $problemId = $context->query['pow_problem_id'] ?? null;
+                         $workResultJson = $context->query['pow_solution_work_result'] ?? null;
+                         if ($problemId && $workResultJson) {
+                             $workResult = json_decode($workResultJson, true);
+                             $this->log('Verifying useful work solution.', [
+                                 'problemId' => $problemId,
+                                 'receivedData' => $workResult,
+                                 'jsonLastError' => json_last_error_msg()
+                             ]);
+                             if (json_last_error() === JSON_ERROR_NONE) {
+                                 // @phpstan-ignore-next-line
+                                 $problemManager = \Anonympins\Fingerprint\ProblemManager::getInstance($this->securityConfig['usefulWorkConfigPath'] ?? null, $store);
+                                 // FIX: La solution est directement le $workResult, pas une sous-propriété.
+                                 $problemManager->integrateSolution($problemId, $workResult);
+                                 $isValid = true;
+                                 // FIX: Générer un vrai ticket pour uPoW, comme pour un PoW normal.
+                                 $ticketTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000; // 1 heure par défaut
+                                 $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
+                                 $signature = hash_hmac('sha256', "{$context->clientIp}:{$expiry}", ChallengeUtils::getPowSecret());
+                                 $ticket = "{$expiry}:{$signature}";
+                             }
+                         }
+                     }
                  }
  
                  if ($isValid) {
-                     $store->delete("secret:{$powNonce}"); // @phpstan-ignore-line
+                     $store->delete("secret:{$powNonce}");
+                     $ticketTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000;
+                     $this->log('Challenge solution valid - issuing ticket', ['ticketMaxAge' => $ticketTtl]);
  
-                     // Logique de ticket probatoire
-                     $preliminaryScore = $challengeContext['suspicionScore'] ?? 0;
-                     $isProbationary = $preliminaryScore >= $thresholds['low'];
-                     $probationaryTtl = $this->securityConfig['probationaryTtl'] ?? 30000; // 30s
-                     $optimalTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000;
-                     $finalTtl = $isProbationary ? $probationaryTtl : $optimalTtl;
- 
-                     $this->log('Challenge solution valid - issuing ticket', ['ticketMaxAge' => $finalTtl, 'isProbationary' => $isProbationary]);
- 
-                     $originalPath = $challengeContext['originalPath'] ?? '/';
                      return [
+                 // ... (le reste de la logique de redirection)
+                 'action' => 'redirect',
+                 'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
+                 'score' => 0.0,
                          'action' => 'redirect',
-                         'path' => RequestUtils::cleanUrlFromPowParams($originalPath, $context->query), // @phpstan-ignore-line
+                         'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
                          'score' => 0.0,
                          'vector' => ['challenge_solved' => 100],
-                         'cookie' => [
-                             'name' => 'pow_clearance',
-                             'value' => ChallengeUtils::regenerateTicketWithTtl($ticket, $context->clientIp, $finalTtl),
-                             'options' => ['httponly' => true, 'secure' => $this->isProduction, 'expires' => time() + ($finalTtl / 1000), 'path' => '/']
-                         ]
+                         'cookie' => ['name' => 'pow_clearance', 'value' => $ticket, 'options' => ['httponly' => true, 'secure' => $this->isProduction, 'expires' => time() + ($ticketTtl / 1000), 'path' => '/']]
                      ];
-                 } else {
-                     $this->log('Challenge solution invalid', ['nonce' => $powNonce], 'warn');
-                     // Si la solution est invalide, on pénalise fortement pour forcer un nouveau challenge plus difficile.
-                     // On ne retourne pas tout de suite, on laisse la logique continuer avec un score élevé.
-                     $suspicionVector['honeypotScore'] = 100;
                  }
-             } else {
-                 $this->log('Challenge context not found or expired', ['nonce' => $powNonce], 'warn');
-                 $suspicionVector['honeypotScore'] = 100; // Tentative de probing
              }
+             // Si la solution est invalide ou le nonce est expiré, on pénalise fortement pour la suite.
+             $this->log('Challenge solution invalid or context expired', ['nonce' => $powNonce], 'warn');
+             $suspicionVector['honeypotScore'] = 100.0;
          }
  
          // 3. Vérifier un ticket existant
@@ -489,6 +497,16 @@
          }
  
          // 4. Calculer le vecteur et le score de suspicion
+         // Résoudre l'identité et vérifier le statut "condamné"
+         $store = StoreManager::getStore();
+         $identity = $this->resolveRequestIdentity($context, $suspicionVector);
+         $deviceId = $identity['deviceId'];
+         $deviceData = $identity['deviceData'];
+         if ($deviceData && ($deviceData['condemned'] ?? false)) {
+             $this->log('Device condemned - blocking request', ['deviceId' => $deviceId], 'warn');
+             return ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => 100, 'vector' => ['honeypotScore' => 100]];
+         }
+
          $suspicionVector = $this->getSuspicionVector($context, $suspicionVector);
          $finalScore = $this->calculateFinalScore($suspicionVector);
          $this->log('Suspicion vector and final score calculated', [
@@ -500,8 +518,8 @@
          $isNewDevice = $identity['newCookie'] !== null;
          if ($isNewDevice && ($this->securityConfig['challengeNewDevices'] ?? false) && $finalScore < $thresholds['low']) {
              $this->log('New device - enforcing minimum challenge score', [
-                 'originalScore' => $finalScore,
-                 'enforcedScore' => $thresholds['low']
+                 'originalScore' => round($finalScore, 2),
+                 'enforcedScore' => (float)$thresholds['low']
              ]);
              $finalScore = (float)$thresholds['low'];
          }
@@ -509,18 +527,33 @@
          // Vérifier les URL pièges (après calcul du score)
          $lastNonce = $deviceData['lastChallengeNonce'] ?? null;
          if ($lastNonce && ChallengeUtils::verifyTrapUrl($context->path, $context->query['sig'] ?? '', $lastNonce)) {
+             if ($this->logger) {
+                 $this->logger->log('info', 'trap_triggered', ['deviceId' => $deviceId, 'score' => 100, 'path' => $context->path, 'vector' => ['honeypotScore' => 100]]);
+             }
              $this->log('Honeypot trap URL triggered - condemning device', ['path' => $context->path, 'deviceId' => $deviceId]);
              $deviceData['condemned'] = true; // @phpstan-ignore-line
              $store->set("device:{$deviceId}", $deviceData); // Persiste le statut condamné
              return ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => 100, 'vector' => ['honeypotScore' => 100]];
          }
  
-         // 5. Prendre une décision basée sur le score
+         // 5. Prendre une décision basée sur le score - Vérifier le blocage d'abord.
          $blockThreshold = $thresholds['block'] ?? 95;
          if ($finalScore >= $blockThreshold) {
-             $response = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector];
+             if ($this->logger) {
+                 $this->logger->log('info', 'request_blocked', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
+             }
+             $response = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector]; // @phpstan-ignore-line
          } else {
              // Logique de re-challenge
+             // Si un nonce est présent mais que ce n'est pas une soumission de solution valide, c'est une sonde.
+             if ($powNonce && !$isChallengeSubmission) {
+                 $this->log('Honeypot probe detected - blocking request', ['path' => $context->path, 'pow_nonce' => $powNonce]);
+                 $suspicionVector['honeypotScore'] = 100.0;
+                 $finalScore = $this->calculateFinalScore($suspicionVector);
+                 // Retourner directement un blocage
+                 return ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector];
+             }
+
              $highThreshold = $thresholds['high'] ?? 75;
              $mustReChallenge = $finalScore >= $highThreshold && $hasValidTicket;
  
@@ -530,12 +563,55 @@
                      $this->log('High suspicion score detected - overriding valid ticket to re-issue challenge', ['finalScore' => $finalScore, 'deviceId' => $deviceId]);
                  }
  
-                 $this->log('Suspicious request - issuing challenge', ['finalScore' => $finalScore]);
+                 $this->log('Suspicious request - selecting challenge type', ['finalScore' => $finalScore]);
  
                  $nonce = bin2hex(random_bytes(16));
-                 $trapUrls = [ChallengeUtils::generateTrapUrl($nonce), ChallengeUtils::generateTrapUrl($nonce)];
                  $clientSecret = bin2hex(random_bytes(16));
  
+                 // --- NOUVELLE LOGIQUE uPoW ---
+                 $shouldUseUsefulWork = ($this->securityConfig['enableUsefulWork'] ?? false) && (
+                     ($this->securityConfig['forceUsefulWork'] ?? false) || (random_int(0, 255) / 255) > 0.5
+                 );
+
+                 // Déterminer si c'est une requête API avant de choisir le type de challenge
+                 $isApiRequest = false;
+                 if (isset($this->securityConfig['isApiRequest']) && is_callable($this->securityConfig['isApiRequest'])) {
+                     $isApiRequest = ($this->securityConfig['isApiRequest'])($context);
+                 }
+
+                 if ($shouldUseUsefulWork) {
+                     $this->log('Issuing a useful work challenge', ['finalScore' => $finalScore]);
+                     $problemManager = ProblemManager::getInstance($this->securityConfig['usefulWorkConfigPath'] ?? null, $store);
+                     $work = $problemManager->dispatchWork($finalScore);
+
+                     if ($work !== null) {
+                         $store->set("secret:{$nonce}", ['clientSecret' => $clientSecret, 'originalPath' => $context->path], 300);
+                         $challengePayload = [
+                             'challenge' => [
+                                 'type' => 'useful_work_task',
+                                 'nonce' => $nonce,
+                                 'clientSecret' => $clientSecret,
+                                 'usefulWorkTask' => [
+                                     'problemId' => $work['problemId'],
+                                     'task' => $work['task']
+                                 ]
+                             ]
+                         ];
+                         // Pour uPoW, on retourne toujours du JSON, car il n'y a pas de page HTML de fallback.
+                         return [
+                             'action' => 'challenge', 'score' => $finalScore, 'vector' => $suspicionVector,
+                             'status' => 403, 'body' => $challengePayload
+                         ];
+                     } else {
+                         // This case handles when uPoW is enabled but dispatching a task fails (e.g., config not found).
+                         // We log it and fall through to the standard PoW challenge.
+                         $this->log('Useful work dispatch failed, falling back to standard PoW.', [], 'warn');
+                         $shouldUseUsefulWork = false; // Explicitly disable for this request
+                     }
+                 }
+
+                 // --- FIN DE LA LOGIQUE uPoW (le reste est le fallback) ---
+
                  $suspicionFactor = ($finalScore - $lowThreshold) / (($thresholds['high'] ?? 75) - $lowThreshold);
                  $suspicionFactor = max(0, min(1.5, $suspicionFactor));
  
@@ -570,11 +646,11 @@
                      $store->set("device:{$deviceId}", $deviceData); // @phpstan-ignore-line
                  }
  
+                 $trapUrls = [ChallengeUtils::generateTrapUrl($nonce), ChallengeUtils::generateTrapUrl($nonce)];
                  $this->log('Challenge issued', ['nonce' => $nonce, 'ttl' => $this->securityConfig['challengeTtl'] ?? 300]);
  
-                 $isApiRequest = false;
-                 if (isset($this->securityConfig['isApiRequest']) && is_callable($this->securityConfig['isApiRequest'])) {
-                     $isApiRequest = ($this->securityConfig['isApiRequest'])($context);
+                 if ($this->logger) {
+                     $this->logger->log('info', 'challenge_issued', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
                  }
  
                  // Pour les API, retourner un challenge JSON
@@ -605,7 +681,10 @@
              } else {
                  // 6. Si le score est bas et qu'il n'y a pas de ticket, autoriser la requête
                  $this->log('Request passed - no challenge required', ['finalScore' => $finalScore]);
-                 $response = ['action' => 'next', 'score' => $finalScore, 'vector' => $suspicionVector];
+                 if ($this->logger) {
+                     $this->logger->log('info', 'request_passed', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
+                 }
+                 $response = ['action' => 'next', 'score' => $finalScore, 'vector' => $suspicionVector]; // @phpstan-ignore-line
              }
          }
  
@@ -625,7 +704,7 @@
          if (empty($operationType) || empty($operationName)) {
              return false;
          }
-
+ 
          $whitelistRules = $this->securityConfig['whitelist'] ?? [];
          $graphqlRule = null;
          foreach ($whitelistRules as $rule) {
@@ -634,27 +713,23 @@
                  break;
              }
          }
-
+ 
          if (empty($graphqlRule['entries'])) {
              return false;
          }
-
+ 
          foreach ($graphqlRule['entries'] as $entry) {
              [$entryType, $entryName] = explode(':', $entry, 2);
-             if ($entryType !== $operationType) {
-                 continue;
-             }
-
-             if ($entryName === $operationName || $entryName === '*') {
-                 return true;
-             }
-             if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) {
-                 return true;
-             }
+             if ($entryType !== $operationType) continue;
+ 
+             if ($entryName === $operationName || $entryName === '*') return true;
+ 
+             if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) return true;
          }
+ 
          return false;
      }
-
+ 
      /**
       * Vérifie si une requête provient d'un bot légitime et whitelisté (ex: Googlebot)
       * en utilisant des recherches DNS inversées et directes. Le résultat est mis en cache.
@@ -719,4 +794,12 @@
          return false;
      }
 
+    /**
+     * @internal For testing purposes only.
+     */
+    public function getProblems(): array
+    {
+        $problemManager = ProblemManager::getInstance();
+        return $problemManager->getProblems();
+    }
  }

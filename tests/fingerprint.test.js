@@ -1441,6 +1441,8 @@ describe('Fingerprint & PoW Security Suite', () => {
         };
 
         const securityConfig = {
+            weights: {}, // Add empty weights to satisfy the validator
+            thresholds: {}, // Add empty thresholds to satisfy the validator
             whitelist: [
                 { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' },
                 { userAgent: 'TestBot', hostnameSuffix: '.test-verifier.com' },

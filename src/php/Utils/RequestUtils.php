@@ -195,24 +195,26 @@ class RequestUtils
             return ['behaviorScore' => 100.0];
         }
 
-        $score = 0;
-        if (($metrics['mouseEntropy'] ?? 0) == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
-            $score += 40;
-        }
+        $score = 0.0;
 
         if (isset($metrics['historyLength'])) {
             if ($metrics['historyLength'] === 1) $score += 15;
             elseif ($metrics['historyLength'] >= 5) $score -= 20;
             elseif ($metrics['historyLength'] >= 2) $score -= 10;
+        } else {
+            // Only apply this penalty if history length is not available
+            if (($metrics['mouseEntropy'] ?? 0) == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
+                $score += 40;
+            }
         }
 
         if (($metrics['mouseEntropy'] ?? 0) > 0 && $metrics['mouseEntropy'] < 0.1) $score += 20;
-        if (($metrics['mouseEntropy'] ?? 0) > 500) $score += 30;
+        if (($metrics['mouseEntropy'] ?? 0) > 500) $score += 30; // Unnaturally high entropy
 
         if (($metrics['keystrokeLatency'] ?? 0) > 0 && $metrics['keystrokeLatency'] < 40) $score += 25;
         if (($metrics['keystrokeLatency'] ?? 0) > 1000) $score += 15;
 
-        return ['behaviorScore' => max(0.0, min(100.0, $score))];
+        return ['behaviorScore' => min(100.0, $score)];
     }
 
     /**
@@ -248,26 +250,26 @@ class RequestUtils
     /**
      * Calcule un score d'incohérence temporelle.
      * @return array{'timeInconsistencyScore': float}
+     * @param RequestContext $context
+     * @param array|null $metrics
      */
-    public static function getTimeInconsistencyScore(RequestContext $context): array
+    public static function getTimeInconsistencyScore(RequestContext $context, ?array $metrics = null): array
     {
-        $behaviorHeader = $context->getHeader('x-behavior-metrics');
-        if (!$behaviorHeader) return ['timeInconsistencyScore' => 0.0];
+        if ($metrics === null) {
+            $behaviorHeader = $context->getHeader('x-behavior-metrics');
+            if (!$behaviorHeader) return ['timeInconsistencyScore' => 0.0];
+            $metrics = json_decode($behaviorHeader, true);
+        }
 
-        $metrics = json_decode($behaviorHeader, true);
-        if (json_last_error() !== JSON_ERROR_NONE || empty($metrics['clientTimestamp'])) {
+        if (!is_array($metrics) || empty($metrics['clientTimestamp'])) {
             return ['timeInconsistencyScore' => 0.0];
         }
 
         $timeDelta = $context->requestTimestamp - $metrics['clientTimestamp'];
         $replayThreshold = 5000; // 5 secondes
 
-        if ($timeDelta > $replayThreshold) {
-            $score = min(100.0, ($timeDelta / $replayThreshold - 1) * 50);
-            return ['timeInconsistencyScore' => $score];
-        }
-
-        return ['timeInconsistencyScore' => 0.0];
+        $score = ($timeDelta > $replayThreshold) ? min(100.0, ($timeDelta / $replayThreshold - 1) * 50) : 0.0;
+        return ['timeInconsistencyScore' => $score];
     }
 
     /**
@@ -426,13 +428,37 @@ class RequestUtils
     public static function getHoneypotScore(RequestContext $context, array $honeypotConfig): array // @phpstan-ignore-line
     {
         $fields = $honeypotConfig['fields'] ?? [];
-        $data = array_merge($context->query, is_array($context->body) ? $context->body : []); // @phpstan-ignore-line
+        $trapUrls = $honeypotConfig['trapUrls'] ?? [];
+        $data = array_merge($context->query, is_array($context->body) ? $context->body : []);
 
+        // 1. Vérifier les champs de formulaire pièges
         foreach ($fields as $field) {
-            if (isset($data[$field]) && !empty($data[$field])) {
+            // Ignorer les paramètres de solution de challenge pour éviter les faux positifs.
+            if (str_starts_with($field, 'pow_')) {
+                continue;
+            }
+            if (!empty($data[$field])) {
                 return ['honeypotScore' => 100.0];
             }
         }
+
+        // 2. Vérifier l'accès aux URL pièges
+        foreach ($trapUrls as $trap) {
+            if (str_starts_with($context->path, $trap)) {
+                return ['honeypotScore' => 100.0];
+            }
+        }
+
+        // 3. (Optionnel) Détection d'injections
+        if ($honeypotConfig['detectInjections'] ?? false) {
+            $typesToDetect = is_array($honeypotConfig['detectInjections']) ? $honeypotConfig['detectInjections'] : [];
+            foreach ($data as $value) {
+                if (is_string($value) && MaliciousPatterns::isMalicious($value, $typesToDetect)) {
+                    return ['honeypotScore' => 100.0];
+                }
+            }
+        }
+
         return ['honeypotScore' => 0.0];
     }
 

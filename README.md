@@ -47,6 +47,7 @@ For API clients, the challenge is delivered as a `404` JSON response, and the cl
 -   **Timing Attack Protection**: Uses `crypto.timingSafeEqual` for secure validation of tickets and other signatures.
 -   **Bot Whitelisting**: Includes a DNS-based verification mechanism to reliably identify and whitelist legitimate crawlers like Googlebot and Bingbot, preventing them from being challenged. The results are cached for optimal performance.
 -   **Automatic Parameter Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust suspicion thresholds, weights, and behavioral pattern detection parameters, improving accuracy and reducing false positives over time. The tuner is hardened against data poisoning attempts.
+-   **Optional WASM Acceleration**: The client-side library can be accelerated with a WebAssembly module for high-performance hashing. The build process handles this optionally, and the client gracefully falls back to a pure JavaScript implementation if WASM is unavailable.
 -   **Hardened Security**: Protects against various attacks, including DoS via memory exhaustion, invalid nonce submission, and uses cryptographically secure randomness for all sensitive operations.
 
 ## Installation and Usage
@@ -112,6 +113,11 @@ $securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
     'verbose' => true,
 ]);
 
+// IMPORTANT: For PHP environments, TLS fingerprinting (JA3/JA4) requires a reverse proxy
+// (like Nginx, HAProxy, or a cloud load balancer) to inspect the TLS handshake and
+// pass the fingerprint hashes to the PHP application via HTTP headers
+// (e.g., `X-JA3-Hash`, `X-JA4-Hash`).
+
 // 2. Create an instance of the DirectFingerprint protector.
 $protector = new DirectFingerprint($securityConfig);
 
@@ -133,13 +139,13 @@ echo "<p>Your suspicion score was: " . round($score, 2) . "</p>";
 ```
 
 <a id="nodejs-quickstart"></a>
-### NodeJS Configuration
+## NodeJS Configuration
 
-#### Prerequisites for Node.js
+### Prerequisites for Node.js
 
 Ensure you have middleware for parsing cookies (like `cookie-parser`) and request bodies (like `express.json` and `express.urlencoded`) set up in your Express application *before* the `powMiddleware`.
 
-#### Configuration
+### Configuration
 Define a secret key for signing PoW tickets in your environment variables.
 
 ```bash
@@ -254,7 +260,7 @@ const securityConfig = {
     },
     cpu: {
         minDifficultyBits: 8,
-        maxDifficultyBits: 24,
+        maxDifficultyBits: 32,
     },
     // (Optional) Configure the duration (in milliseconds) for various temporary data.
     ticketMaxAge: 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
@@ -360,6 +366,10 @@ const securityConfig = {
     enableUsefulWork: true,
     usefulWorkConfigPath: './path/to/your/problems.config.json' // (Optional) Path to the useful work configuration.
 };
+
+
+// Create an instance of the middleware with your security configuration.
+const powMiddlewareInstance = powMiddleware(securityConfig);
 ```
 
 
@@ -617,6 +627,11 @@ initializeClient({
   // (Optional) An array of `name` attributes for hidden form fields that act as bot traps.
   honeypots: ['email_confirm', 'user_nickname', 'website_url'],
  
+  // (Optional) Path to the WebAssembly loader script (`fp.js`) for accelerated hashing.
+  // If provided, the client will attempt to load the WASM module. If it fails or is not available,
+  // it will gracefully fall back to the pure JavaScript implementation.
+  wasmPath: '/fp.js',
+ 
   // (Optional) Enables automatic protection for `fetch` requests.
   // If the `fetch` object is present, the protection is active.
   fetch: {
@@ -742,6 +757,11 @@ app.get('/api/problems/solutions', (req, res) => {
 
 ```
 
+#### `getBestTuningSolution()`
+
+Returns the last best solution object found by the auto-tuner. This is particularly useful for "FinOps" or for auditing the tuner's performance, as it allows you to log the exact configuration that the genetic algorithm identified as optimal.
+
+*   **Returns**: (`object|null`) The best solution object `{ solution, objectives }` or `null` if no tuning cycle has completed yet. The `solution` property contains the optimized `weights`, `thresholds`, and `patterns`, while `objectives` contains the performance scores (e.g., false positive/negative rates) for that solution.
 
 #### `problemManager.updateProblemPayload(problemId, newPayload)`
 

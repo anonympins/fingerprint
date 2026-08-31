@@ -33,7 +33,7 @@ class SecurityProfiles
                 'crossLayerInconsistencyScore' => 0.4,
                 'timeInconsistencyScore' => 0.9,
                 'tlsSpoofingScore' => 0.8,
-                'botScore' => 0.0, // Poids pour le score de bot explicite
+                'botScore' => 1.0, // Poids pour le score de bot explicite
                 'cookieDroppingScore' => 0.9, // Pénalité élevée pour la suppression de cookies
                 'threatIntelScore' => 0.4, // Poids pour le renseignement sur les menaces (ex: IP de proxy connu)
             ],
@@ -193,6 +193,8 @@ class SecurityProfiles
                 'behaviorScore' => 0.8, // Important for checkout/login forms
                 'honeypotScore' => 1.0,
                 'crossLayerInconsistencyScore' => 0.7,
+                // NOUVEAU: Ajout des scores manquants pour une configuration complète
+                'requestPatternScore' => 0.9, // Poids unifié pour les patterns, remplace les scores scindés
                 'timeInconsistencyScore' => 0.9,
                 'tlsSpoofingScore' => 0.9,
                 'botScore' => 1.0,

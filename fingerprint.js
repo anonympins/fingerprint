@@ -236,6 +236,38 @@ const getPowSolverCode = () => {
 };
 
 /**
+ * @private
+ * A mapping of IANA cipher suite names (as used by Node.js) to their decimal IDs.
+ * This is essential for correct JA3 fingerprint calculation.
+ * The list is not exhaustive but covers the most common cipher suites.
+ */
+const cipherSuiteMap = {
+    'TLS_AES_128_GCM_SHA256': 4865,
+    'TLS_AES_256_GCM_SHA384': 4866,
+    'TLS_CHACHA20_POLY1305_SHA256': 4867,
+    'TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256': 49195,
+    'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256': 49199,
+    'TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384': 49196,
+    'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384': 49200,
+    'TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256': 52393,
+    'TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256': 52392,
+    'TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA': 49171,
+    'TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA': 49172,
+    'TLS_RSA_WITH_AES_128_GCM_SHA256': 156,
+    'TLS_RSA_WITH_AES_256_GCM_SHA384': 157,
+    'TLS_RSA_WITH_AES_128_CBC_SHA': 47,
+    'TLS_RSA_WITH_AES_256_CBC_SHA': 53,
+    // Older/Less common suites
+    'TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA': 49161,
+    'TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA': 49162,
+    'TLS_DHE_RSA_WITH_AES_128_GCM_SHA256': 158,
+    'TLS_DHE_RSA_WITH_AES_256_GCM_SHA384': 159,
+    'TLS_DHE_RSA_WITH_AES_128_CBC_SHA': 51,
+    'TLS_DHE_RSA_WITH_AES_256_CBC_SHA': 57,
+    'TLS_RSA_WITH_3DES_EDE_CBC_SHA': 10,
+};
+
+/**
  * Extracts TLS fingerprints (JA3 and JA4) from request context.
  * Prioritizes headers from reverse proxies (x-ja4-hash) and falls back to JA3 calculation
  * from raw socket data if available.
@@ -265,15 +297,19 @@ function getTlsFingerprint(context) {
 
             // The official JA3 spec includes the TLS version.
             // Node.js provides it as a string like 'TLSv1.3', we need the corresponding decimal value.
-            const tlsVersionMap = {
+            const tlsVersionMap = { // NOSONAR
                 'TLSv1': 769, 'TLSv1.1': 770, 'TLSv1.2': 771, 'TLSv1.3': 772
             };
             const tlsVersionId = tlsVersionMap[version] || 0;
 
+            // Convert cipher suite names to their decimal IDs.
+            const cipherIds = Array.isArray(ciphers)
+                ? ciphers.map(c => cipherSuiteMap[c.name] || c).join('-') // Use the raw ID if name is not in map
+                : '';
+
             const ja3String = [
                 tlsVersionId,
-                // The ciphers array from clientHello is an array of objects, not just IDs.
-                Array.isArray(ciphers) ? ciphers.join('-') : '',
+                cipherIds,
                 extensions?.join('-') || '',
                 ellipticCurves?.join('-') || '',
                 ellipticCurvePointFormats?.join('-') || ''
@@ -906,7 +942,7 @@ function getHoneypotScore(context, honeypotConfig = {}) {
  */
 const injectionPatterns = {
     // SQL/NoSQL injections, including time-based attacks
-    sql: /(\$ne|' *OR *'1'='1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|SLEEP\(|BENCHMARK\(|WAITFOR DELAY)/i,
+    sql: /(\$ne|\' *OR *\'1\'=\'1|['";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|(?:SLEEP|BENCHMARK)\s*\(|WAITFOR DELAY)/i,
     // Log4Shell (JNDI injection)
     log4shell: /\$\{jndi:(ldap|rmi|dns):/i,
     // Server-Side Template Injection (SSTI) for engines like Jinja2, Twig, etc.
@@ -983,7 +1019,7 @@ function getBehaviorScore(context) {
       if (keystrokeDeviation > 0.15) score += 40;
     }
 
-    return { behaviorScore: Math.max(0, Math.min(100, score)) }; // Assure que le score reste entre 0 et 100
+    return { behaviorScore: Math.min(100, score) }; // Assure que le score ne dépasse pas 100, mais peut être négatif (bonus)
   } catch (e) {
     return { behaviorScore: 10 }; // En-tête malformé = légèrement suspect.
   }
@@ -3093,6 +3129,7 @@ export const __internal = {
 // --- THRESHOLD AUTO-TUNING SECTION ---
 
 let autoTuningJobId = null;
+let lastBestSolution = null; // NOUVEAU: Stocke la meilleure solution trouvée
 
 /**
  * Executes a threshold optimization pass using collected traffic data.
@@ -3151,29 +3188,46 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
 
   /**
    * Met à jour un objet de configuration (ex: thresholds, weights) en douceur.
+   * Cette nouvelle version préserve la proportionnalité des valeurs initiales.
    * @param {object} currentConfig - La configuration actuelle à modifier.
    * @param {object} targetConfig - La configuration cible proposée par l'optimiseur.
    */
   const applyInertialUpdate = (currentConfig, targetConfig) => {
-      if (!currentConfig || !targetConfig) return; // Vérifier aussi currentConfig
-      for (const key in targetConfig) {
-          if (Object.hasOwnProperty.call(currentConfig, key)) {
-              const currentValue = currentConfig[key];
-              const targetValue = targetConfig[key];
-              const delta = targetValue - currentValue;
-              const maxChange = Math.abs(currentValue * MAX_CHANGE_VELOCITY);
+    if (!currentConfig || !targetConfig) return; // Vérifier aussi currentConfig
 
-              // Limite le changement à la vélocité maximale
-              const change = Math.max(-maxChange, Math.min(maxChange, delta));
-              
-              currentConfig[key] += change;
-          }
+    // --- NOUVELLE LOGIQUE PROPORTIONNELLE ---
+    let totalCurrentWeight = 0;
+    let totalTargetWeight = 0;
+
+    // 1. Calculer la somme des poids actuels et cibles pour les clés communes.
+    for (const key in currentConfig) {
+      if (Object.hasOwnProperty.call(targetConfig, key)) {
+        totalCurrentWeight += currentConfig[key];
+        totalTargetWeight += targetConfig[key];
       }
-  };
+    }
 
+    if (totalCurrentWeight === 0) return; // Éviter la division par zéro
+
+    // 2. Déterminer le ratio de changement global et le limiter par la vélocité.
+    // Cela crée un "facteur d'ajustement" unique pour l'ensemble de la configuration.
+    const globalChangeRatio = (totalTargetWeight - totalCurrentWeight) / totalCurrentWeight;
+    const adjustmentFactor = Math.max(-MAX_CHANGE_VELOCITY, Math.min(MAX_CHANGE_VELOCITY, globalChangeRatio));
+
+    // 3. Appliquer ce facteur à chaque valeur de la configuration actuelle.
+    // Cela fait "glisser" l'ensemble de la configuration tout en préservant les proportions.
+    for (const key in currentConfig) {
+      if (Object.hasOwnProperty.call(targetConfig, key)) {
+        currentConfig[key] *= (1 + adjustmentFactor);
+      }
+    }
+  };
   applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds);
   applyInertialUpdate(securityConfig.weights, newConfig.weights);
   applyInertialUpdate(securityConfig.patterns, newConfig.patterns);
+
+  // NOUVEAU: Stocker la meilleure solution pour une consultation externe
+  lastBestSolution = bestSolution;
 
   console.log("[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.");
   console.log("[AutoTuning] Objectifs atteints :", { falsePositiveRate: bestSolution.objectives[0].toFixed(4), falseNegativeRate: bestSolution.objectives[1].toFixed(4) });
@@ -3227,4 +3281,14 @@ export function stopThresholdAutoTuning() {
         autoTuningJobId = null;
         console.log("[AutoTuning] Job d'optimisation des seuils arrêté.");
     }
+}
+
+/**
+ * Returns the last best solution found by the auto-tuner.
+ * This is useful for logging or creating a "finops" security configuration.
+ * @export
+ * @returns {object|null} The best solution object { solution, objectives } or null if no tuning has run.
+ */
+export function getBestTuningSolution() {
+    return lastBestSolution;
 }

@@ -44,7 +44,8 @@ class FingerprintClient
             'keystrokes' => true,
             'honeypots' => [],
             'fetch' => [
-                'handleChallenges' => true
+                'handleChallenges' => true,
+                'probationaryTtl' => 30000, // 30 seconds
             ]
         ], $clientConfig);
 

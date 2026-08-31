@@ -1,7 +1,8 @@
 /**
  * Algorithme de hachage cyrb53 (rapide et faible taux de collision).
  */
-export const cyrb53 = (str, seed = 0) => {
+// Exporté pour être utilisé comme fallback par fingerprint.client.js
+export const cyrb53 = (str, seed = 0) => { 
     let h1 = 0xdeadbeef ^ seed,
         h2 = 0x41c6ce57 ^ seed;
     for (let i = 0, ch; i < str.length; i++) {
@@ -24,7 +25,10 @@ export const cyrb53 = (str, seed = 0) => {
  */
 export class FingerprintBuilder {
     constructor() {
+        // Le hasher est maintenant une propriété pour pouvoir être surchargé par le client WASM.
         this.components = new Map();
+        // FIX: Initialiser le hasher par défaut à l'implémentation JS.
+        this.hasher = cyrb53;
     }
 
     /**
@@ -35,7 +39,7 @@ export class FingerprintBuilder {
     add(group, value) {
         if (value === undefined || value === null) return this;
         // On hash la valeur individuellement pour l'anonymiser et réduire sa taille
-        this.components.set(group, cyrb53(String(value)));
+        this.components.set(group, this.hasher(String(value)));
         return this;
     }
 

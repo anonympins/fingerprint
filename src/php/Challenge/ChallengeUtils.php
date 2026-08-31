@@ -81,7 +81,7 @@ class ChallengeUtils
         $filteredParts = array_filter($parts);
         sort($filteredParts);
         $sortedFingerprint = implode('|', $filteredParts);
-
+        
         return "{$nonce}:{$clientSecret}:{$sortedFingerprint}:";
     }
 
@@ -130,24 +130,6 @@ class ChallengeUtils
     }
 
     /**
-     * Régénère un ticket avec un nouveau TTL sans re-vérifier le PoW.
-     * Utile pour appliquer un TTL probatoire après une vérification réussie.
-     * @param string|null $validTicket Le ticket original déjà validé.
-     * @param string $clientIp L'IP du client.
-     * @param int $newTtlMs Le nouveau TTL en millisecondes.
-     * @return string|null Le nouveau ticket.
-     */
-    public static function regenerateTicketWithTtl(?string $validTicket, string $clientIp, int $newTtlMs): ?string
-    {
-        if ($validTicket === null) {
-            return null;
-        }
-        $newExpiry = (int)floor(microtime(true) * 1000) + $newTtlMs;
-        $newSignature = hash_hmac('sha256', "{$clientIp}:{$newExpiry}", self::getPowSecret());
-        return "{$newExpiry}:{$newSignature}";
-    }
-
-    /**
      * Vérifie une solution de PoW mémoire.
      */
     public static function verifyMemoryPoW(
@@ -176,8 +158,7 @@ class ChallengeUtils
         }
 
         for ($i = 0; $i < count($buffer); $i++) {
-            $h = self::imul($h ^ $i, 1597334677);
-            $buffer[$i] = $h;
+            $buffer[$i] = $h = self::gmp_imul($h ^ $i, 1597334677);
         }
 
         $finalHash = 0;
@@ -193,17 +174,13 @@ class ChallengeUtils
     /**
      * Émule la multiplication 32-bit `Math.imul` de JavaScript.
      */
-    private static function imul(int $a, int $b): int
+    private static function gmp_imul(int $a, int $b): int
     {
-        $ah = ($a >> 16) & 0xffff;
-        $al = $a & 0xffff;
-        $bh = ($b >> 16) & 0xffff;
-        $bl = $b & 0xffff;
-        $result = ($al * $bl) + ((($ah * $bl + $al * $bh) << 16) & 0xffffffff);
-        if ($result & 0x80000000) {
-            return $result | (int)0xffffffff00000000;
-        }
-        return $result;
+        $a_lo = $a & 0xffff;
+        $a_hi = $a >> 16;
+        $b_lo = $b & 0xffff;
+        $b_hi = $b >> 16;
+        return (($a_lo * $b_lo) + ((($a_hi * $b_lo + $a_lo * $b_hi) << 16) & 0xffffffff)) | 0;
     }
 
     /**
@@ -272,7 +249,7 @@ class ChallengeUtils
         string $originalFingerprint
     ): string {
         $nonce = $cpuChallengeDetails['nonce'];
-        $target = $cpuChallengeDetails['target'];
+        $target = $cpuChallengeDetails['target']; // @phpstan-ignore-line
         $path = $cpuChallengeDetails['path'];
 
         $solverCode = self::getPowSolverCode();
