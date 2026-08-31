@@ -655,47 +655,6 @@ export const verifyTspChallenge = (
 };
 
 /**
- * Generates the HTML content for the CPU PoW challenge (SHA-256).
- */
-const generateCpuPoWChallenge = (
-    clientIp,
-    nonce,
-    difficulty = 4,
-    path = "",
-) => {
-    return `
-      <html>
-        <head><title>Security Check</title></head>
-        <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
-          <h1>One moment... (Level 1)</h1>
-          <p>We are verifying that you are not a bot. This takes a few seconds.</p>
-          <div id="loader" style="margin:20px;">⚙️ Performing CPU security calculation...</div>
-          <script>
-            async function solve() { 
-              const ip = ${JSON.stringify(clientIp)};
-              const nonce = ${JSON.stringify(nonce)};
-              const diff = ${JSON.stringify(difficulty)};
-              const target = "0".repeat(diff); 
-              let solution = 0; 
-               
-              while (true) { 
-                const msg = ip + ":" + nonce + ":" + solution; 
-                const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(msg)); 
-                const hash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join(''); 
-                if (hash.startsWith(target)) break; 
-                solution++; 
-                if (solution % 100000 === 0) await new Promise(resolve => setTimeout(resolve, 0)); 
-              } 
-              window.location.href = ${JSON.stringify(path)} + "?pow_type=cpu&pow_nonce=" + nonce + "&pow_solution=" + solution; 
-            } 
-            solve();
-          </script>
-        </body>
-      </html>
-    `;
-};
-
-/**
  * Generates the HTML content for a memory-intensive PoW challenge.
  */
 const generateMemoryPoWChallenge = (
@@ -953,6 +912,68 @@ const injectionPatterns = {
 };
 
 /**
+ * @private
+ * Analyse une série de mouvements de souris pour en extraire des métriques comportementales.
+ * @param {Array<{x: number, y: number, t: number}>} history - L'historique des points de la souris.
+ * @returns {{avgSpeed: number, avgAcceleration: number, straightness: number, pauses: number, segments: Array<number>}}
+ */
+function analyzeMouseMovements(history) {
+    if (!history || history.length < 3) {
+        return { avgSpeed: 0, avgAcceleration: 0, straightness: 1, pauses: 0, segments: [] };
+    }
+
+    const segments = [];
+    let totalDistance = 0;
+    let pauses = 0;
+
+    for (let i = 1; i < history.length; i++) {
+        const p1 = history[i - 1];
+        const p2 = history[i];
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const dt = p2.t - p1.t;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (dt > 0) {
+            const speed = distance / dt;
+            segments.push({ distance, dt, speed });
+            totalDistance += distance;
+        }
+        // Une "micro-pause" est un intervalle de temps long sans mouvement significatif.
+        if (dt > 100 && distance < 5) {
+            pauses++;
+        }
+    }
+
+    if (segments.length < 2) {
+        return { avgSpeed: 0, avgAcceleration: 0, straightness: 1, pauses, segments: [] };
+    }
+
+    const totalTime = history[history.length - 1].t - history[0].t;
+    const avgSpeed = totalTime > 0 ? segments.reduce((sum, s) => sum + s.speed, 0) / segments.length : 0;
+
+    let totalAbsAcceleration = 0;
+    for (let i = 1; i < segments.length; i++) {
+        const s1 = segments[i - 1];
+        const s2 = segments[i];
+        if (s2.dt > 0) {
+            const acceleration = (s2.speed - s1.speed) / s2.dt;
+            totalAbsAcceleration += Math.abs(acceleration);
+        }
+    }
+    const avgAcceleration = totalAbsAcceleration / (segments.length - 1);
+
+    // Le score de rectitude compare la distance totale parcourue à la distance en ligne droite.
+    // Un score proche de 1 signifie un mouvement très droit (suspect).
+    const startPoint = history[0];
+    const endPoint = history[history.length - 1];
+    const straightDistance = Math.sqrt(Math.pow(endPoint.x - startPoint.x, 2) + Math.pow(endPoint.y - startPoint.y, 2));
+    const straightness = totalDistance > 0 ? straightDistance / totalDistance : 1;
+
+    return { avgSpeed, avgAcceleration, straightness, pauses, segments: segments.map(s => s.distance) };
+}
+
+/**
  * Calcule un score basé sur les métriques comportementales envoyées par le client.
  * @param {object} context - Le contexte de la requête, contenant les en-têtes.
  * @returns {{behaviorScore: number}}
@@ -972,8 +993,11 @@ function getBehaviorScore(context) {
       return { behaviorScore: 100 };
     }
 
-    // 2. Pénalité pour absence totale d'interaction.
-    if (metrics.mouseEntropy === 0 && metrics.keystrokeLatency === 0) {
+    // 2. Analyse des mouvements de la souris
+    const { avgSpeed, avgAcceleration, straightness, pauses, segments } = analyzeMouseMovements(metrics.mouseMovementsHistory);
+
+    // Pénalité pour absence totale d'interaction (pas de mouvements, pas de frappes).
+    if (avgSpeed === 0 && metrics.keystrokeLatency === 0) {
       score += 40;
     }
 
@@ -988,32 +1012,25 @@ function getBehaviorScore(context) {
             score -= 10; // Petit bonus pour une navigation de base.
         }
     }
-    // 3. Vérification de la plausibilité et de la distribution des métriques.
-    // Un bot pourrait envoyer des valeurs aléatoires, mais elles ne suivront probablement pas
-    // des distributions naturelles (comme la loi de Benford pour les premiers chiffres).
 
-    // Plausibilité de l'entropie de la souris
-    if (metrics.mouseEntropy > 0 && metrics.mouseEntropy < 0.1) score += 20; // Entropie très faible, suspect.
-    if (metrics.mouseEntropy > 500) score += 30; // Entropie irréalistement élevée.
+    // 3. Analyse des métriques de la souris
+    if (avgSpeed > 0) {
+        if (avgSpeed > 3) score += 25; // Vitesse irréaliste (3 pixels/ms)
+        if (avgAcceleration > 0.5) score += 20; // Accélération trop brutale
+        if (straightness > 0.95) score += 30; // Mouvement trop droit
+        if (pauses === 0 && segments.length > 20) score += 15; // Mouvement continu sans micro-pauses
+    }
 
     // Plausibilité de la latence de frappe
     if (metrics.keystrokeLatency > 0 && metrics.keystrokeLatency < 40) score += 25; // Frappe trop rapide pour un humain.
     if (metrics.keystrokeLatency > 1000) score += 15; // Latence très élevée, peut être un script lent.
 
     // 4. Analyse de la distribution avec la loi de Benford (si les valeurs sont non nulles).
-    // On utilise les décimales pour avoir plus de chiffres à analyser.
-    const mouseEntropyStr = String(metrics.mouseEntropy).replace(".", "");
-    const keystrokeLatencyStr = String(metrics.keystrokeLatency).replace(".", "");
-
-    if (mouseEntropyStr.length > 2) {
-      const mouseDeviation = Optimization.Operators.benfordTest(mouseEntropyStr);
-      // Une déviation > 0.15 est fortement suspecte.
-      if (mouseDeviation > 0.15) score += 40;
-    }
-
-    if (keystrokeLatencyStr.length > 2) {
-      const keystrokeDeviation = Optimization.Operators.benfordTest(keystrokeLatencyStr);
-      if (keystrokeDeviation > 0.15) score += 40;
+    if (segments.length > 10) {
+        const benfordDeviation = Optimization.Operators.benfordTest(segments);
+        if (benfordDeviation > 0.18) { // Seuil légèrement plus élevé pour cette métrique
+            score += 35;
+        }
     }
 
     return { behaviorScore: Math.min(100, score) }; // Assure que le score ne dépasse pas 100, mais peut être négatif (bonus)

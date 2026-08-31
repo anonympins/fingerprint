@@ -150,12 +150,13 @@ export class FingerprintBuilder {
 
         allKeys.forEach((key) => {
             // On ignore les clés volatiles pour cette comparaison spécifique.
-            if (volatileKeys.has(key)) return;
-            const weight = weights[key];
-            // The check must be for `undefined` to allow keys that have a legitimate weight of 0.
-            // The previous `!weight` check would incorrectly exclude them, potentially leading to a totalWeight of 0
-            // and a similarity score of NaN, which evaluates to 0. This is the fix.
-            if (weight === undefined || (!map1.has(key) && !map2.has(key))) return;
+            if (volatileKeys.has(key)) {
+                return;
+            }
+
+            const weight = weights[key] ?? 0;
+            // On ne compte une clé dans le poids total que si elle est présente dans au moins une des deux empreintes.
+            if (!map1.has(key) && !map2.has(key)) return;
 
             totalWeight += weight; // N'incrémenter que si la clé est pertinente.
             if (map1.get(key) === map2.get(key)) {

@@ -614,26 +614,21 @@ This function uses several configurable parameters to identify suspicious behavi
 
 ### Statistical Analysis (Regularity and Benford's Law)
 
-To counter more advanced bots that might try to randomize their request timings, the engine employs statistical analysis based on Benford's Law.
+To counter more advanced bots that might try to randomize their request timings, the engine employs statistical analysis.
 
-*   **How it works**: Benford's Law states that in many naturally occurring sets of numbers, the leading digit is more likely to be small. For example, the number 1 appears as the leading digit about 30% of the time, while 9 appears less than 5% of the time. The timings between a human's requests tend to follow this natural distribution, whereas a bot's randomized delays often do not.
 *   **Regularity Detection**: The system also calculates the standard deviation of the time intervals between requests. A very low standard deviation indicates an unnaturally regular, "cron-like" behavior, which is a strong signal of automation.
+*   **Benford's Law Analysis**: Benford's Law states that in many naturally occurring sets of numbers, the leading digit is more likely to be small. The timings between a human's requests tend to follow this natural distribution, whereas a bot's randomized delays often do not. The engine penalizes distributions that violate this law.
 
 ### Core Pattern Detection Parameters
 
 These parameters form the basis of the statistical request pattern analysis:
 
-*   `minSamples`: (Default: 5) The minimum number of request timings to collect before performing statistical analysis.
 *   `regularityThreshold`: (Default: 50ms) The standard deviation in milliseconds below which the request timing is considered "too regular" and robotic.
 *   `benfordThreshold`: (Default: 0.15) The deviation score from Benford's Law above which the timing distribution is considered "unnatural".
 *   `patternWeight`: (Default: 80) A strong, one-time penalty applied to the suspicion score if either a regularity or Benford's Law anomaly is detected.
 
 *   `benfordMinSamples`: (Default: 15) The minimum number of request timings to collect before performing a Benford's Law test.
 *   `benfordWeight`: (Default: 50) The weight applied to the suspicion score if the distribution of timings significantly deviates from Benford's Law.
-
-### Configuration and Auto-Tuning
-
-All these parameters are part of the `patterns` object within the main security configuration and can be fine-tuned.
 
 ## Customizing the Challenge Page
 

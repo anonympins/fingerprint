@@ -158,16 +158,21 @@ const ClientLibrary = {
      * À appeler une fois sur la page.
      */
     startMouseEntropyTracker() {
-        // S'assurer de ne pas attacher l'écouteur plusieurs fois
-        if (mouseMovements > 0) return;
-
+        // Utiliser un drapeau pour éviter d'attacher l'écouteur plusieurs fois
+        if (this._mouseTrackerAttached) return;
+        this._mouseTrackerAttached = true;
+ 
         document.addEventListener('mousemove', (e) => {
-            const dx = e.clientX - lastMousePos.x;
-            const dy = e.clientY - lastMousePos.y;
-            // Une métrique simple : la somme des distances. Un bot aura souvent 0.
-            metrics.mouseEntropy += Math.sqrt(dx * dx + dy * dy);
-            lastMousePos = {x: e.clientX, y: e.clientY};
-            mouseMovements++;
+            // NOUVEAU: Capturer une série de points {x, y, t}
+            if (mouseMovementsHistory.length >= MOUSE_HISTORY_MAX) {
+                // Garder la taille de l'historique constante pour éviter une consommation mémoire excessive.
+                mouseMovementsHistory.shift();
+            }
+            mouseMovementsHistory.push({
+                x: e.clientX,
+                y: e.clientY,
+                t: performance.now()
+            });
         }, {passive: true});
     },
 
@@ -238,10 +243,9 @@ const ClientLibrary = {
         // Ajoute un timestamp au moment de la collecte pour la détection de rejeu.
         metrics.clientTimestamp = Date.now();
 
-        // Normalise l'entropie de la souris
-        if (mouseMovements > 10) {
-            metrics.mouseEntropy /= mouseMovements;
-        }
+        // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
+        metrics.mouseMovementsHistory = mouseMovementsHistory;
+
         // Calcule la latence moyenne des frappes
         if (keystrokeLatencies.length > 0) {
             const sum = keystrokeLatencies.reduce((a, b) => a + b, 0);
@@ -525,16 +529,17 @@ const ClientLibrary = {
 /**
  * @typedef {object} ClientBehaviorMetrics
  * @property {number} mouseEntropy - Entropie des mouvements de la souris.
+ * @property {Array<{x: number, y: number, t: number}>} mouseMovementsHistory - Historique des points de la souris.
  * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
  * @property {number} historyLength - La longueur de l'historique de session du navigateur (`window.history.length`).
  * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
  * @property {string[]} [trapUrls] - URLs pièges à injecter dynamiquement.
  */
-
 /** @type {ClientBehaviorMetrics} */
 const metrics = {
-    mouseEntropy: 0,
+    mouseEntropy: 0, // Conservé pour la compatibilité, mais l'analyse se fait maintenant sur l'historique
+    mouseMovementsHistory: [],
     keystrokeLatency: 0,
     honeypotInteraction: false,
     historyLength: 0,
@@ -542,7 +547,8 @@ const metrics = {
 };
 
 let lastMousePos = { x: 0, y: 0 };
-let mouseMovements = 0;
+let mouseMovementsHistory = []; // NOUVEAU: Historique des points de la souris
+const MOUSE_HISTORY_MAX = 100; // Limite le nombre de points stockés
 let activeHoneypotListeners = new Map(); // Garde une trace des écouteurs actifs
 let keystrokeTimestamps = [];
 let keystrokeLatencies = []; // NOUVEAU: Tableau dédié pour les latences

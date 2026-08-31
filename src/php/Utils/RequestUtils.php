@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Utils;
 
 use Anonympins\Fingerprint\FingerprintBuilder;
+use Anonympins\Fingerprint\Optimization\Optimization;
 use Anonympins\Fingerprint\RequestContext;
 
 /**
@@ -176,6 +177,67 @@ class RequestUtils
     }
 
     /**
+     * @private
+     * Analyse une série de mouvements de souris pour en extraire des métriques comportementales.
+     * @param array<int, array{x: int, y: int, t: float}>|null $history
+     * @return array{avgSpeed: float, avgAcceleration: float, straightness: float, pauses: int, segments: array<float>}
+     */
+    private static function analyzeMouseMovements(?array $history): array
+    {
+        if (empty($history) || count($history) < 3) {
+            return ['avgSpeed' => 0, 'avgAcceleration' => 0, 'straightness' => 1, 'pauses' => 0, 'segments' => []];
+        }
+
+        $segments = [];
+        $totalDistance = 0.0;
+        $pauses = 0;
+
+        for ($i = 1; $i < count($history); $i++) {
+            $p1 = $history[$i - 1];
+            $p2 = $history[$i];
+            $dx = $p2['x'] - $p1['x'];
+            $dy = $p2['y'] - $p1['y'];
+            $dt = $p2['t'] - $p1['t'];
+            $distance = sqrt($dx * $dx + $dy * $dy);
+
+            if ($dt > 0) {
+                $speed = $distance / $dt;
+                $segments[] = ['distance' => $distance, 'dt' => $dt, 'speed' => $speed];
+                $totalDistance += $distance;
+            }
+            if ($dt > 100 && $distance < 5) {
+                $pauses++;
+            }
+        }
+
+        if (count($segments) < 2) {
+            return ['avgSpeed' => 0, 'avgAcceleration' => 0, 'straightness' => 1, 'pauses' => $pauses, 'segments' => []];
+        }
+
+        $totalTime = $history[count($history) - 1]['t'] - $history[0]['t'];
+        $avgSpeed = $totalTime > 0 ? array_sum(array_column($segments, 'speed')) / count($segments) : 0;
+
+        $totalAbsAcceleration = 0.0;
+        for ($i = 1; $i < count($segments); $i++) {
+            $s1 = $segments[$i - 1];
+            $s2 = $segments[$i];
+            if ($s2['dt'] > 0) {
+                $acceleration = ($s2['speed'] - $s1['speed']) / $s2['dt'];
+                $totalAbsAcceleration += abs($acceleration);
+            }
+        }
+        $avgAcceleration = $totalAbsAcceleration / (count($segments) - 1);
+
+        $startPoint = $history[0];
+        $endPoint = $history[count($history) - 1];
+        $straightDistance = sqrt(pow($endPoint['x'] - $startPoint['x'], 2) + pow($endPoint['y'] - $startPoint['y'], 2));
+        $straightness = $totalDistance > 0 ? $straightDistance / $totalDistance : 1;
+
+        return ['avgSpeed' => $avgSpeed, 'avgAcceleration' => $avgAcceleration, 'straightness' => $straightness, 'pauses' => $pauses, 'segments' => array_column($segments, 'distance')];
+    }
+
+
+    /**
      * Calcule un score basé sur les métriques comportementales envoyées par le client.
      * @return array{'behaviorScore': float}
      */
@@ -197,22 +259,36 @@ class RequestUtils
 
         $score = 0.0;
 
+        $mouseAnalysis = self::analyzeMouseMovements($metrics['mouseMovementsHistory'] ?? null);
+
         if (isset($metrics['historyLength'])) {
             if ($metrics['historyLength'] === 1) $score += 15;
             elseif ($metrics['historyLength'] >= 5) $score -= 20;
             elseif ($metrics['historyLength'] >= 2) $score -= 10;
         } else {
-            // Only apply this penalty if history length is not available
-            if (($metrics['mouseEntropy'] ?? 0) == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
+            // Pénalité pour absence totale d'interaction si l'historique n'est pas dispo
+            if ($mouseAnalysis['avgSpeed'] == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
                 $score += 40;
             }
         }
 
-        if (($metrics['mouseEntropy'] ?? 0) > 0 && $metrics['mouseEntropy'] < 0.1) $score += 20;
-        if (($metrics['mouseEntropy'] ?? 0) > 500) $score += 30; // Unnaturally high entropy
+        if ($mouseAnalysis['avgSpeed'] > 0) {
+            if ($mouseAnalysis['avgSpeed'] > 3) $score += 25;
+            if ($mouseAnalysis['avgAcceleration'] > 0.5) $score += 20;
+            if ($mouseAnalysis['straightness'] > 0.95) $score += 30;
+            if ($mouseAnalysis['pauses'] === 0 && count($mouseAnalysis['segments']) > 20) $score += 15;
+        }
 
         if (($metrics['keystrokeLatency'] ?? 0) > 0 && $metrics['keystrokeLatency'] < 40) $score += 25;
         if (($metrics['keystrokeLatency'] ?? 0) > 1000) $score += 15;
+
+        // Analyse de Benford sur les segments de mouvement de la souris
+        if (count($mouseAnalysis['segments']) > 10) {
+            $benfordDeviation = Optimization::benfordTest($mouseAnalysis['segments']);
+            if ($benfordDeviation > 0.18) {
+                $score += 35;
+            }
+        }
 
         return ['behaviorScore' => min(100.0, $score)];
     }
@@ -393,7 +469,7 @@ class RequestUtils
             $mean = array_sum($timings) / count($timings); // @phpstan-ignore-line
             $variance = array_reduce($timings, fn($carry, $item) => $carry + pow($item - $mean, 2), 0) / count($timings); // @phpstan-ignore-line
             $stdDev = sqrt($variance);
-            $benfordDeviation = self::benfordTest($timings);
+            $benfordDeviation = Optimization::benfordTest($timings);
 
             // Détection de régularité (bots de type "cron")
             if ($stdDev < $regularityThreshold) {
@@ -465,47 +541,6 @@ class RequestUtils
     public static function getThreatIntelScore(RequestContext $context, array $threatIntelConfig): array
     {
         return ['threatIntelScore' => 0.0];
-    }
-
-    /**
-     * Calcule la déviation d'une série de chiffres par rapport à la loi de Benford.
-     * Un score élevé indique une distribution non naturelle, potentiellement frauduleuse.
-     * @param array<int|float> $numbers La série de nombres à analyser.
-     * @return float Un score de déviation (0 = parfait, > 0.15 = suspect).
-     */
-    private static function benfordTest(array $numbers): float
-    {
-        $leadingDigits = array_map(function ($n) {
-            $str = (string)$n;
-            return $str[0] ?? '';
-        }, $numbers);
-
-        $leadingDigits = array_filter($leadingDigits, fn($d) => $d >= '1' && $d <= '9');
-
-        if (count($leadingDigits) < 10) {
-            return 0.0; // Pas assez de données pour un test fiable
-        }
-
-        $counts = array_fill(1, 9, 0);
-        foreach ($leadingDigits as $digit) {
-            $counts[(int)$digit]++;
-        }
-
-        // Distribution attendue selon la loi de Benford pour le premier chiffre
-        $benfordDistribution = [
-            1 => 30.1, 2 => 17.6, 3 => 12.5, 4 => 9.7, 5 => 7.9,
-            6 => 6.7, 7 => 5.8, 8 => 5.1, 9 => 4.6
-        ];
-
-        $totalDeviation = 0.0;
-        for ($i = 1; $i <= 9; $i++) {
-            $observedFrequency = ($counts[$i] / count($leadingDigits)) * 100;
-            $expectedFrequency = $benfordDistribution[$i];
-            $totalDeviation += pow($observedFrequency - $expectedFrequency, 2);
-        }
-
-        // Normalise la déviation pour obtenir un score plus interprétable.
-        return sqrt($totalDeviation) / 50.0;
     }
 
     /**

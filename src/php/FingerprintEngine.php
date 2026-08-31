@@ -5,7 +5,7 @@
  namespace Anonympins\Fingerprint;
 
  use Anonympins\Fingerprint\Config\SecurityProfiles;
- use Anonympins\Fingerprint\Store\StoreManager;
+ use Anonympins\Fingerprint\Store\StoreManager; // Correction de l'import
  use Anonympins\Fingerprint\Challenge\ChallengeUtils;
  use Anonympins\Fingerprint\Utils\BlockList;
  use Anonympins\Fingerprint\Utils\Logger;
@@ -448,7 +448,7 @@
                                  'jsonLastError' => json_last_error_msg()
                              ]);
                              if (json_last_error() === JSON_ERROR_NONE) {
-                                 // @phpstan-ignore-next-line
+                                 // @phpstan-ignore-next-line - L'instance est gérée par le singleton
                                  $problemManager = \Anonympins\Fingerprint\ProblemManager::getInstance($this->securityConfig['usefulWorkConfigPath'] ?? null, $store);
                                  // FIX: La solution est directement le $workResult, pas une sous-propriété.
                                  $problemManager->integrateSolution($problemId, $workResult);

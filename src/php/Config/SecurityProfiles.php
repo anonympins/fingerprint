@@ -184,11 +184,6 @@ class SecurityProfiles
                 'historyScore' => 0.4,
                 'rotationScore' => 0.6,
                 'headerAnomalyScore' => 0.2,
-                // Scission du requestPatternScore pour un contrôle plus fin
-                'velocityScore' => 0.8,       // Pénalise la vitesse globale
-                'burstScore' => 1.0,          // Pénalise fortement les rafales sur la même ressource (scalping)
-                'scrapeScore' => 0.9,         // Pénalise le parcours de pages/produits
-                'regularityScore' => 0.7,     // Détecte les bots de type "cron"
                 'inconsistencyScore' => 1.0, // Crucial for preventing account takeover
                 'behaviorScore' => 0.8, // Important for checkout/login forms
                 'honeypotScore' => 1.0,
