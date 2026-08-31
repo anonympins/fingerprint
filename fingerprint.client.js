@@ -9,6 +9,18 @@ const ClientLibrary = {
     // Cache pour éviter de recalculer les constantes (Hardware, etc.)
     _cachedBuilder: null,
     /**
+     * @private
+     * Dispatches a custom event from the window object.
+     * @param {string} eventName - The name of the event.
+     * @param {object} [detail={}] - The data to include in the event's detail property.
+     */
+    _dispatchEvent(eventName, detail = {}) {
+        if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return;
+        const event = new CustomEvent(`fingerprint:${eventName}`, { detail });
+        window.dispatchEvent(event);
+    },
+
+    /**
      * Wrapper interne pour la fonction de hachage.
      * @private
      */
@@ -343,9 +355,10 @@ const ClientLibrary = {
      * La fonction qui est appelée lorsqu'un honeypot est déclenché.
      * @private
      */
-    onHoneypotTrigger : () => {
+    onHoneypotTrigger() {
         metrics.honeypotInteraction = true;
-        // On pourrait même envoyer un signalement au serveur immédiatement.
+        // Émettre un événement pour que l'application puisse réagir.
+        this._dispatchEvent('honeypotTriggered');
     },
 
   /**
@@ -434,11 +447,14 @@ const ClientLibrary = {
       }
 
       console.log(`[Fingerprint] Received a '${challengeData.challenge.type}' challenge. Solving...`);
+      this._dispatchEvent('challengeReceived', { challenge: challengeData.challenge });
+
       // L'empreinte de l'appareil qui résout le challenge est cruciale.
       const solverFp = this.getDeviceFingerprint();
       const solutionWrapper = await solveChallenge(challengeData.challenge, solverFp);
       console.log('[Fingerprint] Challenge solved. Retrying original request.');
 
+      this._dispatchEvent('challengeSolved', { solution: solutionWrapper.rawSolution });
       // Ajouter la solution aux paramètres de la requête pour le nouvel essai
       const url = new URL((resource instanceof Request) ? resource.url : String(resource), window.location.origin);
       // La logique de formatage est maintenant cachée dans la classe ChallengeSolution.

@@ -3153,8 +3153,11 @@ export const powMiddleware = (securityConfig) => {
   const engine = new FingerprintEngine(securityConfig);
 
   // Initialize the problem manager with the configured path, if provided.
-  if (securityConfig.enableUsefulWork && securityConfig.usefulWorkConfigPath) {
-    getProblemManager(securityConfig.usefulWorkConfigPath, store); // This correctly initializes the singleton
+  if (securityConfig.enableUsefulWork) {
+    getProblemManager({
+        configPath: securityConfig.usefulWorkConfigPath,
+        config: securityConfig.usefulWorkConfig
+    }, store);
   }
 
   if (securityConfig.autotuning) {

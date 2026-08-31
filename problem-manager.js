@@ -117,12 +117,15 @@ class ProblemManager {
     /**
      * @private
      * Le constructeur est privé. Utilisez la méthode de fabrique asynchrone `create()`.
-     * @param {string} configPath - Le chemin vers le fichier de configuration.
+     * @param {object} options - Les options d'initialisation.
+     * @param {string} [options.configPath] - Le chemin vers le fichier de configuration.
+     * @param {object} [options.config] - L'objet de configuration des problèmes.
      * @param {Array<object>} problems - Les problèmes pré-chargés.
      * @param {IStore} store - The datastore for synchronization.
      */
-    constructor(configPath, problems, store) {
-        this.configPath = configPath;
+    constructor(options, problems, store) {
+        this.configPath = options.configPath;
+        this.config = options.config;
         this.problems = problems;
         this.store = store; // The datastore instance
         this.currentProblemIndex = 0;
@@ -130,22 +133,21 @@ class ProblemManager {
 
     /**
      * Méthode de fabrique asynchrone pour créer et initialiser une instance de ProblemManager.
-     * @param {string} configPath - Le chemin vers le fichier de configuration.
+     * @param {object} options - Les options d'initialisation.
      * @returns {Promise<ProblemManager>}
      */
-    static async create(configPath, store) {
-        const manager = new ProblemManager(configPath, [], store);
-        manager.problems = await manager.loadProblems(configPath);
+    static async create(options, store) {
+        const manager = new ProblemManager(options, [], store);
+        manager.problems = await manager.loadProblems();
         return manager;
     }
 
     /**
      * Charge et parse les problèmes depuis le fichier de configuration de manière asynchrone.
      * It now also synchronizes with the datastore.
-     * @param {string} configPath - Le chemin vers le fichier de configuration.
      * @returns {Promise<Array<object>>}
      */
-    async loadProblems(configPath) {
+    async loadProblems() {
         // Guard clause: If no store is configured (e.g., during isolated test imports),
         // do not attempt to load problems to prevent crashes.
         if (!this.store) {
@@ -153,8 +155,15 @@ class ProblemManager {
         }
 
         try {
-            const data = await fs.readFile(configPath, 'utf-8');
-            const problemsFromFile = JSON.parse(data);
+            let problemsFromFile;
+            if (this.config) {
+                problemsFromFile = this.config;
+            } else if (this.configPath) {
+                const data = await fs.readFile(this.configPath, 'utf-8');
+                problemsFromFile = JSON.parse(data);
+            } else {
+                throw new Error('Either `config` or `configPath` must be provided to load problems.');
+            }
 
             // For each problem, try to load its state from the datastore.
             // If it doesn't exist, use the state from the file and save it to the store.
@@ -496,13 +505,21 @@ let managerPromise = null;
 
 /**
  * Gets or creates the singleton instance of the ProblemManager.
- * @param {string} [configPath] - The path to the problems configuration file. If not provided, uses the existing instance or a default path.
- * @returns {Promise<ProblemManager>} The singleton instance.
+ * @param {object} [options] - The options for initialization.
+ * @param {string} [options.configPath='./problems.config.json'] - The path to the problems configuration file.
+ * @param {object} [options.config] - The problem configuration as an object.
  * @param {IStore} [store] - The datastore instance.
+ * @returns {Promise<ProblemManager>} The singleton instance.
  */
-export function getProblemManager(configPath = './problems.config.json', store) {
-    if (!managerPromise || (problemManagerInstance && (problemManagerInstance.configPath !== configPath || problemManagerInstance.store !== store))) {
-        managerPromise = ProblemManager.create(configPath, store).then(manager => {
+export function getProblemManager(options = {}, store) {
+    const { configPath = './problems.config.json', config } = options;
+
+    const hasConfigChanged = problemManagerInstance && (
+        (config && problemManagerInstance.config !== config) ||
+        (configPath && problemManagerInstance.configPath !== configPath)
+    );
+    if (!managerPromise || hasConfigChanged || (problemManagerInstance && problemManagerInstance.store !== store)) {
+        managerPromise = ProblemManager.create({ configPath, config }, store).then(manager => {
             problemManagerInstance = manager;
             return manager;
         });

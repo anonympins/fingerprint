@@ -279,7 +279,10 @@ $securityConfig = [
     ],
     // Enables "Useful Proof-of-Work" for suspicious activity.
     'enableUsefulWork' => true,
-    'usefulWorkConfigPath' => './path/to/your/problems.config.json' // (Optional) Path to the uPoW configuration.
+    // Provide either a path to a JSON file or the configuration as an array.
+    'usefulWorkConfigPath' => './path/to/your/problems.config.json', // (Optional)
+    // Or provide the configuration directly as an array.
+    // 'usefulWorkConfig' => [ /* ... your problem definitions ... */ ]
 ];
 
 ```
@@ -598,7 +601,9 @@ const securityConfig = {
     },
     // Enables problem solving for suspicious activity (configurable in problems.config.json)
     enableUsefulWork: true,
-    usefulWorkConfigPath: './path/to/your/problems.config.json', // (Optional) Path to the useful work configuration.
+    // (Optional) Path to the useful work configuration.
+    usefulWorkConfigPath: './path/to/your/problems.config.json',
+    // or usefulWorkConfig: [ /* ... your problem definitions ... */ ],
     // (Optional) Enable "dry run" mode. The engine will calculate scores and log intended actions
     // but will never actually block or challenge a request. Useful for testing new configs in production.
     dryRun: false,
