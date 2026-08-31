@@ -1635,6 +1635,8 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
             behaviorScore: secureRandom(),
             crossLayerInconsistencyScore: secureRandom(),
             timeInconsistencyScore: secureRandom(),
+            tlsSpoofingScore: secureRandom(), // NOUVEAU: Ajout du poids pour le spoofing TLS
+            botScore: secureRandom(), // NOUVEAU: Ajout du poids pour la détection de bot
         },
         patterns: {
             velocityThreshold: 100 + secureRandom() * 400, // 100-500ms

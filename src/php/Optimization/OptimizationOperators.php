@@ -121,6 +121,10 @@ class OptimizationOperators
                     'behaviorScore' => self::secureRandom(),
                     'crossLayerInconsistencyScore' => self::secureRandom(),
                     'timeInconsistencyScore' => self::secureRandom(),
+                    'tlsSpoofingScore' => self::secureRandom(),
+                    'botScore' => self::secureRandom(),
+                    'cookieDroppingScore' => self::secureRandom(),
+                    'threatIntelScore' => self::secureRandom(),
                 ],
                 'patterns' => [
                     'velocityThreshold' => 100 + self::secureRandom() * 400,
