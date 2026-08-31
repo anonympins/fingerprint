@@ -88,7 +88,7 @@ describe('ProblemManager', () => {
         // Mock readFile to return our config. This needs to be in the top-level
         // beforeEach to apply to all test suites within this describe block.
         fs.readFile.mockResolvedValue(JSON.stringify(mockConfig));
-        manager = await getProblemManager(configPath, store);
+        manager = await getProblemManager({ configPath }, store);
     });
 
     describe('Initialization and Loading', () => {
@@ -117,15 +117,15 @@ describe('ProblemManager', () => {
 
         it('should handle file read errors gracefully', async () => {
             fs.readFile.mockRejectedValue(new Error('File not found'));
-            const manager = await getProblemManager('nonexistent.json', store);
+            const manager = await getProblemManager({ configPath: 'nonexistent.json' }, store);
             expect(manager.problems).toEqual([]);
         });
     });
 
     describe('dispatchWork', () => {
         it('should return null if no problems are loaded', async () => {
-            fs.readFile.mockRejectedValue(new Error('err'));
-            const manager = await getProblemManager('bad.json', store);
+            fs.readFile.mockRejectedValue(new Error('File read error'));
+            const manager = await getProblemManager({ configPath: 'bad.json' }, store);
             expect(manager.dispatchWork(0.5)).toBeNull();
         });
 
