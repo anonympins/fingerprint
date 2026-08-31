@@ -11,7 +11,7 @@
     "test": "vitest run --reporter=verbose",
     "build": "npm run build:client && npm run build:wasm",
     "build:client": "node build-client.js",
-    "build:wasm": "emcc src/cpp/main.cpp src/cpp/utils.cpp -o public/fp.wasm -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='createFingerprintModule' -s \"EXPORTED_FUNCTIONS=['_hash_string']\" -O3 --no-entry"
+    "build:wasm": "em++ src/cpp/main.cpp src/cpp/utils.cpp -o public/fp.js -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='createFingerprintModule' -s \"EXPORTED_FUNCTIONS=['_hash_string']\" -O3 --no-entry"
   },
   "files": [
     "fingerprint.js",
