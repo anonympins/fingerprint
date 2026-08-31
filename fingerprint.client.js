@@ -1,9 +1,19 @@
-import { cyrb53, FingerprintBuilder } from './fingerprint.builder.js';
+import { cyrb53 as jsCyrb53, FingerprintBuilder } from './fingerprint.builder.js';
 import { solveChallenge } from './pow.solver.js';
+
+// Variable pour stocker la fonction de hachage active.
+// Par défaut, c'est l'implémentation JavaScript.
+let activeCyrb53 = jsCyrb53;
 
 const ClientLibrary = {
     // Cache pour éviter de recalculer les constantes (Hardware, etc.)
     _cachedBuilder: null,
+    /**
+     * Wrapper interne pour la fonction de hachage.
+     * @private
+     */
+    _hasher: (str, seed) => activeCyrb53(str, seed),
+
     /**
      * Génère l'empreinte de l'appareil actuel.
      */
@@ -12,7 +22,7 @@ const ClientLibrary = {
             console.error("getDeviceFingerprint can only be called on the client-side.");
             return "";
         }
-
+        
         if (!this._cachedBuilder) {
             const nav = window.navigator;
             const screen = window.screen;
@@ -21,7 +31,7 @@ const ClientLibrary = {
 
             // 1. Hardware (Très stable) : Cœurs, RAM, GPU (si dispo via canvas), Touch
             this._cachedBuilder.add(
-                "hw",
+                "hw", // Utilise maintenant le hasher actif
                 `${nav.hardwareConcurrency}_${nav.deviceMemory}_${nav.maxTouchPoints}`,
             );
 
@@ -111,7 +121,7 @@ const ClientLibrary = {
             .sort()
             .map((k) => `${k}=${payload[k]}`)
             .join("&");
-        const payloadHash = cyrb53(sortedPayload);
+        const payloadHash = this._hasher(sortedPayload);
         return `${deviceFp}|req:${payloadHash}`;
     },
 
@@ -138,6 +148,8 @@ const ClientLibrary = {
      * Resets the cached fingerprint builder. Used for testing purposes.
      */
     _resetCache() {
+        // Réinitialise le hasher à l'implémentation JS par défaut.
+        activeCyrb53 = jsCyrb53;
         this._cachedBuilder = null;
     },
 
@@ -345,7 +357,7 @@ const ClientLibrary = {
     };
 
     this.addFetchInterceptor(fingerprintInterceptor);
-  },
+  }, // <-- VIRGULE AJOUTÉE ICI
   
   /**
    * Intercepte une réponse de challenge JSON, le résout, et réessaie la requête.
@@ -388,18 +400,11 @@ const ClientLibrary = {
       console.error('[Fingerprint] Failed to solve or retry challenge:', e);
       return response; // Retourne la réponse 429 originale en cas d'échec
     }
-  },
-/**
- * @typedef {object} ClientConfig
- * @property {boolean} [mouse=true] - Activer le suivi de l'entropie de la souris.
- * @property {boolean} [keystrokes=true] - Activer le suivi de la dynamique de frappe.
- * @property {string[]} [honeypots] - Noms des champs de formulaire honeypot à initialiser.
- * @property {object} [fetch] - Configuration pour l'interception de fetch.
- * @property {string[]} [fetch.targetDomains] - Domaines à protéger. Si non fourni, protège les requêtes de même origine.
- */
+  }, // <-- VIRGULE AJOUTÉE ICI
 
 /**
  * Initialise toutes les protections côté client en une seule fois.
+ * Tente également de charger le module WASM si `wasmPath` est fourni.
  * C'est la méthode d'initialisation recommandée.
  * @param {ClientConfig} [config={}] - L'objet de configuration.
  */
@@ -408,8 +413,14 @@ const ClientLibrary = {
         mouse = true,
         keystrokes = true,
         honeypots = [],
-        fetch: fetchConfig = {},
+        wasmPath, // Nouveau paramètre
+        fetch: fetchConfig = {}
     } = config;
+
+    // Tentative de chargement du WASM si le chemin est fourni
+    if (wasmPath) {
+        this.initializeWasm(wasmPath);
+    }
 
     if (mouse) {
         this.startMouseEntropyTracker();
@@ -426,14 +437,57 @@ const ClientLibrary = {
 
         // Ajoute l'intercepteur pour la résolution de challenge
         if (fetchConfig.handleChallenges !== false) {
-          this.addFetchInterceptor(async (resource, options, next) => {
-            const originalResponse = await next(resource, options);
-            // On clone la réponse pour que la lecture du corps par solveChallengeAndRetry ne la consomme pas pour l'appelant original.
-            return this.solveChallengeAndRetry(originalResponse.clone(), resource, options);
-          });
+            this.addFetchInterceptor(async (resource, options, next) => {
+                const originalResponse = await next(resource, options);
+                // On clone la réponse pour que la lecture du corps par solveChallengeAndRetry ne la consomme pas pour l'appelant original.
+                return this.solveChallengeAndRetry(originalResponse.clone(), resource, options);
+            });
         }
     }
-  }
+  },
+
+    /**
+     * Tente de charger et d'initialiser le module WebAssembly pour un hachage plus rapide.
+     * Si le chargement échoue, il se rabat silencieusement sur l'implémentation JS.
+     * @param {string} wasmPath - Le chemin vers le script de chargement du module WASM (ex: '/fp.js').
+     */
+    async initializeWasm(wasmPath) {
+        try {
+            // 1. Injecter le script qui charge le module WASM
+            const script = document.createElement('script');
+            script.src = wasmPath;
+            await new Promise((resolve, reject) => {
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+
+            // 2. Attendre que la fonction globale `createFingerprintModule` soit disponible
+            if (typeof window.createFingerprintModule !== 'function') {
+                throw new Error('WASM loader script did not expose createFingerprintModule.');
+            }
+
+            // 3. Initialiser le module
+            const wasmModule = await window.createFingerprintModule();
+            if (typeof wasmModule._hash_string !== 'function') {
+                throw new Error('WASM module did not export _hash_string.');
+            }
+
+            // 4. Remplacer la fonction de hachage par la version WASM
+            activeCyrb53 = (str) => {
+                // La fonction C++ attend un pointeur, Emscripten gère la conversion
+                return wasmModule._hash_string(str);
+            };
+
+            console.log('[Fingerprint] WASM module loaded successfully. Using fast hashing.');
+            // NOUVEAU: Ajoute un indicateur à l'empreinte pour que le serveur sache que le WASM est actif.
+            if (this._cachedBuilder) {
+                this._cachedBuilder.addRaw('wasm', 'true');
+            }
+        } catch (error) {
+            console.warn('[Fingerprint] WASM module failed to load. Falling back to JS implementation. Error:', error);
+        }
+    }
 };
 
 /**
@@ -477,6 +531,7 @@ export const addFetchInterceptor = ClientLibrary.addFetchInterceptor.bind(Client
 export const patchGlobalFetch = ClientLibrary.patchGlobalFetch.bind(ClientLibrary);
 export const initializeFetch = ClientLibrary.initializeFetch.bind(ClientLibrary);
 export const initializeClient = ClientLibrary.initializeClient.bind(ClientLibrary);
+export const initializeWasm = ClientLibrary.initializeWasm.bind(ClientLibrary);
 export const solveChallengeAndRetry = ClientLibrary.solveChallengeAndRetry.bind(ClientLibrary);
 
 // Export the internal object for testing purposes

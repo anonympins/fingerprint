@@ -9,9 +9,7 @@
   },
   "scripts": {
     "test": "vitest run --reporter=verbose",
-    "build": "npm run build:client && npm run build:wasm",
-    "build:client": "node build-client.js",
-    "build:wasm": "em++ src/cpp/main.cpp src/cpp/utils.cpp -o public/fp.js -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='createFingerprintModule' -s \"EXPORTED_FUNCTIONS=['_hash_string']\" -O3 --no-entry"
+    "build": "node build-client.js"
   },
   "files": [
     "fingerprint.js",
@@ -71,7 +69,8 @@
     "prom-client": "^15.1.2",
     "vitest": "^4.1.11",
     "javascript-obfuscator": "^4.1.0",
-    "terser": "^5.30.3"
+    "terser": "^5.30.3",
+    "jsdom": "^24.0.0"
   },
   "peerDependencies": {
     "ioredis": "^5.3.2",
