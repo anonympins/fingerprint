@@ -1956,3 +1956,51 @@ describe('Regularity Detection (Standard Deviation)', () => {
         expect(requestPatternScore).toBe(0);
     });
 });
+describe('Dry Run Mode', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+    };
+
+    beforeEach(() => {
+        inMemoryStore._map.clear();
+        configureStore(inMemoryStore);
+        vi.spyOn(console, 'log').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('should log the intended action but return "next" when a request would be blocked', async () => {
+        const securityConfig = {
+            dryRun: true,
+            verbose: true, // Enable logging for the test
+            weights: { honeypotScore: 1.0 },
+            thresholds: { low: 20, block: 95 },
+        };
+        const engine = new FingerprintEngine(securityConfig);
+
+        // Mock a highly suspicious vector that would normally trigger a block
+        vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+            honeypotScore: 100
+        });
+
+        const requestContext = {
+            clientIp: '1.2.3.4', path: '/', cookies: {}, query: {}, headers: { 'user-agent': 'test-bot' },
+        };
+
+        const decision = await engine.processRequest(requestContext);
+
+        // Assert that the final action is 'next'
+        expect(decision.action).toBe('next');
+        // Assert that the intended action was to 'block'
+        expect(decision.intendedAction).toBe('block');
+        // Assert that the log message indicates a dry run
+        expect(console.log).toHaveBeenCalledWith(
+            expect.stringContaining('[FingerprintEngine] [Dry Run] Intended action: block'),
+            expect.any(Object) // The second argument is the data object
+        );
+    });
+});
