@@ -7,6 +7,13 @@
 
 An HTTP(S) client mitigation and anti-bot protection library for both PHP and Node.js/Express, based on digital fingerprinting and dynamic Proof-of-Work (PoW) challenges.
 
+## Installation and Usage
+
+This library is available for both **Node.js** and **PHP**.
+
+*   [PHP Quickstart](#php-quickstart)
+*   [Node.js Quickstart](#nodejs-quickstart)
+
 ## How It Works
 
 This system identifies and slows down bots and automated scripts by evaluating the "suspicion" level of each incoming request. Instead of outright blocking, it imposes challenges with a difficulty proportional to the suspicion score, penalizing bots without significantly impacting legitimate users.
@@ -49,13 +56,6 @@ For API clients, the challenge is delivered as a `404` JSON response, and the cl
 -   **Automatic Parameter Tuning**: Includes a genetic algorithm-based optimizer (`startThresholdAutoTuning`) that analyzes real traffic to dynamically adjust suspicion thresholds, weights, and behavioral pattern detection parameters, improving accuracy and reducing false positives over time. The tuner is hardened against data poisoning attempts.
 -   **Optional WASM Acceleration**: The client-side library can be accelerated with a WebAssembly module for high-performance hashing. The build process handles this optionally, and the client gracefully falls back to a pure JavaScript implementation if WASM is unavailable.
 -   **Hardened Security**: Protects against various attacks, including DoS via memory exhaustion, invalid nonce submission, and uses cryptographically secure randomness for all sensitive operations.
-
-## Installation and Usage
-
-This library is available for both **Node.js** and **PHP**.
-
-*   [PHP Quickstart](#php-quickstart)
-*   [Node.js Quickstart](#nodejs-quickstart)
 
 ### Prerequisites
 
@@ -113,10 +113,14 @@ $securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
     'verbose' => true,
 ]);
 
-// IMPORTANT: For PHP environments, TLS fingerprinting (JA3/JA4) requires a reverse proxy
-// (like Nginx, HAProxy, or a cloud load balancer) to inspect the TLS handshake and
-// pass the fingerprint hashes to the PHP application via HTTP headers
-// (e.g., `X-JA3-Hash`, `X-JA4-Hash`).
+/*
+ * IMPORTANT: Unlike Node.js, standard PHP environments (like PHP-FPM) cannot directly access
+ * the raw TLS handshake to compute JA3/JA4 fingerprints.
+ * To enable robust TLS fingerprinting in PHP, you must use a reverse proxy (like Nginx,
+ * HAProxy, or a cloud load balancer) configured to extract the fingerprint and pass it
+ * to your application via an HTTP header (e.g., `X-JA3-Hash`). The library is already
+ * built to consume these headers automatically.
+ */
 
 // 2. Create an instance of the DirectFingerprint protector.
 $protector = new DirectFingerprint($securityConfig);
@@ -137,7 +141,89 @@ echo "<p>Your suspicion score was: " . round($score, 2) . "</p>";
 
 ?>
 ```
+## TLS Fingerprinting (JA3/JA4) with Nginx and Apache
 
+Unlike Node.js, which can directly inspect the TLS handshake, a standard PHP environment (such as PHP-FPM) runs behind a web server (Nginx, Apache) that terminates the TLS connection. Consequently, the PHP script lacks direct access to the low-level information required to calculate the JA3 fingerprint.
+
+If you want a **better protection**, the standard solution is to delegate this calculation to the front-end web server (or a reverse proxy like HAProxy) and pass the result to PHP via an HTTP header. The library is designed to automatically detect and utilize these headers.
+
+### Automatic Detection in the Library
+
+The PHP `RequestContext` class automatically looks for the following headers.
+
+Once these headers are present, the `FingerprintEngine` incorporates them into the composite device fingerprint, providing the same level of robustness as the Node.js version.
+
+---
+
+### Configuration with Nginx
+
+Nginx is the simplest and most common solution. It requires your Nginx instance to be compiled with the `ngx_http_ssl_ja3_module` module. Many modern Nginx builds or distribution-provided packages include it. Here is an example configuration:
+
+```nginx
+http {
+# ... other http configurations ...
+
+# Declare a variable to store the JA3 fingerprint. 
+# Nginx automatically populates $ssl_ja3_hash if the module is active. 
+map $ssl_ja3_hash $ja3_hash {
+default $ssl_ja3_hash; 
+}
+
+server {
+listen 443 ssl http2; 
+server_name yourdomain.com; 
+
+# ... SSL configuration (certificates, etc.) ...
+ssl_certificate /path/to/your/fullchain.pem; 
+ssl_certificate_key /path/to/your/privkey.pem; 
+
+location / {
+# ... your application configuration ...
+try_files $uri $uri/ /index.php?$query_string; 
+}
+
+location ~ \.php$ {
+include fastcgi_params; 
+fastcgi_pass unix:/var/run/php/php8.1-fpm.sock; # Adjust for your PHP version
+fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; 
+
+# Add the JA3 fingerprint as a FastCGI parameter. 
+# PHP will make it available in $_SERVER['HTTP_X_JA3_HASH']. 
+fastcgi_param HTTP_X_JA3_HASH $ja3_hash; 
+}
+}
+}
+```
+
+After reloading the Nginx configuration, the `X-JA3-Hash` header will be automatically available to your PHP application.
+
+---
+
+### Configuration with Apache
+
+For Apache, obtaining the JA3 fingerprint is less straightforward because there is no standard module as widely available as the one for Nginx.
+
+#### Option 1: `mod_ssl_ja3` module (Recommended)
+
+The best approach is to use a third-party module like `mod_ssl_ja3`. You will need to compile and load it into your Apache configuration. Once the module is installed and enabled, you can add the JA3 header to your requests using the `RequestHeader` directive in your Virtual Host configuration:
+
+```apache
+<VirtualHost *:443>
+ServerName yourdomain.com
+# ... SSL configuration ...
+
+# The JA3_HASH environment variable is provided by mod_ssl_ja3
+RequestHeader set X-JA3-Hash "%{JA3_HASH}e"
+
+# ... your PHP application configuration ...
+</VirtualHost>
+```
+
+#### Option 2: Using a Reverse Proxy in front of Apache
+
+If you cannot compile modules for Apache, a very robust alternative is to place another service in front to handle TLS termination. **HAProxy** is an excellent choice for this, as it can calculate the JA3 hash natively and add it as a header before forwarding the request (via plain HTTP) to Apache.
+
+This architecture is common in high-performance environments and offers great flexibility.
 <a id="nodejs-quickstart"></a>
 ## NodeJS Configuration
 
@@ -318,7 +404,8 @@ const securityConfig = {
         { type: 'allowlist', entries: [
                 '192.168.1.100',      // A specific internal IP
                 '203.0.113.0/24',     // A partner's network range
-                '2001:db8::/32'       // An IPv6 range
+                '2001:db8::/32',      // An IPv6 range
+                '2a01:e0a:129:57c0::1' // A specific IPv6 address
             ]},
         { type: 'hostname_allowlist', entries: [
                 'google.com',      // A specific hostname
