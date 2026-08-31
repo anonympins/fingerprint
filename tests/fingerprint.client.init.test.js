@@ -9,11 +9,15 @@ const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
     url: 'http://localhost',
 });
 
-global.window = dom.window;
-global.document = dom.window.document;
-global.navigator = dom.window.navigator;
-global.screen = dom.window.screen;
-global.performance = dom.window.performance;
+// In recent Node.js versions, some global properties like 'navigator', 'performance',
+// and 'screen' are read-only. To ensure our JSDOM environment works correctly across
+// all versions, we use Object.defineProperty to make these properties writable.
+Object.defineProperty(global, 'window', { value: dom.window, writable: true });
+Object.defineProperty(global, 'document', { value: dom.window.document, writable: true });
+Object.defineProperty(global, 'navigator', { value: dom.window.navigator, writable: true });
+Object.defineProperty(global, 'screen', { value: dom.window.screen, writable: true });
+Object.defineProperty(global, 'performance', { value: dom.window.performance, writable: true });
+
 global.fetch = vi.fn(); // Mock global fetch
 global.Headers = dom.window.Headers;
 global.Request = dom.window.Request;
