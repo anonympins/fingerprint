@@ -564,6 +564,68 @@ class RequestUtils
         }
         return null;
     }
+    /**
+     * @private
+     * Analyzes click positions to detect unnaturally low variance.
+     * @param array<int, array{x: int, y: int, targetId: string}>|null $history
+     * @return float
+     */
+    private static function analyzeClickPositions(?array $history): float
+    {
+        if (empty($history) || count($history) < 3) {
+            return 0.0;
+        }
+
+        $clicksByTarget = [];
+        foreach ($history as $click) {
+            if (empty($click['targetId'])) continue;
+            if (!isset($clicksByTarget[$click['targetId']])) {
+                $clicksByTarget[$click['targetId']] = [];
+            }
+            $clicksByTarget[$click['targetId']][] = $click;
+        }
+
+        $maxScore = 0.0;
+
+        foreach ($clicksByTarget as $clicks) {
+            if (count($clicks) < 3) continue;
+
+            $n = count($clicks);
+            $meanX = array_sum(array_column($clicks, 'x')) / $n;
+            $meanY = array_sum(array_column($clicks, 'y')) / $n;
+
+            $variance = array_reduce($clicks, function ($sum, $c) use ($meanX, $meanY) {
+                    return $sum + pow($c['x'] - $meanX, 2) + pow($c['y'] - $meanY, 2);
+                }, 0) / $n;
+
+            if ($variance < 1.0) {
+                $score = (1 - sqrt($variance) / 5) * 100;
+                if ($score > $maxScore) {
+                    $maxScore = $score;
+                }
+            }
+        }
+
+        return min(100.0, $maxScore);
+    }
+
+    /**
+     * Calculates a score based on click variance metrics sent by the client.
+     * @return array{'clickVarianceScore': float}
+     */
+    public static function getClickVarianceScore(RequestContext $context): array
+    {
+        $behaviorHeader = $context->getHeader('x-behavior-metrics');
+        if (!$behaviorHeader) {
+            return ['clickVarianceScore' => 0.0];
+        }
+        $metrics = json_decode($behaviorHeader, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return ['clickVarianceScore' => 0.0];
+        }
+        $score = self::analyzeClickPositions($metrics['clicksHistory'] ?? null);
+        return ['clickVarianceScore' => $score];
+    }
 
     /**
      * Nettoie une URL de tous les paramètres de requête liés au PoW.

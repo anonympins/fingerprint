@@ -341,6 +341,9 @@
          // Score de détection de bot explicite (marqueurs d'automatisation)
          $bot = RequestUtils::getBotScore($context);
 
+         // Score de variance des clics
+         $clickVariance = RequestUtils::getClickVarianceScore($context);
+
          // Score basé sur les listes de menaces (Threat Intelligence)
          $threatIntel = RequestUtils::getThreatIntelScore($context, $this->securityConfig['threatIntel'] ?? []);
 
@@ -357,6 +360,7 @@
              'honeypotScore' => $honeypot['honeypotScore'],
              'behaviorScore' => $behavior['behaviorScore'],
              'botScore' => $bot['botScore'],
+             'clickVarianceScore' => $clickVariance['clickVarianceScore'],
              'threatIntelScore' => $threatIntel['threatIntelScore'],
          ]);
  

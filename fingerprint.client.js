@@ -202,6 +202,30 @@ const ClientLibrary = {
     },
 
     /**
+     * Starts tracking click events to analyze position variance.
+     * @private
+     */
+    startClickTracker() {
+        if (this._clickTrackerAttached) return;
+        this._clickTrackerAttached = true;
+
+        document.addEventListener('click', (e) => {
+            if (clicksHistory.length >= CLICKS_HISTORY_MAX) {
+                clicksHistory.shift();
+            }
+            // Generate a simple identifier for the target element
+            const target = e.target;
+            const targetId = target.id || target.name || target.tagName;
+
+            clicksHistory.push({
+                x: e.clientX,
+                y: e.clientY,
+                t: performance.now(),
+                targetId: this._hasher(targetId) // Hash the ID to keep it short and consistent
+            });
+        }, { passive: true });
+    },
+    /**
      * Initialise ou réinitialise les honeypots côté client pour une détection immédiate.
      * Les anciens écouteurs sont supprimés avant d'en ajouter de nouveaux.
      * @param {string[]} honeypotFieldNames - Noms des champs de formulaire cachés.
@@ -241,6 +265,7 @@ const ClientLibrary = {
         metrics.historyLength = window.history.length;
 
         // Ajoute un timestamp au moment de la collecte pour la détection de rejeu.
+        metrics.clicksHistory = clicksHistory;
         metrics.clientTimestamp = Date.now();
 
         // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
@@ -442,6 +467,7 @@ const ClientLibrary = {
     const {
         mouse = true,
         keystrokes = true,
+        clicks = true, // Add new option
         honeypots = [],
         trapUrls = [], // Nouveau paramètre pour les URL pièges
         wasmPath, // Nouveau paramètre
@@ -458,6 +484,9 @@ const ClientLibrary = {
     }
     if (keystrokes) {
         this.startKeystrokeDynamicsTracker();
+    }
+    if (clicks) {
+        this.startClickTracker();
     }
     if (honeypots.length > 0) {
         this.initializeHoneypots(honeypots);
@@ -532,6 +561,7 @@ const ClientLibrary = {
  * @property {Array<{x: number, y: number, t: number}>} mouseMovementsHistory - Historique des points de la souris.
  * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
+ * @property {Array<{x: number, y: number, t: number, targetId: string}>} clicksHistory - Historique des clics.
  * @property {number} historyLength - La longueur de l'historique de session du navigateur (`window.history.length`).
  * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
  * @property {string[]} [trapUrls] - URLs pièges à injecter dynamiquement.
@@ -540,6 +570,7 @@ const ClientLibrary = {
 const metrics = {
     mouseEntropy: 0, // Conservé pour la compatibilité, mais l'analyse se fait maintenant sur l'historique
     mouseMovementsHistory: [],
+    clicksHistory: [],
     keystrokeLatency: 0,
     honeypotInteraction: false,
     historyLength: 0,
@@ -549,6 +580,8 @@ const metrics = {
 let lastMousePos = { x: 0, y: 0 };
 let mouseMovementsHistory = []; // NOUVEAU: Historique des points de la souris
 const MOUSE_HISTORY_MAX = 100; // Limite le nombre de points stockés
+let clicksHistory = [];
+const CLICKS_HISTORY_MAX = 50;
 let activeHoneypotListeners = new Map(); // Garde une trace des écouteurs actifs
 let keystrokeTimestamps = [];
 let keystrokeLatencies = []; // NOUVEAU: Tableau dédié pour les latences
@@ -563,6 +596,7 @@ export const generateClientSideSignature = ClientLibrary.generateClientSideSigna
 export const _resetCache = ClientLibrary._resetCache.bind(ClientLibrary);
 export const startMouseEntropyTracker = ClientLibrary.startMouseEntropyTracker.bind(ClientLibrary);
 export const startKeystrokeDynamicsTracker = ClientLibrary.startKeystrokeDynamicsTracker.bind(ClientLibrary);
+export const startClickTracker = ClientLibrary.startClickTracker.bind(ClientLibrary);
 export const initializeHoneypots = ClientLibrary.initializeHoneypots.bind(ClientLibrary);
 export const getClientBehaviorMetrics = ClientLibrary.getClientBehaviorMetrics.bind(ClientLibrary);
 export const protectedFetch = ClientLibrary.protectedFetch.bind(ClientLibrary);

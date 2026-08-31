@@ -42,6 +42,7 @@ class FingerprintClient
         $this->clientConfig = array_merge([
             'mouse' => true,
             'keystrokes' => true,
+            'clicks' => true,
             'honeypots' => [],
             'fetch' => [
                 'handleChallenges' => true,

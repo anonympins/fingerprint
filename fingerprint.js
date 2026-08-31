@@ -1166,6 +1166,63 @@ function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
     return { tlsSpoofingScore: 0 };
 }
 
+/**
+ * @private
+ * Analyzes click positions from client-side metrics to detect unnaturally low variance,
+ * which can be a sign of automated clicking.
+ * @param {Array<{x: number, y: number, targetId: string}>|null} history - The click history from the client.
+ * @returns {number} A score from 0 to 100, where a higher score indicates lower variance (more bot-like).
+ */
+function analyzeClickPositions(history) {
+    if (!history || history.length < 3) {
+        return 0;
+    }
+
+    const clicksByTarget = {};
+    for (const click of history) {
+        if (!click.targetId) continue;
+        if (!clicksByTarget[click.targetId]) {
+            clicksByTarget[click.targetId] = [];
+        }
+        clicksByTarget[click.targetId].push(click);
+    }
+
+    let maxScore = 0;
+
+    for (const targetId in clicksByTarget) {
+        const clicks = clicksByTarget[targetId];
+        if (clicks.length < 3) continue;
+
+        const n = clicks.length;
+        const meanX = clicks.reduce((sum, c) => sum + c.x, 0) / n;
+        const meanY = clicks.reduce((sum, c) => sum + c.y, 0) / n;
+
+        const variance = clicks.reduce((sum, c) => sum + Math.pow(c.x - meanX, 2) + Math.pow(c.y - meanY, 2), 0) / n;
+
+        // If variance is extremely low (e.g., less than 1 pixel), it's highly suspicious.
+        // The score increases as variance approaches zero.
+        if (variance < 1.0) {
+            // A simple scoring model: score is 100 if variance is 0, and decreases.
+            const score = (1 - Math.sqrt(variance) / 5) * 100;
+            if (score > maxScore) {
+                maxScore = score;
+            }
+        }
+    }
+
+    return Math.min(100, maxScore);
+}
+
+/**
+ * Calculates a score based on click variance metrics sent by the client.
+ * @param {object} context - The request context.
+ * @returns {{clickVarianceScore: number}}
+ */
+function getClickVarianceScore(context) {
+    const metrics = JSON.parse(context.headers['x-behavior-metrics'] || '{}');
+    const score = analyzeClickPositions(metrics.clicksHistory);
+    return { clickVarianceScore: score };
+}
 
 /**
  * Calcule un score basé sur la détection explicite de frameworks d'automatisation.
@@ -1535,6 +1592,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // NOUVEAU: On calcule le score d'incohérence entre les couches.
   const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
 
+  // NOUVEAU: On calcule le score de variance des clics.
+  const { clickVarianceScore } = getClickVarianceScore(context);
+
   const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
@@ -1547,7 +1607,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -3142,6 +3202,7 @@ export const __internal = {
     getCrossLayerInconsistency, // Expose for testing
     // Expose page generators for security testing
     getTimeInconsistencyScore,
+    getClickVarianceScore, // NOUVEAU: Expose pour les tests
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,

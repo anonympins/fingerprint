@@ -24,7 +24,7 @@ const {
     __internal,
     configureStore,
     verifyCpuTargetPoWAndGenerateTicket,
-    verifyMemoryPoW, // This is already exported, no need to get from __internal
+    verifyMemoryPoW,
     verifyTspChallenge,
     startThresholdAutoTuning,
     default_whitelist,
@@ -32,7 +32,7 @@ const {
     getCompositeDeviceHash,
 } = fingerprint;
 const { store, getRequestPatternScore, getDeviceHash } = __internal;
-let getBehaviorScore; // Will be initialized after import
+let { getBehaviorScore, getClickVarianceScore } = __internal;
 // Mock the entire dns/promises module
 vi.mock('node:dns/promises');
 
@@ -1392,6 +1392,11 @@ describe('Fingerprint & PoW Security Suite', () => {
 
     describe('getBehaviorScore', () => {
         // La fonction est privée, on la récupère via l'export __internal
+        // FIX: Correctly assign the function before tests run.
+        beforeEach(() => {
+            getBehaviorScore = fingerprint.__internal.getBehaviorScore;
+        });
+
         beforeEach(() => {
             getBehaviorScore = fingerprint.__internal.getBehaviorScore;
         });
@@ -1435,6 +1440,57 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
     });
 
+    describe('getClickVarianceScore', () => {
+        // FIX: Correctly assign the function before tests run.
+        beforeEach(() => {
+            getClickVarianceScore = fingerprint.__internal.getClickVarianceScore;
+        });
+
+        it('should return 0 if no click history is present', () => {
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify({}) } };
+            const { clickVarianceScore } = getClickVarianceScore(context);
+            expect(clickVarianceScore).toBe(0);
+        });
+
+        it('should return 0 if there are not enough clicks on a single target', () => {
+            const metrics = {
+                clicksHistory: [
+                    { x: 10, y: 10, targetId: 'hash1' },
+                    { x: 11, y: 11, targetId: 'hash1' },
+                    { x: 100, y: 100, targetId: 'hash2' }
+                ]
+            };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { clickVarianceScore } = getClickVarianceScore(context);
+            expect(clickVarianceScore).toBe(0);
+        });
+
+        it('should return a high score for clicks with very low variance', () => {
+            const metrics = {
+                clicksHistory: [
+                    { x: 100, y: 100, targetId: 'hash1' },
+                    { x: 100.1, y: 100.2, targetId: 'hash1' },
+                    { x: 99.9, y: 99.8, targetId: 'hash1' }
+                ]
+            };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { clickVarianceScore } = getClickVarianceScore(context);
+            expect(clickVarianceScore).toBeGreaterThan(90);
+        });
+
+        it('should return a low score for clicks with high (human-like) variance', () => {
+            const metrics = {
+                clicksHistory: [
+                    { x: 105, y: 110, targetId: 'hash1' },
+                    { x: 98, y: 102, targetId: 'hash1' },
+                    { x: 112, y: 95, targetId: 'hash1' }
+                ]
+            };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { clickVarianceScore } = getClickVarianceScore(context);
+            expect(clickVarianceScore).toBe(0);
+        });
+    });
 
     describe('Bot Whitelisting', () => {
         const inMemoryStore = {
