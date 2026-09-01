@@ -847,7 +847,7 @@ In short, the client-side library is not an alternative, but a **force multiplie
 To simplify setup, all client-side features can be enabled and configured through a single, unified function: `initializeClient(config)`. This is the recommended approach.
 
 ```javascript
-import { initializeClient } from '@anonympins/finger/print/client';
+import { initializeClient } from '@anonympins/fingerprint/client';
  
 /**
  * Initializes all client-side protections.
