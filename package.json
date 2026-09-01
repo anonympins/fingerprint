@@ -18,24 +18,21 @@
       "require": "./public/fingerprint.client.obfuscated.js",
       "browser": "./public/fingerprint.client.obfuscated.js"
     },
+    "./client/src/*": "./src/js/*",
     "./fp.wasm": "./public/fp.wasm",
     "./fp.js": "./public/fp.js",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
-    "public/fingerprint.client.obfuscated.js",
-    "src/js/fingerprint.builder.js",
-    "src/js/optimization.worker.js",
-    "src/js/pow.worker.js",
-    "src/js/library.js",
-    "src/js/redis-store.js",
-    "src/js/mongodb-store.js",
-    "src/js/sql-store.js",
-    "public/fp.wasm",
-    "public/fp.js",
+    "src/js/",
+    "public/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md",
+    "src/php/",
+    "composer.json",
+    "phpunit.xml"
   ],
   "repository": {
     "type": "git",
