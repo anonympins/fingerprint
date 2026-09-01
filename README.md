@@ -847,7 +847,7 @@ In short, the client-side library is not an alternative, but a **force multiplie
 To simplify setup, all client-side features can be enabled and configured through a single, unified function: `initializeClient(config)`. This is the recommended approach.
 
 ```javascript
-import { initializeClient } from './path/to/fingerprint.client.js';
+import { initializeClient } from '@anonympins/finger/print/client';
  
 /**
  * Initializes all client-side protections.
@@ -919,7 +919,7 @@ If you prefer not to modify global functions or need fine-grained control over w
 import {
     initializeClient,
     protectedFetch
-} from './path/to/fingerprint.client.js';
+} from '@anonympins/fingerprint/client';
 
 // Start tracking user behavior as soon as the app loads.
 // Note: You still need to initialize the trackers even if you use protectedFetch manually.
@@ -990,7 +990,7 @@ Retrieves the best solution currently known for one or all problems. This is use
 **Example: Creating an API endpoint to view solutions**
 
 ```javascript
-import { problemManager } from './fingerprint.js'; // Adjust path
+import { problemManager } from '@anonympins/fingerprint'; // Adjust path
 
 app.get('/api/problems/solutions', (req, res) => {
     const solutions = problemManager.getBestSolutions();
