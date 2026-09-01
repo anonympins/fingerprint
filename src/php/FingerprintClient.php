@@ -105,6 +105,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const wasmScript = document.createElement('script');
             wasmScript.src = config.wasmPath;
             wasmScript.async = true;
+            wasmScript.nonce = '{$this->nonce}';
             document.head.appendChild(wasmScript);
         }
 
