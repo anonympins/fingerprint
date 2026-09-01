@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isMalicious } from '../fingerprint.js';
+import { isMalicious } from '../src/js/fingerprint.js';
 
 // We import the function directly to test it in isolation, avoiding vite:define errors.
 

@@ -1,9 +1,9 @@
 import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
 import dns from 'node:dns/promises';
-import { solveCpuTargetInline, solveMemory } from '../pow.solver.js';
+import { solveCpuTargetInline, solveMemory } from '../src/js/pow.solver.js';
 import { readFileSync } from 'node:fs';
-import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
+import { FingerprintBuilder, cyrb53 } from '../src/js/fingerprint.builder.js';
 
 // Mock import.meta.env before importing the module that uses it
 vi.mock('import-meta-env', () => ({
@@ -15,7 +15,7 @@ vi.mock('node:fs', async () => {
     return { ...actualFs, readFileSync: vi.fn() };
 });
 
-import * as fingerprint from '../fingerprint.js';
+import * as fingerprint from '../src/js/fingerprint.js';
 const {
     FingerprintEngine,
     isTicketValid,

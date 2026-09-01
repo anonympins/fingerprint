@@ -401,7 +401,7 @@ Available profiles:
 import express from 'express';
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
-import { powMiddleware, createSecurityProfile } from './fingerprint.js'; // Adjust the path
+import { powMiddleware, createSecurityProfile } from '@anonympins/fingerprint'; // Adjust the path
 
 const app = express();
 app.use(cookieParser());
@@ -461,7 +461,7 @@ app.listen(3000, () => console.log('Server started on port 3000'));
 If you prefer to define the entire configuration manually instead of using a profile, you can create a `securityConfig` object with all the parameters. All parameters are optional, but it is highly recommended to review and adjust them for your specific needs. The engine will warn you about any unknown keys in this configuration, helping you catch typos.
 
 ```javascript
-import { default_whitelist, default_analyzers } from './fingerprint.js';
+import { powMiddleware, default_whitelist, default_analyzers } from '@anonympins/fingerprint';
 
 const app = express();
 app.use(cookieParser());
@@ -701,7 +701,7 @@ The library provides ready-to-use adapters for popular datastores like **Redis**
 **Redis Example:**
 
 ```javascript
-import { configureStore } from './fingerprint.js';
+import { configureStore } from '@anonympins/fingerprint';
 import { createRedisStore } from './redis-store.js';
 import Redis from 'ioredis';
 
@@ -1029,7 +1029,7 @@ Updates the payload (parameters) of a specific problem by its ID. This allows fo
 
 ```javascript
 import http from 'http';
-import { FingerprintEngine } from './fingerprint.js'; // Adjust path
+import { FingerprintEngine } from '@anonympins/fingerprint'; // Adjust path
 
 const securityConfig = { /* ... your config ... */ };
 const engine = new FingerprintEngine(securityConfig);

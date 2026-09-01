@@ -1,6 +1,6 @@
 import { it, describe, expect, vi, beforeEach, afterEach } from 'vitest';
-import * as fingerprint from '../fingerprint.js';
-import { solveCpuTargetInline, solveMemory } from '../pow.solver.js';
+import * as fingerprint from '../src/js/fingerprint.js';
+import { solveCpuTargetInline, solveMemory } from '../src/js/pow.solver.js';
 
 // Mock the internal store to be a simple in-memory map for testing
 const inMemoryStore = {
@@ -12,7 +12,7 @@ const inMemoryStore = {
     clear() { this._map.clear(); }
 };
 
-vi.mock('../fingerprint.js', async (importOriginal) => {
+vi.mock('../src/js/fingerprint.js', async (importOriginal) => {
     const original = await importOriginal();
     return {
         ...original,

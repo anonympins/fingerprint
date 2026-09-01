@@ -52,7 +52,7 @@ async function buildClientScript() {
     const obfuscatedCode = obfuscationResult.getObfuscatedCode();
 
     console.log('Writing obfuscated script to fingerprint.client.obfuscated.js...');
-    await fs.writeFile(join(__dirname, 'fingerprint.client.obfuscated.js'), obfuscatedCode);
+    await fs.writeFile(join(__dirname, './../../public/fingerprint.client.obfuscated.js'), obfuscatedCode);
 
     console.log('Client script build process completed successfully.');
   } catch (error) {
