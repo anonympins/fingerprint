@@ -11,6 +11,17 @@
     "test": "vitest run --reporter=verbose",
     "build": "node src/js/build-client.js"
   },
+  "exports": {
+    ".": "./index.js",
+    "./client": {
+      "import": "./public/fingerprint.client.obfuscated.js",
+      "require": "./public/fingerprint.client.obfuscated.js",
+      "browser": "./public/fingerprint.client.obfuscated.js"
+    },
+    "./fp.wasm": "./public/fp.wasm",
+    "./fp.js": "./public/fp.js",
+    "./package.json": "./package.json"
+  },
   "files": [
     "index.js",
     "public/fingerprint.client.obfuscated.js",
