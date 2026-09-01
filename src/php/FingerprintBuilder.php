@@ -173,13 +173,14 @@ class FingerprintBuilder
      */
     private static function imul(int $a, int $b): int
     {
-        // Emulation of JavaScript's Math.imul for 32-bit integer multiplication.
-        // This prevents overflow to float on 64-bit systems and ensures consistency.
-        $a_lo = $a & 0xffff;
-        $a_hi = $a >> 16;
-        $b_lo = $b & 0xffff;
-        $b_hi = $b >> 16;
-        // The final bitwise OR ensures the result is a signed 32-bit integer.
-        return (($a_lo * $b_lo) + ((($a_hi * $b_lo + $a_lo * $b_hi) << 16) & 0xffffffff)) | 0;
+        // Emulation of JavaScript's Math.imul for signed 32-bit integer multiplication.
+        // This version correctly handles overflows on 64-bit systems.
+        $ah = ($a >> 16) & 0xffff;
+        $al = $a & 0xffff;
+        $bh = ($b >> 16) & 0xffff;
+        $bl = $b & 0xffff;
+        $lo = $al * $bl;
+        $hi = (($lo >> 16) + ($al * $bh) + ($ah * $bl)) & 0xffff;
+        return (($hi << 16) | ($lo & 0xffff)) | 0;
     }
 }
