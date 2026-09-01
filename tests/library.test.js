@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Optimization } from '../library.js';
+import { Optimization } from '../src/js/library.js';
 
 describe('Optimization.Operators.benfordTest', () => {
 

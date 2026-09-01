@@ -1,3 +1,34 @@
+## Version 0.3.3
+
+This release introduces significant enhancements to client-side behavioral analysis, adds a crucial "dry run" mode for safe production testing, and improves the overall developer experience with an event-driven client library and better packaging.
+
+### ✨ New Features
+
+*   **Advanced Behavioral Analysis: Click Variance**:
+    *   The client-side library now tracks the exact coordinates of user clicks on interactive elements.
+    *   A new `clickVarianceScore` is calculated on the server-side (for both PHP and Node.js) to penalize unnaturally precise, bot-like clicking patterns (e.g., always hitting the exact same pixel). This adds a powerful new dimension to detecting sophisticated automation.
+
+*   **"Dry Run" Mode**:
+    *   A `dryRun: true` option can now be added to the security configuration. When enabled, the engine performs all calculations and logs the action it *would* have taken (`block`, `challenge`) but never actually interrupts the request.
+    *   This is invaluable for safely testing new or stricter configurations in a live production environment without affecting real users.
+
+*   **Client-Side Event Emitter**:
+    *   The client library now emits events for key actions (e.g., `challenge_issued`, `challenge_solved`, `honeypot_triggered`). This allows developers to easily hook into the library's lifecycle to trigger custom UI changes, analytics, or logging.
+
+### 🚀 Improvements
+
+*   **Enhanced Mouse Tracking Analysis**: The server-side analysis of mouse movement data has been refined to better distinguish between natural, human-like cursor paths and the linear or predictable movements typical of bots.
+*   **PHP Code Quality**: The entire PHP codebase has undergone a syntax normalization pass, improving consistency and long-term maintainability.
+*   **Test Suite Reliability**:
+    *   Unit tests for the client-side `initializeClient` function have been added and improved.
+    *   New unit tests cover the "Dry Run" mode functionality.
+    *   Fixed existing unit tests for the `ProblemManager` to ensure the stability of the Useful-Proof-of-Work system.
+
+### 📦 Build & Internals
+
+*   **Corrected NPM Package Files**: The `files` array in `package.json` has been updated to ensure all necessary JavaScript source files (`library.js`, `fingerprint.builder.js`, etc.) are correctly included in the published package, fixing potential `import` issues for users.
+*   **Project Structure**: The JavaScript source files have been consolidated into the `src/js` directory for a cleaner and more organized project structure.
+
 ## Version 0.3.2
 
 This release brings major new capabilities to both the Node.js and PHP versions of the library. Key highlights include the full implementation of the "Useful Proof-of-Work" (uPoW) system in PHP, client-side acceleration via WebAssembly (WASM), direct JA3 fingerprinting in Node.js, and significant reliability improvements to the auto-tuner.

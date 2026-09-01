@@ -110,16 +110,10 @@ export class FingerprintBuilder {
         const map1 = parse(fpString1);
         const map2 = parse(fpString2);
 
-        // Keys to ignore when comparing the initial request fingerprint with the challenge solver's fingerprint.
-        // Headers like Client-Hints (ch_*), cookie presence (cookie_keys), and upgrade-insecure-requests
-        // can vary or be absent on the subsequent request that submits the solution, especially after a redirect.
-        // By ignoring them, we focus the comparison on more stable identifiers like UA, JA3, GPU, etc.
         const volatileKeys = new Set([
             'ch_ua', 'ch_platform', 'ch_mobile', 'ch_model', 'ch_arch', 'ch_bitness',
             'cookie_keys', 'upgrade',
-            // Also ignore network and http version as they can change between requests (e.g., proxy, protocol upgrade)
             'network', 'http_ver',
-            // Ignore proxy-related headers as they are not stable client identifiers
             'x_forwarded_for', 'x_real_ip', 'cf_connecting_ip'
         ]);
 
@@ -131,8 +125,8 @@ export class FingerprintBuilder {
             gpu: 4.0,   // GPU: Haute entropie (Matériel spécifique)
             ja3: 3.5,   // JA3: Identifie la librairie TLS (très stable pour un client donné)
             ja4: 4.0,   // JA4: Plus moderne, inclut HTTP/2
-            h2_settings: 3.0, // HTTP/2 settings frame fingerprint
-            tcp_fp: 2.5, // TCP/IP fingerprint
+            h2: 3.0, // HTTP/2 settings frame fingerprint
+            tcp: 2.5, // TCP/IP fingerprint
             ua: 2.0,    // User-Agent: Signal fort, bien que modifiable
             
             // --- Signaux composites et dérivés ---
@@ -156,14 +150,13 @@ export class FingerprintBuilder {
 
         allKeys.forEach((key) => {
             // On ignore les clés volatiles pour cette comparaison spécifique.
-            if (volatileKeys.has(key)) return;
+            if (volatileKeys.has(key)) {
+                return;
+            }
 
-            // On ne compare que les clés qui ont un poids défini.
-            const weight = weights[key];
-            // The check must be for `undefined` to allow keys that have a legitimate weight of 0.
-            // The previous `!weight` check would incorrectly exclude them, potentially leading to a totalWeight of 0
-            // and a similarity score of NaN, which evaluates to 0. This is the fix.
-            if (weight === undefined) return;
+            const weight = weights[key] ?? 0;
+            // On ne compte une clé dans le poids total que si elle est présente dans au moins une des deux empreintes.
+            if (!map1.has(key) && !map2.has(key)) return;
 
             totalWeight += weight; // N'incrémenter que si la clé est pertinente.
             if (map1.get(key) === map2.get(key)) {

@@ -222,7 +222,7 @@ class ChallengeUtils
     private static function getPowSolverCode(): string
     {
         // Le chemin doit être relatif à ce fichier ou absolu.
-        $solverPath = __DIR__ . '/../../../pow.solver.inline.js';
+        $solverPath = __DIR__ . '/../../js/pow.solver.inline.js';
         if (!file_exists($solverPath)) {
             error_log("[ChallengeUtils] Erreur: Le fichier pow.solver.inline.js n'a pas été trouvé à l'emplacement attendu.");
             return '';

@@ -36,6 +36,7 @@ class SecurityProfiles
                 'botScore' => 1.0, // Poids pour le score de bot explicite
                 'cookieDroppingScore' => 0.9, // Pénalité élevée pour la suppression de cookies
                 'threatIntelScore' => 0.4, // Poids pour le renseignement sur les menaces (ex: IP de proxy connu)
+                'clickVarianceScore' => 0.6, // Poids pour la variance des clics
             ],
             'thresholds' => ['low' => 20, 'medium' => 45, 'high' => 75, 'block' => 95],
             'patterns' => [
@@ -75,6 +76,7 @@ class SecurityProfiles
                 'botScore' => 1.0,
                 'cookieDroppingScore' => 1.0, // Pénalité maximale
                 'threatIntelScore' => 0.7, // Poids élevé pour les menaces connues (Tor, etc.)
+                'clickVarianceScore' => 0.7, // Poids élevé pour la variance des clics
             ],
             'thresholds' => ['low' => 10, 'medium' => 35, 'high' => 65, 'block' => 90],
             'patterns' => [
@@ -114,6 +116,7 @@ class SecurityProfiles
                 'botScore' => 0.5,
                 'cookieDroppingScore' => 0.8, // Important pour les clients API qui doivent maintenir un état
                 'threatIntelScore' => 0.5, // Les API sont souvent ciblées par des IPs malveillantes
+                'clickVarianceScore' => 0.3, // Poids faible car non applicable aux API
             ],
             'thresholds' => ['low' => 25, 'medium' => 50, 'high' => 80, 'block' => 95],
             'patterns' => [
@@ -155,6 +158,7 @@ class SecurityProfiles
                 'botScore' => 0.8,
                 'cookieDroppingScore' => 0.7, // Moins critique, mais toujours un signal
                 'threatIntelScore' => 0.3, // Moins prioritaire pour un blog
+                'clickVarianceScore' => 0.5, // Poids modéré pour la variance des clics
             ],
             'thresholds' => ['low' => 25, 'medium' => 55, 'high' => 80, 'block' => 95],
             'patterns' => [
@@ -184,11 +188,6 @@ class SecurityProfiles
                 'historyScore' => 0.4,
                 'rotationScore' => 0.6,
                 'headerAnomalyScore' => 0.2,
-                // Scission du requestPatternScore pour un contrôle plus fin
-                'velocityScore' => 0.8,       // Pénalise la vitesse globale
-                'burstScore' => 1.0,          // Pénalise fortement les rafales sur la même ressource (scalping)
-                'scrapeScore' => 0.9,         // Pénalise le parcours de pages/produits
-                'regularityScore' => 0.7,     // Détecte les bots de type "cron"
                 'inconsistencyScore' => 1.0, // Crucial for preventing account takeover
                 'behaviorScore' => 0.8, // Important for checkout/login forms
                 'honeypotScore' => 1.0,
@@ -200,6 +199,7 @@ class SecurityProfiles
                 'botScore' => 1.0,
                 'cookieDroppingScore' => 1.0, // Crucial pour la détection de bots e-commerce
                 'threatIntelScore' => 0.8, // Très important pour l'e-commerce (proxies de scalping)
+                'clickVarianceScore' => 0.8, // Poids très élevé pour la variance des clics
             ],
             'thresholds' => ['low' => 15, 'medium' => 40, 'high' => 70, 'block' => 90],
             'patterns' => [

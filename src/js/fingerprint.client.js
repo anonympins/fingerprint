@@ -9,6 +9,18 @@ const ClientLibrary = {
     // Cache pour éviter de recalculer les constantes (Hardware, etc.)
     _cachedBuilder: null,
     /**
+     * @private
+     * Dispatches a custom event from the window object.
+     * @param {string} eventName - The name of the event.
+     * @param {object} [detail={}] - The data to include in the event's detail property.
+     */
+    _dispatchEvent(eventName, detail = {}) {
+        if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return;
+        const event = new CustomEvent(`fingerprint:${eventName}`, { detail });
+        window.dispatchEvent(event);
+    },
+
+    /**
      * Wrapper interne pour la fonction de hachage.
      * @private
      */
@@ -158,16 +170,21 @@ const ClientLibrary = {
      * À appeler une fois sur la page.
      */
     startMouseEntropyTracker() {
-        // S'assurer de ne pas attacher l'écouteur plusieurs fois
-        if (mouseMovements > 0) return;
-
+        // Utiliser un drapeau pour éviter d'attacher l'écouteur plusieurs fois
+        if (this._mouseTrackerAttached) return;
+        this._mouseTrackerAttached = true;
+ 
         document.addEventListener('mousemove', (e) => {
-            const dx = e.clientX - lastMousePos.x;
-            const dy = e.clientY - lastMousePos.y;
-            // Une métrique simple : la somme des distances. Un bot aura souvent 0.
-            metrics.mouseEntropy += Math.sqrt(dx * dx + dy * dy);
-            lastMousePos = {x: e.clientX, y: e.clientY};
-            mouseMovements++;
+            // NOUVEAU: Capturer une série de points {x, y, t}
+            if (mouseMovementsHistory.length >= MOUSE_HISTORY_MAX) {
+                // Garder la taille de l'historique constante pour éviter une consommation mémoire excessive.
+                mouseMovementsHistory.shift();
+            }
+            mouseMovementsHistory.push({
+                x: e.clientX,
+                y: e.clientY,
+                t: performance.now()
+            });
         }, {passive: true});
     },
 
@@ -196,6 +213,30 @@ const ClientLibrary = {
         }, {passive: true});
     },
 
+    /**
+     * Starts tracking click events to analyze position variance.
+     * @private
+     */
+    startClickTracker() {
+        if (this._clickTrackerAttached) return;
+        this._clickTrackerAttached = true;
+
+        document.addEventListener('click', (e) => {
+            if (clicksHistory.length >= CLICKS_HISTORY_MAX) {
+                clicksHistory.shift();
+            }
+            // Generate a simple identifier for the target element
+            const target = e.target;
+            const targetId = target.id || target.name || target.tagName;
+
+            clicksHistory.push({
+                x: e.clientX,
+                y: e.clientY,
+                t: performance.now(),
+                targetId: this._hasher(targetId) // Hash the ID to keep it short and consistent
+            });
+        }, { passive: true });
+    },
     /**
      * Initialise ou réinitialise les honeypots côté client pour une détection immédiate.
      * Les anciens écouteurs sont supprimés avant d'en ajouter de nouveaux.
@@ -236,12 +277,12 @@ const ClientLibrary = {
         metrics.historyLength = window.history.length;
 
         // Ajoute un timestamp au moment de la collecte pour la détection de rejeu.
+        metrics.clicksHistory = clicksHistory;
         metrics.clientTimestamp = Date.now();
 
-        // Normalise l'entropie de la souris
-        if (mouseMovements > 10) {
-            metrics.mouseEntropy /= mouseMovements;
-        }
+        // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
+        metrics.mouseMovementsHistory = mouseMovementsHistory;
+
         // Calcule la latence moyenne des frappes
         if (keystrokeLatencies.length > 0) {
             const sum = keystrokeLatencies.reduce((a, b) => a + b, 0);
@@ -314,9 +355,10 @@ const ClientLibrary = {
      * La fonction qui est appelée lorsqu'un honeypot est déclenché.
      * @private
      */
-    onHoneypotTrigger : () => {
+    onHoneypotTrigger() {
         metrics.honeypotInteraction = true;
-        // On pourrait même envoyer un signalement au serveur immédiatement.
+        // Émettre un événement pour que l'application puisse réagir.
+        this._dispatchEvent('honeypotTriggered');
     },
 
   /**
@@ -360,6 +402,32 @@ const ClientLibrary = {
   }, // <-- VIRGULE AJOUTÉE ICI
   
   /**
+   * Injects visually hidden "honeypot" links into the DOM to trap bots.
+   * @param {string[]} urls - An array of trap URLs to inject.
+   * @private
+   */
+  injectTrapLinks(urls) {
+    if (!urls || urls.length === 0 || typeof document === 'undefined') {
+      return;
+    }
+
+    const trapContainer = document.createElement('div');
+    trapContainer.setAttribute('aria-hidden', 'true');
+    trapContainer.style.position = 'absolute';
+    trapContainer.style.left = '-9999px';
+    trapContainer.style.top = '-9999px';
+
+    urls.forEach(url => {
+      const link = document.createElement('a');
+      link.href = url;
+      link.tabIndex = -1; // Make it unfocusable
+      link.textContent = 'config'; // Some plausible text
+      trapContainer.appendChild(link);
+    });
+
+    document.body.appendChild(trapContainer);
+  },
+  /**
    * Intercepte une réponse de challenge JSON, le résout, et réessaie la requête.
    * @param {Response} response - La réponse initiale (potentiellement 429).
    * @param {RequestInfo} resource - La ressource de la requête originale.
@@ -379,11 +447,14 @@ const ClientLibrary = {
       }
 
       console.log(`[Fingerprint] Received a '${challengeData.challenge.type}' challenge. Solving...`);
+      this._dispatchEvent('challengeReceived', { challenge: challengeData.challenge });
+
       // L'empreinte de l'appareil qui résout le challenge est cruciale.
       const solverFp = this.getDeviceFingerprint();
       const solutionWrapper = await solveChallenge(challengeData.challenge, solverFp);
       console.log('[Fingerprint] Challenge solved. Retrying original request.');
 
+      this._dispatchEvent('challengeSolved', { solution: solutionWrapper.rawSolution });
       // Ajouter la solution aux paramètres de la requête pour le nouvel essai
       const url = new URL((resource instanceof Request) ? resource.url : String(resource), window.location.origin);
       // La logique de formatage est maintenant cachée dans la classe ChallengeSolution.
@@ -412,7 +483,9 @@ const ClientLibrary = {
     const {
         mouse = true,
         keystrokes = true,
+        clicks = true, // Add new option
         honeypots = [],
+        trapUrls = [], // Nouveau paramètre pour les URL pièges
         wasmPath, // Nouveau paramètre
         fetch: fetchConfig = {}
     } = config;
@@ -428,8 +501,16 @@ const ClientLibrary = {
     if (keystrokes) {
         this.startKeystrokeDynamicsTracker();
     }
+    if (clicks) {
+        this.startClickTracker();
+    }
     if (honeypots.length > 0) {
         this.initializeHoneypots(honeypots);
+    }
+
+    // Injection dynamique des liens pièges au démarrage
+    if (trapUrls.length > 0) {
+        this.injectTrapLinks(trapUrls);
     }
     // On active l'interception si `fetch` est configuré, même avec un objet vide.
     if (config.fetch) {
@@ -493,15 +574,19 @@ const ClientLibrary = {
 /**
  * @typedef {object} ClientBehaviorMetrics
  * @property {number} mouseEntropy - Entropie des mouvements de la souris.
+ * @property {Array<{x: number, y: number, t: number}>} mouseMovementsHistory - Historique des points de la souris.
  * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
+ * @property {Array<{x: number, y: number, t: number, targetId: string}>} clicksHistory - Historique des clics.
  * @property {number} historyLength - La longueur de l'historique de session du navigateur (`window.history.length`).
  * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
+ * @property {string[]} [trapUrls] - URLs pièges à injecter dynamiquement.
  */
-
 /** @type {ClientBehaviorMetrics} */
 const metrics = {
-    mouseEntropy: 0,
+    mouseEntropy: 0, // Conservé pour la compatibilité, mais l'analyse se fait maintenant sur l'historique
+    mouseMovementsHistory: [],
+    clicksHistory: [],
     keystrokeLatency: 0,
     honeypotInteraction: false,
     historyLength: 0,
@@ -509,7 +594,10 @@ const metrics = {
 };
 
 let lastMousePos = { x: 0, y: 0 };
-let mouseMovements = 0;
+let mouseMovementsHistory = []; // NOUVEAU: Historique des points de la souris
+const MOUSE_HISTORY_MAX = 100; // Limite le nombre de points stockés
+let clicksHistory = [];
+const CLICKS_HISTORY_MAX = 50;
 let activeHoneypotListeners = new Map(); // Garde une trace des écouteurs actifs
 let keystrokeTimestamps = [];
 let keystrokeLatencies = []; // NOUVEAU: Tableau dédié pour les latences
@@ -524,6 +612,7 @@ export const generateClientSideSignature = ClientLibrary.generateClientSideSigna
 export const _resetCache = ClientLibrary._resetCache.bind(ClientLibrary);
 export const startMouseEntropyTracker = ClientLibrary.startMouseEntropyTracker.bind(ClientLibrary);
 export const startKeystrokeDynamicsTracker = ClientLibrary.startKeystrokeDynamicsTracker.bind(ClientLibrary);
+export const startClickTracker = ClientLibrary.startClickTracker.bind(ClientLibrary);
 export const initializeHoneypots = ClientLibrary.initializeHoneypots.bind(ClientLibrary);
 export const getClientBehaviorMetrics = ClientLibrary.getClientBehaviorMetrics.bind(ClientLibrary);
 export const protectedFetch = ClientLibrary.protectedFetch.bind(ClientLibrary);
@@ -532,7 +621,14 @@ export const patchGlobalFetch = ClientLibrary.patchGlobalFetch.bind(ClientLibrar
 export const initializeFetch = ClientLibrary.initializeFetch.bind(ClientLibrary);
 export const initializeClient = ClientLibrary.initializeClient.bind(ClientLibrary);
 export const initializeWasm = ClientLibrary.initializeWasm.bind(ClientLibrary);
+export const injectTrapLinks = ClientLibrary.injectTrapLinks.bind(ClientLibrary);
 export const solveChallengeAndRetry = ClientLibrary.solveChallengeAndRetry.bind(ClientLibrary);
 
 // Export the internal object for testing purposes
 export default ClientLibrary;
+
+// --- Global Export for Browser ---
+// Attach the library to the window object to make it accessible from inline scripts.
+if (typeof window !== 'undefined') {
+    window.ClientLibrary = ClientLibrary;
+}

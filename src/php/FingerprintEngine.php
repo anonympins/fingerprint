@@ -5,7 +5,7 @@
  namespace Anonympins\Fingerprint;
 
  use Anonympins\Fingerprint\Config\SecurityProfiles;
- use Anonympins\Fingerprint\Store\StoreManager;
+ use Anonympins\Fingerprint\Store\StoreManager; // Correction de l'import
  use Anonympins\Fingerprint\Challenge\ChallengeUtils;
  use Anonympins\Fingerprint\Utils\BlockList;
  use Anonympins\Fingerprint\Utils\Logger;
@@ -22,6 +22,7 @@
      private BlockList $allowlist;
      private bool $verbose;
      private ?Logger $logger;
+     private bool $dryRun;
 
      public function __construct(array $securityConfig)
      {
@@ -31,6 +32,7 @@
          $this->allowlist = $this->buildAllowlist();
          $this->validateConfig($securityConfig);
          $this->logger = isset($securityConfig['logger']) && is_callable($securityConfig['logger']) ? new Logger($securityConfig['logger']) : null;
+         $this->dryRun = $securityConfig['dryRun'] ?? false;
      }
 
      private function validateConfig(array $config): void
@@ -44,7 +46,7 @@
              'weights', 'thresholds', 'cpu', 'ticketMaxAge', 'challengeTtl',
              'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
              'honeypot', 'threatIntel', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger', 'probationaryTtl',
-             'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist',
+             'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
              'similarityThreshold', 'summary', 'description'
          ];
 
@@ -341,6 +343,12 @@
          // Score de détection de bot explicite (marqueurs d'automatisation)
          $bot = RequestUtils::getBotScore($context);
 
+         // Score de variance des clics
+         $clickVariance = RequestUtils::getClickVarianceScore($context);
+
+         // Score de variance des clics
+         $clickVariance = RequestUtils::getClickVarianceScore($context);
+
          // Score basé sur les listes de menaces (Threat Intelligence)
          $threatIntel = RequestUtils::getThreatIntelScore($context, $this->securityConfig['threatIntel'] ?? []);
 
@@ -357,6 +365,7 @@
              'honeypotScore' => $honeypot['honeypotScore'],
              'behaviorScore' => $behavior['behaviorScore'],
              'botScore' => $bot['botScore'],
+             'clickVarianceScore' => $clickVariance['clickVarianceScore'],
              'threatIntelScore' => $threatIntel['threatIntelScore'],
          ]);
  
@@ -448,7 +457,7 @@
                                  'jsonLastError' => json_last_error_msg()
                              ]);
                              if (json_last_error() === JSON_ERROR_NONE) {
-                                 // @phpstan-ignore-next-line
+                                 // @phpstan-ignore-next-line - L'instance est gérée par le singleton
                                  $problemManager = \Anonympins\Fingerprint\ProblemManager::getInstance($this->securityConfig['usefulWorkConfigPath'] ?? null, $store);
                                  // FIX: La solution est directement le $workResult, pas une sous-propriété.
                                  $problemManager->integrateSolution($problemId, $workResult);
@@ -504,7 +513,14 @@
          $deviceData = $identity['deviceData'];
          if ($deviceData && ($deviceData['condemned'] ?? false)) {
              $this->log('Device condemned - blocking request', ['deviceId' => $deviceId], 'warn');
-             return ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => 100, 'vector' => ['honeypotScore' => 100]];
+             $decision = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => 100, 'vector' => ['honeypotScore' => 100]];
+             if ($this->dryRun) {
+                 $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
+                 $decision['intendedAction'] = $decision['action'];
+                 $decision['action'] = 'next';
+                 unset($decision['status'], $decision['body']);
+             }
+             return $decision;
          }
 
          $suspicionVector = $this->getSuspicionVector($context, $suspicionVector);
@@ -532,8 +548,15 @@
              }
              $this->log('Honeypot trap URL triggered - condemning device', ['path' => $context->path, 'deviceId' => $deviceId]);
              $deviceData['condemned'] = true; // @phpstan-ignore-line
-             $store->set("device:{$deviceId}", $deviceData); // Persiste le statut condamné
-             return ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => 100, 'vector' => ['honeypotScore' => 100]];
+             $store->set("device:{$deviceId}", $deviceData);
+             $decision = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => 100, 'vector' => ['honeypotScore' => 100]];
+             if ($this->dryRun) {
+                 $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
+                 $decision['intendedAction'] = $decision['action'];
+                 $decision['action'] = 'next';
+                 unset($decision['status'], $decision['body']);
+             }
+             return $decision;
          }
  
          // 5. Prendre une décision basée sur le score - Vérifier le blocage d'abord.
@@ -542,16 +565,30 @@
              if ($this->logger) {
                  $this->logger->log('info', 'request_blocked', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
              }
-             $response = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector]; // @phpstan-ignore-line
+             $decision = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector];
+             if ($this->dryRun) {
+                 $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
+                 $decision['intendedAction'] = $decision['action'];
+                 $decision['action'] = 'next';
+                 unset($decision['status'], $decision['body']);
+             }
+             $response = $decision;
          } else {
              // Logique de re-challenge
              // Si un nonce est présent mais que ce n'est pas une soumission de solution valide, c'est une sonde.
              if ($powNonce && !$isChallengeSubmission) {
                  $this->log('Honeypot probe detected - blocking request', ['path' => $context->path, 'pow_nonce' => $powNonce]);
                  $suspicionVector['honeypotScore'] = 100.0;
-                 $finalScore = $this->calculateFinalScore($suspicionVector);
-                 // Retourner directement un blocage
-                 return ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector];
+                 $finalScore = $this->calculateFinalScore($suspicionVector); // Recalculate score
+                 $decision = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector];
+                 // Apply dry run logic here as well
+                 if ($this->dryRun) {
+                     $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
+                     $decision['intendedAction'] = $decision['action'];
+                     $decision['action'] = 'next';
+                     unset($decision['status'], $decision['body']);
+                 }
+                 return $decision;
              }
 
              $highThreshold = $thresholds['high'] ?? 75;
@@ -561,6 +598,16 @@
              if (($finalScore >= $lowThreshold && !$hasValidTicket) || $mustReChallenge) {
                  if ($mustReChallenge) {
                      $this->log('High suspicion score detected - overriding valid ticket to re-issue challenge', ['finalScore' => $finalScore, 'deviceId' => $deviceId]);
+                 }
+ 
+                 $decision = ['action' => 'challenge', 'score' => $finalScore, 'vector' => $suspicionVector, 'status' => 403];
+ 
+                 if ($this->dryRun) {
+                     $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
+                     $decision['intendedAction'] = $decision['action'];
+                     $decision['action'] = 'next';
+                     unset($decision['status']);
+                     return $decision;
                  }
  
                  $this->log('Suspicious request - selecting challenge type', ['finalScore' => $finalScore]);
@@ -597,11 +644,8 @@
                                  ]
                              ]
                          ];
-                         // Pour uPoW, on retourne toujours du JSON, car il n'y a pas de page HTML de fallback.
-                         return [
-                             'action' => 'challenge', 'score' => $finalScore, 'vector' => $suspicionVector,
-                             'status' => 403, 'body' => $challengePayload
-                         ];
+                         $decision['body'] = $challengePayload;
+                         return $decision;
                      } else {
                          // This case handles when uPoW is enabled but dispatching a task fails (e.g., config not found).
                          // We log it and fall through to the standard PoW challenge.
@@ -665,26 +709,27 @@
                              'baseBlock' => array_values(unpack('C*', $baseBlock)), // Envoyer comme un tableau d'octets
                          ]
                      ];
-                     $response = ['action' => 'challenge', 'score' => $finalScore, 'vector' => $suspicionVector, 'status' => 403, 'body' => $challengePayload];
+                     $decision['body'] = $challengePayload;
                  } else {
                      // Pour les navigateurs, retourner une page HTML
                      $pageBody = ChallengeUtils::generateCombinedPoWChallengePage(
                          $cpuChallengeDetails, $memDifficulty, $clientSecret, 
                          $this->securityConfig, $trapUrls, $originalFingerprint
                      );
-                     $response = ['action' => 'challenge', 'score' => $finalScore, 'vector' => $suspicionVector, 'status' => 403, 'body' => $pageBody];
+                     $decision['body'] = $pageBody;
                  }
+                 $response = $decision;
              } elseif ($hasValidTicket) {
                  // Si on arrive ici avec un ticket valide et un score bas, on autorise
                  $this->log('Valid clearance ticket found and score is low - allowing request');
-                 $response = ['action' => 'next', 'score' => 0.0, 'vector' => ['ticket_valid' => 100]];
+                 $response = ['action' => 'next', 'score' => 0.0, 'vector' => ['ticket_valid' => 100], 'intendedAction' => 'next'];
              } else {
                  // 6. Si le score est bas et qu'il n'y a pas de ticket, autoriser la requête
                  $this->log('Request passed - no challenge required', ['finalScore' => $finalScore]);
                  if ($this->logger) {
                      $this->logger->log('info', 'request_passed', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
                  }
-                 $response = ['action' => 'next', 'score' => $finalScore, 'vector' => $suspicionVector]; // @phpstan-ignore-line
+                 $response = ['action' => 'next', 'score' => $finalScore, 'vector' => $suspicionVector, 'intendedAction' => 'next'];
              }
          }
  

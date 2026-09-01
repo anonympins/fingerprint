@@ -141,6 +141,151 @@ echo "<p>Your suspicion score was: " . round($score, 2) . "</p>";
 
 ?>
 ```
+
+### Full Configuration Example (PHP)
+
+If you prefer to define the entire configuration manually instead of using a profile, you can create a `$securityConfig` array with all the parameters. All parameters are optional, but it is highly recommended to review and adjust them for your specific needs. The engine will warn you about any unknown keys in this configuration, helping you catch typos.
+
+```php
+<?php
+
+use Anonympins\Fingerprint\Utils\DefaultWhitelist;
+
+// Array to store traffic analysis data for the auto-tuner.
+// In a real application, this could be a more robust logging system.
+$trafficData = [];
+
+// Configuration of weights and thresholds for calculating the suspicion score.
+// These values should be adjusted based on traffic and expected user behavior.
+$securityConfig = [
+    'weights' => [
+        'historyScore' => 0.3,       // Penalizes IP rotation (proxy)
+        'rotationScore' => 0.5,      // Penalizes rapid fingerprint changes (user-agent, etc.)
+        'headerAnomalyScore' => 0.1, // Penalizes abnormal headers (missing UA, etc.)
+        'requestPatternScore' => 0.6,// Penalizes bot-like request sequences (scraping, etc.)
+        'inconsistencyScore' => 0.8, // Strongly penalizes inconsistency between the current and initial fingerprint (stolen cookie)
+        'behaviorScore' => 0.7,      // Penalizes non-human interactions (no mouse/keyboard activity)
+        'honeypotScore' => 1.0,      // Strongly penalizes bots filling hidden form fields
+        'crossLayerInconsistencyScore' => 0.4, // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
+        'timeInconsistencyScore' => 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
+        'tlsSpoofingScore' => 0.8,     // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
+        'botScore' => 1.0,             // Penalizes explicit bot markers from the client
+        'cookieDroppingScore' => 0.9,  // Penalizes clients that appear to be intentionally dropping cookies
+        'threatIntelScore' => 0.4,     // Penalizes requests from known malicious IPs (proxies, Tor, etc.)
+    ],
+    'thresholds' => [
+        'low' => 20,    // Score from which a CPU challenge is issued
+        'medium' => 45, // Score for a more difficult combined CPU/Memory challenge
+        'high' => 75,   // Score for a very difficult challenge
+        'block' => 95,  // Score above which the request is blocked outright (HTTP 403)
+    ],
+    'cpu' => [
+        'minDifficultyBits' => 8,
+        'maxDifficultyBits' => 24,
+    ],
+    // (Optional) Configure the duration (in milliseconds) for various temporary data.
+    'ticketMaxAge' => 3600000, // 1 hour. Duration for which a solved challenge ticket is valid.
+    'challengeTtl' => 300000,  // 5 minutes. Time during which a challenge nonce is valid.
+    'deviceIdCookieMaxAge' => null, // By default, it's a session cookie. Set a value in ms for a persistent cookie.
+    'challengePagePath' => './path/to/your/custom-challenge-page.html', // (Optional) Path to a custom HTML template for the challenge page.
+    'verbose' => ($_ENV['APP_ENV'] ?? 'production') !== 'production', // Log detailed info in development.
+    'patterns' => [ // (Optional) Initial values for request pattern detection, optimized by auto-tuner if enabled.
+        'historySize' => 10,          // Number of requests to keep for pattern analysis
+        'minSamples' => 5,            // Minimum number of timings to collect before statistical analysis.
+        'regularityThreshold' => 50,  // Standard deviation (ms) below which behavior is "too regular".
+        'benfordThreshold' => 0.15,   // Benford's Law deviation threshold above which the distribution is "unnatural".
+        'patternWeight' => 80,        // Strong, one-time penalty when a pattern is detected.
+        'decayFactor' => 0.9,         // Factor by which the pattern score decreases over time.
+        'inactivityReset' => 5000,    // Time (ms) after which the pattern score is reset.
+    ],
+    'honeypot' => [
+        // List of field names that are traps for bots.
+        'fields' => ['email_confirm', 'user_nickname', 'debug', 'test_mode', 'admin'], // (Optional)
+        // List of URL paths that should never be accessed by a legitimate user.
+        'trapUrls' => ['/wp-admin', '/.env', '/admin.php', '/phpmyadmin'], // (Optional)
+        // Automatically detect common injection patterns. Can be a boolean or an array of specific types.
+        'detectInjections' => ['sql', 'rce', 'traversal', 'xxe', 'ssti', 'log4shell'], // (Optional, default: true)
+        // (Optional) Plug in external analyzers. Each must be a callable that receives request data
+        // and returns `true` if a threat is detected.
+        'analyzers' => [
+            // Example: A custom function to detect specific keywords (e.g., for anti-spam).
+            function ($data) {
+                $spamKeywords = ['viagra', 'free money', 'crypto pump'];
+                $dataString = strtolower(json_encode($data));
+                foreach ($spamKeywords as $keyword) {
+                    if (str_contains($dataString, $keyword)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        ]
+    ],
+    // (Optional) Whitelisting configuration.
+    'whitelist' => [
+        // Option 1: Static IP Allowlist (IPs or CIDR ranges).
+        [
+            'type' => 'allowlist',
+            'entries' => [
+                '192.168.1.100',      // A specific internal IP
+                '203.0.113.0/24',     // A partner's network range
+                '2001:db8::/32',      // An IPv6 range
+            ]
+        ],
+        // Option 2: Host + Path Allowlist (supports wildcards).
+        [
+            'type' => 'host_path_allowlist',
+            'entries' => [
+                'api.yourdomain.com/v1/webhooks/*', // All paths under /v1/webhooks on a specific host
+            ]
+        ],
+        // Option 3: Path Allowlist (supports wildcards).
+        [
+            'type' => 'path_allowlist',
+            'entries' => [
+                '/api/v2/public-stats', // Exact path
+                '/callbacks/trusted-source/*', // All paths under /callbacks/trusted-source/
+            ]
+        ],
+        // Option 4: GraphQL Operation Allowlist (supports wildcards).
+        [
+            'type' => 'graphql_operation_allowlist',
+            'entries' => [
+                'query:GetPublicPosts', // A specific query
+                'mutation:*'            // All mutations
+            ]
+        ],
+        // Option 5: DNS-verified bots (e.g., search engine crawlers).
+        // You can use the provided default list and extend it.
+        ...DefaultWhitelist::getRules(), // Use the defaults
+        ['userAgent' => 'MyCustomBot', 'hostnameSuffix' => '.my-bot-verifier.com'], // Add a custom bot
+    ],
+    // (Optional) Custom function to identify API requests. Must be a callable.
+    'isApiRequest' => function (RequestContext $context) {
+        return str_starts_with($context->path, '/api/') ||
+               str_contains($context->getHeader('accept') ?? '', 'application/json');
+    },
+    // The logger is required for auto-tuning. It must be a callable.
+    'logger' => function ($log) use (&$trafficData) {
+        $trafficData[] = $log;
+    },
+    // (Optional) Configuration for the automatic threshold and pattern tuning.
+    'autotuning' => [
+        'trafficData' => &$trafficData, // Pass the data source by reference.
+        'interval' => 1800,              // Optimization cycle every 30 minutes (in seconds for a cron job).
+        'minDataPoints' => 200,
+        'maxDataPoints' => 20000,
+        'savePath' => './security-config.optimized.json' // (Optional) Save the best config found.
+    ],
+    // Enables "Useful Proof-of-Work" for suspicious activity.
+    'enableUsefulWork' => true,
+    // Provide either a path to a JSON file or the configuration as an array.
+    'usefulWorkConfigPath' => './path/to/your/problems.config.json', // (Optional)
+    // Or provide the configuration directly as an array.
+    // 'usefulWorkConfig' => [ /* ... your problem definitions ... */ ]
+];
+
+```
 ## TLS Fingerprinting (JA3/JA4) with Nginx and Apache
 
 Unlike Node.js, which can directly inspect the TLS handshake, a standard PHP environment (such as PHP-FPM) runs behind a web server (Nginx, Apache) that terminates the TLS connection. Consequently, the PHP script lacks direct access to the low-level information required to calculate the JA3 fingerprint.
@@ -224,8 +369,11 @@ RequestHeader set X-JA3-Hash "%{JA3_HASH}e"
 If you cannot compile modules for Apache, a very robust alternative is to place another service in front to handle TLS termination. **HAProxy** is an excellent choice for this, as it can calculate the JA3 hash natively and add it as a header before forwarding the request (via plain HTTP) to Apache.
 
 This architecture is common in high-performance environments and offers great flexibility.
+
+---
+
 <a id="nodejs-quickstart"></a>
-## NodeJS Configuration
+## NodeJS Quickstart
 
 ### Prerequisites for Node.js
 
@@ -253,7 +401,7 @@ Available profiles:
 import express from 'express';
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
-import { powMiddleware, createSecurityProfile } from './fingerprint.js'; // Adjust the path
+import { powMiddleware, createSecurityProfile } from '@anonympins/fingerprint'; // Adjust the path
 
 const app = express();
 app.use(cookieParser());
@@ -280,7 +428,8 @@ const securityConfig = createSecurityProfile('api', {
         trafficData: trafficData,
         interval: 1800000, // 30 minutes
         minDataPoints: 200,
-    }
+        savePath: './security-config.optimized.json' // (Optional) Save the best config found.
+    },
 });
 
 // Create an instance of the middleware with your security configuration.
@@ -312,7 +461,7 @@ app.listen(3000, () => console.log('Server started on port 3000'));
 If you prefer to define the entire configuration manually instead of using a profile, you can create a `securityConfig` object with all the parameters. All parameters are optional, but it is highly recommended to review and adjust them for your specific needs. The engine will warn you about any unknown keys in this configuration, helping you catch typos.
 
 ```javascript
-import { default_whitelist, default_analyzers } from './fingerprint.js';
+import { powMiddleware, default_whitelist, default_analyzers } from '@anonympins/fingerprint';
 
 const app = express();
 app.use(cookieParser());
@@ -447,11 +596,17 @@ const securityConfig = {
         trafficData: trafficData,       // The data source for the genetic algorithm.
         interval: 1800000,              // Optimization cycle every 30 minutes (in ms).
         minDataPoints: 200,              // Minimum requests before starting an optimization cycle.
-        maxDataPoints: 20000              // Minimum requests before starting an optimization cycle.
+        maxDataPoints: 20000,             // Maximum log entries to keep in memory.
+        savePath: './security-config.optimized.json' // (Optional) Save the best config found.
     },
     // Enables problem solving for suspicious activity (configurable in problems.config.json)
     enableUsefulWork: true,
-    usefulWorkConfigPath: './path/to/your/problems.config.json' // (Optional) Path to the useful work configuration.
+    // (Optional) Path to the useful work configuration.
+    usefulWorkConfigPath: './path/to/your/problems.config.json',
+    // or usefulWorkConfig: [ /* ... your problem definitions ... */ ],
+    // (Optional) Enable "dry run" mode. The engine will calculate scores and log intended actions
+    // but will never actually block or challenge a request. Useful for testing new configs in production.
+    dryRun: false,
 };
 
 
@@ -464,31 +619,27 @@ const powMiddlewareInstance = powMiddleware(securityConfig);
 
 ## Advanced Behavioral Analysis
 
-The FingerprintEngine includes sophisticated behavioral analysis to detect non-human patterns. This analysis is performed by the `getRequestPatternScore` function, which is a stateful check that looks for repetitive or unnaturally fast requests from a single device.
+The `FingerprintEngine` includes sophisticated behavioral analysis to detect non-human patterns. This analysis is performed by the `getRequestPatternScore` function, which is a stateful check that looks for repetitive or unnaturally fast requests from a single device.
 
 This function uses several configurable parameters to identify suspicious behavior:
 
-### Core Pattern Detection
+### Statistical Analysis (Regularity and Benford's Law)
 
-These parameters form the basis of the request pattern analysis:
+To counter more advanced bots that might try to randomize their request timings, the engine employs statistical analysis.
 
-*   `velocityThreshold`: (Default: 800ms) Penalizes requests that are too fast to be humanly possible. If the time since the last request from a device is less than this value, the suspicion score increases.
-*   `burstThreshold`: (Default: 1500ms) Adds a significant penalty for multiple identical requests (same path and query parameters) occurring in a very short time frame. This is a strong indicator of automated retries or brute-force attacks.
-*   `scrapeThreshold`: (Default: 1000ms) Penalizes sequential requests to the same path but with different query parameters. This pattern is typical of scraping bots that iterate through pages or product IDs.
-*   `sequenceLength`: (Default: 3) Detects repetitive sequences of requests (e.g., A -> B -> C -> A -> B -> C), which is a common pattern for scripted bots navigating a site.
+*   **Regularity Detection**: The system also calculates the standard deviation of the time intervals between requests. A very low standard deviation indicates an unnaturally regular, "cron-like" behavior, which is a strong signal of automation.
+*   **Benford's Law Analysis**: Benford's Law states that in many naturally occurring sets of numbers, the leading digit is more likely to be small. The timings between a human's requests tend to follow this natural distribution, whereas a bot's randomized delays often do not. The engine penalizes distributions that violate this law.
 
-### Statistical Analysis (Benford's Law)
+### Core Pattern Detection Parameters
 
-To counter more advanced bots that might try to randomize their request timings, the engine employs statistical analysis based on Benford's Law.
+These parameters form the basis of the statistical request pattern analysis:
 
-*   **How it works**: Benford's Law states that in many naturally occurring sets of numbers, the leading digit is more likely to be small. For example, the number 1 appears as the leading digit about 30% of the time, while 9 appears less than 5% of the time. The timings between a human's requests tend to follow this natural distribution, whereas a bot's randomized delays often do not.
+*   `regularityThreshold`: (Default: 50ms) The standard deviation in milliseconds below which the request timing is considered "too regular" and robotic.
+*   `benfordThreshold`: (Default: 0.15) The deviation score from Benford's Law above which the timing distribution is considered "unnatural".
+*   `patternWeight`: (Default: 80) A strong, one-time penalty applied to the suspicion score if either a regularity or Benford's Law anomaly is detected.
 
 *   `benfordMinSamples`: (Default: 15) The minimum number of request timings to collect before performing a Benford's Law test.
 *   `benfordWeight`: (Default: 50) The weight applied to the suspicion score if the distribution of timings significantly deviates from Benford's Law.
-
-### Configuration and Auto-Tuning
-
-All these parameters are part of the `patterns` object within the main security configuration and can be fine-tuned.
 
 ## Customizing the Challenge Page
 
@@ -550,7 +701,7 @@ The library provides ready-to-use adapters for popular datastores like **Redis**
 **Redis Example:**
 
 ```javascript
-import { configureStore } from './fingerprint.js';
+import { configureStore } from '@anonympins/fingerprint';
 import { createRedisStore } from './redis-store.js';
 import Redis from 'ioredis';
 
@@ -713,6 +864,10 @@ initializeClient({
  
   // (Optional) An array of `name` attributes for hidden form fields that act as bot traps.
   honeypots: ['email_confirm', 'user_nickname', 'website_url'],
+
+  // (Optional) An array of signed trap URLs provided by the server. The client will
+  // dynamically inject these into the DOM to trap bots that parse the live DOM.
+  trapUrls: ['/backups/db.sql.gz?sig=...', '/.env?sig=...'],
  
   // (Optional) Path to the WebAssembly loader script (`fp.js`) for accelerated hashing.
   // If provided, the client will attempt to load the WASM module. If it fails or is not available,
@@ -874,7 +1029,7 @@ Updates the payload (parameters) of a specific problem by its ID. This allows fo
 
 ```javascript
 import http from 'http';
-import { FingerprintEngine } from './fingerprint.js'; // Adjust path
+import { FingerprintEngine } from '@anonympins/fingerprint'; // Adjust path
 
 const securityConfig = { /* ... your config ... */ };
 const engine = new FingerprintEngine(securityConfig);

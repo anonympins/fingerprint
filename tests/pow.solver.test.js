@@ -8,7 +8,7 @@ import {
     solveMemory,
     solveTsp,
     solveChallenge
-} from '../pow.solver.js';
+} from '../src/js/pow.solver.js';
 
 describe('Proof-of-Work Solvers', () => {
 

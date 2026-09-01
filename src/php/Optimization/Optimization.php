@@ -217,9 +217,10 @@ class Optimization
 
     /**
      * Calcule la déviation d'une série de chiffres par rapport à la loi de Benford.
+     * @public
      * @param array<int|float> $numbers
      */
-    public static function benfordTest(array $numbers): float
+    public static function benfordTest(array $numbers): float // Rendre la méthode publique et statique
     {
         if (count($numbers) < 10) {
             return 0.0; // Pas assez de données

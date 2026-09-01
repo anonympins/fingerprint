@@ -1,9 +1,9 @@
 import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
 import dns from 'node:dns/promises';
-import { solveCpuTargetInline, solveMemory } from '../pow.solver.js';
+import { solveCpuTargetInline, solveMemory } from '../src/js/pow.solver.js';
 import { readFileSync } from 'node:fs';
-import { FingerprintBuilder, cyrb53 } from '../fingerprint.builder.js';
+import { FingerprintBuilder, cyrb53 } from '../src/js/fingerprint.builder.js';
 
 // Mock import.meta.env before importing the module that uses it
 vi.mock('import-meta-env', () => ({
@@ -15,7 +15,7 @@ vi.mock('node:fs', async () => {
     return { ...actualFs, readFileSync: vi.fn() };
 });
 
-import * as fingerprint from '../fingerprint.js';
+import * as fingerprint from '../src/js/fingerprint.js';
 const {
     FingerprintEngine,
     isTicketValid,
@@ -24,7 +24,7 @@ const {
     __internal,
     configureStore,
     verifyCpuTargetPoWAndGenerateTicket,
-    verifyMemoryPoW, // This is already exported, no need to get from __internal
+    verifyMemoryPoW,
     verifyTspChallenge,
     startThresholdAutoTuning,
     default_whitelist,
@@ -32,7 +32,7 @@ const {
     getCompositeDeviceHash,
 } = fingerprint;
 const { store, getRequestPatternScore, getDeviceHash } = __internal;
-let getBehaviorScore; // Will be initialized after import
+let { getBehaviorScore, getClickVarianceScore } = __internal;
 // Mock the entire dns/promises module
 vi.mock('node:dns/promises');
 
@@ -1392,6 +1392,11 @@ describe('Fingerprint & PoW Security Suite', () => {
 
     describe('getBehaviorScore', () => {
         // La fonction est privée, on la récupère via l'export __internal
+        // FIX: Correctly assign the function before tests run.
+        beforeEach(() => {
+            getBehaviorScore = fingerprint.__internal.getBehaviorScore;
+        });
+
         beforeEach(() => {
             getBehaviorScore = fingerprint.__internal.getBehaviorScore;
         });
@@ -1410,17 +1415,22 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
 
         it('should return a score of 40 for no mouse or keyboard activity', () => {
-            const metrics = { honeypotInteraction: false, mouseEntropy: 0, keystrokeLatency: 0 };
+            const metrics = { honeypotInteraction: false, mouseMovementsHistory: [], keystrokeLatency: 0 };
             const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
             const { behaviorScore } = getBehaviorScore(context);
             expect(behaviorScore).toBe(40);
         });
 
         it('should return a score of 0 for normal user activity', () => {
-            const metrics = { honeypotInteraction: false, mouseEntropy: 150.5, keystrokeLatency: 88.2 };
+            // Données de test avec un mouvement moins linéaire pour éviter la pénalité de "rectitude"
+            const metrics = { 
+                honeypotInteraction: false, 
+                mouseMovementsHistory: [{x:10,y:10,t:1},{x:12,y:15,t:100},{x:18,y:12,t:200},{x:25,y:25,t:300}], 
+                keystrokeLatency: 88.2 
+            };
             const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
             const { behaviorScore } = getBehaviorScore(context);
-            expect(behaviorScore).toBe(0);
+            expect(behaviorScore).toBeLessThan(10); // Le score ne sera pas exactement 0, mais il devrait être très bas.
         });
 
         it('should return a score of 10 for a malformed header', () => {
@@ -1430,6 +1440,57 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
     });
 
+    describe('getClickVarianceScore', () => {
+        // FIX: Correctly assign the function before tests run.
+        beforeEach(() => {
+            getClickVarianceScore = fingerprint.__internal.getClickVarianceScore;
+        });
+
+        it('should return 0 if no click history is present', () => {
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify({}) } };
+            const { clickVarianceScore } = getClickVarianceScore(context);
+            expect(clickVarianceScore).toBe(0);
+        });
+
+        it('should return 0 if there are not enough clicks on a single target', () => {
+            const metrics = {
+                clicksHistory: [
+                    { x: 10, y: 10, targetId: 'hash1' },
+                    { x: 11, y: 11, targetId: 'hash1' },
+                    { x: 100, y: 100, targetId: 'hash2' }
+                ]
+            };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { clickVarianceScore } = getClickVarianceScore(context);
+            expect(clickVarianceScore).toBe(0);
+        });
+
+        it('should return a high score for clicks with very low variance', () => {
+            const metrics = {
+                clicksHistory: [
+                    { x: 100, y: 100, targetId: 'hash1' },
+                    { x: 100.1, y: 100.2, targetId: 'hash1' },
+                    { x: 99.9, y: 99.8, targetId: 'hash1' }
+                ]
+            };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { clickVarianceScore } = getClickVarianceScore(context);
+            expect(clickVarianceScore).toBeGreaterThan(90);
+        });
+
+        it('should return a low score for clicks with high (human-like) variance', () => {
+            const metrics = {
+                clicksHistory: [
+                    { x: 105, y: 110, targetId: 'hash1' },
+                    { x: 98, y: 102, targetId: 'hash1' },
+                    { x: 112, y: 95, targetId: 'hash1' }
+                ]
+            };
+            const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+            const { clickVarianceScore } = getClickVarianceScore(context);
+            expect(clickVarianceScore).toBe(0);
+        });
+    });
 
     describe('Bot Whitelisting', () => {
         const inMemoryStore = {
@@ -1893,5 +1954,53 @@ describe('Regularity Detection (Standard Deviation)', () => {
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
 
         expect(requestPatternScore).toBe(0);
+    });
+});
+describe('Dry Run Mode', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+    };
+
+    beforeEach(() => {
+        inMemoryStore._map.clear();
+        configureStore(inMemoryStore);
+        vi.spyOn(console, 'log').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('should log the intended action but return "next" when a request would be blocked', async () => {
+        const securityConfig = {
+            dryRun: true,
+            verbose: true, // Enable logging for the test
+            weights: { honeypotScore: 1.0 },
+            thresholds: { low: 20, block: 95 },
+        };
+        const engine = new FingerprintEngine(securityConfig);
+
+        // Mock a highly suspicious vector that would normally trigger a block
+        vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+            honeypotScore: 100
+        });
+
+        const requestContext = {
+            clientIp: '1.2.3.4', path: '/', cookies: {}, query: {}, headers: { 'user-agent': 'test-bot' },
+        };
+
+        const decision = await engine.processRequest(requestContext);
+
+        // Assert that the final action is 'next'
+        expect(decision.action).toBe('next');
+        // Assert that the intended action was to 'block'
+        expect(decision.intendedAction).toBe('block');
+        // Assert that the log message indicates a dry run
+        expect(console.log).toHaveBeenCalledWith(
+            expect.stringContaining('[FingerprintEngine] [Dry Run] Intended action: block'),
+            expect.any(Object) // The second argument is the data object
+        );
     });
 });

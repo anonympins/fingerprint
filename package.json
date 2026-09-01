@@ -1,31 +1,39 @@
 {
   "name": "@anonympins/fingerprint",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Advanced anti-bot library for Node.js using multi-layer fingerprinting (JA3, client-side, headers), behavioral analysis, and adaptive Proof-of-Work (PoW) challenges to mitigate scraping, scalping, and automated threats.",
-  "main": "fingerprint.js",
+  "main": "index.js",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
   },
   "scripts": {
     "test": "vitest run --reporter=verbose",
-    "build": "node build-client.js"
+    "build": "node src/js/build-client.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": {
+      "import": "./public/fingerprint.client.obfuscated.js",
+      "require": "./public/fingerprint.client.obfuscated.js",
+      "browser": "./public/fingerprint.client.obfuscated.js"
+    },
+    "./fp.wasm": "./public/fp.wasm",
+    "./fp.js": "./public/fp.js",
+    "./package.json": "./package.json"
   },
   "files": [
-    "fingerprint.js",
-    "fingerprint.client.js",
-    "fingerprint.client.obfuscated.js",
-    "fingerprint.builder.js",
-    "pow.solver.js",
-    "pow.worker.js",
-    "pow.solver.inline.js",
-    "problem-manager.js",
-    "optimization.worker.js",
-    "library.js",
-    "redis-store.js",
-    "mongodb-store.js",
-    "sql-store.js", 
+    "index.js",
+    "public/fingerprint.client.obfuscated.js",
+    "src/js/fingerprint.builder.js",
+    "src/js/optimization.worker.js",
+    "src/js/pow.worker.js",
+    "src/js/library.js",
+    "src/js/redis-store.js",
+    "src/js/mongodb-store.js",
+    "src/js/sql-store.js",
     "public/fp.wasm",
+    "public/fp.js",
     "README.md",
     "LICENSE"
   ],

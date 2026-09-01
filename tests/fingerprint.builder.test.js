@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FingerprintBuilder } from '../fingerprint.builder.js';
+import { FingerprintBuilder } from '../src/js/fingerprint.builder.js';
 
 describe('FingerprintBuilder.compare', () => {
 
