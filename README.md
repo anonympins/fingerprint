@@ -60,8 +60,9 @@ For API clients, the challenge is delivered as a `404` JSON response, and the cl
 ### Prerequisites
 
 *   **PHP 7.4+**
-*   The **GMP** extension (`php-gmp`) is required for handling the large-integer arithmetic used in cryptographic challenges.
+*   The **BCMath** extension (`php-bcmath`) is required. It is included by default in most PHP installations.
 *   **Composer** for package management.
+*   The **GMP** extension (`php-gmp`) is highly recommended for performance. If not available, the library will fall back to a slower BCMath-based implementation for cryptographic operations.
 
 ---
 
@@ -74,8 +75,9 @@ This guide shows the simplest way to integrate the library into any PHP applicat
 ### Prerequisites
 
 *   **PHP 7.4+**
-*   The **GMP** extension (`php-gmp`) is required for handling the large-integer arithmetic used in cryptographic challenges.
+*   The **BCMath** extension (`php-bcmath`) is required. It is included by default in most PHP installations.
 *   **Composer** for package management.
+*   The **GMP** extension (`php-gmp`) is highly recommended for performance. If not available, the library will fall back to a slower BCMath-based implementation for cryptographic operations.
 
 ### Installation
 

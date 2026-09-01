@@ -173,13 +173,13 @@ class FingerprintBuilder
      */
     private static function imul(int $a, int $b): int
     {
-        // Utiliser GMP pour la multiplication pour éviter le dépassement en float sur les systèmes 64-bit.
-        $gmp_a = gmp_init($a);
-        $gmp_b = gmp_init($b);
-        $gmp_result = gmp_mul($gmp_a, $gmp_b);
-
-        // Tronquer le résultat à 32 bits et le convertir en entier signé.
-        $truncated = gmp_and($gmp_result, '0xFFFFFFFF');
-        return gmp_intval(gmp_sign($truncated) < 0 ? gmp_sub($truncated, '0x100000000') : $truncated);
+        // Emulation of JavaScript's Math.imul for 32-bit integer multiplication.
+        // This prevents overflow to float on 64-bit systems and ensures consistency.
+        $a_lo = $a & 0xffff;
+        $a_hi = $a >> 16;
+        $b_lo = $b & 0xffff;
+        $b_hi = $b >> 16;
+        // The final bitwise OR ensures the result is a signed 32-bit integer.
+        return (($a_lo * $b_lo) + ((($a_hi * $b_lo + $a_lo * $b_hi) << 16) & 0xffffffff)) | 0;
     }
 }
