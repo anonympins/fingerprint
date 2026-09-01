@@ -306,37 +306,37 @@ Nginx is the simplest and most common solution. It requires your Nginx instance 
 
 ```nginx
 http {
-# ... other http configurations ...
+    # ... other http configurations ...
 
-# Declare a variable to store the JA3 fingerprint. 
-# Nginx automatically populates $ssl_ja3_hash if the module is active. 
-map $ssl_ja3_hash $ja3_hash {
-default $ssl_ja3_hash; 
-}
+    # Declare a variable to store the JA3 fingerprint. 
+    # Nginx automatically populates $ssl_ja3_hash if the module is active. 
+    map $ssl_ja3_hash $ja3_hash {
+        default $ssl_ja3_hash; 
+    }
 
-server {
-listen 443 ssl http2; 
-server_name yourdomain.com; 
+    server {
+        listen 443 ssl http2; 
+        server_name yourdomain.com; 
 
-# ... SSL configuration (certificates, etc.) ...
-ssl_certificate /path/to/your/fullchain.pem; 
-ssl_certificate_key /path/to/your/privkey.pem; 
+        # ... SSL configuration (certificates, etc.) ...
+        ssl_certificate /path/to/your/fullchain.pem; 
+        ssl_certificate_key /path/to/your/privkey.pem; 
 
-location / {
-# ... your application configuration ...
-try_files $uri $uri/ /index.php?$query_string; 
-}
+        location / {
+            # ... your application configuration ...
+            try_files $uri $uri/ /index.php?$query_string; 
+        }
 
-location ~ \.php$ {
-include fastcgi_params; 
-fastcgi_pass unix:/var/run/php/php8.1-fpm.sock; # Adjust for your PHP version
-fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; 
+        location ~ \.php$ {
+            include fastcgi_params; 
+            fastcgi_pass unix:/var/run/php/php8.1-fpm.sock; # Adjust for your PHP version
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; 
 
-# Add the JA3 fingerprint as a FastCGI parameter. 
-# PHP will make it available in $_SERVER['HTTP_X_JA3_HASH']. 
-fastcgi_param HTTP_X_JA3_HASH $ja3_hash; 
-}
-}
+            # Add the JA3 fingerprint as a FastCGI parameter. 
+            # PHP will make it available in $_SERVER['HTTP_X_JA3_HASH']. 
+            fastcgi_param HTTP_X_JA3_HASH $ja3_hash; 
+        }
+    }
 }
 ```
 
@@ -354,13 +354,13 @@ The best approach is to use a third-party module like `mod_ssl_ja3`. You will ne
 
 ```apache
 <VirtualHost *:443>
-ServerName yourdomain.com
-# ... SSL configuration ...
+    ServerName yourdomain.com
+    # ... SSL configuration ...
 
-# The JA3_HASH environment variable is provided by mod_ssl_ja3
-RequestHeader set X-JA3-Hash "%{JA3_HASH}e"
+    # The JA3_HASH environment variable is provided by mod_ssl_ja3
+    RequestHeader set X-JA3-Hash "%{JA3_HASH}e"
 
-# ... your PHP application configuration ...
+    # ... your PHP application configuration ...
 </VirtualHost>
 ```
 
