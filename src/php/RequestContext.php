@@ -34,6 +34,8 @@ class RequestContext
     // Propriétés spécifiques qui peuvent être fournies par un proxy inverse
     public ?string $ja3;
     public ?string $ja4;
+    public ?string $ja4s;
+    public ?string $ja4h;
     public ?string $http2Fingerprint;
     public ?string $tcpFingerprint;
 
@@ -70,6 +72,8 @@ class RequestContext
         // Extraire les empreintes TLS/HTTP2/TCP si elles sont fournies par les en-têtes
         $this->ja3 = $this->headers['x-ja3-hash'] ?? null;
         $this->ja4 = $this->headers['x-ja4-hash'] ?? null;
+        $this->ja4s = $this->headers['x-ja4s-hash'] ?? null;
+        $this->ja4h = $this->headers['x-ja4h-hash'] ?? null;
         $this->http2Fingerprint = $this->headers['x-http2-fingerprint'] ?? null;
         $this->tcpFingerprint = $this->headers['x-tcp-fingerprint'] ?? null;
     }

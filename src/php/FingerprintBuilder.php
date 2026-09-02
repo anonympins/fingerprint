@@ -104,7 +104,7 @@ class FingerprintBuilder
         ];
 
         $weights = [
-            'cvs' => 5.0, 'gpu' => 4.0, 'ja3' => 3.5, 'ja4' => 4.0,
+            'cvs' => 5.0, 'gpu' => 4.0, 'ja3' => 3.5, 'ja4' => 4.0, 'ja4s' => 4.0, 'ja4h' => 3.8,
             'h2_settings' => 3.0, 'tcp_fp' => 2.5, 'ua' => 2.0,
             'client_fp_hash' => 3.0, 'browser' => 1.5, 'os_version' => 1.5,
             'device_type' => 1.0, 'hw' => 1.5, 'scr' => 1.0, 'os' => 0.8, 'geo' => 0.5,

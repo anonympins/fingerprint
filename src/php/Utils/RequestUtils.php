@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+
 namespace Anonympins\Fingerprint\Utils;
 
 use Anonympins\Fingerprint\FingerprintBuilder;
@@ -44,6 +45,20 @@ class RequestUtils
     ];
 
     /**
+     * Base de données de signatures JA4 connues.
+     * @var array<string, string|string[]>
+     */
+    private const JA4_FINGERPRINT_DB = [
+        // Format: {JA4 Hash} => {Client Name}
+        // --- Chrome ---
+        't13d1517h2_8daaf61527d5' => 'Chrome', // Chrome 117 on Win11
+        't13d1516h2_8daaf61527d5' => 'Chrome', // Chrome 116 on Win10
+        // --- Firefox ---
+        't13d1517h2_2491a244c393' => 'Firefox', // Firefox 117 on Win11
+        // --- Common Libraries & Bots ---
+        't13d1500h1_4b56136b4d35' => 'Python', // Python requests
+    ];
+    /**
      * Crée un hash composite stable basé sur les caractéristiques de la requête.
      */
     public static function getCompositeDeviceHash(RequestContext $context): string
@@ -62,6 +77,8 @@ class RequestUtils
 
         if ($context->ja3) $srv->add("ja3", $context->ja3);
         if ($context->ja4) $srv->add("ja4", $context->ja4);
+        if ($context->ja4s) $srv->add("ja4s", $context->ja4s);
+        if ($context->ja4h) $srv->add("ja4h", $context->ja4h);
         if ($context->http2Fingerprint) $srv->add("h2", $context->http2Fingerprint);
         if ($context->tcpFingerprint) $srv->add("tcp", $context->tcpFingerprint);
 
@@ -103,33 +120,58 @@ class RequestUtils
      */
     public static function getTlsSpoofingScore(RequestContext $context): array
     {
-        $ja3 = $context->ja3;
         $ua = $context->getHeader('user-agent') ?? '';
+        $ja3 = $context->ja3;
+        $ja4 = $context->ja4;
 
-        if ($ja3 && (empty($ua) || strlen($ua) < 10 || stripos($ua, 'python') !== false || stripos($ua, 'curl') !== false)) {
+        // Si un fingerprint TLS est présent mais que le User-Agent est absent ou générique, c'est suspect.
+        if (($ja3 || $ja4) && (empty($ua) || strlen($ua) < 10 || stripos($ua, 'python') !== false || stripos($ua, 'curl') !== false)) {
             return ['tlsSpoofingScore' => 50.0];
         }
 
-        if ($ja3 && !empty($ua) && isset(self::TLS_FINGERPRINT_DB[$ja3])) {
-            $expectedBrowsers = self::TLS_FINGERPRINT_DB[$ja3];
-            if (!is_array($expectedBrowsers)) {
-                $expectedBrowsers = [$expectedBrowsers];
+        $claimedBrowserInfo = self::parseUserAgent($ua);
+        $claimedBrowser = $claimedBrowserInfo['browser'] ?? null;
+
+        if (empty($claimedBrowser) || empty($ua)) {
+            return ['tlsSpoofingScore' => 0.0];
+        }
+
+        // Priorité à JA4 pour la détection de spoofing
+        if ($ja4 && isset(self::JA4_FINGERPRINT_DB[$ja4])) {
+            $expectedClients = self::JA4_FINGERPRINT_DB[$ja4];
+            if (!is_array($expectedClients)) {
+                $expectedClients = [$expectedClients];
             }
 
-            $claimedBrowserInfo = self::parseUserAgent($ua);
-            $claimedBrowser = $claimedBrowserInfo['browser'] ?? null;
+            $isMatch = false;
+            foreach ($expectedClients as $expected) {
+                if (stripos($claimedBrowser, $expected) !== false) {
+                    $isMatch = true;
+                    break;
+                }
+            }
+            if (!$isMatch) {
+                // Incohérence forte détectée avec JA4
+                return ['tlsSpoofingScore' => 90.0];
+            }
+        }
+        // Fallback sur JA3 si JA4 n'a pas matché
+        elseif ($ja3 && isset(self::TLS_FINGERPRINT_DB[$ja3])) {
+            $expectedClients = self::TLS_FINGERPRINT_DB[$ja3];
+            if (!is_array($expectedClients)) {
+                $expectedClients = [$expectedClients];
+            }
 
-            if ($claimedBrowser) {
-                $isMatch = false;
-                foreach ($expectedBrowsers as $expected) {
-                    if (str_starts_with($claimedBrowser, $expected)) {
-                        $isMatch = true;
-                        break;
-                    }
+            $isMatch = false;
+            foreach ($expectedClients as $expected) {
+                if (stripos($claimedBrowser, $expected) !== false) {
+                    $isMatch = true;
+                    break;
                 }
-                if (!$isMatch) {
-                    return ['tlsSpoofingScore' => 80.0];
-                }
+            }
+            if (!$isMatch) {
+                // Incohérence détectée avec JA3
+                return ['tlsSpoofingScore' => 80.0];
             }
         }
 
