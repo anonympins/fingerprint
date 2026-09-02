@@ -216,4 +216,85 @@ class FingerprintEngineTest extends TestCase
         // Score = 1.5 / 6.3 = ~0.238095... (This logic is correct, the test is fine)
         $this->assertEqualsWithDelta(0.238, FingerprintBuilder::compare($fp1, $fp4), 0.001, "Partial match score should reflect current weights"); // This test is correct, no change needed.
     }
+
+    /**
+     * @dataProvider clientHintsInconsistencyProvider
+     * @param array<string, string> $headers Les en-têtes à tester.
+     * @param float $expectedScore Le score attendu.
+     * @param string $message Le message de test.
+     */
+    public function testDetectsClientHintsInconsistency(array $headers, float $expectedScore, string $message): void
+    {
+        // Le test nécessite un deviceId, donc on simule une première visite.
+        // Les en-têtes de la première visite n'ont pas d'importance ici.
+        $firstDecision = $this->engine->processRequest($this->createRequestContext());
+        $deviceIdCookie = $firstDecision['newCookieForResponse'] ?? null;
+        $this->assertNotNull($deviceIdCookie, "Un cookie deviceId aurait dû être créé.");
+
+        // On simule la visite suivante avec les en-têtes à tester.
+        $testContext = $this->createRequestContext([
+            'cookies' => [$deviceIdCookie['name'] => $deviceIdCookie['value']],
+            'headers' => $headers,
+        ]);
+
+        $decision = $this->engine->processRequest($testContext);
+        $this->assertEquals($expectedScore, $decision['vector']['clientHintsInconsistencyScore'], $message);
+    }
+
+    /**
+     * Fournisseur de données pour le test d'incohérence des Client Hints.
+     * @return array<string, array{0: array<string, string>, 1: float, 2: string}>
+     */
+    public function clientHintsInconsistencyProvider(): array
+    {
+        $baseHeaders = ['accept-language' => 'en-US,en;q=0.9'];
+
+        return [
+            'no inconsistency' => [
+                array_merge($baseHeaders, [
+                    'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'sec-ch-ua' => '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+                ]),
+                0.0,
+                'Should return 0 for consistent headers.'
+            ],
+            'large version mismatch' => [
+                array_merge($baseHeaders, [
+                    'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                    'sec-ch-ua' => '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+                ]),
+                80.0,
+                'Should return 80 for a large version mismatch (>5).'
+            ],
+            'small version mismatch' => [
+                array_merge($baseHeaders, [
+                    'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+                    'sec-ch-ua' => '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+                ]),
+                40.0,
+                'Should return 40 for a small version mismatch (>1).'
+            ],
+            'browser mismatch' => [
+                array_merge($baseHeaders, [
+                    'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+                    'sec-ch-ua' => '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+                ]),
+                90.0,
+                'Should return 90 for a browser mismatch (Firefox vs Chrome).'
+            ],
+            'missing client hints header' => [
+                ['user-agent' => 'Mozilla/5.0 Chrome/120.0.0.0'],
+                0.0,
+                'Should return 0 if sec-ch-ua header is missing.'
+            ],
+            'malformed client hints' => [
+                array_merge($baseHeaders, [
+                    'user-agent' => 'Mozilla/5.0 Chrome/120.0.0.0',
+                    'sec-ch-ua' => '"SomeOtherBrowser";v="abc"',
+                ]),
+                0.0,
+                'Should return 0 if headers are malformed or unparsable.'
+            ],
+        ];
+    }
 }

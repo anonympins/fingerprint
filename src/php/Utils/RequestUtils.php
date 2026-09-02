@@ -378,6 +378,62 @@ class RequestUtils
     }
 
     /**
+     * Calcule un score d'incohérence entre le User-Agent et les en-têtes Sec-CH-UA (Client Hints).
+     * @return array{'clientHintsInconsistencyScore': float}
+     */
+    public static function getClientHintsInconsistencyScore(RequestContext $context): array
+    {
+        $ua = $context->getHeader('user-agent');
+        $clientHints = $context->getHeader('sec-ch-ua');
+
+        if (empty($ua) || empty($clientHints)) {
+            return ['clientHintsInconsistencyScore' => 0.0];
+        }
+
+        // 1. Extraire la version du navigateur depuis le User-Agent
+        $uaVersion = null;
+        if (preg_match('/(Chrome|Firefox|Edg|Safari)\/([\d\.]+)/', $ua, $uaMatches)) {
+            $uaBrowser = $uaMatches[1] === 'Edg' ? 'Edge' : $uaMatches[1];
+            // Prendre uniquement la version majeure
+            $uaVersion = explode('.', $uaMatches[2])[0] ?? null;
+        }
+
+        // 2. Extraire la version du navigateur depuis Sec-CH-UA
+        $chVersion = null;
+        $chBrowser = null;
+        // Regex pour trouver une marque de navigateur connue et sa version
+        if (preg_match('/"(?:Google Chrome|Chromium|Microsoft Edge)";v="(\d+)"/', $clientHints, $chMatches)) {
+            $chVersion = $chMatches[1];
+            // Déterminer le navigateur à partir de la marque trouvée
+            if (str_contains($chMatches[0], 'Edge')) {
+                $chBrowser = 'Edge';
+            } else {
+                $chBrowser = 'Chrome'; // Chrome ou Chromium
+            }
+        }
+
+        if ($uaVersion === null || $chVersion === null || $uaBrowser === null || $chBrowser === null) {
+            return ['clientHintsInconsistencyScore' => 0.0];
+        }
+
+        // 3. Comparer les versions
+        // Tolérer une petite différence car les Client-Hints peuvent être plus précis ou mis à jour différemment
+        $versionDifference = abs((int)$uaVersion - (int)$chVersion);
+
+        // Si les navigateurs déclarés sont différents (ex: UA dit Firefox, CH dit Chrome)
+        if ($uaBrowser !== $chBrowser && ($uaBrowser !== 'Chrome' || $chBrowser !== 'Edge')) { // Tolérer Chrome/Edge
+             return ['clientHintsInconsistencyScore' => 90.0];
+        }
+
+        if ($versionDifference > 5) { // Un écart de plus de 5 versions majeures est très suspect
+            return ['clientHintsInconsistencyScore' => 80.0];
+        } elseif ($versionDifference > 1) { // Un petit écart est légèrement suspect
+            return ['clientHintsInconsistencyScore' => 40.0];
+        }
+
+        return ['clientHintsInconsistencyScore' => 0.0];
+    }
+    /**
      * Calcule les indicateurs comportementaux liés à l'historique de l'appareil.
      * @param array<string, mixed> $deviceData
      * @return array{'historyScore': float, 'rotationScore': float}

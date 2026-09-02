@@ -172,6 +172,7 @@ $securityConfig = [
         'timeInconsistencyScore' => 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
         'tlsSpoofingScore' => 0.8,     // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
         'botScore' => 1.0,             // Penalizes explicit bot markers from the client
+        'clientHintsInconsistencyScore' => 0.7, // Penalizes mismatches between User-Agent and Client-Hints versions
         'cookieDroppingScore' => 0.9,  // Penalizes clients that appear to be intentionally dropping cookies
         'threatIntelScore' => 0.4,     // Penalizes requests from known malicious IPs (proxies, Tor, etc.)
     ],
@@ -486,8 +487,9 @@ const securityConfig = {
         behaviorScore: 0.7,      // Penalizes non-human interactions (no mouse/keyboard activity)
         honeypotScore: 1.0,      // Strongly penalizes bots filling hidden form fields
         crossLayerInconsistencyScore: 0.4, // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
-        timeInconsistencyScore: 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
-        tlsSpoofingScore: 0.8      // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
+        timeInconsistencyScore: 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack),
+        tlsSpoofingScore: 0.8,      // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
+        clientHintsInconsistencyScore: 0.7 // Penalizes mismatches between User-Agent and Client-Hints versions
     },
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued

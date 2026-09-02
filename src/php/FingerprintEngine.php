@@ -46,7 +46,7 @@
              'weights', 'thresholds', 'cpu', 'ticketMaxAge', 'challengeTtl',
              'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
              'honeypot', 'threatIntel', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger', 'probationaryTtl',
-             'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
+             'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun', 'clientHintsInconsistencyScore',
              'similarityThreshold', 'summary', 'description'
          ];
 
@@ -352,6 +352,9 @@
          // Score basé sur les listes de menaces (Threat Intelligence)
          $threatIntel = RequestUtils::getThreatIntelScore($context, $this->securityConfig['threatIntel'] ?? []);
 
+         // Score d'incohérence des Client-Hints
+         $clientHintsInconsistency = RequestUtils::getClientHintsInconsistencyScore($context);
+
          // Assemblage du vecteur de suspicion final
          $suspicionVector = array_merge($suspicionVector, [
              'inconsistencyScore' => $inconsistencyScore,
@@ -367,6 +370,7 @@
              'botScore' => $bot['botScore'],
              'clickVarianceScore' => $clickVariance['clickVarianceScore'],
              'threatIntelScore' => $threatIntel['threatIntelScore'],
+             'clientHintsInconsistencyScore' => $clientHintsInconsistency['clientHintsInconsistencyScore'],
          ]);
  
          // Sauvegarder l'état mis à jour de l'appareil dans le store

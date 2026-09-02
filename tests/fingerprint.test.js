@@ -23,6 +23,7 @@ const {
     powMiddleware,
     __internal,
     configureStore,
+    getClientHintsInconsistencyScore,
     verifyCpuTargetPoWAndGenerateTicket,
     verifyMemoryPoW,
     verifyTspChallenge,
@@ -2002,5 +2003,63 @@ describe('Dry Run Mode', () => {
             expect.stringContaining('[FingerprintEngine] [Dry Run] Intended action: block'),
             expect.any(Object) // The second argument is the data object
         );
+    });
+});
+
+describe('getClientHintsInconsistencyScore', () => {
+    const { getClientHintsInconsistencyScore } = __internal;
+
+    it('should return 0 for consistent User-Agent and Client-Hints', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'sec-ch-ua': '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+            }
+        };
+        const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
+        expect(clientHintsInconsistencyScore).toBe(0);
+    });
+
+    it('should return 80 for a large version mismatch', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                'sec-ch-ua': '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+            }
+        };
+        const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
+        expect(clientHintsInconsistencyScore).toBe(80);
+    });
+
+    it('should return 40 for a small version mismatch', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+                'sec-ch-ua': '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+            }
+        };
+        const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
+        expect(clientHintsInconsistencyScore).toBe(40);
+    });
+
+    it('should return 90 for a browser family mismatch', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+                'sec-ch-ua': '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
+            }
+        };
+        const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
+        expect(clientHintsInconsistencyScore).toBe(90);
+    });
+
+    it('should return 0 if headers are missing or unparsable', () => {
+        const context1 = { headers: { 'user-agent': 'Just Chrome/120' } }; // Missing sec-ch-ua
+        const context2 = { headers: { 'sec-ch-ua': '"Google Chrome";v="120"' } }; // Missing user-agent
+        const context3 = { headers: { 'user-agent': 'UnknownBrowser/1.0', 'sec-ch-ua': '"UnknownBrand";v="1.0"' } }; // Unparsable
+
+        expect(getClientHintsInconsistencyScore(context1).clientHintsInconsistencyScore).toBe(0);
+        expect(getClientHintsInconsistencyScore(context2).clientHintsInconsistencyScore).toBe(0);
+        expect(getClientHintsInconsistencyScore(context3).clientHintsInconsistencyScore).toBe(0);
     });
 });

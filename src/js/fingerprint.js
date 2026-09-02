@@ -1167,6 +1167,59 @@ function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
 }
 
 /**
+ * Calculates a score based on inconsistencies between User-Agent and Sec-CH-UA headers.
+ * @param {object} context The request context.
+ * @returns {{clientHintsInconsistencyScore: number}}
+ */
+function getClientHintsInconsistencyScore(context) {
+    const ua = context.headers['user-agent'];
+    const clientHints = context.headers['sec-ch-ua'];
+
+    if (!ua || !clientHints) {
+        return { clientHintsInconsistencyScore: 0 };
+    }
+
+    // 1. Extract browser and version from User-Agent
+    let uaVersion = null;
+    let uaBrowser = null;
+    const uaMatch = ua.match(/(Chrome|Firefox|Edg|Safari)\/([\d\.]+)/);
+    if (uaMatch) {
+        uaBrowser = uaMatch[1] === 'Edg' ? 'Edge' : uaMatch[1];
+        uaVersion = uaMatch[2]?.split('.')[0];
+    }
+
+    // 2. Extract browser and version from Sec-CH-UA
+    let chVersion = null;
+    let chBrowser = null;
+    const chMatch = clientHints.match(/"(Google Chrome|Chromium|Microsoft Edge)";v="(\d+)"/);
+
+    if (chMatch) {
+        chVersion = chMatch[2];
+        if (chMatch[1] === 'Microsoft Edge') {
+            chBrowser = 'Edge';
+        } else {
+            chBrowser = 'Chrome'; // Treat Chrome and Chromium as the same for this check
+        }
+    }
+
+    if (!uaVersion || !chVersion || !uaBrowser || !chBrowser) {
+        return { clientHintsInconsistencyScore: 0 };
+    }
+
+    // 3. Compare
+    if (uaBrowser !== chBrowser && (uaBrowser !== 'Chrome' || chBrowser !== 'Edge')) { // Allow Chrome UA with Edge CH
+        return { clientHintsInconsistencyScore: 90 };
+    }
+
+    const versionDifference = Math.abs(parseInt(uaVersion, 10) - parseInt(chVersion, 10));
+
+    if (versionDifference > 5) return { clientHintsInconsistencyScore: 80 };
+    if (versionDifference > 1) return { clientHintsInconsistencyScore: 40 };
+
+    return { clientHintsInconsistencyScore: 0 };
+}
+
+/**
  * @private
  * Analyzes click positions from client-side metrics to detect unnaturally low variance,
  * which can be a sign of automated clicking.
@@ -1596,6 +1649,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // NOUVEAU: On calcule le score de variance des clics.
   const { clickVarianceScore } = getClickVarianceScore(context);
 
+  // NOUVEAU: On calcule le score d'incohérence des Client-Hints.
+  const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
+
   const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
@@ -1608,7 +1664,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore: clickVarianceScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -2005,7 +2061,8 @@ export class FingerprintEngine {
             (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
             (suspicionVector.tlsSpoofingScore || 0) * (weights.tlsSpoofingScore || 0) + // NOUVEAU: TLS Spoofing
             (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0) +
-            (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0);
+            (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
+            (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0);
 
         return Math.min(100, score);
     }
@@ -3262,6 +3319,7 @@ export const __internal = {
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
+    getClientHintsInconsistencyScore, // Expose for testing
     generateCombinedPoWChallengePage,
     problemManager, // Re-export the problemManager promise
 };
