@@ -3132,17 +3132,7 @@ export class FingerprintEngine {
     await store.set(`ip:${clientIp}`, ipProfile, 600); // Keep IP profile for 10 minutes
 
     const vector = await __internal.getSuspicionVector(requestContext, this.securityConfig); // Pass the config
-    const { honeypotScore } = getHoneypotScore(requestContext, this.securityConfig.honeypot);
-    const { requestPatternScore } = getRequestPatternScore(requestContext, (await store.get(`device:${requestContext.cookies?.device_id}`)), this.securityConfig.patterns);
-    const score =
-      vector.historyScore * (this.securityConfig.weights.historyScore || 0.3) +
-      vector.rotationScore * (this.securityConfig.weights.rotationScore || 0.5) +
-      vector.headerAnomalyScore * (this.securityConfig.weights.headerAnomalyScore || 0.1) +
-      vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
-      honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +
-      requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0) +
-      vector.behaviorScore * (this.securityConfig.weights.behaviorScore || 0) +
-      (vector.ipReputationScore || 0) * (this.securityConfig.weights.ipReputationScore || 0);
+    const score = this.calculateFinalScore(vector);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
     if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
