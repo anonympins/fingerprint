@@ -90,4 +90,43 @@ describe('IP Reputation Local System (Node.js)', () => {
         // Expected score: 60 (ipRepScore) * 0.5 (weight) = 30
         expect(finalScore).toBe(30.0);
     });
+
+    it('should return correct subnet for IPv4 and IPv6', async () => {
+        const ipv4Subnet = __internal.getIpSubnet('192.168.1.50', 24, 48);
+        expect(ipv4Subnet).toBe('192.168.1.0/24');
+
+        const ipv6Subnet = __internal.getIpSubnet('2001:db8:abcd:12::1', 24, 48);
+        expect(ipv6Subnet).toBe('2001:db8:abcd:0:0:0:0:0/48');
+    });
+
+    it('should calculate client hints inconsistency score correctly', async () => {
+        const mockContextMismatch = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 Firefox/117.0',
+                'sec-ch-ua': '"Google Chrome";v="117"'
+            }
+        };
+        const scoreMismatch = __internal.getClientHintsInconsistencyScore(mockContextMismatch);
+        expect(scoreMismatch.clientHintsInconsistencyScore).toBe(90);
+
+        const mockContextVersionDrift = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 Chrome/110.0',
+                'sec-ch-ua': '"Google Chrome";v="117"'
+            }
+        };
+        const scoreVersionDrift = __internal.getClientHintsInconsistencyScore(mockContextVersionDrift);
+        expect(scoreVersionDrift.clientHintsInconsistencyScore).toBe(80);
+    });
+
+    it('should integrate subnet history into subnet score', async () => {
+        const mockContext = { clientIp: '192.168.1.50' };
+        let score = await __internal.getSubnetScore(mockContext);
+        expect(score.subnetScore).toBe(0);
+        for (let i = 1; i <= 12; i++) {
+            await __internal.updateSubnetMetrics(mockContext, `dev-${i}`, 40);
+        }
+        score = await __internal.getSubnetScore(mockContext);
+        expect(score.subnetScore).toBeGreaterThan(0);
+    });
 });
