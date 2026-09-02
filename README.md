@@ -60,8 +60,9 @@ For API clients, the challenge is delivered as a `404` JSON response, and the cl
 ### Prerequisites
 
 *   **PHP 7.4+**
-*   The **GMP** extension (`php-gmp`) is required for handling the large-integer arithmetic used in cryptographic challenges.
+*   The **BCMath** extension (`php-bcmath`) is required. It is included by default in most PHP installations.
 *   **Composer** for package management.
+*   The **GMP** extension (`php-gmp`) is highly recommended for performance. If not available, the library will fall back to a slower BCMath-based implementation for cryptographic operations.
 
 ---
 
@@ -74,8 +75,9 @@ This guide shows the simplest way to integrate the library into any PHP applicat
 ### Prerequisites
 
 *   **PHP 7.4+**
-*   The **GMP** extension (`php-gmp`) is required for handling the large-integer arithmetic used in cryptographic challenges.
+*   The **BCMath** extension (`php-bcmath`) is required. It is included by default in most PHP installations.
 *   **Composer** for package management.
+*   The **GMP** extension (`php-gmp`) is highly recommended for performance. If not available, the library will fall back to a slower BCMath-based implementation for cryptographic operations.
 
 ### Installation
 
@@ -170,6 +172,7 @@ $securityConfig = [
         'timeInconsistencyScore' => 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
         'tlsSpoofingScore' => 0.8,     // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
         'botScore' => 1.0,             // Penalizes explicit bot markers from the client
+        'clientHintsInconsistencyScore' => 0.7, // Penalizes mismatches between User-Agent and Client-Hints versions
         'cookieDroppingScore' => 0.9,  // Penalizes clients that appear to be intentionally dropping cookies
         'threatIntelScore' => 0.4,     // Penalizes requests from known malicious IPs (proxies, Tor, etc.)
     ],
@@ -484,8 +487,9 @@ const securityConfig = {
         behaviorScore: 0.7,      // Penalizes non-human interactions (no mouse/keyboard activity)
         honeypotScore: 1.0,      // Strongly penalizes bots filling hidden form fields
         crossLayerInconsistencyScore: 0.4, // Penalizes mismatches between client-side data (e.g., OS) and server-side headers (e.g., User-Agent)
-        timeInconsistencyScore: 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack)
-        tlsSpoofingScore: 0.8      // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
+        timeInconsistencyScore: 0.9, // Strongly penalizes large time gaps between client metric collection and server reception (replay attack),
+        tlsSpoofingScore: 0.8,      // Penalizes mismatches between the TLS fingerprint (JA3/JA4) and the User-Agent (client spoofing)
+        clientHintsInconsistencyScore: 0.7 // Penalizes mismatches between User-Agent and Client-Hints versions
     },
     thresholds: {
         low: 20,    // Score from which a CPU challenge is issued

@@ -23,4 +23,14 @@ class StoreManager
     {
         self::$store = $externalStore;
     }
+
+    /**
+     * Définit l'instance active du store (utile pour l'injection de dépendances et les tests).
+     *
+     * @param mixed $store
+     */
+    public static function setStore($store): void
+    {
+        self::$store = $store;
+    }
 }

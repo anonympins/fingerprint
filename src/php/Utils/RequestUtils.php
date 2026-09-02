@@ -2,9 +2,11 @@
 
 declare(strict_types=1);
 
+
 namespace Anonympins\Fingerprint\Utils;
 
 use Anonympins\Fingerprint\FingerprintBuilder;
+use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\Optimization\Optimization;
 use Anonympins\Fingerprint\RequestContext;
 
@@ -44,6 +46,20 @@ class RequestUtils
     ];
 
     /**
+     * Base de données de signatures JA4 connues.
+     * @var array<string, string|string[]>
+     */
+    private const JA4_FINGERPRINT_DB = [
+        // Format: {JA4 Hash} => {Client Name}
+        // --- Chrome ---
+        't13d1517h2_8daaf61527d5' => 'Chrome', // Chrome 117 on Win11
+        't13d1516h2_8daaf61527d5' => 'Chrome', // Chrome 116 on Win10
+        // --- Firefox ---
+        't13d1517h2_2491a244c393' => 'Firefox', // Firefox 117 on Win11
+        // --- Common Libraries & Bots ---
+        't13d1500h1_4b56136b4d35' => 'Python', // Python requests
+    ];
+    /**
      * Crée un hash composite stable basé sur les caractéristiques de la requête.
      */
     public static function getCompositeDeviceHash(RequestContext $context): string
@@ -62,6 +78,8 @@ class RequestUtils
 
         if ($context->ja3) $srv->add("ja3", $context->ja3);
         if ($context->ja4) $srv->add("ja4", $context->ja4);
+        if ($context->ja4s) $srv->add("ja4s", $context->ja4s);
+        if ($context->ja4h) $srv->add("ja4h", $context->ja4h);
         if ($context->http2Fingerprint) $srv->add("h2", $context->http2Fingerprint);
         if ($context->tcpFingerprint) $srv->add("tcp", $context->tcpFingerprint);
 
@@ -103,33 +121,58 @@ class RequestUtils
      */
     public static function getTlsSpoofingScore(RequestContext $context): array
     {
-        $ja3 = $context->ja3;
         $ua = $context->getHeader('user-agent') ?? '';
+        $ja3 = $context->ja3;
+        $ja4 = $context->ja4;
 
-        if ($ja3 && (empty($ua) || strlen($ua) < 10 || stripos($ua, 'python') !== false || stripos($ua, 'curl') !== false)) {
+        // Si un fingerprint TLS est présent mais que le User-Agent est absent ou générique, c'est suspect.
+        if (($ja3 || $ja4) && (empty($ua) || strlen($ua) < 10 || stripos($ua, 'python') !== false || stripos($ua, 'curl') !== false)) {
             return ['tlsSpoofingScore' => 50.0];
         }
 
-        if ($ja3 && !empty($ua) && isset(self::TLS_FINGERPRINT_DB[$ja3])) {
-            $expectedBrowsers = self::TLS_FINGERPRINT_DB[$ja3];
-            if (!is_array($expectedBrowsers)) {
-                $expectedBrowsers = [$expectedBrowsers];
+        $claimedBrowserInfo = self::parseUserAgent($ua);
+        $claimedBrowser = $claimedBrowserInfo['browser'] ?? null;
+
+        if (empty($claimedBrowser) || empty($ua)) {
+            return ['tlsSpoofingScore' => 0.0];
+        }
+
+        // Priorité à JA4 pour la détection de spoofing
+        if ($ja4 && isset(self::JA4_FINGERPRINT_DB[$ja4])) {
+            $expectedClients = self::JA4_FINGERPRINT_DB[$ja4];
+            if (!is_array($expectedClients)) {
+                $expectedClients = [$expectedClients];
             }
 
-            $claimedBrowserInfo = self::parseUserAgent($ua);
-            $claimedBrowser = $claimedBrowserInfo['browser'] ?? null;
+            $isMatch = false;
+            foreach ($expectedClients as $expected) {
+                if (stripos($claimedBrowser, $expected) !== false) {
+                    $isMatch = true;
+                    break;
+                }
+            }
+            if (!$isMatch) {
+                // Incohérence forte détectée avec JA4
+                return ['tlsSpoofingScore' => 90.0];
+            }
+        }
+        // Fallback sur JA3 si JA4 n'a pas matché
+        elseif ($ja3 && isset(self::TLS_FINGERPRINT_DB[$ja3])) {
+            $expectedClients = self::TLS_FINGERPRINT_DB[$ja3];
+            if (!is_array($expectedClients)) {
+                $expectedClients = [$expectedClients];
+            }
 
-            if ($claimedBrowser) {
-                $isMatch = false;
-                foreach ($expectedBrowsers as $expected) {
-                    if (str_starts_with($claimedBrowser, $expected)) {
-                        $isMatch = true;
-                        break;
-                    }
+            $isMatch = false;
+            foreach ($expectedClients as $expected) {
+                if (stripos($claimedBrowser, $expected) !== false) {
+                    $isMatch = true;
+                    break;
                 }
-                if (!$isMatch) {
-                    return ['tlsSpoofingScore' => 80.0];
-                }
+            }
+            if (!$isMatch) {
+                // Incohérence détectée avec JA3
+                return ['tlsSpoofingScore' => 80.0];
             }
         }
 
@@ -378,6 +421,62 @@ class RequestUtils
     }
 
     /**
+     * Calcule un score d'incohérence entre le User-Agent et les en-têtes Sec-CH-UA (Client Hints).
+     * @return array{'clientHintsInconsistencyScore': float}
+     */
+    public static function getClientHintsInconsistencyScore(RequestContext $context): array
+    {
+        $ua = $context->getHeader('user-agent');
+        $clientHints = $context->getHeader('sec-ch-ua');
+
+        if (empty($ua) || empty($clientHints)) {
+            return ['clientHintsInconsistencyScore' => 0.0];
+        }
+
+        // 1. Extraire la version du navigateur depuis le User-Agent
+        $uaVersion = null;
+        if (preg_match('/(Chrome|Firefox|Edg|Safari)\/([\d\.]+)/', $ua, $uaMatches)) {
+            $uaBrowser = $uaMatches[1] === 'Edg' ? 'Edge' : $uaMatches[1];
+            // Prendre uniquement la version majeure
+            $uaVersion = explode('.', $uaMatches[2])[0] ?? null;
+        }
+
+        // 2. Extraire la version du navigateur depuis Sec-CH-UA
+        $chVersion = null;
+        $chBrowser = null;
+        // Regex pour trouver une marque de navigateur connue et sa version
+        if (preg_match('/"(?:Google Chrome|Chromium|Microsoft Edge)";v="(\d+)"/', $clientHints, $chMatches)) {
+            $chVersion = $chMatches[1];
+            // Déterminer le navigateur à partir de la marque trouvée
+            if (str_contains($chMatches[0], 'Edge')) {
+                $chBrowser = 'Edge';
+            } else {
+                $chBrowser = 'Chrome'; // Chrome ou Chromium
+            }
+        }
+
+        if ($uaVersion === null || $chVersion === null || $uaBrowser === null || $chBrowser === null) {
+            return ['clientHintsInconsistencyScore' => 0.0];
+        }
+
+        // 3. Comparer les versions
+        // Tolérer une petite différence car les Client-Hints peuvent être plus précis ou mis à jour différemment
+        $versionDifference = abs((int)$uaVersion - (int)$chVersion);
+
+        // Si les navigateurs déclarés sont différents (ex: UA dit Firefox, CH dit Chrome)
+        if ($uaBrowser !== $chBrowser && ($uaBrowser !== 'Chrome' || $chBrowser !== 'Edge')) { // Tolérer Chrome/Edge
+             return ['clientHintsInconsistencyScore' => 90.0];
+        }
+
+        if ($versionDifference > 5) { // Un écart de plus de 5 versions majeures est très suspect
+            return ['clientHintsInconsistencyScore' => 80.0];
+        } elseif ($versionDifference > 1) { // Un petit écart est légèrement suspect
+            return ['clientHintsInconsistencyScore' => 40.0];
+        }
+
+        return ['clientHintsInconsistencyScore' => 0.0];
+    }
+    /**
      * Calcule les indicateurs comportementaux liés à l'historique de l'appareil.
      * @param array<string, mixed> $deviceData
      * @return array{'historyScore': float, 'rotationScore': float}
@@ -392,17 +491,36 @@ class RequestUtils
         $rapidChangeThresholdMs = 2000; // 2 secondes
         $maxRapidChanges = 3;
 
-        if (isset($deviceData['lastFpHash']) && $currentFpHash !== $deviceData['lastFpHash']) {
+        $lastFpHash = $deviceData['lastFpHash'] ?? null;
+
+        if ($lastFpHash && $currentFpHash !== $lastFpHash) {
+            // Comparaison plus intelligente : ne pénaliser que si les parties STABLES de l'empreinte changent.
+            // Les parties stables sont celles qui ne devraient pas changer lors d'un simple changement de réseau.
+            $stablePart1 = self::extractStablePart($lastFpHash);
+            $stablePart2 = self::extractStablePart($currentFpHash);
+
             $timeSinceLastChange = $now - ($deviceData['lastChangeTimestamp'] ?? 0);
-            if ($timeSinceLastChange < $rapidChangeThresholdMs) {
-                $deviceData['rapidChangeCount'] = ($deviceData['rapidChangeCount'] ?? 0) + 1;
-            } else {
-                $deviceData['rapidChangeCount'] = max(0, ($deviceData['rapidChangeCount'] ?? 0) - 1);
+
+            // On incrémente le compteur de rotation rapide SEULEMENT si la partie stable a changé.
+            if ($stablePart1 !== $stablePart2) {
+                if ($timeSinceLastChange < $rapidChangeThresholdMs) {
+                    $deviceData['rapidChangeCount'] = ($deviceData['rapidChangeCount'] ?? 0) + 1;
+                } else {
+                    // Si le changement est lent, on réduit le compteur pour pardonner les anciens changements rapides.
+                    $deviceData['rapidChangeCount'] = max(0, ($deviceData['rapidChangeCount'] ?? 0) - 1);
+                }
+                $deviceData['lastChangeTimestamp'] = $now;
             }
+            // Si seule la partie volatile a changé (ex: User-Agent, IP via en-têtes), on ne met pas à jour le `lastChangeTimestamp`.
+            // Cela évite qu'un changement de réseau légitime soit suivi d'un autre changement (ex: mise en veille)
+            // et soit compté comme une rotation rapide.
+
+        } else if ($lastFpHash === null) {
+            // Première visite, on initialise le timestamp.
             $deviceData['lastChangeTimestamp'] = $now;
         }
         $deviceData['lastFpHash'] = $currentFpHash;
-
+        
         // Enregistrement de l'IP
         if (!in_array($clientIp, $deviceData['ips'])) {
             $deviceData['ips'][] = $clientIp;
@@ -416,6 +534,27 @@ class RequestUtils
         $rotationScore = min(100.0, (($deviceData['rapidChangeCount'] ?? 0) / $maxRapidChanges) * 100);
 
         return ['historyScore' => $historyScore, 'rotationScore' => $rotationScore];
+    }
+
+    /**
+     * Extrait la partie "stable" d'une chaîne d'empreinte.
+     * La partie stable inclut les composants matériels (canvas, gpu) qui ne devraient pas changer.
+     * @param string $fpString La chaîne d'empreinte complète.
+     * @return string La sous-chaîne de l'empreinte contenant uniquement les parties stables.
+     */
+    private static function extractStablePart(string $fpString): string
+    {
+        $stableKeys = ['cvs', 'gpu', 'hw', 'client_fp_hash', 'os', 'scr'];
+        $parts = explode('|', $fpString);
+        $stableParts = [];
+        foreach ($parts as $part) {
+            $pair = explode(':', $part, 2);
+            if (count($pair) === 2 && in_array($pair[0], $stableKeys, true)) {
+                $stableParts[] = $part;
+            }
+        }
+        sort($stableParts);
+        return implode('|', $stableParts);
     }
 
     /**
@@ -669,5 +808,155 @@ class RequestUtils
         if ($requestHost !== $hostPattern) return false;
 
         return self::pathMatches($requestPath, $pathPattern);
+    }
+
+    /**
+     * Génère un masque de sous-réseau binaire pour une longueur de préfixe donnée.
+     *
+     * @param int $prefix La longueur du préfixe (ex: 24 pour IPv4, 48 pour IPv6).
+     * @param int $totalBytes Le nombre total d'octets pour le masque (4 pour IPv4, 16 pour IPv6).
+     * @return string|null Le masque binaire ou null si le préfixe est invalide.
+     */
+    private static function generateMask(int $prefix, int $totalBytes): ?string
+    {
+        if ($prefix < 0 || $prefix > $totalBytes * 8) {
+            return null; // Préfixe invalide
+        }
+        $mask = str_repeat(chr(255), (int)floor($prefix / 8));
+        if ($prefix % 8 !== 0) {
+            $mask .= chr((255 << (8 - $prefix % 8)) & 255);
+        }
+        return str_pad($mask, $totalBytes, chr(0));
+    }
+
+    /**
+     * Calcule le sous-réseau d'une adresse IP.
+     * @param string $ip L'adresse IP.
+     * @param int $ipv4Prefix Le préfixe pour les adresses IPv4 (défaut /24).
+     * @param int $ipv6Prefix Le préfixe pour les adresses IPv6 (défaut /48).
+     * @return string|null Le sous-réseau CIDR ou null si l'IP est invalide.
+     */
+    public static function getIpSubnet(string $ip, int $ipv4Prefix = 24, int $ipv6Prefix = 48): ?string
+    {
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $ipBinary = inet_pton($ip);
+            if ($ipBinary === false) return null;
+            
+            $mask = self::generateMask($ipv4Prefix, 4);
+            if ($mask === null) return null;
+
+            $networkBinary = $ipBinary & $mask;
+            return inet_ntop($networkBinary) . '/' . $ipv4Prefix;
+        } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            $ipBinary = inet_pton($ip);
+            if ($ipBinary === false) return null;
+            
+            $mask = self::generateMask($ipv6Prefix, 16);
+            if ($mask === null) return null;
+
+            $networkBinary = $ipBinary & $mask;
+            return inet_ntop($networkBinary) . '/' . $ipv6Prefix; // FIX: Use the provided ipv6Prefix
+        }
+        return null;
+    }
+
+    /**
+     * Met à jour les métriques agrégées pour un sous-réseau IP.
+     * @param RequestContext $context
+     * @param string $deviceId
+     * @param float $finalScore
+     */
+    public static function updateSubnetMetrics(RequestContext $context, string $deviceId, float $finalScore): void
+    {
+        $subnet = self::getIpSubnet($context->clientIp);
+        if ($subnet === null) return;
+
+        $store = StoreManager::getStore();
+        $key = "subnet:{$subnet}";
+        $subnetData = $store->get($key) ?? [
+            'highScoreCount' => 0,
+            'deviceIds' => [],
+            'lastActivity' => 0
+        ];
+
+        $subnetData['highScoreCount']++;
+        if (!in_array($deviceId, $subnetData['deviceIds'])) {
+            $subnetData['deviceIds'][] = $deviceId;
+        }
+        $subnetData['lastActivity'] = time();
+
+        // Limiter la taille du tableau des deviceIds pour éviter une consommation mémoire excessive.
+        if (count($subnetData['deviceIds']) > 100) {
+            array_shift($subnetData['deviceIds']);
+        }
+
+        // TTL de 24 heures pour les données de sous-réseau.
+        $store->set($key, $subnetData, 86400);
+    }
+
+    /**
+     * Calcule un score de suspicion basé sur l'activité historique du sous-réseau IP.
+     * @param RequestContext $context
+     * @param string $currentDeviceId
+     * @return array{'subnetScore': float}
+     */
+    public static function getSubnetScore(RequestContext $context, string $currentDeviceId): array
+    {
+        $subnet = self::getIpSubnet($context->clientIp);
+        if ($subnet === null) {
+            return ['subnetScore' => 0.0];
+        }
+
+        $store = StoreManager::getStore();
+        $key = "subnet:{$subnet}";
+        $subnetData = $store->get($key);
+
+        if ($subnetData === null) {
+            return ['subnetScore' => 0.0];
+        }
+
+        $score = 0.0;
+
+        // Pénalité basée sur le nombre de devices uniques vus depuis ce sous-réseau.
+        $deviceCount = count($subnetData['deviceIds']);
+        if ($deviceCount > 10) {
+            $score += min(80.0, ($deviceCount - 10) * 5);
+        }
+
+        // Pénalité basée sur le nombre de scores élevés enregistrés.
+        $score += min(40.0, $subnetData['highScoreCount'] * 2);
+
+        return ['subnetScore' => min(100.0, $score)];
+    }
+
+    /**
+     * Calcule le score de réputation d'une IP en appliquant la décroissance temporelle.
+     */
+    public static function getIpReputationScore(string $ip): float
+    {
+        $store = StoreManager::getStore();
+        $key = "ip-reputation:{$ip}";
+        $data = $store->get($key);
+        if ($data === null) {
+            return 0.0;
+        }
+
+        $now = time();
+        $hoursPassed = ($now - $data['lastUpdate']) / 3600;
+        $decay = (int)floor($hoursPassed * 2); // Décroissance de 2 points par heure
+
+        return (float)max(0.0, $data['score'] - $decay);
+    }
+
+    /**
+     * Met à jour le score de réputation locale d'une IP.
+     */
+    public static function updateIpReputationScore(string $ip, float $change): void
+    {
+        $store = StoreManager::getStore();
+        $key = "ip-reputation:{$ip}";
+        $current = self::getIpReputationScore($ip);
+        $newScore = min(100.0, max(0.0, $current + $change));
+        $store->set($key, ['score' => $newScore, 'lastUpdate' => time()], 86400 * 7); // TTL de 7 jours
     }
 }

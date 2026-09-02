@@ -1,3 +1,24 @@
+## Version 0.3.4
+
+### ✨ Improvements :
+- **Client Hints Inconsistency Score (JS/PHP)** :
+- Implementation of cross-analysis between the traditional `User-Agent` header and the new Client Hints headers (`Sec-CH-UA`).
+- Calculation of a progressive anomaly score upon inconsistency: a penalty of `90` for a mismatched browser change, `80` for a major version gap exceeding 5 versions, and `40` for a minor gap exceeding 1 version.
+- **Support for JA4, JA4S, and JA4H (PHP)** :
+- Integration of modern TLS JA4 transport fingerprints into the composite application fingerprint calculation (`getCompositeDeviceHash`).
+- Prioritization of spoofing analysis via the JA4 database (`JA4_FINGERPRINT_DB`) to intercept sophisticated User-Agent impersonation attempts before falling back to JA3.
+- **Subnet-based activity score (JS/PHP)** :
+- Grouping of hosts by their respective IP subnets (using `/24` CIDR masking for IPv4 and `/48` for IPv6).
+- Tracking of an internal reputation score (`subnetScore`) to mitigate distributed attacks from rotating proxies by analyzing the proliferation of new `deviceIds` and the violation history of an entire network block.
+- **Optional GMP support** :
+- Optimization of arithmetic operations on 256-bit integers (BigInt) for PoW difficulty target calculation (`calculateTarget`) using the native PHP `GMP` extension, with a seamless fallback if the extension is missing. - **PHP `imul` simulation (`test imul`)** :
+- Added strict emulation of JavaScript's 32-bit signed integer multiplication (`Math.imul`) in PHP to ensure the Proof-of-Work memory allocation algorithm behaves identically.
+- **WebAssembly solver dynamic loader (`wasmPath loader`)** :
+- Integrated a configurable loader to facilitate the dynamic and secure loading of the compiled WASM module via a URI or local path option (`wasmPath`).
+- **WebAssembly nonce (`wasm nonce`)** :
+- Secured the algorithm's resolution and cryptographic evaluation handshake within the WebAssembly module by implementing a unique execution nonce to prevent replay attacks.
+- Added ipReputationScore by flagging requests 
+
 ## Version 0.3.3
 
 This release introduces significant enhancements to client-side behavioral analysis, adds a crucial "dry run" mode for safe production testing, and improves the overall developer experience with an event-driven client library and better packaging.

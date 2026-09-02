@@ -1,6 +1,6 @@
 {
   "name": "@anonympins/fingerprint",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Advanced anti-bot library for Node.js using multi-layer fingerprinting (JA3, client-side, headers), behavioral analysis, and adaptive Proof-of-Work (PoW) challenges to mitigate scraping, scalping, and automated threats.",
   "main": "index.js",
   "type": "module",
@@ -68,14 +68,17 @@
   },
   "homepage": "https://github.com/anonympins/fingerprint#readme",
   "devDependencies": {
-    "body-parser": "^1.20.2",
     "cookie-parser": "^1.4.6",
-    "express": "^4.18.2",
-    "prom-client": "^15.1.2",
-    "vitest": "^4.1.11",
+    "express": "^4.22.2",
     "javascript-obfuscator": "^4.1.0",
+    "jsdom": "^24.0.0",
+    "prom-client": "^15.1.2",
     "terser": "^5.30.3",
-    "jsdom": "^24.0.0"
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "body-parser": "2.3.0",
+    "qs": "6.16.0"
   },
   "peerDependencies": {
     "ioredis": "^5.3.2",

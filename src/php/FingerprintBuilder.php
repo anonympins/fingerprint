@@ -104,7 +104,7 @@ class FingerprintBuilder
         ];
 
         $weights = [
-            'cvs' => 5.0, 'gpu' => 4.0, 'ja3' => 3.5, 'ja4' => 4.0,
+            'cvs' => 5.0, 'gpu' => 4.0, 'ja3' => 3.5, 'ja4' => 4.0, 'ja4s' => 4.0, 'ja4h' => 3.8,
             'h2_settings' => 3.0, 'tcp_fp' => 2.5, 'ua' => 2.0,
             'client_fp_hash' => 3.0, 'browser' => 1.5, 'os_version' => 1.5,
             'device_type' => 1.0, 'hw' => 1.5, 'scr' => 1.0, 'os' => 0.8, 'geo' => 0.5,
@@ -173,13 +173,14 @@ class FingerprintBuilder
      */
     private static function imul(int $a, int $b): int
     {
-        // Utiliser GMP pour la multiplication pour éviter le dépassement en float sur les systèmes 64-bit.
-        $gmp_a = gmp_init($a);
-        $gmp_b = gmp_init($b);
-        $gmp_result = gmp_mul($gmp_a, $gmp_b);
-
-        // Tronquer le résultat à 32 bits et le convertir en entier signé.
-        $truncated = gmp_and($gmp_result, '0xFFFFFFFF');
-        return gmp_intval(gmp_sign($truncated) < 0 ? gmp_sub($truncated, '0x100000000') : $truncated);
+        // Emulation of JavaScript's Math.imul for signed 32-bit integer multiplication.
+        // This version correctly handles overflows on 64-bit systems.
+        $ah = ($a >> 16) & 0xffff;
+        $al = $a & 0xffff;
+        $bh = ($b >> 16) & 0xffff;
+        $bl = $b & 0xffff;
+        $lo = $al * $bl;
+        $hi = (($lo >> 16) + ($al * $bh) + ($ah * $bl)) & 0xffff;
+        return (($hi << 16) | ($lo & 0xffff)) | 0;
     }
 }

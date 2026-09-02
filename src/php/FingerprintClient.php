@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 namespace Anonympins\Fingerprint;
+use Anonympins\Fingerprint\Config\SecurityProfiles;
 
 /**
  * FingerprintClient - Wrapper PHP pour la bibliothèque de fingerprinting côté client.
@@ -38,8 +39,7 @@ class FingerprintClient
     {
         $this->clientScriptPath = $clientScriptPath;
 
-        // Configuration par défaut si non fournie
-        $this->clientConfig = array_merge([
+        $defaultConfig = [
             'mouse' => true,
             'keystrokes' => true,
             'clicks' => true,
@@ -47,8 +47,13 @@ class FingerprintClient
             'fetch' => [
                 'handleChallenges' => true,
                 'probationaryTtl' => 30000, // 30 seconds
-            ]
-        ], $clientConfig);
+            ],
+            'wasm' => true, // Activer la tentative de chargement du module WASM
+            'wasmPath' => '/fp.js' // Chemin vers le script de chargement WASM
+        ];
+
+        // Utiliser une fusion profonde pour permettre de surcharger des sous-clés
+        $this->clientConfig = SecurityProfiles::deepMerge($defaultConfig, $clientConfig);
 
         try {
             // Génère un nonce pour CSP si possible, pour une sécurité renforcée.
@@ -94,8 +99,17 @@ class FingerprintClient
         // Le script d'initialisation qui sera inclus dans la page.
         $initScript = <<<JS
 document.addEventListener('DOMContentLoaded', function() {
+    const config = {$configJson};
     if (window.ClientLibrary) {
-        window.ClientLibrary.initializeClient({$configJson});
+        if (config.wasmPath) {
+            const wasmScript = document.createElement('script');
+            wasmScript.src = config.wasmPath;
+            wasmScript.async = true;
+            wasmScript.nonce = '{$this->nonce}';
+            document.head.appendChild(wasmScript);
+        }
+
+        window.ClientLibrary.initializeClient(config);
     } else {
         console.error('Fingerprint client library not loaded.');
     }
