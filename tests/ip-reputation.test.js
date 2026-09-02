@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { __internal, configureStore } from '../src/js/fingerprint.js';
+import { __internal, configureStore, FingerprintEngine } from '../src/js/fingerprint.js';
 
 describe('IP Reputation Local System (Node.js)', () => {
     let mockStore;
@@ -54,5 +54,40 @@ describe('IP Reputation Local System (Node.js)', () => {
 
         const score = await __internal.getIpReputationScore(ip);
         expect(score).toBe(44);
+    });
+
+    it('should integrate ipReputationScore into the final score calculation', async () => {
+        const ip = '1.2.3.4';
+        await __internal.updateIpReputationScore(ip, 60); // Set IP reputation to 60
+
+        const mockSecurityConfig = {
+            weights: {
+                ipReputationScore: 0.5, // Give it a weight
+                historyScore: 0.0, // Other weights to 0 for isolation
+                rotationScore: 0.0,
+                headerAnomalyScore: 0.0,
+                requestPatternScore: 0.0,
+                inconsistencyScore: 0.0,
+                honeypotScore: 0.0,
+                behaviorScore: 0.0,
+                botScore: 0.0,
+                crossLayerInconsistencyScore: 0.0,
+                tlsSpoofingScore: 0.0,
+                timeInconsistencyScore: 0.0,
+                clickVarianceScore: 0.0,
+                clientHintsInconsistencyScore: 0.0,
+                subnetScore: 0.0,
+            },
+            thresholds: { low: 0, medium: 0, high: 0, block: 100 }, // Irrelevant for this test
+        };
+
+        const ipRepScore = await __internal.getIpReputationScore(ip);
+        const suspicionVector = { ipReputationScore: ipRepScore };
+
+        const engine = new FingerprintEngine(mockSecurityConfig);
+        const finalScore = engine.calculateFinalScore(suspicionVector);
+
+        // Expected score: 60 (ipRepScore) * 0.5 (weight) = 30
+        expect(finalScore).toBe(30.0);
     });
 });

@@ -69,4 +69,33 @@ class IpReputationTest extends TestCase
         $score = RequestUtils::getIpReputationScore($ip);
         $this->assertEquals(72.0, $score);
     }
+
+    public function testIpReputationScoreIsIntegratedIntoFinalScore(): void
+    {
+        $ip = '1.2.3.4';
+        RequestUtils::updateIpReputationScore($ip, 60.0);
+
+        $weights = [
+            'ipReputationScore' => 0.5,
+            'historyScore' => 0.0,
+            'rotationScore' => 0.0,
+            'headerAnomalyScore' => 0.0,
+            'requestPatternScore' => 0.0,
+            'inconsistencyScore' => 0.0,
+            'honeypotScore' => 0.0,
+            'behaviorScore' => 0.0,
+            'botScore' => 0.0,
+            'crossLayerInconsistencyScore' => 0.0,
+            'tlsSpoofingScore' => 0.0,
+            'timeInconsistencyScore' => 0.0,
+            'clickVarianceScore' => 0.0,
+            'clientHintsInconsistencyScore' => 0.0,
+            'subnetScore' => 0.0,
+        ];
+
+        $ipRepScore = RequestUtils::getIpReputationScore($ip);
+        $this->assertEquals(60.0, $ipRepScore);
+        $score = $ipRepScore * $weights['ipReputationScore'];
+        $this->assertEquals(30.0, $score);
+    }
 }

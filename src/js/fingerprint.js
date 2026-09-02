@@ -48,7 +48,8 @@ const securityProfiles = {
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.9,
-            tlsSpoofingScore: 0.8 // NOUVEAU: Poids pour la détection de spoofing TLS
+            tlsSpoofingScore: 0.8, // NOUVEAU: Poids pour la détection de spoofing TLS
+            ipReputationScore: 0.5 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -79,7 +80,8 @@ const securityProfiles = {
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.6,
             timeInconsistencyScore: 1.0,
-            tlsSpoofingScore: 1.0 // Plus agressif pour le spoofing TLS
+            tlsSpoofingScore: 1.0, // Plus agressif pour le spoofing TLS
+            ipReputationScore: 0.6 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -111,7 +113,8 @@ const securityProfiles = {
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.5,
             timeInconsistencyScore: 0.8,
-            tlsSpoofingScore: 0.7 // Important pour les API
+            tlsSpoofingScore: 0.7, // Important pour les API
+            ipReputationScore: 0.5 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -144,7 +147,8 @@ const securityProfiles = {
             honeypotScore: 1.0, // Crucial for comment spam
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.8,
-            tlsSpoofingScore: 0.6 // Moins critique pour les blogs
+            tlsSpoofingScore: 0.6, // Moins critique pour les blogs
+            ipReputationScore: 0.3 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -176,7 +180,8 @@ const securityProfiles = {
             honeypotScore: 1.0,
             crossLayerInconsistencyScore: 0.7,
             timeInconsistencyScore: 0.9,
-            tlsSpoofingScore: 0.9 // Très important pour l'e-commerce
+            tlsSpoofingScore: 0.9, // Très important pour l'e-commerce
+            ipReputationScore: 0.6 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -1871,6 +1876,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
   const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
+  const ipReputationScore = await getIpReputationScore(clientIp);
+
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
   await store.set(`device:${deviceId}`, deviceData);
@@ -1881,7 +1888,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -2280,7 +2287,8 @@ export class FingerprintEngine {
             (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0) +
             (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
             (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0) +
-            (suspicionVector.subnetScore || 0) * (weights.subnetScore || 0);
+            (suspicionVector.subnetScore || 0) * (weights.subnetScore || 0) +
+            (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0);
 
         return Math.min(100, score);
     }
@@ -3133,7 +3141,8 @@ export class FingerprintEngine {
       vector.inconsistencyScore * (this.securityConfig.weights.inconsistencyScore || 0.8) +
       honeypotScore * (this.securityConfig.weights.honeypotScore || 0) +
       requestPatternScore * (this.securityConfig.weights.requestPatternScore || 0) +
-      vector.behaviorScore * (this.securityConfig.weights.behaviorScore || 0);
+      vector.behaviorScore * (this.securityConfig.weights.behaviorScore || 0) +
+      (vector.ipReputationScore || 0) * (this.securityConfig.weights.ipReputationScore || 0);
 
     if (score >= this.securityConfig.thresholds.high) return `suspicious_high:${clientIp}`;
     if (score >= this.securityConfig.thresholds.low) return `suspicious_medium:${clientIp}`; // Use medium for any suspicion
