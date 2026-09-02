@@ -1452,6 +1452,34 @@ async function getSubnetScore(context) {
 }
 
 /**
+ * Retrieves the current local IP reputation score, applying time-based decay.
+ * @param {string} ip - The client's IP address.
+ * @returns {Promise<number>} The reputation score (0 to 100).
+ */
+async function getIpReputationScore(ip) {
+  const key = `ip-reputation:${ip}`;
+  const data = await store.get(key);
+  if (!data) return 0;
+  
+  const now = Date.now();
+  const hoursPassed = (now - data.lastUpdate) / (1000 * 60 * 60);
+  const decay = Math.floor(hoursPassed * 2); // Decay 2 points per hour of inactivity
+  return Math.max(0, data.score - decay);
+}
+
+/**
+ * Updates the local IP reputation score.
+ * @param {string} ip - The client's IP address.
+ * @param {number} change - The score change (positive to penalize, negative to reward).
+ */
+async function updateIpReputationScore(ip, change) {
+  const key = `ip-reputation:${ip}`;
+  const current = await getIpReputationScore(ip);
+  const newScore = Math.min(100, Math.max(0, current + change));
+  await store.set(key, { score: newScore, lastUpdate: Date.now() }, 86400 * 7); // 7-day TTL
+}
+
+/**
  * Calcule un score basé sur la détection explicite de frameworks d'automatisation.
  * @param {object} context - Le contexte de la requête.
  * @returns {{botScore: number}}
@@ -3520,6 +3548,8 @@ export const __internal = {
     getIpSubnet, // Expose for testing
     updateSubnetMetrics, // Expose for testing
     getSubnetScore, // Expose for testing
+    getIpReputationScore, // Expose for testing
+    updateIpReputationScore, // Expose for testing
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---

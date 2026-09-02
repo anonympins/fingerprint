@@ -928,4 +928,35 @@ class RequestUtils
 
         return ['subnetScore' => min(100.0, $score)];
     }
+
+    /**
+     * Calcule le score de réputation d'une IP en appliquant la décroissance temporelle.
+     */
+    public static function getIpReputationScore(string $ip): float
+    {
+        $store = StoreManager::getStore();
+        $key = "ip-reputation:{$ip}";
+        $data = $store->get($key);
+        if ($data === null) {
+            return 0.0;
+        }
+
+        $now = time();
+        $hoursPassed = ($now - $data['lastUpdate']) / 3600;
+        $decay = (int)floor($hoursPassed * 2); // Décroissance de 2 points par heure
+
+        return (float)max(0.0, $data['score'] - $decay);
+    }
+
+    /**
+     * Met à jour le score de réputation locale d'une IP.
+     */
+    public static function updateIpReputationScore(string $ip, float $change): void
+    {
+        $store = StoreManager::getStore();
+        $key = "ip-reputation:{$ip}";
+        $current = self::getIpReputationScore($ip);
+        $newScore = min(100.0, max(0.0, $current + $change));
+        $store->set($key, ['score' => $newScore, 'lastUpdate' => time()], 86400 * 7); // TTL de 7 jours
+    }
 }
