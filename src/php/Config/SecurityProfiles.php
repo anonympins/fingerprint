@@ -36,8 +36,9 @@ class SecurityProfiles
                 'botScore' => 1.0, // Poids pour le score de bot explicite
                 'cookieDroppingScore' => 0.9, // Pénalité élevée pour la suppression de cookies
                 'threatIntelScore' => 0.4, // Poids pour le renseignement sur les menaces (ex: IP de proxy connu)
-                'clientHintsInconsistencyScore' => 0.7, // Pénalise l'incohérence entre User-Agent et Client-Hints
+                'clientHintsInconsistencyScore' => 0.7, // Penalizes inconsistency between User-Agent and Client-Hints
                 'clickVarianceScore' => 0.6, // Poids pour la variance des clics
+                'subnetScore' => 0.5, // Pénalise les sous-réseaux IP avec une activité suspecte agrégée
             ],
             'thresholds' => ['low' => 20, 'medium' => 45, 'high' => 75, 'block' => 95],
             'patterns' => [
@@ -77,8 +78,9 @@ class SecurityProfiles
                 'botScore' => 1.0,
                 'cookieDroppingScore' => 1.0, // Pénalité maximale
                 'threatIntelScore' => 0.7, // Poids élevé pour les menaces connues (Tor, etc.)
-                'clientHintsInconsistencyScore' => 0.9, // Très forte pénalité en mode strict
-                'clickVarianceScore' => 0.7, // Poids élevé pour la variance des clics
+                'clientHintsInconsistencyScore' => 0.9, // Very high penalty in strict mode
+                'clickVarianceScore' => 0.7, // High weight for click variance
+                'subnetScore' => 0.7, // Poids plus élevé en mode strict
             ],
             'thresholds' => ['low' => 10, 'medium' => 35, 'high' => 65, 'block' => 90],
             'patterns' => [
@@ -117,9 +119,10 @@ class SecurityProfiles
                 'tlsSpoofingScore' => 0.7,
                 'botScore' => 0.5,
                 'cookieDroppingScore' => 0.8, // Important pour les clients API qui doivent maintenir un état
-                'threatIntelScore' => 0.5, // Les API sont souvent ciblées par des IPs malveillantes
-                'clientHintsInconsistencyScore' => 0.6, // Signal pertinent pour les API
-                'clickVarianceScore' => 0.3, // Poids faible car non applicable aux API
+                'threatIntelScore' => 0.5, // APIs are often targeted by malicious IPs
+                'clientHintsInconsistencyScore' => 0.6, // Relevant signal for APIs
+                'clickVarianceScore' => 0.3, // Low weight as not applicable to APIs
+                'subnetScore' => 0.8, // Très important pour les API pour détecter les botnets
             ],
             'thresholds' => ['low' => 25, 'medium' => 50, 'high' => 80, 'block' => 95],
             'patterns' => [
@@ -160,9 +163,10 @@ class SecurityProfiles
                 'tlsSpoofingScore' => 0.6,
                 'botScore' => 0.8,
                 'cookieDroppingScore' => 0.7, // Moins critique, mais toujours un signal
-                'threatIntelScore' => 0.3, // Moins prioritaire pour un blog
+                'threatIntelScore' => 0.3, // Lower priority for a blog
                 'clientHintsInconsistencyScore' => 0.5,
-                'clickVarianceScore' => 0.5, // Poids modéré pour la variance des clics
+                'clickVarianceScore' => 0.5, // Moderate weight for click variance
+                'subnetScore' => 0.4, // Utile contre le spam de commentaires coordonné
             ],
             'thresholds' => ['low' => 25, 'medium' => 55, 'high' => 80, 'block' => 95],
             'patterns' => [
@@ -202,9 +206,10 @@ class SecurityProfiles
                 'tlsSpoofingScore' => 0.9,
                 'botScore' => 1.0,
                 'cookieDroppingScore' => 1.0, // Crucial pour la détection de bots e-commerce
-                'threatIntelScore' => 0.8, // Très important pour l'e-commerce (proxies de scalping)
-                'clientHintsInconsistencyScore' => 0.9, // Très important pour l'e-commerce
-                'clickVarianceScore' => 0.8, // Poids très élevé pour la variance des clics
+                'threatIntelScore' => 0.8, // Very important for e-commerce (scalping proxies)
+                'clientHintsInconsistencyScore' => 0.9, // Very important for e-commerce
+                'clickVarianceScore' => 0.8, // Very high weight for click variance
+                'subnetScore' => 0.9, // Crucial contre les attaques de scalping distribuées
             ],
             'thresholds' => ['low' => 15, 'medium' => 40, 'high' => 70, 'block' => 90],
             'patterns' => [

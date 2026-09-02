@@ -46,7 +46,7 @@
              'weights', 'thresholds', 'cpu', 'ticketMaxAge', 'challengeTtl',
              'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
              'honeypot', 'threatIntel', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger', 'probationaryTtl',
-             'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun', 'clientHintsInconsistencyScore',
+             'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
              'similarityThreshold', 'summary', 'description'
          ];
 
@@ -355,6 +355,9 @@
          // Score d'incohérence des Client-Hints
          $clientHintsInconsistency = RequestUtils::getClientHintsInconsistencyScore($context);
 
+         // NOUVEAU: Score de réputation du sous-réseau IP
+         $subnetScore = RequestUtils::getSubnetScore($context, $deviceId);
+
          // Assemblage du vecteur de suspicion final
          $suspicionVector = array_merge($suspicionVector, [
              'inconsistencyScore' => $inconsistencyScore,
@@ -371,6 +374,7 @@
              'clickVarianceScore' => $clickVariance['clickVarianceScore'],
              'threatIntelScore' => $threatIntel['threatIntelScore'],
              'clientHintsInconsistencyScore' => $clientHintsInconsistency['clientHintsInconsistencyScore'],
+             'subnetScore' => $subnetScore['subnetScore'],
          ]);
  
          // Sauvegarder l'état mis à jour de l'appareil dans le store
@@ -533,6 +537,11 @@
              'finalScore' => round($finalScore, 2),
              'vector' => $suspicionVector
          ]);
+
+         // Mettre à jour les métriques du sous-réseau après le calcul du score final
+         if ($finalScore > ($thresholds['low'] ?? 20)) {
+            RequestUtils::updateSubnetMetrics($context, $deviceId, $finalScore);
+         }
  
          // Logique pour challenger les nouveaux appareils (déplacée ici pour avoir le score final)
          $isNewDevice = $identity['newCookie'] !== null;

@@ -1,9 +1,10 @@
 import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
 import { createHash, createHmac } from 'node:crypto';
-import dns from 'node:dns/promises';
+import * as net from 'node:net'; // Use namespace import for robust access to built-in module functions
 import { solveCpuTargetInline, solveMemory } from '../src/js/pow.solver.js';
 import { readFileSync } from 'node:fs';
 import { FingerprintBuilder, cyrb53 } from '../src/js/fingerprint.builder.js';
+import * as dns from 'node:dns/promises';
 
 // Mock import.meta.env before importing the module that uses it
 vi.mock('import-meta-env', () => ({
@@ -34,7 +35,7 @@ const {
 } = fingerprint;
 const { store, getRequestPatternScore, getDeviceHash } = __internal;
 let { getBehaviorScore, getClickVarianceScore } = __internal;
-// Mock the entire dns/promises module
+// Mock the entire dns module
 vi.mock('node:dns/promises');
 
 describe('Fingerprint & PoW Security Suite', () => {
@@ -1525,8 +1526,8 @@ describe('Fingerprint & PoW Security Suite', () => {
             const googleIp = '66.249.66.1';
             const googleHostname = 'crawl-66-249-66-1.googlebot.com';
 
-            dns.reverse.mockResolvedValue([googleHostname]);
-            dns.resolve.mockResolvedValue([googleIp]);
+            vi.mocked(dns.reverse).mockResolvedValue([googleHostname]);
+            vi.mocked(dns.resolve).mockResolvedValue([googleIp]);
 
             const requestContext = {
                 clientIp: googleIp,
@@ -1535,15 +1536,15 @@ describe('Fingerprint & PoW Security Suite', () => {
 
             const isVerified = await engine._verifyWhitelistedBot(requestContext);
             expect(isVerified).toBe(true);
-            expect(dns.reverse).toHaveBeenCalledWith(googleIp);
-            expect(dns.resolve).toHaveBeenCalledWith(googleHostname);
+            expect(vi.mocked(dns.reverse)).toHaveBeenCalledWith(googleIp);
+            expect(vi.mocked(dns.resolve)).toHaveBeenCalledWith(googleHostname);
         });
 
         test('should reject a fake Googlebot with non-matching IP', async () => {
             const fakeGoogleIp = '1.2.3.4';
             const fakeHostname = 'not-google.com';
 
-            dns.reverse.mockResolvedValue([fakeHostname]);
+            vi.mocked(dns.reverse).mockResolvedValue([fakeHostname]);
 
             const requestContext = {
                 clientIp: fakeGoogleIp,
@@ -1552,16 +1553,16 @@ describe('Fingerprint & PoW Security Suite', () => {
 
             const isVerified = await engine._verifyWhitelistedBot({ ...requestContext, fingerprint: {} }); // Pass fingerprint
             expect(isVerified).toBe(false);
-            expect(dns.reverse).toHaveBeenCalledWith(fakeGoogleIp);
-            expect(dns.resolve).not.toHaveBeenCalled(); // Should fail at reverse lookup
+            expect(vi.mocked(dns.reverse)).toHaveBeenCalledWith(fakeGoogleIp);
+            expect(vi.mocked(dns.resolve)).not.toHaveBeenCalled(); // Should fail at reverse lookup
         });
 
         test('should reject a bot if forward DNS does not match back to original IP', async () => {
             const ip = '66.249.66.1';
             const hostname = 'crawl-66-249-66-1.googlebot.com';
 
-            dns.reverse.mockResolvedValue([hostname]);
-            dns.resolve.mockResolvedValue(['66.249.66.2']); // Different IP
+            vi.mocked(dns.reverse).mockResolvedValue([hostname]);
+            vi.mocked(dns.resolve).mockResolvedValue(['66.249.66.2']); // Different IP
 
             const requestContext = { clientIp: ip, headers: { 'user-agent': 'Googlebot' }, fingerprint: {} };
             const isVerified = await engine._verifyWhitelistedBot(requestContext);
@@ -1574,18 +1575,18 @@ describe('Fingerprint & PoW Security Suite', () => {
             const requestContext = { clientIp: googleIp, headers: { 'user-agent': 'Googlebot' } };
 
             // First call: perform DNS lookups and cache the result
-            dns.reverse.mockResolvedValue([googleHostname]);
-            dns.resolve.mockResolvedValue([googleIp]);
+            vi.mocked(dns.reverse).mockResolvedValue([googleHostname]);
+            vi.mocked(dns.resolve).mockResolvedValue([googleIp]);
             await engine._verifyWhitelistedBot({ ...requestContext, fingerprint: {} });
-            expect(dns.reverse).toHaveBeenCalledTimes(1);
-            expect(dns.resolve).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(dns.reverse)).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(1);
 
             // Second call: should use the cache
             const isVerified = await engine._verifyWhitelistedBot({ ...requestContext, fingerprint: {} });
             expect(isVerified).toBe(true); // Should still be true
             // DNS functions should not be called again
-            expect(dns.reverse).toHaveBeenCalledTimes(1);
-            expect(dns.resolve).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(dns.reverse)).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(1);
         });
 
         test('should handle invalid regex in whitelist rules gracefully', async () => {
@@ -2061,5 +2062,76 @@ describe('getClientHintsInconsistencyScore', () => {
         expect(getClientHintsInconsistencyScore(context1).clientHintsInconsistencyScore).toBe(0);
         expect(getClientHintsInconsistencyScore(context2).clientHintsInconsistencyScore).toBe(0);
         expect(getClientHintsInconsistencyScore(context3).clientHintsInconsistencyScore).toBe(0);
+    });
+});
+
+describe('Subnet Scoring (Node.js)', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        clear() { this._map.clear(); }
+    };
+
+    beforeEach(async () => {
+        inMemoryStore.clear();
+        // La configuration du store est maintenant asynchrone
+        await configureStore(inMemoryStore); // Configure the shared store for each test
+    });
+
+    it('getIpSubnet should correctly calculate subnets', () => {
+        const { getIpSubnet } = __internal;
+        // IPv4
+        expect(getIpSubnet('192.168.1.123', 24)).toBe('192.168.1.0/24');
+        // The new version handles other prefixes
+        expect(getIpSubnet('10.20.30.40', 16)).toBe('10.20.0.0/16');
+        // IPv6
+        expect(getIpSubnet('2001:db8:abcd:0012:0000:0000:0000:0001', 48)).toBe('2001:db8:abcd:0:0:0:0:0/48');
+        // The new version handles other prefixes
+        expect(getIpSubnet('2a01:e0a:129:57c0:a1b2:c3d4:e5f6:a7b8', 64)).toBe('2a01:e0a:129:0:0:0:0:0/48');
+        // Invalid IPs
+        expect(getIpSubnet('not-an-ip')).toBeNull();
+    });
+
+    it('updateSubnetMetrics should create and update subnet data in the store', async () => {
+        const context = { clientIp: '10.0.0.25' };
+        await __internal.updateSubnetMetrics(context, 'device-1', 50);
+
+        const subnetData = await inMemoryStore.get('subnet:10.0.0.0/24');
+        expect(subnetData).toBeDefined();
+        expect(subnetData.highScoreCount).toBe(1);
+        expect(subnetData.deviceIds).toEqual(['device-1']);
+
+        // Second update
+        await __internal.updateSubnetMetrics(context, 'device-2', 60);
+        const updatedSubnetData = await inMemoryStore.get('subnet:10.0.0.0/24');
+        expect(updatedSubnetData.highScoreCount).toBe(2);
+        expect(updatedSubnetData.deviceIds).toEqual(['device-1', 'device-2']);
+    });
+
+    it('getSubnetScore should calculate score based on stored metrics', async () => {
+        const context = { clientIp: '10.0.0.25' };
+
+        // 1. No data, score should be 0
+        let { subnetScore } = await __internal.getSubnetScore(context, 'device-1');
+        expect(subnetScore).toBe(0);
+
+        // 2. Some high scores, few devices. The subnet is calculated from the context.
+        // The key is hardcoded here to match what the implementation would store.
+        await inMemoryStore.set('subnet:10.0.0.0/24', {
+            highScoreCount: 5, // score += 5 * 2 = 10
+            deviceIds: ['d1', 'd2'], // count < 10, score += 0
+        });
+        ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
+        expect(subnetScore).toBe(10);
+
+        // 3. Many devices and high scores
+        const deviceIds = Array.from({ length: 20 }, (_, i) => `d${i}`);
+        await inMemoryStore.set('subnet:10.0.0.0/24', {
+            highScoreCount: 30, // score += min(40, 30 * 2) = 40
+            deviceIds: deviceIds, // count = 20. score += (20-10)*5 = 50
+        });
+        ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
+        expect(subnetScore).toBe(90); // 40 + 50
     });
 });

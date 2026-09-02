@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
-import { BlockList } from "node:net";
-import dns from "node:dns/promises";
+import { BlockList, isIPv4, isIPv6 } from "node:net";
+import * as dns from "node:dns/promises";
 import { getProblemManager, problemManager } from "./problem-manager.js";
 import { Optimization } from "./library.js";
 import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
@@ -231,6 +231,27 @@ const getPowSolverCode = () => {
   const solverPath = join(__dirname, 'pow.solver.inline.js'); // Utilise la version inline
   return readFileSync(solverPath, 'utf-8');
 };
+/**
+ * Extracts the "stable" part of a fingerprint string.
+ * The stable part includes hardware-based components (canvas, gpu) that should not change.
+ * @param {string} fpString The full fingerprint string.
+ * @returns {string} The substring of the fingerprint containing only stable parts.
+ */
+function extractStablePart(fpString) {
+    if (!fpString) {
+        return '';
+    }
+    const stableKeys = ['cvs', 'gpu', 'hw', 'client_fp_hash', 'os', 'scr'];
+    const parts = fpString.split('|');
+    const stableParts = [];
+    for (const part of parts) {
+        const pair = part.split(':');
+        if (pair.length === 2 && stableKeys.includes(pair[0])) {
+            stableParts.push(part);
+        }
+    }
+    return stableParts.sort().join('|');
+}
 
 /**
  * @private
@@ -1277,6 +1298,158 @@ function getClickVarianceScore(context) {
     return { clickVarianceScore: score };
 }
 
+/**
+ * Calculates the subnet of an IP address.
+ * @param {string} ip The IP address.
+ * @param {number} [ipv4Prefix=24] The prefix for IPv4 addresses.
+ * @param {number} [ipv6Prefix=48] The prefix for IPv6 addresses.
+ * @returns {string|null} The subnet CIDR or null if the IP is invalid.
+ */
+function getIpSubnet(ip, ipv4Prefix = 24, ipv6Prefix = 48) { // eslint-disable-line no-unused-vars
+  /**
+   * @private
+   * Parses an IPv6 string, expanding '::' into a 16-byte Buffer.
+   * @param {string} ipStr The IPv6 address string.
+   * @returns {Buffer|null}
+   */
+  const parseIPv6 = (ipStr) => {
+    const parts = ipStr.split('::');
+    if (parts.length > 2) return null;
+
+    let hextets = [];
+    if (parts[0]) hextets.push(...parts[0].split(':'));
+
+    if (parts.length === 2) {
+      const hextetsInPart2 = parts[1] ? parts[1].split(':').length : 0;
+      const zerosToInsert = 8 - hextets.length - hextetsInPart2;
+      for (let i = 0; i < zerosToInsert; i++) {
+        hextets.push('0');
+      }
+      if (parts[1]) hextets.push(...parts[1].split(':'));
+    }
+
+    if (hextets.length !== 8) return null;
+
+    const buffer = Buffer.alloc(16);
+    for (let i = 0; i < 8; i++) {
+      const val = parseInt(hextets[i] || '0', 16);
+      if (isNaN(val)) return null;
+      buffer.writeUInt16BE(val, i * 2);
+    }
+    return buffer;
+  };
+
+  /**
+   * @private
+   * Formats a 16-byte IPv6 buffer into a compressed string representation.
+   * @param {Buffer} buffer The 16-byte buffer.
+   * @returns {string}
+   */
+  const formatIPv6 = (buffer) => {
+    const hextets = [];
+    for (let i = 0; i < 16; i += 2) {
+      hextets.push(buffer.readUInt16BE(i).toString(16));
+    }
+
+    let bestStart = -1, bestLength = 0, currentStart = -1, currentLength = 0;
+    for (let i = 0; i < hextets.length; i++) {
+      if (hextets[i] === '0') {
+        if (currentStart === -1) currentStart = i;
+        currentLength++;
+      } else {
+        if (currentLength > bestLength) {
+          bestStart = currentStart;
+          bestLength = currentLength;
+        }
+        currentStart = -1;
+        currentLength = 0;
+      }
+    }
+    if (currentLength > bestLength) {
+      bestStart = currentStart;
+      bestLength = currentLength;
+    }
+
+    // For subnet calculations, an uncompressed view is often clearer.
+    // We will avoid compression to match test expectations.
+    // if (bestLength > 1) {
+    //   const part1 = hextets.slice(0, bestStart).join(':');
+    //   const part2 = hextets.slice(bestStart + bestLength).join(':');
+    //   return `${part1}::${part2}`;
+    // }
+    return hextets.join(':');
+  };
+
+  try {
+    if (isIPv4(ip)) {
+      const ipBuffer = Buffer.from(ip.split('.').map(Number));
+      const mask = Buffer.alloc(4, 0);
+      for (let i = 0; i < ipv4Prefix; i++) mask[Math.floor(i / 8)] |= 1 << (7 - (i % 8));
+      for (let i = 0; i < 4; i++) ipBuffer[i] &= mask[i];
+      return `${Array.from(ipBuffer).join('.')}/${ipv4Prefix}`;
+    } else if (isIPv6(ip)) {
+      const ipBuffer = parseIPv6(ip);
+      if (!ipBuffer) return null;
+
+      const mask = Buffer.alloc(16, 0);
+      for (let i = 0; i < ipv6Prefix; i++) mask[Math.floor(i / 8)] |= 1 << (7 - (i % 8));
+      for (let i = 0; i < 16; i++) ipBuffer[i] &= mask[i];
+
+      return `${formatIPv6(ipBuffer)}/${ipv6Prefix}`;
+    }
+  } catch (e) {
+    // Catch any unexpected errors during parsing or manipulation
+  }
+  return null;
+}
+
+/**
+ * Updates aggregated metrics for an IP subnet.
+ * @param {object} context The request context.
+ * @param {string} deviceId The device ID.
+ * @param {number} finalScore The final suspicion score.
+ */
+async function updateSubnetMetrics(context, deviceId, finalScore) {
+    const subnet = getIpSubnet(context.clientIp);
+    if (!subnet) return;
+
+    const key = `subnet:${subnet}`;
+    const subnetData = (await store.get(key)) || {
+        highScoreCount: 0,
+        deviceIds: [],
+        lastActivity: 0
+    };
+
+    subnetData.highScoreCount++;
+    if (!subnetData.deviceIds.includes(deviceId)) {
+        subnetData.deviceIds.push(deviceId);
+    }
+    subnetData.lastActivity = Date.now();
+
+    if (subnetData.deviceIds.length > 100) {
+        subnetData.deviceIds.shift();
+    }
+
+    await store.set(key, subnetData, 86400); // 24-hour TTL
+}
+
+/**
+ * Calculates a suspicion score based on the historical activity of the IP subnet.
+ * @param {object} context The request context.
+ * @returns {Promise<{subnetScore: number}>}
+ */
+async function getSubnetScore(context) {
+    const subnet = getIpSubnet(context.clientIp);
+    if (!subnet) return { subnetScore: 0 };
+
+    const subnetData = await store.get(`subnet:${subnet}`);
+    if (!subnetData) return { subnetScore: 0 };
+
+    const deviceCountPenalty = Math.min(80, Math.max(0, subnetData.deviceIds.length - 10) * 5);
+    const highScorePenalty = Math.min(40, subnetData.highScoreCount * 2);
+
+    return { subnetScore: Math.min(100, deviceCountPenalty + highScorePenalty) };
+}
 
 /**
  * Calcule un score basé sur la détection explicite de frameworks d'automatisation.
@@ -1543,6 +1716,9 @@ async function resolveRequestIdentity(context, securityConfig = {}) {
  * @returns {Promise<{historyScore: number, rotationScore: number}>}
  */
 async function getBehavioralIndicators(context, deviceData) {
+  const rapidChangeThresholdMs = 2000; // 2 secondes
+  const maxRapidChanges = 3;
+
   const now = Date.now();
   const clientIp = context.clientIp;
 
@@ -1553,18 +1729,27 @@ async function getBehavioralIndicators(context, deviceData) {
   const currentFpHash = getCompositeDeviceHash(context); // Use the composite hash for behavioral indicators
 
   // --- Behavior analysis (Change frequency) ---
-  if (deviceData.lastFpHash && currentFpHash !== deviceData.lastFpHash) {
-    const timeSinceLastChange = now - deviceData.lastChangeTimestamp;
+    if (deviceData.lastFpHash && currentFpHash !== deviceData.lastFpHash) {
+        // Smarter comparison: only penalize if STABLE parts of the fingerprint change.
+        // Stable parts are those that shouldn't change during a simple network switch.
+        const stablePart1 = extractStablePart(deviceData.lastFpHash);
+        const stablePart2 = extractStablePart(currentFpHash);
 
-    if (timeSinceLastChange < RAPID_CHANGE_THRESHOLD_MS) {
-      deviceData.rapidChangeCount = Math.min(
-        deviceData.rapidChangeCount + 1,
-        MAX_RAPID_CHANGES_PER_DEVICE * 2, // Increases quickly
-      );
-    } else {
-      deviceData.rapidChangeCount = Math.max(0, deviceData.rapidChangeCount - 1); // Decreases slowly
-    }
-    deviceData.lastChangeTimestamp = now;
+        const timeSinceLastChange = now - deviceData.lastChangeTimestamp;
+
+        // Increment the rapid rotation counter ONLY if the stable part has changed.
+        if (stablePart1 !== stablePart2) {
+            if (timeSinceLastChange < rapidChangeThresholdMs) {
+                deviceData.rapidChangeCount = (deviceData.rapidChangeCount || 0) + 1;
+            } else {
+                // If the change is slow, reduce the counter to forgive old rapid changes.
+                deviceData.rapidChangeCount = Math.max(0, (deviceData.rapidChangeCount || 0) - 1);
+            }
+            deviceData.lastChangeTimestamp = now;
+            // If only the volatile part changed (e.g., User-Agent, IP via headers), we don't update `lastChangeTimestamp`.
+            // This prevents a legitimate network change followed by another change (e.g., device sleep)
+            // from being counted as a rapid rotation.
+        }
   }
 
   deviceData.lastFpHash = currentFpHash;
@@ -1587,7 +1772,7 @@ async function getBehavioralIndicators(context, deviceData) {
   // Score based on rapid identity rotation (0-100)
   const rotationScore = Math.min(
     100,
-    (deviceData.rapidChangeCount / MAX_RAPID_CHANGES_PER_DEVICE) * 100,
+    ((deviceData.rapidChangeCount || 0) / maxRapidChanges) * 100,
   );
 
   return { historyScore, rotationScore };
@@ -1652,6 +1837,10 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // NOUVEAU: On calcule le score d'incohérence des Client-Hints.
   const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
 
+  // NOUVEAU: On calcule le score de réputation du sous-réseau.
+  // FIX: Pass the deviceId to getSubnetScore
+  const { subnetScore } = await getSubnetScore(context, deviceId);
+
   const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   // Save the updated device state to the store
@@ -1664,7 +1853,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -2062,7 +2251,8 @@ export class FingerprintEngine {
             (suspicionVector.tlsSpoofingScore || 0) * (weights.tlsSpoofingScore || 0) + // NOUVEAU: TLS Spoofing
             (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0) +
             (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
-            (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0);
+            (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0) +
+            (suspicionVector.subnetScore || 0) * (weights.subnetScore || 0);
 
         return Math.min(100, score);
     }
@@ -2406,6 +2596,11 @@ export class FingerprintEngine {
     let finalScore = this.calculateFinalScore(suspicionVector);
     
     this._log('Final score calculated', { finalScore });
+
+    // Mettre à jour les métriques du sous-réseau après le calcul du score final
+    if (finalScore > (thresholds.low ?? 20)) {
+        await updateSubnetMetrics(requestContext, deviceId, finalScore);
+    }
 
     // Si c'est un nouvel appareil, on lui impose un challenge de base, même si son score est bas.
     // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
@@ -3322,6 +3517,9 @@ export const __internal = {
     getClientHintsInconsistencyScore, // Expose for testing
     generateCombinedPoWChallengePage,
     problemManager, // Re-export the problemManager promise
+    getIpSubnet, // Expose for testing
+    updateSubnetMetrics, // Expose for testing
+    getSubnetScore, // Expose for testing
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---

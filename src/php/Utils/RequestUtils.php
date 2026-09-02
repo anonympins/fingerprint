@@ -6,6 +6,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Utils;
 
 use Anonympins\Fingerprint\FingerprintBuilder;
+use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\Optimization\Optimization;
 use Anonympins\Fingerprint\RequestContext;
 
@@ -490,17 +491,36 @@ class RequestUtils
         $rapidChangeThresholdMs = 2000; // 2 secondes
         $maxRapidChanges = 3;
 
-        if (isset($deviceData['lastFpHash']) && $currentFpHash !== $deviceData['lastFpHash']) {
+        $lastFpHash = $deviceData['lastFpHash'] ?? null;
+
+        if ($lastFpHash && $currentFpHash !== $lastFpHash) {
+            // Comparaison plus intelligente : ne pénaliser que si les parties STABLES de l'empreinte changent.
+            // Les parties stables sont celles qui ne devraient pas changer lors d'un simple changement de réseau.
+            $stablePart1 = self::extractStablePart($lastFpHash);
+            $stablePart2 = self::extractStablePart($currentFpHash);
+
             $timeSinceLastChange = $now - ($deviceData['lastChangeTimestamp'] ?? 0);
-            if ($timeSinceLastChange < $rapidChangeThresholdMs) {
-                $deviceData['rapidChangeCount'] = ($deviceData['rapidChangeCount'] ?? 0) + 1;
-            } else {
-                $deviceData['rapidChangeCount'] = max(0, ($deviceData['rapidChangeCount'] ?? 0) - 1);
+
+            // On incrémente le compteur de rotation rapide SEULEMENT si la partie stable a changé.
+            if ($stablePart1 !== $stablePart2) {
+                if ($timeSinceLastChange < $rapidChangeThresholdMs) {
+                    $deviceData['rapidChangeCount'] = ($deviceData['rapidChangeCount'] ?? 0) + 1;
+                } else {
+                    // Si le changement est lent, on réduit le compteur pour pardonner les anciens changements rapides.
+                    $deviceData['rapidChangeCount'] = max(0, ($deviceData['rapidChangeCount'] ?? 0) - 1);
+                }
+                $deviceData['lastChangeTimestamp'] = $now;
             }
+            // Si seule la partie volatile a changé (ex: User-Agent, IP via en-têtes), on ne met pas à jour le `lastChangeTimestamp`.
+            // Cela évite qu'un changement de réseau légitime soit suivi d'un autre changement (ex: mise en veille)
+            // et soit compté comme une rotation rapide.
+
+        } else if ($lastFpHash === null) {
+            // Première visite, on initialise le timestamp.
             $deviceData['lastChangeTimestamp'] = $now;
         }
         $deviceData['lastFpHash'] = $currentFpHash;
-
+        
         // Enregistrement de l'IP
         if (!in_array($clientIp, $deviceData['ips'])) {
             $deviceData['ips'][] = $clientIp;
@@ -514,6 +534,27 @@ class RequestUtils
         $rotationScore = min(100.0, (($deviceData['rapidChangeCount'] ?? 0) / $maxRapidChanges) * 100);
 
         return ['historyScore' => $historyScore, 'rotationScore' => $rotationScore];
+    }
+
+    /**
+     * Extrait la partie "stable" d'une chaîne d'empreinte.
+     * La partie stable inclut les composants matériels (canvas, gpu) qui ne devraient pas changer.
+     * @param string $fpString La chaîne d'empreinte complète.
+     * @return string La sous-chaîne de l'empreinte contenant uniquement les parties stables.
+     */
+    private static function extractStablePart(string $fpString): string
+    {
+        $stableKeys = ['cvs', 'gpu', 'hw', 'client_fp_hash', 'os', 'scr'];
+        $parts = explode('|', $fpString);
+        $stableParts = [];
+        foreach ($parts as $part) {
+            $pair = explode(':', $part, 2);
+            if (count($pair) === 2 && in_array($pair[0], $stableKeys, true)) {
+                $stableParts[] = $part;
+            }
+        }
+        sort($stableParts);
+        return implode('|', $stableParts);
     }
 
     /**
@@ -767,5 +808,124 @@ class RequestUtils
         if ($requestHost !== $hostPattern) return false;
 
         return self::pathMatches($requestPath, $pathPattern);
+    }
+
+    /**
+     * Génère un masque de sous-réseau binaire pour une longueur de préfixe donnée.
+     *
+     * @param int $prefix La longueur du préfixe (ex: 24 pour IPv4, 48 pour IPv6).
+     * @param int $totalBytes Le nombre total d'octets pour le masque (4 pour IPv4, 16 pour IPv6).
+     * @return string|null Le masque binaire ou null si le préfixe est invalide.
+     */
+    private static function generateMask(int $prefix, int $totalBytes): ?string
+    {
+        if ($prefix < 0 || $prefix > $totalBytes * 8) {
+            return null; // Préfixe invalide
+        }
+        $mask = str_repeat(chr(255), (int)floor($prefix / 8));
+        if ($prefix % 8 !== 0) {
+            $mask .= chr((255 << (8 - $prefix % 8)) & 255);
+        }
+        return str_pad($mask, $totalBytes, chr(0));
+    }
+
+    /**
+     * Calcule le sous-réseau d'une adresse IP.
+     * @param string $ip L'adresse IP.
+     * @param int $ipv4Prefix Le préfixe pour les adresses IPv4 (défaut /24).
+     * @param int $ipv6Prefix Le préfixe pour les adresses IPv6 (défaut /48).
+     * @return string|null Le sous-réseau CIDR ou null si l'IP est invalide.
+     */
+    public static function getIpSubnet(string $ip, int $ipv4Prefix = 24, int $ipv6Prefix = 48): ?string
+    {
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $ipBinary = inet_pton($ip);
+            if ($ipBinary === false) return null;
+            
+            $mask = self::generateMask($ipv4Prefix, 4);
+            if ($mask === null) return null;
+
+            $networkBinary = $ipBinary & $mask;
+            return inet_ntop($networkBinary) . '/' . $ipv4Prefix;
+        } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            $ipBinary = inet_pton($ip);
+            if ($ipBinary === false) return null;
+            
+            $mask = self::generateMask($ipv6Prefix, 16);
+            if ($mask === null) return null;
+
+            $networkBinary = $ipBinary & $mask;
+            return inet_ntop($networkBinary) . '/' . $ipv6Prefix; // FIX: Use the provided ipv6Prefix
+        }
+        return null;
+    }
+
+    /**
+     * Met à jour les métriques agrégées pour un sous-réseau IP.
+     * @param RequestContext $context
+     * @param string $deviceId
+     * @param float $finalScore
+     */
+    public static function updateSubnetMetrics(RequestContext $context, string $deviceId, float $finalScore): void
+    {
+        $subnet = self::getIpSubnet($context->clientIp);
+        if ($subnet === null) return;
+
+        $store = StoreManager::getStore();
+        $key = "subnet:{$subnet}";
+        $subnetData = $store->get($key) ?? [
+            'highScoreCount' => 0,
+            'deviceIds' => [],
+            'lastActivity' => 0
+        ];
+
+        $subnetData['highScoreCount']++;
+        if (!in_array($deviceId, $subnetData['deviceIds'])) {
+            $subnetData['deviceIds'][] = $deviceId;
+        }
+        $subnetData['lastActivity'] = time();
+
+        // Limiter la taille du tableau des deviceIds pour éviter une consommation mémoire excessive.
+        if (count($subnetData['deviceIds']) > 100) {
+            array_shift($subnetData['deviceIds']);
+        }
+
+        // TTL de 24 heures pour les données de sous-réseau.
+        $store->set($key, $subnetData, 86400);
+    }
+
+    /**
+     * Calcule un score de suspicion basé sur l'activité historique du sous-réseau IP.
+     * @param RequestContext $context
+     * @param string $currentDeviceId
+     * @return array{'subnetScore': float}
+     */
+    public static function getSubnetScore(RequestContext $context, string $currentDeviceId): array
+    {
+        $subnet = self::getIpSubnet($context->clientIp);
+        if ($subnet === null) {
+            return ['subnetScore' => 0.0];
+        }
+
+        $store = StoreManager::getStore();
+        $key = "subnet:{$subnet}";
+        $subnetData = $store->get($key);
+
+        if ($subnetData === null) {
+            return ['subnetScore' => 0.0];
+        }
+
+        $score = 0.0;
+
+        // Pénalité basée sur le nombre de devices uniques vus depuis ce sous-réseau.
+        $deviceCount = count($subnetData['deviceIds']);
+        if ($deviceCount > 10) {
+            $score += min(80.0, ($deviceCount - 10) * 5);
+        }
+
+        // Pénalité basée sur le nombre de scores élevés enregistrés.
+        $score += min(40.0, $subnetData['highScoreCount'] * 2);
+
+        return ['subnetScore' => min(100.0, $score)];
     }
 }
