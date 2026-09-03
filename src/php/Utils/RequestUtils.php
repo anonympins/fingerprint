@@ -631,6 +631,25 @@ class RequestUtils
             }
         }
 
+        // Détection d'énumération de chemins (crawling/scraping de ressources séquentielles)
+        $enumerationScore = 0;
+        if (count($history) >= 3) {
+            $templates = array_map(function($h) {
+                return preg_replace('/\d+/', '{num}', $h['path']);
+            }, $history);
+
+            $uniquePaths = array_unique(array_map(function($h) {
+                return $h['path'];
+            }, $history));
+
+            $templateCounts = array_count_values($templates);
+            $maxTemplateRepetition = !empty($templateCounts) ? max($templateCounts) : 0;
+
+            if ($maxTemplateRepetition >= 3 && count($uniquePaths) === count($history)) {
+                $enumerationScore = $patternWeight * 0.8;
+            }
+        }
+
         // Logique de décroissance et de score final
         $newPatternScore = $deviceData['lastPatternScore'] ?? 0;
 
@@ -641,7 +660,7 @@ class RequestUtils
         }
         $newPatternScore = max(0, $newPatternScore);
 
-        $deviceData['lastPatternScore'] = $newPatternScore + $instantScore;
+        $deviceData['lastPatternScore'] = $newPatternScore + $instantScore + $enumerationScore;
 
         return ['requestPatternScore' => min(100.0, $deviceData['lastPatternScore'])];
     }

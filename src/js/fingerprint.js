@@ -1778,6 +1778,22 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         }
     }
 
+    // Détection d'énumération de chemins (crawling/scraping de ressources séquentielles)
+    let enumerationScore = 0;
+    if (history.length >= 3) {
+        const templates = history.map(h => h.path.replace(/\d+/g, '{num}'));
+        const uniquePaths = new Set(history.map(h => h.path));
+
+        const templateCounts = {};
+        templates.forEach(t => templateCounts[t] = (templateCounts[t] || 0) + 1);
+
+        const maxTemplateRepetition = Math.max(...Object.values(templateCounts), 0);
+        // Si une même structure de route est répétée mais sur des URLs réelles différentes
+        if (maxTemplateRepetition >= 3 && uniquePaths.size === history.length) {
+            enumerationScore = patternWeight * 0.8; // Appliquer une forte pénalité
+        }
+    }
+
     // Garder l'historique à une taille raisonnable
     if (history.length > historySize) {
         history.shift();
@@ -1796,7 +1812,7 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     }
     newPatternScore = Math.max(0, newPatternScore);
 
-    deviceData.lastPatternScore = newPatternScore + instantScore;
+    deviceData.lastPatternScore = newPatternScore + instantScore + enumerationScore;
 
     return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
 }
