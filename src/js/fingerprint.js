@@ -3773,6 +3773,7 @@ export const __internal = {
     getTimeInconsistencyScore,
     getClickVarianceScore, // NOUVEAU: Expose pour les tests
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
+    sanitizeTrafficData, // NOUVEAU: Expose pour l'auto-tuner/tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     parseJa3,
     generateCpuTargetChallengePage,
@@ -3792,22 +3793,45 @@ let autoTuningJobId = null;
 let lastBestSolution = null; // NOUVEAU: Stocke la meilleure solution trouvée
 
 /**
+ * Assainit les données de trafic pour l'auto-tuner afin de prévenir les attaques par empoisonnement.
+ * Limite la contribution de chaque deviceId à un pourcentage maximum (ex: 2%) du jeu de données total.
+ * @export
+ * @param {Array<object>} trafficData
+ * @returns {Array<object>}
+ */
+export function sanitizeTrafficData(trafficData) {
+  if (!trafficData || trafficData.length === 0) {
+    return [];
+  }
+  const sanitizedData = [];
+  const deviceCounts = new Map();
+  const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
+
+  for (const log of trafficData) {
+    const devId = log.deviceId || 'anonymous';
+    const currentCount = deviceCounts.get(devId) || 0;
+    if (currentCount < maxLogsPerDevice) {
+      deviceCounts.set(devId, currentCount + 1);
+      sanitizedData.push(log);
+    }
+  }
+  return sanitizedData;
+}
+
+/**
  * Executes a threshold optimization pass using collected traffic data.
  * @private
- * @param {object} securityConfig - The security configuration object to update.
- * @param {Array<object>} trafficData - The array containing traffic logs.
- * @param {number} minDataPoints - The minimum number of data points required to start optimization.
- * @param {number} maxDataPoints - The maximum number of data points to keep after an optimization cycle.
- * @param {string} [savePath] - Optional path to save the best configuration to a file.
  */
 function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath) {
-  const highConfidenceLogs = trafficData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
-  const highConfidenceRatio = trafficData.length > 0 ? highConfidenceLogs / trafficData.length : 0;
+  const sanitizedData = sanitizeTrafficData(trafficData);
+
+  const highConfidenceLogs = sanitizedData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
+  const highConfidenceRatio = sanitizedData.length > 0 ? highConfidenceLogs / sanitizedData.length : 0;
   const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
 
-  if (trafficData.length < minDataPoints || highConfidenceRatio < MIN_CONFIDENCE_RATIO) {
-    if (trafficData.length < minDataPoints) {
-    console.log(`[AutoTuning] Reporté : ${trafficData.length}/${minDataPoints} points de données.`);
+  if (sanitizedData.length < minDataPoints || highConfidenceRatio < MIN_CONFIDENCE_RATIO) {
+    if (sanitizedData.length < minDataPoints) {
+    console.log(`[AutoTuning] Reporté : ${sanitizedData.length}/${minDataPoints} points de données.`);
     } else {
       console.log(`[AutoTuning] Reporté : Ratio de confiance insuffisant (${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}%).`);
     }
@@ -3819,9 +3843,9 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     trafficData.splice(0, trafficData.length - maxDataPoints);
   }
 
-  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${trafficData.length} points de données.`);
+  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${sanitizedData.length} points de données assainis.`);
 
-  const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData });
+  const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData: sanitizedData });
 
   if (!paretoFront || paretoFront.length === 0) {
     console.warn("[AutoTuning] L'optimisation n'a retourné aucune solution.");

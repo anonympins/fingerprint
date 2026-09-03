@@ -78,4 +78,24 @@ class RequestUtilsTest extends TestCase
         $result = RequestUtils::getClickVarianceScore($context);
         $this->assertEquals(0.0, $result['clickVarianceScore']);
     }
+
+    public function testSanitizeTrafficDataFiltersSybilAttacks(): void
+    {
+        $trafficData = [];
+        // Ajout de 100 logs provenant d'un attaquant (Sybil)
+        for ($i = 0; $i < 100; $i++) {
+            $trafficData[] = ['deviceId' => 'attacker_device', 'type' => 'trap_triggered'];
+        }
+        // Ajout de 10 logs d'utilisateurs légitimes distincts
+        for ($i = 0; $i < 10; $i++) {
+            $trafficData[] = ['deviceId' => "legit_device_{$i}", 'type' => 'challenge_solved'];
+        }
+
+        $sanitized = RequestUtils::sanitizeTrafficData($trafficData);
+
+        $attackerLogs = array_filter($sanitized, fn($log) => $log['deviceId'] === 'attacker_device');
+
+        // Total de 110 logs. 2% de 110 est 2.2 -> max(3, 2) = 3 logs maximum autorisés pour l'attaquant.
+        $this->assertLessThanOrEqual(3, count($attackerLogs));
+    }
 }

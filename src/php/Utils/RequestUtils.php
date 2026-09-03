@@ -989,4 +989,35 @@ class RequestUtils
         $newScore = min(100.0, max(0.0, $current + $change));
         $store->set($key, ['score' => $newScore, 'lastUpdate' => time()], 86400 * 7); // TTL de 7 jours
     }
+
+
+    /**
+     * Assainit les données de trafic pour l'auto-tuner afin de prévenir les attaques par empoisonnement.
+     * Limite la contribution de chaque deviceId à un pourcentage maximum (ex: 2%) du jeu de données total.
+     *
+     * @param array<int, array<string, mixed>> $trafficData
+     * @return array<int, array<string, mixed>>
+     */
+    public static function sanitizeTrafficData(array $trafficData): array
+    {
+        if (empty($trafficData)) {
+            return [];
+        }
+
+        $sanitized = [];
+        $deviceCounts = [];
+        $maxLogsPerDevice = max(3, (int)floor(count($trafficData) * 0.02));
+
+        foreach ($trafficData as $log) {
+            $deviceId = $log['deviceId'] ?? 'anonymous';
+            if (!isset($deviceCounts[$deviceId])) {
+                $deviceCounts[$deviceId] = 0;
+            }
+            if ($deviceCounts[$deviceId] < $maxLogsPerDevice) {
+                $deviceCounts[$deviceId]++;
+                $sanitized[] = $log;
+            }
+        }
+        return $sanitized;
+    }
 }
