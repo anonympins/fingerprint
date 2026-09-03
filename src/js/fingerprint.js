@@ -2924,7 +2924,26 @@ export class FingerprintEngine {
         });
 
         let isValid = false;
-        const challengeContext = await store.get(`secret:${pow_nonce}`);
+            let challengeContext = await store.get(`secret:${pow_nonce}`);
+
+            // SECURITY: Verify that the retrieved context has not been tampered with
+            if (challengeContext && challengeContext.signature) {
+                const payloadToSign = `${challengeContext.clientSecret}:${challengeContext.cpuTarget}:${challengeContext.fingerprint}:${challengeContext.memDifficulty}:${challengeContext.originalPath}:${clientIp}`;
+                const expectedSignature = crypto.createHmac("sha256", getPowSecret()).update(payloadToSign).digest("hex");
+                try {
+                    const isSignatureValid = crypto.timingSafeEqual(
+                        Buffer.from(challengeContext.signature, 'hex'),
+                        Buffer.from(expectedSignature, 'hex')
+                    );
+                    if (!isSignatureValid) {
+                        this._log('Challenge context signature invalid - storage tampering detected!', { nonce: pow_nonce });
+                        challengeContext = null; // Invalidate context immediately
+                    }
+                } catch (e) {
+                    this._log('Error validating challenge context signature:', e);
+                    challengeContext = null;
+                }
+            }
         let ticket = null;
         // Déclarer optimalTtl ici avec une valeur par défaut
         let optimalTtl = this.securityConfig.ticketMaxAge || 3600000;
@@ -3267,6 +3286,11 @@ export class FingerprintEngine {
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
             const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint);
+
+            // SECURITY: Cryptographically sign the payload before storing it to prevent database tampering
+            const payloadToSign = `${clientSecret}:${cpuChallengeDetails.target}:${originalFingerprint}:${memDifficulty}:${path}:${clientIp}`;
+            const signature = crypto.createHmac("sha256", getPowSecret()).update(payloadToSign).digest("hex");
+
             await store.set(`secret:${nonce}`, {
                 clientSecret,
                 cpuTarget: cpuChallengeDetails.target,
@@ -3275,6 +3299,7 @@ export class FingerprintEngine {
                 memDifficulty: memDifficulty,
                 baseBlock: baseBlock, // *** NOUVEAU: Le bloc de base est stocké pour la vérification ***
                 originalPath: path, // *** FIX: Store the original path ***
+                signature, // *** NOUVEAU: Cryptographic signature to prevent storage tampering ***
             }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
 
             // Associate the current challenge nonce with the device for trap URL verification later.

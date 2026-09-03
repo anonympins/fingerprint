@@ -1020,4 +1020,47 @@ class RequestUtils
         }
         return $sanitized;
     }
+
+    /**
+     * Génère une signature HMAC-SHA256 pour sécuriser les données du challenge stockées.
+     * @param string $secret Le secret global (POW_SECRET).
+     * @param array<string, mixed> $payload Les données du challenge.
+     * @param string $clientIp L'IP du client pour lier la signature.
+     * @return string
+     */
+    public static function signChallengePayload(string $secret, array $payload, string $clientIp): string
+    {
+        $dataToSign = implode(':', [
+            $payload['clientSecret'] ?? '',
+            $payload['cpuTarget'] ?? '',
+            $payload['fingerprint'] ?? '',
+            $payload['memDifficulty'] ?? '',
+            $payload['originalPath'] ?? '',
+            $clientIp
+        ]);
+
+        return hash_hmac('sha256', $dataToSign, $secret);
+    }
+
+    /**
+     * Vérifie la signature HMAC-SHA256 des données de challenge récupérées du store.
+     * @param string $secret Le secret global (POW_SECRET).
+     * @param array<string, mixed> $payload Les données du challenge contenant la signature.
+     * @param string $clientIp L'IP du client.
+     * @return bool True si la signature est valide, false sinon.
+     */
+    public static function verifyChallengePayload(string $secret, array $payload, string $clientIp): bool
+    {
+        if (empty($payload['signature'])) {
+            return false;
+        }
+
+        $storedSignature = $payload['signature'];
+        $payloadWithoutSig = $payload;
+        unset($payloadWithoutSig['signature']);
+
+        $expectedSignature = self::signChallengePayload($secret, $payloadWithoutSig, $clientIp);
+
+        return hash_equals($expectedSignature, $storedSignature);
+    }
 }

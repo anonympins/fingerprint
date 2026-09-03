@@ -285,3 +285,87 @@ describe('FingerprintEngine GraphQL Support', () => {
         expect(decision.vector.type).toBe('graphql_operation_allowlist');
     });
 });
+
+
+describe("Node.js Storage Security & Signature Verification", () => {
+    test("Should reject challenge and apply max penalty when context storage is tampered with", async () => {
+        // 1. Initialiser un store en mémoire simulé pour le test
+        const mockStore = {
+            _data: {},
+            async get(key) { return this._data[key]; },
+            async set(key, val) { this._data[key] = val; },
+            async has(key) { return !!this._data[key]; },
+            async delete(key) { delete this._data[key]; }
+        };
+        fingerprint.configureStore(mockStore);
+
+        // Configuration de test
+        const securityConfig = {
+            weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8, honeypotScore: 1.0 },
+            thresholds: { low: 20, medium: 45, high: 75, block: 95 },
+            challengeTtl: 300,
+            verbose: false
+        };
+        process.env.POW_SECRET = "super-secret-key-32-characters-long-for-test";
+
+        const engine = new fingerprint.FingerprintEngine(securityConfig);
+        const clientIp = "203.0.113.88";
+
+        // 2. Simuler une requête suspecte (pas de User-Agent) pour forcer un challenge
+        const requestContext = {
+            clientIp,
+            path: "/login",
+            headers: {}, // Provoque l'anomalie d'en-tête
+            query: {},
+            cookies: {}
+        };
+
+        const decision = await engine.processRequest(requestContext);
+        assert.strictEqual(decision.action, "challenge", "L'IP suspecte doit obtenir un challenge.");
+
+        // Récupérer le nonce généré depuis le mockStore
+        const storeKeys = Object.keys(mockStore._data);
+        const secretKey = storeKeys.find(k => k.startsWith("secret:"));
+        assert.ok(secretKey, "Le contexte du challenge doit être stocké.");
+
+        const originalContext = mockStore._data[secretKey];
+        assert.ok(originalContext.signature, "Le contexte doit posséder une signature cryptographique.");
+
+        const nonce = secretKey.split(":")[1];
+
+        // 3. SCÉNARIO DE TAMPERING : On modifie manuellement le cpuTarget dans le Store
+        // sans pouvoir mettre à jour la signature (car la clé secrète globale est inconnue de l'attaquant).
+        originalContext.cpuTarget = "00000000000000ff"; // On baisse artificiellement la difficulté
+        mockStore._data[secretKey] = originalContext;
+
+        // Tentative de soumission d'une solution pour ce challenge altéré
+        const tamperedSubmitContext = {
+            clientIp,
+            path: "/login",
+            headers: { "user-agent": "Mozilla/5.0" },
+            query: {
+                pow_type: "cpu_target",
+                pow_nonce: nonce,
+                pow_solution: "123456" // Solution fictive
+            },
+            cookies: {}
+        };
+
+        const tamperedDecision = await engine.processRequest(tamperedSubmitContext);
+
+        // Le système doit avoir détecté l'altération de la signature,
+        // invalidé le contexte du challenge (null) et appliqué la pénalité maximale.
+        assert.strictEqual(
+            tamperedDecision.score,
+            100,
+            "Le score de suspicion doit passer à 100 suite à la détection d'altération."
+        );
+
+        // Si le score est passé à 100 (au-dessus du seuil de blocage de 95), l'action doit être d'interdire l'accès.
+        assert.strictEqual(
+            tamperedDecision.action,
+            "block",
+            "La requête doit être bloquée immédiatement."
+        );
+    });
+});
