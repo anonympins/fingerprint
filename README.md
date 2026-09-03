@@ -378,6 +378,13 @@ This architecture is common in high-performance environments and offers great fl
 <a id="nodejs-quickstart"></a>
 ## NodeJS Quickstart
 
+### Installation
+
+Install the library via npm:
+```bash
+npm install @anonympins/fingerprint
+```
+
 ### Prerequisites for Node.js
 
 Ensure you have middleware for parsing cookies (like `cookie-parser`) and request bodies (like `express.json` and `express.urlencoded`) set up in your Express application *before* the `powMiddleware`.
