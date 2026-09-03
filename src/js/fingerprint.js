@@ -3872,7 +3872,7 @@ export function sanitizeTrafficData(trafficData) {
   if (!trafficData || trafficData.length === 0) {
     return [];
   }
-  const sanitizedData = [];
+  const tempSanitized = [];
   const deviceCounts = new Map();
   const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
 
@@ -3881,10 +3881,19 @@ export function sanitizeTrafficData(trafficData) {
     const currentCount = deviceCounts.get(devId) || 0;
     if (currentCount < maxLogsPerDevice) {
       deviceCounts.set(devId, currentCount + 1);
-      sanitizedData.push(log);
+      tempSanitized.push(log);
     }
   }
-  return sanitizedData;
+
+  const passedLogs = tempSanitized.filter(log => log.type === 'request_passed');
+  const suspiciousLogs = tempSanitized.filter(log => log.type !== 'request_passed');
+
+  const minDataPoints = 200; // Seuil par défaut
+  const maxPassedAllowed = Math.max(minDataPoints, suspiciousLogs.length * 9);
+  const shuffledPassed = passedLogs.sort(() => 0.5 - Math.random());
+  const selectedPassed = shuffledPassed.slice(0, maxPassedAllowed);
+
+  return [...suspiciousLogs, ...selectedPassed];
 }
 
 /**
@@ -3897,12 +3906,15 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   const highConfidenceLogs = sanitizedData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
   const highConfidenceRatio = sanitizedData.length > 0 ? highConfidenceLogs / sanitizedData.length : 0;
   const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
+  const MIN_HIGH_CONFIDENCE_COUNT = 10; // Absolu de secours pour éviter le gel lors de floods
 
-  if (sanitizedData.length < minDataPoints || highConfidenceRatio < MIN_CONFIDENCE_RATIO) {
+  const hasEnoughSignal = highConfidenceRatio >= MIN_CONFIDENCE_RATIO || highConfidenceLogs >= MIN_HIGH_CONFIDENCE_COUNT;
+
+  if (sanitizedData.length < minDataPoints || !hasEnoughSignal) {
     if (sanitizedData.length < minDataPoints) {
     console.log(`[AutoTuning] Reporté : ${sanitizedData.length}/${minDataPoints} points de données.`);
     } else {
-      console.log(`[AutoTuning] Reporté : Ratio de confiance insuffisant (${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}%).`);
+      console.log(`[AutoTuning] Reporté : Signaux de confiance insuffisants (Ratio: ${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}% et absolu: ${highConfidenceLogs} < ${MIN_HIGH_CONFIDENCE_COUNT}).`);
     }
     return;
   }

@@ -1004,7 +1004,7 @@ class RequestUtils
             return [];
         }
 
-        $sanitized = [];
+        $tempSanitized = [];
         $deviceCounts = [];
         $maxLogsPerDevice = max(3, (int)floor(count($trafficData) * 0.02));
 
@@ -1015,10 +1015,29 @@ class RequestUtils
             }
             if ($deviceCounts[$deviceId] < $maxLogsPerDevice) {
                 $deviceCounts[$deviceId]++;
-                $sanitized[] = $log;
+                $tempSanitized[] = $log;
             }
         }
-        return $sanitized;
+
+        $passedLogs = [];
+        $suspiciousLogs = [];
+        foreach ($tempSanitized as $log) {
+            if (($log['type'] ?? '') === 'request_passed') {
+                $passedLogs[] = $log;
+            } else {
+                $suspiciousLogs[] = $log;
+            }
+        }
+
+        $minDataPoints = 200; // Seuil par défaut
+        $maxPassedAllowed = max($minDataPoints, count($suspiciousLogs) * 9);
+
+        if (count($passedLogs) > $maxPassedAllowed) {
+            shuffle($passedLogs);
+            $passedLogs = array_slice($passedLogs, 0, $maxPassedAllowed);
+        }
+
+        return array_merge($suspiciousLogs, $passedLogs);
     }
 
     /**
