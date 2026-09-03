@@ -849,8 +849,9 @@ export const isTicketValid = (ip, ticket) => {
  */
 function getHeaderAnomalies(context) {
   let anomalyScore = 0;
+  const ua = context.headers["user-agent"] || '';
   // Strong penalty if User-Agent is missing or very short (sign of a simple script)
-  if (!context.headers["user-agent"] || context.headers["user-agent"].length < 10) {
+  if (!ua || ua.length < 10) {
     anomalyScore += 60;
   }
   // Penalty if Accept-Language header is missing
@@ -860,6 +861,17 @@ function getHeaderAnomalies(context) {
   // Penalty for HTTP/1.0 requests, often used by old tools or bots
   if (context.httpVersion === "1.0") {
     anomalyScore += 15;
+  }
+
+  // TE: trailers check for Firefox on Desktop
+  const uaParts = parseUserAgent(ua);
+  const isFirefoxDesktop = uaParts.browser?.startsWith('Firefox') && uaParts.device === 'desktop';
+  const teHeader = context.headers['te'];
+
+  if (isFirefoxDesktop && teHeader !== 'trailers') {
+    anomalyScore += 30; // Suspicious: Firefox desktop missing TE: trailers
+  } else if (!isFirefoxDesktop && uaParts.device === 'desktop' && teHeader === 'trailers') {
+    anomalyScore += 30; // Suspicious: Non-Firefox desktop sending TE: trailers
   }
 
   return {
