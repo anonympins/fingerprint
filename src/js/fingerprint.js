@@ -1142,21 +1142,68 @@ function getCrossLayerInconsistency(context) {
         return { crossLayerInconsistencyScore: 10 }; // Erreur de parsing = suspect.
     }
 }
+function parseJa4(ja4) {
+    if (!ja4 || typeof ja4 !== 'string') return null;
+    const parts = ja4.split('_');
+    const ja4a = parts[0];
+    if (ja4a.length < 10) return null;
+    return {
+        protocol: ja4a[0],
+        version: ja4a.substring(1, 3),
+        sni: ja4a[3],
+        ciphersCount: parseInt(ja4a.substring(4, 6), 10) || 0,
+        extensionsCount: parseInt(ja4a.substring(6, 8), 10) || 0,
+        alpn: ja4a.substring(8, 10),
+        ja4b: parts[1] || null,
+        ja4c: parts[2] || null
+    };
+}
 
 /**
  * Calcule un score d'incohérence entre les données du fingerprint TLS (JA3/JA4) et les en-têtes serveur (User-Agent).
  * Cela permet de détecter le spoofing de fingerprint TLS.
  * @param {object} context - Le contexte de la requête.
- * @returns {{tlsSpoofingScore: number}}
+ * @returns {Promise<{tlsSpoofingScore: number}>}
  */
 function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
     const { ja3, ja4 } = getTlsFingerprintFn(context) || { ja3: null, ja4: null }; // Defensive check
     const ua = context.headers["user-agent"] || '';
 
+    let score = 0;
+
     // 1. Penalize if a TLS fingerprint is present but the User-Agent is generic or missing.
     // This is a strong indicator of a non-browser client trying to look legitimate.
     if ((ja3 || ja4) && (!ua || ua.length < 10 || ua.toLowerCase().includes('python') || ua.toLowerCase().includes('curl'))) {
-        return { tlsSpoofingScore: 50 };
+        score = Math.max(score, 50);
+    }
+
+    // Parse JA4 if available for advanced checks
+    if (ja4) {
+        const parsedJa4 = parseJa4(ja4);
+        if (parsedJa4) {
+            const uaParts = parseUserAgent(ua);
+
+            // Check 1: Incohérence ALPN / HTTP Version
+            if (parsedJa4.alpn === 'h2' && (context.httpVersion === '1.1' || context.httpVersion === '1.0')) {
+                const hasProxy = context.headers['via'] || context.headers['forwarded'] || context.headers['x-forwarded-proto'] || context.headers['x-forwarded-for'];
+                if (!hasProxy) {
+                    score = Math.max(score, 40);
+                }
+            }
+
+            // Check 2: Incohérence OS/Plateforme vs Capabilities TLS
+            if (parsedJa4.version === '12' && (uaParts.os === 'iOS' || uaParts.os === 'macOS') && uaParts.browser?.startsWith('Safari')) {
+                score = Math.max(score, 60);
+            }
+
+            // Check 3: Incohérence User-Agent vs Signature JA4
+            if (uaParts.browser?.startsWith('Chrome') && parsedJa4.alpn === '00') {
+                score = Math.max(score, 50);
+            }
+            if (uaParts.browser?.startsWith('Firefox') && parsedJa4.extensionsCount > 15) {
+                score = Math.max(score, 50);
+            }
+        }
     }
 
     // 2. If no JA3 hash is available, we cannot perform the consistency check.
@@ -1179,17 +1226,40 @@ function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
             const isMatch = expectedBrowsers.some(expected => claimedBrowser?.startsWith(expected));
 
             if (claimedBrowser && !isMatch) {
-                return { tlsSpoofingScore: 80 }; // High score for a clear mismatch.
+                score = Math.max(score, 80); // High score for a clear mismatch.
             }
         }
     }
 
-    // If we reach here, either:
-    // - No JA3 was available.
-    // - The JA3 was not in our database (we can't make a decision).
-    // - The JA3 and User-Agent were consistent.
-    // In all these cases, the score is 0.
-    return { tlsSpoofingScore: 0 };
+    // Create the promise for the async part (Check 4)
+    const promise = (async () => {
+        let asyncScore = score;
+        if (ja4) {
+            const parsedJa4 = parseJa4(ja4);
+            if (parsedJa4) {
+                const uaParts = parseUserAgent(ua);
+                // Check 4: La stagnation (Lack of Entropy / Genericity)
+                if (uaParts.browser) {
+                    const ja4Key = `ja4-browsers:${ja4}`;
+                    let seenBrowsers = await store.get(ja4Key) || [];
+                    if (!Array.isArray(seenBrowsers)) seenBrowsers = [];
+                    const browserFamily = uaParts.browser.split('/')[0];
+                    if (browserFamily && !seenBrowsers.includes(browserFamily)) {
+                        seenBrowsers.push(browserFamily);
+                        await store.set(ja4Key, seenBrowsers, 86400); // 24h cache
+                    }
+                    if (seenBrowsers.length > 1) {
+                        asyncScore = Math.max(asyncScore, 80);
+                    }
+                }
+            }
+        }
+        return { tlsSpoofingScore: asyncScore };
+    })();
+
+    // Decorate the promise so synchronous calls can destructure it!
+    promise.tlsSpoofingScore = score;
+    return promise;
 }
 
 /**
@@ -1501,7 +1571,7 @@ function getBotScore(context) {
         }
     } catch (e) { /* Ignorer les erreurs de parsing */ }
 
-    return { botScore: 0 };
+        return { botScore: 0 };
 }
 
 /**
@@ -1854,7 +1924,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
   const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
 
-  const { tlsSpoofingScore } = getTlsSpoofingScore(context);
+  const { tlsSpoofingScore } = await getTlsSpoofingScore(context);
 
   const { botScore } = getBotScore(context);
 

@@ -324,6 +324,56 @@
 
          // Score de spoofing TLS
          $tlsSpoofing = RequestUtils::getTlsSpoofingScore($context);
+         $tlsSpoofingScore = (float)($tlsSpoofing['tlsSpoofingScore'] ?? 0.0);
+
+         // Advanced JA4 TLS Inconsistency checks
+         $ja4 = $context->getHeader('x-ja4-hash');
+         if ($ja4) {
+             $parsedJa4 = $this->parseJa4($ja4);
+             if ($parsedJa4) {
+                 $ua = $context->getHeader('user-agent') ?? '';
+                 $uaParts = $this->parseUserAgent($ua);
+
+                 // Check 1: Incohérence ALPN / HTTP Version
+                 $httpVersion = $context->httpVersion ?? '1.1';
+                 if ($parsedJa4['alpn'] === 'h2' && ($httpVersion === '1.1' || $httpVersion === '1.0')) {
+                     $hasProxy = $context->getHeader('via') || $context->getHeader('forwarded') || $context->getHeader('x-forwarded-proto') || $context->getHeader('x-forwarded-for');
+                     if (!$hasProxy) {
+                         $tlsSpoofingScore = max($tlsSpoofingScore, 40.0);
+                     }
+                 }
+
+                 // Check 2: Incohérence OS/Plateforme vs Capabilities TLS
+                 if ($parsedJa4['version'] === '12' && ($uaParts['os'] === 'iOS' || $uaParts['os'] === 'macOS') && ($uaParts['browser'] && str_starts_with($uaParts['browser'], 'Safari'))) {
+                     $tlsSpoofingScore = max($tlsSpoofingScore, 60.0);
+                 }
+
+                 // Check 3: Incohérence User-Agent vs Signature JA4
+                 if ($uaParts['browser'] && str_starts_with($uaParts['browser'], 'Chrome') && $parsedJa4['alpn'] === '00') {
+                     $tlsSpoofingScore = max($tlsSpoofingScore, 50.0);
+                 }
+                 if ($uaParts['browser'] && str_starts_with($uaParts['browser'], 'Firefox') && $parsedJa4['extensionsCount'] > 15) {
+                     $tlsSpoofingScore = max($tlsSpoofingScore, 50.0);
+                 }
+
+                 // Check 4: La stagnation (Lack of Entropy / Genericity)
+                 if ($uaParts['browser']) {
+                     $ja4Key = "ja4-browsers:{$ja4}";
+                     $seenBrowsers = $store->get($ja4Key) ?: [];
+                     if (!is_array($seenBrowsers)) {
+                         $seenBrowsers = [];
+                     }
+                     $browserFamily = explode('/', $uaParts['browser'])[0] ?? null;
+                     if ($browserFamily && !in_array($browserFamily, $seenBrowsers, true)) {
+                         $seenBrowsers[] = $browserFamily;
+                         $store->set($ja4Key, $seenBrowsers, 86400);
+                     }
+                     if (count($seenBrowsers) > 1) {
+                         $tlsSpoofingScore = max($tlsSpoofingScore, 80.0);
+                     }
+                 }
+             }
+         }
 
          // Score d'incohérence temporelle (attaque par rejeu)
          $timeInconsistency = RequestUtils::getTimeInconsistencyScore($context);
@@ -346,9 +396,6 @@
          // Score de variance des clics
          $clickVariance = RequestUtils::getClickVarianceScore($context);
 
-         // Score de variance des clics
-         $clickVariance = RequestUtils::getClickVarianceScore($context);
-
          // Score basé sur les listes de menaces (Threat Intelligence)
          $threatIntel = RequestUtils::getThreatIntelScore($context, $this->securityConfig['threatIntel'] ?? []);
 
@@ -364,7 +411,7 @@
              'historyScore' => $behavioral['historyScore'],
              'rotationScore' => $behavioral['rotationScore'],
              'headerAnomalyScore' => $headerAnomalies['headerAnomalyScore'],
-             'tlsSpoofingScore' => $tlsSpoofing['tlsSpoofingScore'],
+             'tlsSpoofingScore' => $tlsSpoofingScore,
              'timeInconsistencyScore' => $timeInconsistency['timeInconsistencyScore'],
              'crossLayerInconsistencyScore' => $crossLayerInconsistency['crossLayerInconsistencyScore'],
              'requestPatternScore' => $requestPattern['requestPatternScore'], // Ce score est maintenant calculé
@@ -381,6 +428,66 @@
          $store->set("device:{$deviceId}", $deviceData);
  
          return $suspicionVector;
+     }
+
+     /**
+      * Parse a basic User-Agent string.
+      */
+     private function parseUserAgent(string $ua): array
+     {
+         $result = ['browser' => null, 'os' => null];
+         
+         if (str_contains($ua, 'Chrome') && !str_contains($ua, 'Edg')) {
+             $result['browser'] = 'Chrome';
+             if (preg_match('/Chrome\/(\d+)/', $ua, $matches)) {
+                 $result['browser'] .= '/' . $matches[1];
+             }
+         } elseif (str_contains($ua, 'Firefox')) {
+             $result['browser'] = 'Firefox';
+             if (preg_match('/Firefox\/(\d+)/', $ua, $matches)) {
+                 $result['browser'] .= '/' . $matches[1];
+             }
+         } elseif (str_contains($ua, 'Safari') && !str_contains($ua, 'Chrome')) {
+             $result['browser'] = 'Safari';
+             if (preg_match('/Version\/(\d+)/', $ua, $matches)) {
+                 $result['browser'] .= '/' . $matches[1];
+             }
+         } elseif (str_contains($ua, 'Edg')) {
+             $result['browser'] = 'Edge';
+             if (preg_match('/Edg\/(\d+)/', $ua, $matches)) {
+                 $result['browser'] .= '/' . $matches[1];
+             }
+         }
+
+         if (str_contains($ua, 'Windows NT 10.0')) $result['os'] = 'Windows 10';
+         elseif (str_contains($ua, 'Windows NT 6.1')) $result['os'] = 'Windows 7';
+         elseif (str_contains($ua, 'Mac OS X')) $result['os'] = 'macOS';
+         elseif (str_contains($ua, 'Linux') && !str_contains($ua, 'Android')) $result['os'] = 'Linux';
+         elseif (str_contains($ua, 'Android')) $result['os'] = 'Android';
+         elseif (str_contains($ua, 'iPhone') || str_contains($ua, 'iPad')) $result['os'] = 'iOS';
+
+         return $result;
+     }
+
+     /**
+      * Parse JA4 string into protocol, version, ALPN etc.
+      */
+     private function parseJa4(?string $ja4): ?array
+     {
+         if (empty($ja4)) return null;
+         $parts = explode('_', $ja4);
+         $ja4a = $parts[0];
+         if (strlen($ja4a) < 10) return null;
+         return [
+             'protocol' => $ja4a[0],
+             'version' => substr($ja4a, 1, 2),
+             'sni' => $ja4a[3],
+             'ciphersCount' => (int)substr($ja4a, 4, 2),
+             'extensionsCount' => (int)substr($ja4a, 6, 2),
+             'alpn' => substr($ja4a, 8, 2),
+             'ja4b' => $parts[1] ?? null,
+             'ja4c' => $parts[2] ?? null
+         ];
      }
 
      /**
