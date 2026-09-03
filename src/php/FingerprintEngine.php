@@ -959,9 +959,17 @@
  
              // 2. Forward DNS lookup
              $addresses = array_merge(dns_get_record($validHostname, DNS_A) ?: [], dns_get_record($validHostname, DNS_AAAA) ?: []);
-             $ips = array_column($addresses, 'ip');
+             $ips = [];
+             foreach ($addresses as $address) {
+                 if (isset($address['ip'])) {
+                     $ips[] = $address['ip'];
+                 }
+                 if (isset($address['ipv6'])) {
+                     $ips[] = $address['ipv6'];
+                 }
+             }
  
-             if (in_array($context->clientIp, $addresses)) {
+             if (in_array($context->clientIp, $ips, true)) {
                  $store->set($cacheKey, 'verified', 86400);
                  return true;
              }

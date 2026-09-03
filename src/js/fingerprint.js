@@ -2716,8 +2716,15 @@ export class FingerprintEngine {
       }
 
       // 2. Forward DNS lookup
-      const addresses = await dns.resolve(validHostname);
-      if (addresses.includes(clientIp)) {
+    let addresses = [];
+    try {
+      addresses = await dns.resolve(validHostname);
+    } catch (e) {}
+    try {
+      const ipv6 = await dns.resolve(validHostname, 'AAAA');
+      addresses = addresses.concat(ipv6);
+    } catch (e) {}
+    if (addresses.includes(clientIp)) {
         await store.set(cacheKey, 'verified', 86400); // Cache success for 24h (TTL in seconds)
         return true;
       }

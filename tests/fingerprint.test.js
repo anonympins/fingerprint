@@ -1579,14 +1579,14 @@ describe('Fingerprint & PoW Security Suite', () => {
             vi.mocked(dns.resolve).mockResolvedValue([googleIp]);
             await engine._verifyWhitelistedBot({ ...requestContext, fingerprint: {} });
             expect(vi.mocked(dns.reverse)).toHaveBeenCalledTimes(1);
-            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(2);
 
             // Second call: should use the cache
             const isVerified = await engine._verifyWhitelistedBot({ ...requestContext, fingerprint: {} });
             expect(isVerified).toBe(true); // Should still be true
             // DNS functions should not be called again
             expect(vi.mocked(dns.reverse)).toHaveBeenCalledTimes(1);
-            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(2);
         });
 
         test('should handle invalid regex in whitelist rules gracefully', async () => {
