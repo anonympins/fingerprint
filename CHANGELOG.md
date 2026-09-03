@@ -1,3 +1,24 @@
+## Version 0.3.6
+
+### 🛡️ Sybil Protection & Auto-Tuner Hardening (JS/PHP)
+- **Auto-Tuner Freeze Vulnerability Fix (Anti-Flood)**:
+  - Resolved a vulnerability allowing an attacker to indefinitely freeze the auto-tuner by flooding it with simple requests (`request_passed`), causing the high-confidence log ratio to plummet below the 5% threshold.
+  - Enhanced `sanitizeTrafficData` to balance, shuffle, and cap the proportion of clean logs (`request_passed`) relative to suspicious logs.
+  - Added an absolute fallback trigger condition (`MIN_HIGH_CONFIDENCE_COUNT = 10`) in the optimizer to bypass the 5% minimum ratio when a sufficiently strong signal is present.
+- **Defense Against Sybil Attacks (Data Poisoning)**:
+  - Limited the contribution of each `deviceId` to a maximum of 2% of the total dataset within the traffic sanitizer, preventing a single attacker from manipulating safety threshold optimization calculations.
+- **Cryptographic Securing of Challenge Context (HMAC)**:
+  - Systematic HMAC-SHA256 signing of the challenge payload (`clientSecret`, `cpuTarget`, `fingerprint`, `memDifficulty`, `originalPath`, and client IP) using the global secret.
+  - Strict validation of challenge context integrity upon submission to counter injection or storage tampering attacks.
+
+### ✨ New Features & Improvements
+- **Sequential Path Enumeration Detection (Scraping)**:
+  - Integrated a detection system for requests with identical, incremental structures (e.g., `/product/1`, `/product/2`, `/product/3`).
+  - Automatically applies an enumeration penalty score (`enumerationScore`) of 80% of the pattern weight during unique sequential requests on the same URL pattern.
+- **Network Roaming Tolerance & Strict Hardware Identity**:
+  - Upgraded `isTicketValid` to tolerate legitimate user IP changes (roaming) within the same network block (IPv4/IPv6 subnet).
+  - Automatic fallback to robust hardware identity validation (`deviceId` and `deviceHash` cryptographically verified via HMAC) if the user completely switches networks (e.g., moving from Wi-Fi to 4G).
+
 ## Version 0.3.5 (Hotfix)
 
 ### 🛡️ Critical Fixes & Security Hardening:
