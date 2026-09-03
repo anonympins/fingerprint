@@ -1579,14 +1579,14 @@ describe('Fingerprint & PoW Security Suite', () => {
             vi.mocked(dns.resolve).mockResolvedValue([googleIp]);
             await engine._verifyWhitelistedBot({ ...requestContext, fingerprint: {} });
             expect(vi.mocked(dns.reverse)).toHaveBeenCalledTimes(1);
-            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(2);
 
             // Second call: should use the cache
             const isVerified = await engine._verifyWhitelistedBot({ ...requestContext, fingerprint: {} });
             expect(isVerified).toBe(true); // Should still be true
             // DNS functions should not be called again
             expect(vi.mocked(dns.reverse)).toHaveBeenCalledTimes(1);
-            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(dns.resolve)).toHaveBeenCalledTimes(2);
         });
 
         test('should handle invalid regex in whitelist rules gracefully', async () => {
@@ -2133,5 +2133,56 @@ describe('Subnet Scoring (Node.js)', () => {
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
         expect(subnetScore).toBe(90); // 40 + 50
+    });
+});
+
+describe('Firefox TE Header Anomaly', () => {
+    const securityConfig = {
+        weights: { headerAnomalyScore: 1.0 },
+        thresholds: { low: 20, medium: 45, high: 75 }
+    };
+
+    it('should penalize Firefox desktop UA without TE: trailers', async () => {
+        const context = {
+            clientIp: '1.1.1.1',
+            path: '/',
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+                'accept-language': 'en-US,en;q=0.9',
+            },
+            cookies: { device_id: 'some-device' },
+        };
+        const vector = await __internal.getSuspicionVector(context, securityConfig);
+        expect(vector.headerAnomalyScore).toBe(30);
+    });
+
+    it('should not penalize Firefox desktop UA with TE: trailers', async () => {
+        const context = {
+            clientIp: '1.1.1.1',
+            path: '/',
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+                'accept-language': 'en-US,en;q=0.9',
+                'te': 'trailers',
+            },
+            cookies: { device_id: 'some-device' },
+        };
+        const vector = await __internal.getSuspicionVector(context, securityConfig);
+        expect(vector.headerAnomalyScore).toBe(0);
+    });
+
+    it('should penalize non-Firefox desktop UA with TE: trailers', async () => {
+        const context = {
+            clientIp: '1.1.1.1',
+            path: '/',
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
+                'accept-language': 'en-US,en;q=0.9',
+                'te': 'trailers',
+            },
+            cookies: { device_id: 'some-device' },
+        };
+        const vector = await __internal.getSuspicionVector(context, securityConfig);
+        expect(vector.headerAnomalyScore).toBe(30);
     });
 });

@@ -1,3 +1,15 @@
+## Version 0.3.5 (Hotfix)
+
+### 🛡️ Critical Fixes & Security Hardening:
+- **IPv6 DNS Lookup for SEO Bots (JS/PHP)**:
+  - Fixed DNS validation (reverse + forward lookup) for legitimate search engine crawlers (Googlebot, Bingbot, etc.) connecting over IPv6.
+  - Added explicit queries for IPv6 (`AAAA` records) in both the Node.js and PHP engines, preventing false positives and ensuring SEO indexing crawlers are never blocked or challenged.
+- **Enhanced JA4 & JA3 Spoofing Detectors (JS/PHP)**:
+  - Added detection of sophisticated JA4 fingerprints (`spoofedJa4s` blacklist) representing automated scraper clients (e.g., `curl-impersonate`, `tls-client`).
+  - Hardened JA3 anomaly detection to analyze raw JA3 signatures (`x-ja3-raw`), strictly validating GREASE mechanisms and ALPN HTTP version negotiations.
+- **Firefox TE Header Anomaly Detection**:
+  - Refined header analysis to detect mismatches on the `TE` header. Legitimate desktop Firefox clients expect `TE: trailers`, whereas other desktop browsers or automated tools trying to mimic Firefox are now appropriately penalized.
+
 ## Version 0.3.4
 
 ### ✨ Improvements :

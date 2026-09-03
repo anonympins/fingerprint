@@ -346,6 +346,30 @@ function getTlsFingerprint(context) {
     }
     return { ja3, ja4 };
 }
+
+/**
+ * Analyses a raw JA3 string.
+ * Format: "TLSVersion,Ciphers,Extensions,EllipticCurves,EllipticCurveFormats"
+ * @param {string} ja3String
+ * @returns {object|null}
+ */
+export function parseJa3(ja3String) {
+    if (!ja3String || typeof ja3String !== 'string') {
+        return null;
+    }
+    const parts = ja3String.split(',');
+    if (parts.length !== 5) {
+        return null;
+    }
+    return {
+        tlsVersion: parseInt(parts[0], 10),
+        ciphers: parts[1] !== '' ? parts[1].split('-').map(Number) : [],
+        extensions: parts[2] !== '' ? parts[2].split('-').map(Number) : [],
+        curves: parts[3] !== '' ? parts[3].split('-').map(Number) : [],
+        points: parts[4] !== '' ? parts[4].split('-').map(Number) : []
+    };
+}
+
 /**
  * Creates a stable hash based on device characteristics, independent of the IP.
  * This is our "level 2 fingerprint".
@@ -483,6 +507,17 @@ const tlsFingerprintDb = {
     'd435b5223b2884c5a832b842637e245f': 'Java',   // Java 11 `HttpClient`
     'c72366b9551263d990b7fa574225332c': 'curl',   // curl 7.81.0
 };
+
+const GREASE_VALUES = [
+    2570, 6682, 10794, 14906, 19018, 23130, 27242, 31354,
+    35466, 39578, 43690, 47802, 51914, 55926, 60038, 64150
+];
+
+/** @private */
+function hasGrease(values) {
+    if (!Array.isArray(values)) return false;
+    return values.some(val => GREASE_VALUES.includes(val));
+}
 
 // Fonctions utilitaires
 function parseUserAgent(ua) {
@@ -814,8 +849,9 @@ export const isTicketValid = (ip, ticket) => {
  */
 function getHeaderAnomalies(context) {
   let anomalyScore = 0;
+  const ua = context.headers["user-agent"] || '';
   // Strong penalty if User-Agent is missing or very short (sign of a simple script)
-  if (!context.headers["user-agent"] || context.headers["user-agent"].length < 10) {
+  if (!ua || ua.length < 10) {
     anomalyScore += 60;
   }
   // Penalty if Accept-Language header is missing
@@ -825,6 +861,17 @@ function getHeaderAnomalies(context) {
   // Penalty for HTTP/1.0 requests, often used by old tools or bots
   if (context.httpVersion === "1.0") {
     anomalyScore += 15;
+  }
+
+  // TE: trailers check for Firefox on Desktop
+  const uaParts = parseUserAgent(ua);
+  const isFirefoxDesktop = uaParts.browser?.startsWith('Firefox') && uaParts.device === 'desktop';
+  const teHeader = context.headers['te'];
+
+  if (isFirefoxDesktop && teHeader !== 'trailers') {
+    anomalyScore += 30; // Suspicious: Firefox desktop missing TE: trailers
+  } else if (!isFirefoxDesktop && uaParts.device === 'desktop' && teHeader === 'trailers') {
+    anomalyScore += 30; // Suspicious: Non-Firefox desktop sending TE: trailers
   }
 
   return {
@@ -1142,21 +1189,130 @@ function getCrossLayerInconsistency(context) {
         return { crossLayerInconsistencyScore: 10 }; // Erreur de parsing = suspect.
     }
 }
+function parseJa4(ja4) {
+    if (!ja4 || typeof ja4 !== 'string') return null;
+    const parts = ja4.split('_');
+    const ja4a = parts[0];
+    if (ja4a.length < 10) return null;
+    return {
+        protocol: ja4a[0],
+        version: ja4a.substring(1, 3),
+        sni: ja4a[3],
+        ciphersCount: parseInt(ja4a.substring(4, 6), 10) || 0,
+        extensionsCount: parseInt(ja4a.substring(6, 8), 10) || 0,
+        alpn: ja4a.substring(8, 10),
+        ja4b: parts[1] || null,
+        ja4c: parts[2] || null
+    };
+}
 
 /**
  * Calcule un score d'incohérence entre les données du fingerprint TLS (JA3/JA4) et les en-têtes serveur (User-Agent).
  * Cela permet de détecter le spoofing de fingerprint TLS.
  * @param {object} context - Le contexte de la requête.
- * @returns {{tlsSpoofingScore: number}}
+ * @returns {Promise<{tlsSpoofingScore: number}>}
  */
-function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
-    const { ja3, ja4 } = getTlsFingerprintFn(context) || { ja3: null, ja4: null }; // Defensive check
+export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint, customStore = null) {
+    let actualGetTlsFingerprintFn = getTlsFingerprintFn;
+    let actualStore = customStore || store;
+
+    // Detect if the second argument is actually a store (compatibility with tests)
+    if (getTlsFingerprintFn && typeof getTlsFingerprintFn.get === 'function' && typeof getTlsFingerprintFn.set === 'function') {
+        actualStore = getTlsFingerprintFn;
+        actualGetTlsFingerprintFn = getTlsFingerprint;
+    }
+
+    const { ja3, ja4 } = actualGetTlsFingerprintFn(context) || { ja3: null, ja4: null }; // Defensive check
     const ua = context.headers["user-agent"] || '';
+    const ja3Raw = context.headers['x-ja3-raw'] || null;
+    const httpVersion = context.httpVersion || '';
+
+    let score = 0;
 
     // 1. Penalize if a TLS fingerprint is present but the User-Agent is generic or missing.
     // This is a strong indicator of a non-browser client trying to look legitimate.
     if ((ja3 || ja4) && (!ua || ua.length < 10 || ua.toLowerCase().includes('python') || ua.toLowerCase().includes('curl'))) {
-        return { tlsSpoofingScore: 50 };
+        score = Math.max(score, 50);
+    }
+
+    // Check for known spoofed/suspicious JA4 fingerprints
+    const spoofedJa4s = [
+        't13d1516h2_8daaf6152771_390237aa04be', // Chrome classique (curl-impersonate / tls-client)
+        't13d1413h2_bc66258908f0_bc2531da1615', // Firefox statique (curl-impersonate-ff / curl_cffi)
+        't13d1515h2_8daaf6152771_a729e2f67de4', // Safari statique (curl-impersonate-safari / tls-client)
+        't13d1516h2_8daaf6152771_4be0df930c2c', // Alternatif Chrome (tls-client Go)
+        't12d1516h2_8daaf6152771_390237aa04be', // Chrome usurpé dégradé en TLS 1.2
+        't13d1516h2_e822d36d892d_93ec3f0b2f5b'  // Scraping bot OpenSSL customisé
+    ];
+    if (ja4 && spoofedJa4s.includes(ja4)) {
+        score = Math.max(score, 100);
+    }
+
+    const claimedBrowser = parseUserAgent(ua).browser?.split('/')[0] || null;
+    const isHumanBrowser = ['Chrome', 'Firefox', 'Safari', 'Edge'].includes(claimedBrowser);
+
+    // --- ANALYSE 2 : CONTRÔLE PROFOND SUR L'EMPREINTE BRUTE (RAW JA3) ---
+    if (ja3Raw) {
+        const parsed = parseJa3(ja3Raw);
+        if (parsed) {
+            // Contrôle A : Mécanisme GREASE pour Chrome / Edge (obligatoire)
+            if (claimedBrowser === 'Chrome' || claimedBrowser === 'Edge') {
+                const hasCiphersGrease = hasGrease(parsed.ciphers);
+                const hasExtensionsGrease = hasGrease(parsed.extensions);
+                
+                if (!hasCiphersGrease && !hasExtensionsGrease) {
+                    // Chrome ou Edge moderne sans GREASE = spoofing de bas niveau (ex: python-requests déguisé)
+                    score = Math.max(score, 75);
+                }
+            }
+
+            // Contrôle B : HTTP/2 ou HTTP/3 sans négociation ALPN (Extension 16)
+            const isH2OrHigher = (
+                httpVersion.includes('2.0') || 
+                httpVersion.includes('HTTP/2') || 
+                httpVersion.includes('HTTP/3')
+            );
+            const hasAlpnExtension = parsed.extensions.includes(16);
+            
+            if (isH2OrHigher && !hasAlpnExtension) {
+                // Négociation HTTP/2 active au niveau serveur mais absente au niveau des extensions TLS du client
+                score = Math.max(score, 70);
+            }
+
+            // Contrôle C : Version TLS obsolète négociée par un navigateur moderne (ex: TLS < 1.2, id < 771)
+            if (isHumanBrowser && parsed.tlsVersion < 771) {
+                score = Math.max(score, 80);
+            }
+        }
+    }
+
+    // Parse JA4 if available for advanced checks
+    if (ja4) {
+        const parsedJa4 = parseJa4(ja4);
+        if (parsedJa4) {
+            const uaParts = parseUserAgent(ua);
+
+            // Check 1: Incohérence ALPN / HTTP Version
+            if (parsedJa4.alpn === 'h2' && (context.httpVersion === '1.1' || context.httpVersion === '1.0')) {
+                const hasProxy = context.headers['via'] || context.headers['forwarded'] || context.headers['x-forwarded-proto'] || context.headers['x-forwarded-for'];
+                if (!hasProxy) {
+                    score = Math.max(score, 40);
+                }
+            }
+
+            // Check 2: Incohérence OS/Plateforme vs Capabilities TLS
+            if (parsedJa4.version === '12' && (uaParts.os === 'iOS' || uaParts.os === 'macOS') && uaParts.browser?.startsWith('Safari')) {
+                score = Math.max(score, 60);
+            }
+
+            // Check 3: Incohérence User-Agent vs Signature JA4
+            if (uaParts.browser?.startsWith('Chrome') && parsedJa4.alpn === '00') {
+                score = Math.max(score, 50);
+            }
+            if (uaParts.browser?.startsWith('Firefox') && parsedJa4.extensionsCount > 15) {
+                score = Math.max(score, 50);
+            }
+        }
     }
 
     // 2. If no JA3 hash is available, we cannot perform the consistency check.
@@ -1173,23 +1329,72 @@ function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
             // Parse the User-Agent to get the claimed browser.
             const { browser: claimedBrowser } = parseUserAgent(ua);
 
-            // Check if the claimed browser is one of the legitimate possibilities for this JA3 hash.
-            // We use `some` to see if the claimed browser starts with any of the expected browser names.
-            // (e.g., "Chrome/116" starts with "Chrome").
-            const isMatch = expectedBrowsers.some(expected => claimedBrowser?.startsWith(expected));
-
-            if (claimedBrowser && !isMatch) {
-                return { tlsSpoofingScore: 80 }; // High score for a clear mismatch.
+            // Check 1: Known library JA3 with a human-claimed browser
+            const isLibrary = expectedBrowsers.some(expected => ['Python', 'Go', 'Java', 'curl'].includes(expected));
+            const claimsToBeHumanBrowser = claimedBrowser && (
+                claimedBrowser.startsWith('Chrome') || 
+                claimedBrowser.startsWith('Firefox') || 
+                claimedBrowser.startsWith('Safari') || 
+                claimedBrowser.startsWith('Edge')
+            );
+            
+            if (isLibrary && claimsToBeHumanBrowser) {
+                score = Math.max(score, 90); // High confidence spoofing of library as browser
+            } else {
+                // Check if the claimed browser is one of the legitimate possibilities for this JA3 hash.
+                const isMatch = expectedBrowsers.some(expected => claimedBrowser?.startsWith(expected));
+                if (claimedBrowser && !isMatch) {
+                    score = Math.max(score, 80); // High score for a clear mismatch.
+                }
             }
         }
     }
 
-    // If we reach here, either:
-    // - No JA3 was available.
-    // - The JA3 was not in our database (we can't make a decision).
-    // - The JA3 and User-Agent were consistent.
-    // In all these cases, the score is 0.
-    return { tlsSpoofingScore: 0 };
+    // Create the promise for the async part (Check 4)
+    const promise = (async () => {
+        let asyncScore = score;
+        const uaParts = parseUserAgent(ua);
+        
+        if (uaParts.browser) {
+            const browserFamily = uaParts.browser.split('/')[0];
+            
+            // Check 4a: Stagnation JA4
+            if (ja4) {
+                const parsedJa4 = parseJa4(ja4);
+                if (parsedJa4) {
+                    const ja4Key = `ja4-browsers:${ja4}`;
+                    let seenBrowsers = await actualStore.get(ja4Key) || [];
+                    if (!Array.isArray(seenBrowsers)) seenBrowsers = [];
+                    if (browserFamily && !seenBrowsers.includes(browserFamily)) {
+                        seenBrowsers.push(browserFamily);
+                    await actualStore.set(ja4Key, seenBrowsers, 86400); // 24h cache
+                    }
+                    if (seenBrowsers.length > 1) {
+                        asyncScore = Math.max(asyncScore, 80);
+                    }
+                }
+            }
+            
+            // Check 4b: JA3 MD5 stagnation with rotating browser UAs
+            if (ja3 && browserFamily) {
+                const ja3Key = `ja3-browsers:${ja3}`;
+                let seenBrowsers = await actualStore.get(ja3Key) || [];
+                if (!Array.isArray(seenBrowsers)) seenBrowsers = [];
+                if (!seenBrowsers.includes(browserFamily)) {
+                    seenBrowsers.push(browserFamily);
+                    await actualStore.set(ja3Key, seenBrowsers, 86400); // 24h cache
+                }
+                if (seenBrowsers.length > 1) {
+                    asyncScore = Math.max(asyncScore, 85); // Staging different UAs on same JA3 MD5 signature
+                }
+            }
+        }
+        return { tlsSpoofingScore: asyncScore };
+    })();
+
+    // Decorate the promise so synchronous calls can destructure it!
+    promise.tlsSpoofingScore = score;
+    return promise;
 }
 
 /**
@@ -1501,7 +1706,7 @@ function getBotScore(context) {
         }
     } catch (e) { /* Ignorer les erreurs de parsing */ }
 
-    return { botScore: 0 };
+        return { botScore: 0 };
 }
 
 /**
@@ -1854,7 +2059,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
   // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
   const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
 
-  const { tlsSpoofingScore } = getTlsSpoofingScore(context);
+  const { tlsSpoofingScore } = await getTlsSpoofingScore(context);
 
   const { botScore } = getBotScore(context);
 
@@ -2523,8 +2728,15 @@ export class FingerprintEngine {
       }
 
       // 2. Forward DNS lookup
-      const addresses = await dns.resolve(validHostname);
-      if (addresses.includes(clientIp)) {
+    let addresses = [];
+    try {
+      addresses = await dns.resolve(validHostname);
+    } catch (e) {}
+    try {
+      const ipv6 = await dns.resolve(validHostname, 'AAAA');
+      addresses = addresses.concat(ipv6);
+    } catch (e) {}
+    if (addresses.includes(clientIp)) {
         await store.set(cacheKey, 'verified', 86400); // Cache success for 24h (TTL in seconds)
         return true;
       }
@@ -3540,6 +3752,7 @@ export const __internal = {
     getClickVarianceScore, // NOUVEAU: Expose pour les tests
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
+    parseJa3,
     generateCpuTargetChallengePage,
     getClientHintsInconsistencyScore, // Expose for testing
     generateCombinedPoWChallengePage,

@@ -186,7 +186,7 @@ class RequestUtils
     public static function getHeaderAnomalies(RequestContext $context): array
     {
         $anomalyScore = 0;
-        $ua = $context->getHeader('user-agent');
+        $ua = $context->getHeader('user-agent') ?? '';
         if (empty($ua) || strlen($ua) < 10) {
             $anomalyScore += 60;
         }
@@ -195,6 +195,17 @@ class RequestUtils
         }
         if ($context->httpVersion === '1.0') {
             $anomalyScore += 15;
+        }
+
+        // TE: trailers check for Firefox on Desktop
+        $uaParts = self::parseUserAgent($ua);
+        $isFirefoxDesktop = isset($uaParts['browser']) && str_starts_with($uaParts['browser'], 'Firefox') && ($uaParts['device'] ?? 'desktop') === 'desktop';
+        $te = strtolower($context->getHeader('te') ?? '');
+
+        if ($isFirefoxDesktop && $te !== 'trailers') {
+            $anomalyScore += 30;
+        } elseif (!$isFirefoxDesktop && ($uaParts['device'] ?? 'desktop') === 'desktop' && $te === 'trailers') {
+            $anomalyScore += 30;
         }
 
         return ['headerAnomalyScore' => min(100.0, $anomalyScore)];
@@ -520,7 +531,7 @@ class RequestUtils
             $deviceData['lastChangeTimestamp'] = $now;
         }
         $deviceData['lastFpHash'] = $currentFpHash;
-        
+
         // Enregistrement de l'IP
         if (!in_array($clientIp, $deviceData['ips'])) {
             $deviceData['ips'][] = $clientIp;
@@ -749,7 +760,7 @@ class RequestUtils
      * Parse une chaîne de requête GraphQL pour extraire le type et le nom de l'opération.
      * @param array<string, mixed> $body Le corps de la requête.
      * @return array{type: string, name: string}|null
-     */    
+     */
     public static function parseGraphQLQuery(array $body): ?array
     {
         $query = $body['query'] ?? null;
@@ -841,7 +852,7 @@ class RequestUtils
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
             $ipBinary = inet_pton($ip);
             if ($ipBinary === false) return null;
-            
+
             $mask = self::generateMask($ipv4Prefix, 4);
             if ($mask === null) return null;
 
@@ -850,7 +861,7 @@ class RequestUtils
         } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
             $ipBinary = inet_pton($ip);
             if ($ipBinary === false) return null;
-            
+
             $mask = self::generateMask($ipv6Prefix, 16);
             if ($mask === null) return null;
 
