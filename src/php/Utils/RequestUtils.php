@@ -1063,4 +1063,62 @@ class RequestUtils
 
         return hash_equals($expectedSignature, $storedSignature);
     }
+
+    /**
+     * Vérifie si un ticket de clearance (PoW) est valide, en supportant la tolérance au roaming.
+     *
+     * @param string $ip L'adresse IP de la requête courante.
+     * @param string|null $ticket Le ticket de clearance extrait du cookie.
+     * @param string $deviceId L'identifiant du cookie de l'appareil.
+     * @param string $deviceHash L'empreinte matérielle calculée côté serveur.
+     * @param string $secret La clé secrète (POW_SECRET).
+     * @return bool True si le ticket est valide et correspond aux contraintes de sécurité.
+     */
+    public static function isTicketValid(string $ip, ?string $ticket, string $deviceId = '', string $deviceHash = '', string $secret = ''): bool
+    {
+        if (empty($ticket)) {
+            return false;
+        }
+
+        if (str_contains($ticket, '|')) {
+            $parts = explode('|', $ticket);
+            if (count($parts) < 3) return false;
+            [$expiry, $originalIp, $sig] = $parts;
+        } elseif (str_contains($ticket, ':')) {
+            // Fallback rétrocompatible pour les anciens tickets
+            $parts = explode(':', $ticket);
+            if (count($parts) < 2) return false;
+            [$expiry, $sig] = $parts;
+            $originalIp = $ip;
+        } else {
+            return false;
+        }
+
+        if (empty($expiry) || empty($sig) || (time() * 1000) > (int)$expiry) {
+            return false;
+        }
+
+        if (str_contains($ticket, '|')) {
+            $expectedSig = hash_hmac('sha256', "{$expiry}:{$originalIp}:{$deviceId}:{$deviceHash}", $secret);
+        } else {
+            $expectedSig = hash_hmac('sha256', "{$ip}:{$expiry}", $secret);
+        }
+
+        if (!hash_equals($expectedSig, $sig)) {
+            return false;
+        }
+
+        if (!str_contains($ticket, '|')) {
+            return $ip === $originalIp;
+        }
+
+        if ($ip === $originalIp) return true;
+        $currentSubnet = self::getIpSubnet($ip);
+        $originalSubnet = self::getIpSubnet($originalIp);
+        if ($currentSubnet !== null && $originalSubnet !== null && $currentSubnet === $originalSubnet) {
+            return true;
+        }
+
+        return !empty($deviceId) && !empty($deviceHash); // Match d'identité matérielle stricte (deviceId + deviceHash validés par HMAC)
+    }
 }
