@@ -1177,6 +1177,19 @@ function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerprint) {
         score = Math.max(score, 50);
     }
 
+    // Check for known spoofed/suspicious JA4 fingerprints
+    const spoofedJa4s = [
+        't13d1516h2_8daaf6152771_390237aa04be', // Chrome classique (curl-impersonate / tls-client)
+        't13d1413h2_bc66258908f0_bc2531da1615', // Firefox statique (curl-impersonate-ff / curl_cffi)
+        't13d1515h2_8daaf6152771_a729e2f67de4', // Safari statique (curl-impersonate-safari / tls-client)
+        't13d1516h2_8daaf6152771_4be0df930c2c', // Alternatif Chrome (tls-client Go)
+        't12d1516h2_8daaf6152771_390237aa04be', // Chrome usurpé dégradé en TLS 1.2
+        't13d1516h2_e822d36d892d_93ec3f0b2f5b'  // Scraping bot OpenSSL customisé
+    ];
+    if (ja4 && spoofedJa4s.includes(ja4)) {
+        score = Math.max(score, 100);
+    }
+
     // Parse JA4 if available for advanced checks
     if (ja4) {
         const parsedJa4 = parseJa4(ja4);

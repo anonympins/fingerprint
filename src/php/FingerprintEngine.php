@@ -329,6 +329,18 @@
          // Advanced JA4 TLS Inconsistency checks
          $ja4 = $context->getHeader('x-ja4-hash');
          if ($ja4) {
+             $spoofedJa4s = [
+                 't13d1516h2_8daaf6152771_390237aa04be', // Chrome classique (curl-impersonate / tls-client)
+                 't13d1413h2_bc66258908f0_bc2531da1615', // Firefox statique (curl-impersonate-ff / curl_cffi)
+                 't13d1515h2_8daaf6152771_a729e2f67de4', // Safari statique (curl-impersonate-safari / tls-client)
+                 't13d1516h2_8daaf6152771_4be0df930c2c', // Alternatif Chrome (tls-client Go)
+                 't12d1516h2_8daaf6152771_390237aa04be', // Chrome usurpé dégradé en TLS 1.2
+                 't13d1516h2_e822d36d892d_93ec3f0b2f5b'  // Scraping bot OpenSSL customisé
+             ];
+             if (in_array($ja4, $spoofedJa4s, true)) {
+                 $tlsSpoofingScore = max($tlsSpoofingScore, 100.0);
+             }
+
              $parsedJa4 = $this->parseJa4($ja4);
              if ($parsedJa4) {
                  $ua = $context->getHeader('user-agent') ?? '';
