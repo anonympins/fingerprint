@@ -769,6 +769,8 @@ export const verifyPoWAndGenerateTicket = (
   nonce,
   solution,
   difficulty = 4,
+  deviceId = '',
+  deviceHash = ''
 ) => {
   // 1. Verify the solution: hash(ip + nonce + solution) must start with N zeros
   const hash = crypto
@@ -784,10 +786,10 @@ export const verifyPoWAndGenerateTicket = (
   const expiry = Date.now() + 3600000; // 1 heure
   const signature = crypto
     .createHmac("sha256", getPowSecret())
-    .update(`${ip}:${expiry}`)
+    .update(`${expiry}:${ip}:${deviceId}:${deviceHash}`)
     .digest("hex");
 
-  return `${expiry}:${signature}`;
+  return `${expiry}|${ip}|${signature}`;
 };
 
 
@@ -822,23 +824,61 @@ export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret =
   }
   return finalHash === parseInt(solution, 10);
 };
-export const isTicketValid = (ip, ticket) => {
+export const isTicketValid = (ip, ticket, deviceId = '', deviceHash = '') => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
-  if (typeof ticket !== 'string' || !ticket.includes(':')) return false;
-  const [expiry, sig] = ticket.split(':');
+  if (typeof ticket !== 'string') return false;
+
+  let expiry, originalIp, sig;
+  if (ticket.includes('|')) {
+    const parts = ticket.split('|');
+    if (parts.length < 3) return false;
+    [expiry, originalIp, sig] = parts;
+  } else if (ticket.includes(':')) {
+    // Legacy fallback format
+    const parts = ticket.split(':');
+    if (parts.length < 2) return false;
+    [expiry, sig] = parts;
+    originalIp = ip;
+  } else {
+    return false;
+  }
+
   if (!expiry || !sig || Date.now() > parseInt(expiry, 10)) return false;
-  const expectedSig = crypto
-    .createHmac("sha256", getPowSecret())
-    .update(`${ip}:${expiry}`)
-    .digest("hex");
+
+  let expectedSig;
+  if (ticket.includes('|')) {
+    expectedSig = crypto
+      .createHmac("sha256", getPowSecret())
+      .update(`${expiry}:${originalIp}:${deviceId}:${deviceHash}`)
+      .digest("hex");
+  } else {
+    // Legacy expected signature
+    expectedSig = crypto
+      .createHmac("sha256", getPowSecret())
+      .update(`${ip}:${expiry}`)
+      .digest("hex");
+  }
 
   // Use timingSafeEqual to prevent timing attacks
   try {
-    return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expectedSig, 'hex'));
+    const isSigValid = crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expectedSig, 'hex'));
+    if (!isSigValid) return false;
   } catch (e) {
-    // This can happen if the buffers have different lengths, which is a failure case.
     return false;
   }
+
+  if (!ticket.includes('|')) {
+    return ip === originalIp;
+  }
+
+  // Roaming & Terminal Identity checks:
+  if (ip === originalIp) return true;
+  const currentSubnet = getIpSubnet(ip);
+  const originalSubnet = getIpSubnet(originalIp);
+  if (currentSubnet && originalSubnet && currentSubnet === originalSubnet) return true;
+
+  // Perfect terminal identity matched via HMAC signature
+  return !!(deviceId && deviceHash);
 };
 
 
@@ -1778,6 +1818,22 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         }
     }
 
+    // Détection d'énumération de chemins (crawling/scraping de ressources séquentielles)
+    let enumerationScore = 0;
+    if (history.length >= 3) {
+        const templates = history.map(h => h.path.replace(/\d+/g, '{num}'));
+        const uniquePaths = new Set(history.map(h => h.path));
+
+        const templateCounts = {};
+        templates.forEach(t => templateCounts[t] = (templateCounts[t] || 0) + 1);
+
+        const maxTemplateRepetition = Math.max(...Object.values(templateCounts), 0);
+        // Si une même structure de route est répétée mais sur des URLs réelles différentes
+        if (maxTemplateRepetition >= 3 && uniquePaths.size === history.length) {
+            enumerationScore = patternWeight * 0.8; // Appliquer une forte pénalité
+        }
+    }
+
     // Garder l'historique à une taille raisonnable
     if (history.length > historySize) {
         history.shift();
@@ -1796,7 +1852,7 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     }
     newPatternScore = Math.max(0, newPatternScore);
 
-    deviceData.lastPatternScore = newPatternScore + instantScore;
+    deviceData.lastPatternScore = newPatternScore + instantScore + enumerationScore;
 
     return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
 }
@@ -2341,6 +2397,8 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   nonce,
   solution,
   challengeContext = {}, // Le contexte complet du challenge est maintenant passé
+  deviceId = '',
+  deviceHash = ''
 ) {
   const { cpuTarget, baseBlock } = challengeContext;
   if (!cpuTarget || !baseBlock) {
@@ -2392,9 +2450,9 @@ export function verifyCpuTargetPoWAndGenerateTicket(
       const expiry = Date.now() + (ticketTtl || 3600000); // Calcule l'expiration à partir du TTL
       const signature = crypto
       .createHmac("sha256", getPowSecret())
-      .update(`${clientIp}:${expiry}`)
+      .update(`${expiry}:${clientIp}:${deviceId}:${deviceHash}`)
       .digest("hex");
-    return `${expiry}:${signature}`;
+    return `${expiry}|${clientIp}|${signature}`;
   }
 
   return null;
@@ -2474,7 +2532,7 @@ export class FingerprintEngine {
       console.log(`[FingerprintEngine] ${message}`, data);
     }
   }
-    calculateFinalScore = function(suspicionVector) {
+    calculateFinalScore(suspicionVector) {
         const { weights } = this.securityConfig;
         if (!weights) return 0;
 
@@ -2760,6 +2818,11 @@ export class FingerprintEngine {
       return { action: 'next', score: 0, vector: {} };
     }
 
+    // Resolve identity and check for persisted "condemned" status early.
+    const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
+    const currentDeviceHash = getCompositeDeviceHash(requestContext);
+    const isNewDevice = !!newCookie;
+
     // 1. Check static IP allowlist first for maximum performance.
     if (this._isIpInAllowlist(clientIp)) {
       this._log('IP in allowlist - allowing request', { clientIp });
@@ -2798,7 +2861,7 @@ export class FingerprintEngine {
     // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot probe.
     if (pow_nonce) {
         const powCookie = cookies?.pow_clearance;
-        if (!isTicketValid(clientIp, powCookie)) { // Only check if there's no valid ticket
+        if (!isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash)) { // Only check if there's no valid ticket
             // This is a potential probe. We'll let the main logic confirm if it's not a legitimate challenge response.
             // The final decision is made later, after calculating the score.
         }
@@ -2809,10 +2872,6 @@ export class FingerprintEngine {
       this._log('Whitelisted bot verified - allowing request', { clientIp });
       return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
     }
-    
-    // Resolve identity and check for persisted "condemned" status early.
-    const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
-    const isNewDevice = !!newCookie;
     
     this._log('Identity resolved', { deviceId, isNewDevice, hasDeviceData: !!deviceData });
 
@@ -2908,7 +2967,26 @@ export class FingerprintEngine {
         });
 
         let isValid = false;
-        const challengeContext = await store.get(`secret:${pow_nonce}`);
+            let challengeContext = await store.get(`secret:${pow_nonce}`);
+
+            // SECURITY: Verify that the retrieved context has not been tampered with
+            if (challengeContext && challengeContext.signature) {
+                const payloadToSign = `${challengeContext.clientSecret}:${challengeContext.cpuTarget}:${challengeContext.fingerprint}:${challengeContext.memDifficulty}:${challengeContext.originalPath}:${clientIp}`;
+                const expectedSignature = crypto.createHmac("sha256", getPowSecret()).update(payloadToSign).digest("hex");
+                try {
+                    const isSignatureValid = crypto.timingSafeEqual(
+                        Buffer.from(challengeContext.signature, 'hex'),
+                        Buffer.from(expectedSignature, 'hex')
+                    );
+                    if (!isSignatureValid) {
+                        this._log('Challenge context signature invalid - storage tampering detected!', { nonce: pow_nonce });
+                        challengeContext = null; // Invalidate context immediately
+                    }
+                } catch (e) {
+                    this._log('Error validating challenge context signature:', e);
+                    challengeContext = null;
+                }
+            }
         let ticket = null;
         // Déclarer optimalTtl ici avec une valeur par défaut
         let optimalTtl = this.securityConfig.ticketMaxAge || 3600000;
@@ -2957,11 +3035,12 @@ export class FingerprintEngine {
 
                 if ((pow_type === "cpu_target" || !pow_type) && (pow_solution_cpu || pow_solution)) { // !pow_type pour compatibilité
                     const cpuSolution = pow_solution_cpu || pow_solution;
-            ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, cpuSolution, challengeContext);
+                    ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, cpuSolution, challengeContext, deviceId, currentDeviceHash);
                     isValid = ticket !== null;
                     this._log('CPU target challenge verification', { isValid });
-                } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {                    const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext);
-            const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret); // Memory PoW is independent of fingerprint
+                } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
+                    const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext, deviceId, currentDeviceHash);
+                    const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret); // Memory PoW is independent of fingerprint
                     isValid = cpuTicket !== null && isMemValid;
                     if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
                     this._log('Combined CPU+Memory challenge verification', {
@@ -3087,7 +3166,10 @@ export class FingerprintEngine {
         if (challengeContext) {
             try {
                 const workResult = JSON.parse(pow_solution_work_result);
-                getProblemManager(this.securityConfig.usefulWorkConfigPath).integrateSolution(pow_problem_id, workResult);
+                getProblemManager({
+                    configPath: this.securityConfig.usefulWorkConfigPath,
+                    config: this.securityConfig.usefulWorkConfig
+                }, store).integrateSolution(pow_problem_id, workResult);
 
                 await store.delete(`secret:${pow_nonce}`);
                 // Accorder un ticket de passage comme pour un PoW normal
@@ -3153,7 +3235,7 @@ export class FingerprintEngine {
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
     // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
-    const hasValidTicket = isTicketValid(clientIp, powCookie);
+    const hasValidTicket = isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash);
     const mustReChallenge = isSuspiciousHigh && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
@@ -3197,7 +3279,10 @@ export class FingerprintEngine {
         if (isSuspicious && shouldUseUsefulWork) {
             this._log('Issuing a useful work challenge', { finalScore });
 
-            const { problemId, task } = getProblemManager(this.securityConfig.usefulWorkConfigPath).dispatchWork(suspicionFactor);
+            const { problemId, task } = getProblemManager({
+                configPath: this.securityConfig.usefulWorkConfigPath,
+                config: this.securityConfig.usefulWorkConfig
+            }, store).dispatchWork(suspicionFactor);
 
             await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
 
@@ -3245,6 +3330,11 @@ export class FingerprintEngine {
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
             const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint);
+
+            // SECURITY: Cryptographically sign the payload before storing it to prevent database tampering
+            const payloadToSign = `${clientSecret}:${cpuChallengeDetails.target}:${originalFingerprint}:${memDifficulty}:${path}:${clientIp}`;
+            const signature = crypto.createHmac("sha256", getPowSecret()).update(payloadToSign).digest("hex");
+
             await store.set(`secret:${nonce}`, {
                 clientSecret,
                 cpuTarget: cpuChallengeDetails.target,
@@ -3253,6 +3343,7 @@ export class FingerprintEngine {
                 memDifficulty: memDifficulty,
                 baseBlock: baseBlock, // *** NOUVEAU: Le bloc de base est stocké pour la vérification ***
                 originalPath: path, // *** FIX: Store the original path ***
+                signature, // *** NOUVEAU: Cryptographic signature to prevent storage tampering ***
             }, this.securityConfig.challengeTtl || 300); // NOUVEAU: TTL configurable (5min par défaut)
 
             // Associate the current challenge nonce with the device for trap URL verification later.
@@ -3302,7 +3393,7 @@ export class FingerprintEngine {
     }
 
     // Basic log for each non-static request that passed without a challenge
-    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie) });
+    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash) });
     
     if (logger) {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
@@ -3751,6 +3842,7 @@ export const __internal = {
     getTimeInconsistencyScore,
     getClickVarianceScore, // NOUVEAU: Expose pour les tests
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
+    sanitizeTrafficData, // NOUVEAU: Expose pour l'auto-tuner/tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     parseJa3,
     generateCpuTargetChallengePage,
@@ -3770,24 +3862,59 @@ let autoTuningJobId = null;
 let lastBestSolution = null; // NOUVEAU: Stocke la meilleure solution trouvée
 
 /**
+ * Assainit les données de trafic pour l'auto-tuner afin de prévenir les attaques par empoisonnement.
+ * Limite la contribution de chaque deviceId à un pourcentage maximum (ex: 2%) du jeu de données total.
+ * @export
+ * @param {Array<object>} trafficData
+ * @returns {Array<object>}
+ */
+export function sanitizeTrafficData(trafficData) {
+  if (!trafficData || trafficData.length === 0) {
+    return [];
+  }
+  const tempSanitized = [];
+  const deviceCounts = new Map();
+  const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
+
+  for (const log of trafficData) {
+    const devId = log.deviceId || 'anonymous';
+    const currentCount = deviceCounts.get(devId) || 0;
+    if (currentCount < maxLogsPerDevice) {
+      deviceCounts.set(devId, currentCount + 1);
+      tempSanitized.push(log);
+    }
+  }
+
+  const passedLogs = tempSanitized.filter(log => log.type === 'request_passed');
+  const suspiciousLogs = tempSanitized.filter(log => log.type !== 'request_passed');
+
+  const minDataPoints = 200; // Seuil par défaut
+  const maxPassedAllowed = Math.max(minDataPoints, suspiciousLogs.length * 9);
+  const shuffledPassed = passedLogs.sort(() => 0.5 - Math.random());
+  const selectedPassed = shuffledPassed.slice(0, maxPassedAllowed);
+
+  return [...suspiciousLogs, ...selectedPassed];
+}
+
+/**
  * Executes a threshold optimization pass using collected traffic data.
  * @private
- * @param {object} securityConfig - The security configuration object to update.
- * @param {Array<object>} trafficData - The array containing traffic logs.
- * @param {number} minDataPoints - The minimum number of data points required to start optimization.
- * @param {number} maxDataPoints - The maximum number of data points to keep after an optimization cycle.
- * @param {string} [savePath] - Optional path to save the best configuration to a file.
  */
 function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath) {
-  const highConfidenceLogs = trafficData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
-  const highConfidenceRatio = trafficData.length > 0 ? highConfidenceLogs / trafficData.length : 0;
-  const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
+  const sanitizedData = sanitizeTrafficData(trafficData);
 
-  if (trafficData.length < minDataPoints || highConfidenceRatio < MIN_CONFIDENCE_RATIO) {
-    if (trafficData.length < minDataPoints) {
-    console.log(`[AutoTuning] Reporté : ${trafficData.length}/${minDataPoints} points de données.`);
+  const highConfidenceLogs = sanitizedData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
+  const highConfidenceRatio = sanitizedData.length > 0 ? highConfidenceLogs / sanitizedData.length : 0;
+  const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
+  const MIN_HIGH_CONFIDENCE_COUNT = 10; // Absolu de secours pour éviter le gel lors de floods
+
+  const hasEnoughSignal = highConfidenceRatio >= MIN_CONFIDENCE_RATIO || highConfidenceLogs >= MIN_HIGH_CONFIDENCE_COUNT;
+
+  if (sanitizedData.length < minDataPoints || !hasEnoughSignal) {
+    if (sanitizedData.length < minDataPoints) {
+    console.log(`[AutoTuning] Reporté : ${sanitizedData.length}/${minDataPoints} points de données.`);
     } else {
-      console.log(`[AutoTuning] Reporté : Ratio de confiance insuffisant (${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}%).`);
+      console.log(`[AutoTuning] Reporté : Signaux de confiance insuffisants (Ratio: ${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}% et absolu: ${highConfidenceLogs} < ${MIN_HIGH_CONFIDENCE_COUNT}).`);
     }
     return;
   }
@@ -3797,9 +3924,9 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     trafficData.splice(0, trafficData.length - maxDataPoints);
   }
 
-  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${trafficData.length} points de données.`);
+  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${sanitizedData.length} points de données assainis.`);
 
-  const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData });
+  const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData: sanitizedData });
 
   if (!paretoFront || paretoFront.length === 0) {
     console.warn("[AutoTuning] L'optimisation n'a retourné aucune solution.");

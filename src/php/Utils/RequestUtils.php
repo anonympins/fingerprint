@@ -631,6 +631,25 @@ class RequestUtils
             }
         }
 
+        // Détection d'énumération de chemins (crawling/scraping de ressources séquentielles)
+        $enumerationScore = 0;
+        if (count($history) >= 3) {
+            $templates = array_map(function($h) {
+                return preg_replace('/\d+/', '{num}', $h['path']);
+            }, $history);
+
+            $uniquePaths = array_unique(array_map(function($h) {
+                return $h['path'];
+            }, $history));
+
+            $templateCounts = array_count_values($templates);
+            $maxTemplateRepetition = !empty($templateCounts) ? max($templateCounts) : 0;
+
+            if ($maxTemplateRepetition >= 3 && count($uniquePaths) === count($history)) {
+                $enumerationScore = $patternWeight * 0.8;
+            }
+        }
+
         // Logique de décroissance et de score final
         $newPatternScore = $deviceData['lastPatternScore'] ?? 0;
 
@@ -641,7 +660,7 @@ class RequestUtils
         }
         $newPatternScore = max(0, $newPatternScore);
 
-        $deviceData['lastPatternScore'] = $newPatternScore + $instantScore;
+        $deviceData['lastPatternScore'] = $newPatternScore + $instantScore + $enumerationScore;
 
         return ['requestPatternScore' => min(100.0, $deviceData['lastPatternScore'])];
     }
@@ -969,5 +988,156 @@ class RequestUtils
         $current = self::getIpReputationScore($ip);
         $newScore = min(100.0, max(0.0, $current + $change));
         $store->set($key, ['score' => $newScore, 'lastUpdate' => time()], 86400 * 7); // TTL de 7 jours
+    }
+
+
+    /**
+     * Assainit les données de trafic pour l'auto-tuner afin de prévenir les attaques par empoisonnement.
+     * Limite la contribution de chaque deviceId à un pourcentage maximum (ex: 2%) du jeu de données total.
+     *
+     * @param array<int, array<string, mixed>> $trafficData
+     * @return array<int, array<string, mixed>>
+     */
+    public static function sanitizeTrafficData(array $trafficData): array
+    {
+        if (empty($trafficData)) {
+            return [];
+        }
+
+        $tempSanitized = [];
+        $deviceCounts = [];
+        $maxLogsPerDevice = max(3, (int)floor(count($trafficData) * 0.02));
+
+        foreach ($trafficData as $log) {
+            $deviceId = $log['deviceId'] ?? 'anonymous';
+            if (!isset($deviceCounts[$deviceId])) {
+                $deviceCounts[$deviceId] = 0;
+            }
+            if ($deviceCounts[$deviceId] < $maxLogsPerDevice) {
+                $deviceCounts[$deviceId]++;
+                $tempSanitized[] = $log;
+            }
+        }
+
+        $passedLogs = [];
+        $suspiciousLogs = [];
+        foreach ($tempSanitized as $log) {
+            if (($log['type'] ?? '') === 'request_passed') {
+                $passedLogs[] = $log;
+            } else {
+                $suspiciousLogs[] = $log;
+            }
+        }
+
+        $minDataPoints = 200; // Seuil par défaut
+        $maxPassedAllowed = max($minDataPoints, count($suspiciousLogs) * 9);
+
+        if (count($passedLogs) > $maxPassedAllowed) {
+            shuffle($passedLogs);
+            $passedLogs = array_slice($passedLogs, 0, $maxPassedAllowed);
+        }
+
+        return array_merge($suspiciousLogs, $passedLogs);
+    }
+
+    /**
+     * Génère une signature HMAC-SHA256 pour sécuriser les données du challenge stockées.
+     * @param string $secret Le secret global (POW_SECRET).
+     * @param array<string, mixed> $payload Les données du challenge.
+     * @param string $clientIp L'IP du client pour lier la signature.
+     * @return string
+     */
+    public static function signChallengePayload(string $secret, array $payload, string $clientIp): string
+    {
+        $dataToSign = implode(':', [
+            $payload['clientSecret'] ?? '',
+            $payload['cpuTarget'] ?? '',
+            $payload['fingerprint'] ?? '',
+            $payload['memDifficulty'] ?? '',
+            $payload['originalPath'] ?? '',
+            $clientIp
+        ]);
+
+        return hash_hmac('sha256', $dataToSign, $secret);
+    }
+
+    /**
+     * Vérifie la signature HMAC-SHA256 des données de challenge récupérées du store.
+     * @param string $secret Le secret global (POW_SECRET).
+     * @param array<string, mixed> $payload Les données du challenge contenant la signature.
+     * @param string $clientIp L'IP du client.
+     * @return bool True si la signature est valide, false sinon.
+     */
+    public static function verifyChallengePayload(string $secret, array $payload, string $clientIp): bool
+    {
+        if (empty($payload['signature'])) {
+            return false;
+        }
+
+        $storedSignature = $payload['signature'];
+        $payloadWithoutSig = $payload;
+        unset($payloadWithoutSig['signature']);
+
+        $expectedSignature = self::signChallengePayload($secret, $payloadWithoutSig, $clientIp);
+
+        return hash_equals($expectedSignature, $storedSignature);
+    }
+
+    /**
+     * Vérifie si un ticket de clearance (PoW) est valide, en supportant la tolérance au roaming.
+     *
+     * @param string $ip L'adresse IP de la requête courante.
+     * @param string|null $ticket Le ticket de clearance extrait du cookie.
+     * @param string $deviceId L'identifiant du cookie de l'appareil.
+     * @param string $deviceHash L'empreinte matérielle calculée côté serveur.
+     * @param string $secret La clé secrète (POW_SECRET).
+     * @return bool True si le ticket est valide et correspond aux contraintes de sécurité.
+     */
+    public static function isTicketValid(string $ip, ?string $ticket, string $deviceId = '', string $deviceHash = '', string $secret = ''): bool
+    {
+        if (empty($ticket)) {
+            return false;
+        }
+
+        if (str_contains($ticket, '|')) {
+            $parts = explode('|', $ticket);
+            if (count($parts) < 3) return false;
+            [$expiry, $originalIp, $sig] = $parts;
+        } elseif (str_contains($ticket, ':')) {
+            // Fallback rétrocompatible pour les anciens tickets
+            $parts = explode(':', $ticket);
+            if (count($parts) < 2) return false;
+            [$expiry, $sig] = $parts;
+            $originalIp = $ip;
+        } else {
+            return false;
+        }
+
+        if (empty($expiry) || empty($sig) || (time() * 1000) > (int)$expiry) {
+            return false;
+        }
+
+        if (str_contains($ticket, '|')) {
+            $expectedSig = hash_hmac('sha256', "{$expiry}:{$originalIp}:{$deviceId}:{$deviceHash}", $secret);
+        } else {
+            $expectedSig = hash_hmac('sha256', "{$ip}:{$expiry}", $secret);
+        }
+
+        if (!hash_equals($expectedSig, $sig)) {
+            return false;
+        }
+
+        if (!str_contains($ticket, '|')) {
+            return $ip === $originalIp;
+        }
+
+        if ($ip === $originalIp) return true;
+        $currentSubnet = self::getIpSubnet($ip);
+        $originalSubnet = self::getIpSubnet($originalIp);
+        if ($currentSubnet !== null && $originalSubnet !== null && $currentSubnet === $originalSubnet) {
+            return true;
+        }
+
+        return !empty($deviceId) && !empty($deviceHash); // Match d'identité matérielle stricte (deviceId + deviceHash validés par HMAC)
     }
 }
