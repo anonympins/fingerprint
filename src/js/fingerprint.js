@@ -3457,68 +3457,123 @@ const staticExtensions = new RegExp(
 const isStaticResource = (path) => staticExtensions.test(path);
 
 
+/** @type {Map<number, number>} Cache des TTL optimisés par score de suspicion (clés de 0 à 100 par pas de 10) */
+let optimizedTtlCache = new Map();
+
 /**
- * Détermine le TTL optimal pour un ticket en utilisant un algorithme génétique multi-objectifs.
- * @param {number} suspicionScore - Le score de suspicion de la requête.
- * @returns {number} Le TTL optimal calculé en millisecondes.
-*/
-function determineOptimalTicketTtl(suspicionScore) {
-    // Définir les bornes pour la durée de vie du ticket (5 minutes à 24 heures)
+ * Exécute l'optimisation des TTL en tâche de fond de manière asynchrone et non-bloquante.
+ * Utilise l'algorithme génétique multi-objectifs de Pareto pour trouver des solutions stables.
+ */
+export async function runBackgroundTtlOptimization() {
     const MIN_TTL = 300000;
     const MAX_TTL = 86400000;
+    const tempCache = new Map();
+    const keyScores = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
-    const solverFunction = () => {
-        const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
+    for (const suspicionScore of keyScores) {
+        // Rend la main à la boucle d'événements Node.js à chaque itération pour ne pas bloquer les requêtes web actives
+        await new Promise(resolve => {
+            if (typeof setImmediate === 'function') {
+                setImmediate(resolve);
+            } else {
+                setTimeout(resolve, 0);
+            }
+        });
 
-        // Un "individu" est simplement une valeur de TTL en millisecondes.
-        const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
-        const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
-        const mutate = (ttl) => {
-            const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1; // Mutation de +/- 10% max
-            return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
+        const solverFunction = () => {
+            const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
+            const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
+            const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
+            const mutate = (ttl) => {
+                const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1;
+                return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
+            };
+
+            const paretoFront = Optimization.geneticAlgorithmMultiObjective(
+                createIndividual,
+                fitnessFunction,
+                crossover,
+                mutate,
+                {
+                    generations: 40,
+                    populationSize: 30,
+                }
+            );
+
+            if (!paretoFront || paretoFront.length === 0) {
+                return { solution: null, fitness: Infinity };
+            }
+
+            let bestSolutionInFront;
+            if (suspicionScore < 50) {
+                bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
+            } else {
+                bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
+            }
+            return { solution: bestSolutionInFront, fitness: 0 };
         };
 
-        const paretoFront = Optimization.geneticAlgorithmMultiObjective(
-            createIndividual,
-            fitnessFunction,
-            crossover,
-            mutate,
-            {
-                generations: 40,
-                populationSize: 30,
-            }
-        );
-
-        // Pour runMultiple, on doit retourner un objet avec une propriété "fitness" ou "energy".
-        // Pour un front de Pareto, il n'y a pas de score unique. On choisit la meilleure solution
-        // en fonction du score de suspicion et on lui assigne un score de 0 pour que runMultiple la sélectionne.
-        if (!paretoFront || paretoFront.length === 0) {
-            return { solution: null, fitness: Infinity };
-        }
-
-        // Stratégie de sélection :
-        // Pour un score faible (< 50), on privilégie la solution avec le plus grand TTL (minimise la friction).
-        // Pour un score élevé (>= 50), on privilégie la solution avec le plus petit TTL (minimise le risque).
-        let bestSolutionInFront;
-        if (suspicionScore < 50) {
-            bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
+        const { bestResult } = Optimization.runMultiple(solverFunction, 20);
+        if (bestResult && bestResult.solution && bestResult.solution !== Infinity) {
+            tempCache.set(suspicionScore, Math.round(bestResult.solution));
         } else {
-            bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
+            tempCache.set(suspicionScore, Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL));
         }
-        return { solution: bestSolutionInFront, fitness: 0 }; // fitness=0 car on a déjà la meilleure solution du cycle.
-    };
-
-    // On exécute le solveur 20 fois pour trouver une solution plus stable et robuste.
-    const { bestResult } = Optimization.runMultiple(solverFunction, 20);
-
-    if (!bestResult || !bestResult.solution || bestResult.solution === Infinity) {
-        // Fallback : si l'algo ne retourne rien, on applique une règle simple et sûre.
-        return Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL);
     }
 
-    // runMultiple choisit le meilleur résultat sur la base du score (ici, 0).
-    // La "meilleure" solution dépendra du cycle qui a trouvé le meilleur compromis.
-    return Math.round(bestResult.solution);
+    optimizedTtlCache = tempCache;
+}
+
+// Lancement de l'optimisation initiale immédiate en arrière-plan
+runBackgroundTtlOptimization().catch(err => {
+    console.error('[Fingerprint] Error in background TTL optimization:', err);
+});
+
+// Planification périodique toutes les 30 minutes sans bloquer la fermeture du processus Node.js (via unref)
+const ttlInterval = setInterval(() => {
+    runBackgroundTtlOptimization().catch(err => {
+        console.error('[Fingerprint] Error in background TTL optimization:', err);
+    });
+}, 1800000);
+if (ttlInterval && typeof ttlInterval.unref === 'function') {
+    ttlInterval.unref();
+}
+
+/**
+ * Détermine le TTL optimal pour un ticket.
+ * Utilise les valeurs pré-calculées de la tâche d'optimisation en arrière-plan et effectue
+ * une interpolation linéaire instantanée pour le score requis.
+ *
+ * @param {number} suspicionScore - Le score de suspicion de la requête.
+ * @returns {number} Le TTL optimal calculé en millisecondes.
+ */
+function determineOptimalTicketTtl(suspicionScore) {
+    const MIN_TTL = 300000;
+    const MAX_TTL = 86400000;
+    const score = Math.max(0, Math.min(100, suspicionScore));
+
+    if (!optimizedTtlCache || optimizedTtlCache.size === 0) {
+        // Formule mathématique instantanée de secours si le cache de fond n'est pas encore prêt
+        return Math.round(MAX_TTL - (score / 100) * (MAX_TTL - MIN_TTL));
+    }
+
+    const lowerKey = Math.floor(score / 10) * 10;
+    const upperKey = Math.ceil(score / 10) * 10;
+
+    const lowerTtl = optimizedTtlCache.get(lowerKey);
+    const upperTtl = optimizedTtlCache.get(upperKey);
+
+    if (lowerTtl === undefined || upperTtl === undefined) {
+        return Math.round(MAX_TTL - (score / 100) * (MAX_TTL - MIN_TTL));
+    }
+
+    if (lowerKey === upperKey) {
+        return lowerTtl;
+    }
+
+    // Interpolation linéaire entre les deux points clés optimisés du front de Pareto
+    const fraction = (score - lowerKey) / (upperKey - lowerKey);
+    return Math.round(lowerTtl + fraction * (upperTtl - lowerTtl));
 }
 
 /**
@@ -3836,6 +3891,7 @@ export const __internal = {
     FingerprintBuilder, // Export for testing
     calculateTarget,
     determineOptimalTicketTtl,
+    runBackgroundTtlOptimization,
     getRequestPatternScore, // Expose for testing
     getBehaviorScore, // Expose for testing
     getCrossLayerInconsistency, // Expose for testing
