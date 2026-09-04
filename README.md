@@ -59,7 +59,7 @@ For API clients, the challenge is delivered as a `404` JSON response, and the cl
 
 ### Prerequisites
 
-*   **PHP 7.4+**
+*   **PHP 8.0+**
 *   The **BCMath** extension (`php-bcmath`) is required. It is included by default in most PHP installations.
 *   **Composer** for package management.
 *   The **GMP** extension (`php-gmp`) is highly recommended for performance. If not available, the library will fall back to a slower BCMath-based implementation for cryptographic operations.
@@ -74,7 +74,7 @@ This guide shows the simplest way to integrate the library into any PHP applicat
 
 ### Prerequisites
 
-*   **PHP 7.4+**
+*   **PHP 8.0+**
 *   The **BCMath** extension (`php-bcmath`) is required. It is included by default in most PHP installations.
 *   **Composer** for package management.
 *   The **GMP** extension (`php-gmp`) is highly recommended for performance. If not available, the library will fall back to a slower BCMath-based implementation for cryptographic operations.
@@ -375,6 +375,68 @@ This architecture is common in high-performance environments and offers great fl
 
 ---
 
+### Exposing Prometheus Metrics (Optional & Secure)
+
+You can expose a Prometheus-compatible endpoint.
+
+**It is CRUCIAL to secure this endpoint.** By default, the endpoint will be accessible to anyone. You can provide a `metricsAuthorizationCallback` in your `securityConfig` to implement custom authorization rules.
+
+The `metricsAuthorizationCallback` receives a `RequestContext` object and should return:
+- `true`: Access granted.
+- `false`: Access denied (will result in a 403 Forbidden).
+- An array like `['action' => 'redirect', 'path' => '/login', 'status' => 302]`: To redirect the client (e.g., to an SSO login page).
+- An array like `['action' => 'block', 'status' => 401, 'body' => 'Unauthorized']`: To block access with a specific status and message.
+
+ ```php
+ <?php
+
+ // Example of a custom authorization callback
+ $securityConfig['metricsAuthorizationCallback'] = function (\Anonympins\Fingerprint\RequestContext $context) {
+     // Implement your custom authorization logic here.
+     // For example, check an API key in headers, or a session.
+ 
+     // Example 1: Allow only from specific IP
+     if ($context->clientIp === '127.0.0.1' || $context->clientIp === '::1') {
+         return true; // Authorized
+     }
+ 
+     // Example 2: Require a specific header (e.g., an API key)
+     if (($context->headers['X-Metrics-API-Key'] ?? '') === 'your-secret-api-key') {
+         return true; // Authorized
+     }
+ 
+     // Example 3: Redirect to an SSO login page if not authenticated
+     // (Assuming you have a session or token check here)
+     // if (!isAuthenticated($context)) {
+     //     return ['action' => 'redirect', 'path' => 'https://sso.yourdomain.com/login?redirect_to=/metrics', 'status' => 302];
+     // }
+ 
+     return false; // Deny by default if no rule matches
+ };
+ 
+ // Re-create the protector with the updated securityConfig
+ $protector = new DirectFingerprint($securityConfig);
+ 
+ // Handle the /metrics route
+ if (isset($_GET['metrics'])) { // Or check a specific path like $_SERVER['REQUEST_URI'] === '/metrics'
+     // Create a RequestContext for the metrics request
+     $metricsContext = new \Anonympins\Fingerprint\RequestContext(
+         $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1',
+         parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '/',
+         function_exists('getallheaders') ? getallheaders() : [],
+         $_GET,
+         $_POST ?: json_decode(file_get_contents('php://input'), true),
+         $_COOKIE,
+         $_SERVER['SERVER_PROTOCOL'] ?? '1.1'
+     );
+     $protector->handleMetricsRequest($metricsContext);
+     // handleMetricsRequest will call exit() upon completion
+ }
+ 
+?>
+```
+
+
 <a id="nodejs-quickstart"></a>
 ## NodeJS Quickstart
 
@@ -409,9 +471,10 @@ Available profiles:
 
 ```javascript
 import express from 'express';
+import http from 'http'; // Required for Node.js RequestContext
 import bodyParser from 'body-parser';
 import cookieParser from 'cookie-parser';
-import { powMiddleware, createSecurityProfile } from '@anonympins/fingerprint'; // Adjust the path
+import { powMiddleware, createSecurityProfile, handleMetricsRequest } from '@anonympins/fingerprint'; // Adjust the path
 
 const app = express();
 app.use(cookieParser());
@@ -440,6 +503,8 @@ const securityConfig = createSecurityProfile('api', {
         minDataPoints: 200,
         savePath: './security-config.optimized.json' // (Optional) Save the best config found.
     },
+    // (Optional) Custom authorization callback for the /metrics endpoint
+    metricsAuthorizationCallback: async (context) => { /* ... your auth logic ... */ return true; },
 });
 
 // Create an instance of the middleware with your security configuration.
@@ -449,12 +514,61 @@ const powMiddlewareInstance = powMiddleware(securityConfig);
 // to correctly retrieve the client's IP.
 app.set('trust proxy', 1);
 
+// --- Metrics Endpoint (Node.js) ---
+// This route should typically be placed BEFORE the general powMiddleware to avoid unnecessary processing
+// for metrics requests, especially if the metricsAuthorizationCallback is simple.
+app.get('/metrics', async (req, res) => {
+    // The handleMetricsRequest function (conceptually part of the library)
+    // will handle authorization and serving of metrics.
+    await handleMetricsRequest(req, res, securityConfig);
+});
+// --- End Metrics Endpoint ---
+
 // Apply the protection middleware to all routes or to specific ones.
 app.use(powMiddlewareInstance);
 
 app.get('/', (req, res) => {
     res.send('Welcome to the protected page!');
 });
+
+// The powMiddleware itself (or the FingerprintEngine it wraps) should internally
+// call MetricsManager to record events like requests passed, blocked, challenged,
+// and suspicion scores. This example shows how you might observe the results
+// if the middleware attaches them to `req.fingerprint`.
+app.use((req, res, next) => {
+    // Assuming powMiddleware attaches a 'fingerprint' object to the request
+    if (req.fingerprint) {
+        const { score, action, intendedAction } = req.fingerprint;
+
+        // Record suspicion score
+        if (score !== undefined) {
+            // MetricsManager.observeValue('suspicion_score', score, { action: action || 'processed' });
+        }
+
+        // Record request status
+        if (action) {
+            // if (action === 'block') {
+            //     MetricsManager.incrementCounter('requests_total', { status: 'blocked' });
+            // } else if (action === 'challenge') {
+            //     MetricsManager.incrementCounter('requests_total', { status: 'challenged' });
+            // } else if (action === 'next') {
+            //     MetricsManager.incrementCounter('requests_total', { status: 'passed' });
+            // }
+        }
+
+        // Record dry run actions
+        if (securityConfig.dryRun && intendedAction) {
+            // if (intendedAction === 'block') {
+            //     MetricsManager.incrementCounter('requests_total', { status: 'dry_run_block' });
+            // } else if (intendedAction === 'challenge') {
+            //     MetricsManager.incrementCounter('requests_total', { status: 'dry_run_challenge' });
+            // }
+        }
+    }
+    next();
+});
+// --- End Conceptual Metrics Collection ---
+
 
 // Example of accessing the suspicion score in a subsequent middleware or route.
 // The `fingerprint` object is attached to the request object by the middleware.
@@ -471,7 +585,8 @@ app.listen(3000, () => console.log('Server started on port 3000'));
 If you prefer to define the entire configuration manually instead of using a profile, you can create a `securityConfig` object with all the parameters. All parameters are optional, but it is highly recommended to review and adjust them for your specific needs. The engine will warn you about any unknown keys in this configuration, helping you catch typos.
 
 ```javascript
-import { powMiddleware, default_whitelist, default_analyzers } from '@anonympins/fingerprint';
+import { 
+    powMiddleware, default_whitelist, default_analyzers } from '@anonympins/fingerprint';
 
 const app = express();
 app.use(cookieParser());
@@ -620,7 +735,6 @@ const securityConfig = {
     dryRun: false,
 };
 
-
 // Create an instance of the middleware with your security configuration.
 const powMiddlewareInstance = powMiddleware(securityConfig);
 ```
@@ -648,7 +762,6 @@ These parameters form the basis of the statistical request pattern analysis:
 *   `regularityThreshold`: (Default: 50ms) The standard deviation in milliseconds below which the request timing is considered "too regular" and robotic.
 *   `benfordThreshold`: (Default: 0.15) The deviation score from Benford's Law above which the timing distribution is considered "unnatural".
 *   `patternWeight`: (Default: 80) A strong, one-time penalty applied to the suspicion score if either a regularity or Benford's Law anomaly is detected.
-
 *   `benfordMinSamples`: (Default: 15) The minimum number of request timings to collect before performing a Benford's Law test.
 *   `benfordWeight`: (Default: 50) The weight applied to the suspicion score if the distribution of timings significantly deviates from Benford's Law.
 

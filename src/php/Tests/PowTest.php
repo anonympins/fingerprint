@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Tests;
 
-use PHPUnit\Framework\TestCase;
+use Anonympins\Fingerprint\Config\SecurityProfiles;
 use Anonympins\Fingerprint\FingerprintEngine;
 use Anonympins\Fingerprint\ProblemManager;
 use Anonympins\Fingerprint\Store\InMemoryStore;
 use Anonympins\Fingerprint\Store\StoreManager;
-use Anonympins\Fingerprint\Config\SecurityProfiles;
+use PHPUnit\Framework\TestCase;
 
 class PowTest extends TestCase
 {

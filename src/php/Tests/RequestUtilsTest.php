@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Tests;
 
-use PHPUnit\Framework\TestCase;
 use Anonympins\Fingerprint\RequestContext;
 use Anonympins\Fingerprint\Utils\RequestUtils;
+use PHPUnit\Framework\TestCase;
 
 class RequestUtilsTest extends TestCase
 {

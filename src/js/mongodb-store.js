@@ -18,17 +18,34 @@
  */
 export function createMongoDbStore(db, collectionName = 'fingerprint_store') {
   const collection = db.collection(collectionName);
+  
+  // Custom replacer/reviver to handle Set serialization (identical to Redis/SQL stores)
+  const replacer = (k, v) => (v instanceof Set ? Array.from(v) : v);
+  const reviver = (k, v) => (k === 'ips' && Array.isArray(v) ? new Set(v) : v);
 
   return {
     async get(key) {
       const doc = await collection.findOne({ _id: key });
-      // The TTL index automatically removes expired documents, so no need to check `expiresAt` here.
-      return doc ? doc.value : null;
+      if (!doc) return null;
+
+      // Active expiration check to bypass eventual consistency of MongoDB's 60s TTL cleanup daemon
+      if (doc.expiresAt && new Date(doc.expiresAt) < new Date()) {
+        await this.delete(key);
+        return null;
+      }
+
+      try {
+        return JSON.parse(doc.value, reviver);
+      } catch (e) {
+        // Fallback for legacy un-serialized raw values
+        return doc.value;
+      }
     },
     async set(key, value, ttl) {
+      const stringValue = JSON.stringify(value, replacer);
       const doc = {
         _id: key,
-        value: value,
+        value: stringValue,
       };
 
       if (ttl && ttl > 0) {
@@ -43,11 +60,21 @@ export function createMongoDbStore(db, collectionName = 'fingerprint_store') {
       );
     },
     async has(key) {
-      const count = await collection.countDocuments({ _id: key });
-      return count > 0;
+      const doc = await collection.findOne({ _id: key }, { projection: { expiresAt: 1 } });
+      if (!doc) return false;
+
+      if (doc.expiresAt && new Date(doc.expiresAt) < new Date()) {
+        await this.delete(key);
+        return false;
+      }
+      return true;
     },
     async delete(key) {
       await collection.deleteOne({ _id: key });
     },
+    async init() {
+      // Automates index configuration
+      await collection.createIndex({ "expiresAt": 1 }, { expireAfterSeconds: 0 });
+    }
   };
 }

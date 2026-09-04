@@ -28,9 +28,9 @@ if (!$autoloaded) {
     exit(1);
 }
 
-use Anonympins\Fingerprint\Utils\RequestUtils;
-use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\Optimization\Optimization;
+use Anonympins\Fingerprint\Store\StoreManager;
+use Anonympins\Fingerprint\Utils\RequestUtils;
 
 // 1. Récupération des arguments CLI
 $configPath = $argv[1] ?? null;

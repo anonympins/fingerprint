@@ -1,5 +1,6 @@
-import http from 'http';
-import { FingerprintEngine } from './fingerprint.js'; // Adjust path
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import { powMiddleware, handleMetricsRequest } from './src/js/fingerprint.js'; // Adjust path
 
 const securityConfig = {
     weights: {
@@ -20,65 +21,25 @@ const securityConfig = {
         block: 95,  // Score above which the request is blocked outright (HTTP 404)
     },
 };
-const engine = new FingerprintEngine(securityConfig);
 
-const server = http.createServer(async (req, res) => {
-    // Helper function to parse cookies from the header string
-    const parseCookies = (cookieHeader) => {
-        if (!cookieHeader) return {};
-        return cookieHeader.split(';').reduce((acc, cookie) => {
-            const [key, value] = cookie.split('=').map(c => c.trim());
-            if (key) acc[key] = value;
-            return acc;
-        }, {});
-    };
+const app = express();
 
-    // 1. Manually build the context
-    const requestContext = {
-        clientIp: req.socket.remoteAddress,
-        path: req.url.split('?')[0],
-        cookies: parseCookies(req.headers.cookie), // FIX: Correctly parse cookies
-        query: Object.fromEntries(new URL(req.url, `http://${req.headers.host}`).searchParams),
-        headers: req.headers,
-        rawReq: req, // Pass the raw request
-        rawRes: res, // Pass the raw response for cookie setting
-    };
+// Middleware pour analyser les cookies requis par le moteur de fingerprinting
+app.use(cookieParser());
 
-    // 2. Process and get a decision
-    const decision = await engine.processRequest(requestContext);
+// Middleware PoW qui gère l'évaluation de la réputation et l'interception automatique par challenge PoW
+app.use(powMiddleware(securityConfig));
 
-    // The decision object now contains the score and the raw suspicion vector.
-    // You can use it for logging or custom logic.
-    console.log(`Request from ${requestContext.clientIp} processed with score: ${decision.score}`);
-
-    // 3. Act on the decision
-    if (decision.action === 'challenge') {
-        // The engine now returns the correct status (e.g., 404) for challenges.
-        // We should respect this status code.
-        res.writeHead(decision.status, { 'Content-Type': 'text/html' });
-        res.end(decision.body);
-    } else if (decision.action === 'redirect') {
-        // The engine now returns the cookie to be set in the decision object.
-        const headers = { 'Location': decision.path };
-        if (decision.cookie) {
-            const { name, value, options } = decision.cookie;
-            let cookieString = `${name}=${value}`;
-            for (const key in options) {
-                cookieString += `; ${key}=${options[key]}`;
-            }
-            headers['Set-Cookie'] = cookieString;
-        }
-        res.writeHead(302, headers);
-        res.end();
-    } else { // 'next'
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        // FIX: Distinguish between the root path (which can trigger a challenge)
-        // and a final destination page to avoid redirection loops.
-        const destinationMessage = requestContext.path === '/' ?
-            'Welcome! You are on the main page. Try accessing /protected to see the engine in action.' :
-            'Welcome to the protected page!';
-        res.end(destinationMessage);
-    }
+// Route d'accueil
+app.get('/', (req, res) => {
+    res.send('Welcome! You are on the main page. Try accessing /protected to see the engine in action.');
 });
 
-server.listen(3000, () => console.log('Server with manual fingerprint engine started on port 3000'));
+// Route protégée
+app.get('/protected', (req, res) => {
+    res.send('Welcome to the protected page!');
+});
+app.get('/metrics', async (req, res) => {
+    await handleMetricsRequest(req, res, securityConfig);
+});
+app.listen(3000, () => console.log('Server with Express and powMiddleware started on port 3000'));

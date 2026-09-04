@@ -114,7 +114,7 @@ This release marks a major expansion of the library, introducing a full-featured
 
 ### ✨ New Features
 
-*   **Full PHP Support**: The library is now available for PHP 7.4+ with a feature set equivalent to the Node.js version.
+*   **Full PHP Support**: The library is now available for PHP 8.0+ with a feature set equivalent to the Node.js version.
     *   **Direct Integration**: A `DirectFingerprint` class allows for easy integration into any PHP application, including legacy codebases, by interacting directly with PHP's superglobals.
     *   **PSR-15 Middleware**: A `FingerprintMiddleware` is provided for modern, framework-agnostic integration with applications that follow PSR-7, PSR-15, and PSR-17 standards (e.g., Slim, Laminas).
     *   **Pluggable Datastores**: The PHP version supports the same pluggable store architecture, allowing state to be persisted in Redis, databases, or other external systems.

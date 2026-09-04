@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Tests;
 
-use PHPUnit\Framework\TestCase;
 use Anonympins\Fingerprint\Challenge\ChallengeUtils;
 use Anonympins\Fingerprint\Utils\BigInt;
+use PHPUnit\Framework\TestCase;
 
 class ChallengeUtilsTest extends TestCase
 {

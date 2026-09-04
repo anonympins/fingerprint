@@ -1,10 +1,10 @@
-import { it, beforeEach, afterEach, assert, describe, test, expect, vi } from 'vitest';
-import { createHash, createHmac } from 'node:crypto';
-import * as net from 'node:net'; // Use namespace import for robust access to built-in module functions
-import { solveCpuTargetInline, solveMemory } from '../src/js/pow.solver.js';
-import { readFileSync } from 'node:fs';
-import { FingerprintBuilder, cyrb53 } from '../src/js/fingerprint.builder.js';
+import {afterEach, assert, beforeEach, describe, expect, it, test, vi} from 'vitest';
+import {createHash, createHmac} from 'node:crypto';
+import {solveCpuTargetInline, solveMemory} from '../src/js/pow.solver.js';
+import {readFileSync} from 'node:fs';
+import {cyrb53, FingerprintBuilder} from '../src/js/fingerprint.builder.js';
 import * as dns from 'node:dns/promises';
+import * as fingerprint from '../src/js/fingerprint.js';
 
 // Mock import.meta.env before importing the module that uses it
 vi.mock('import-meta-env', () => ({
@@ -16,7 +16,6 @@ vi.mock('node:fs', async () => {
     return { ...actualFs, readFileSync: vi.fn() };
 });
 
-import * as fingerprint from '../src/js/fingerprint.js';
 const {
     FingerprintEngine,
     isTicketValid,

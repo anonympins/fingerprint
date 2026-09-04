@@ -1,6 +1,6 @@
 # Propositions d'Améliorations et Nouvelles Fonctionnalités
 
-Ce document liste 20 propositions pour l'évolution de la bibliothèque de fingerprinting, visant à renforcer ses capacités de détection, sa flexibilité et son intégration.
+Ce document liste 17 propositions pour l'évolution de la bibliothèque de fingerprinting, visant à renforcer ses capacités de détection, sa flexibilité et son intégration.
 
 ---
 
@@ -44,54 +44,42 @@ Ce document liste 20 propositions pour l'évolution de la bibliothèque de finge
 
 ### Axe 4 : Améliorations du Moteur et de l'Analyse
 
-9.  **Analyse Comportementale Multi-sessions** :
-    *   **Description** : Agréger les données comportementales (scores, types d'actions) non seulement par `device_id`, mais aussi par sous-réseau IP (`/24` pour IPv4, `/48` pour IPv6).
-    *   **Bénéfice** : Détecter les attaques coordonnées provenant d'un même bloc d'IPs, même si chaque bot utilise un `device_id` différent.
-
-10. **Détection d'Incohérence de Fuseau Horaire** :
+9.  **Détection d'Incohérence de Fuseau Horaire** :
     *   **Description** : Comparer le fuseau horaire rapporté par le navigateur (`Intl.DateTimeFormat().resolvedOptions().timeZone`) avec celui déduit de l'adresse IP (via une base de données GeoIP).
     *   **Bénéfice** : Signal puissant pour détecter l'utilisation de proxies ou de VPN, où le fuseau horaire de la machine cliente ne correspond pas à celui de l'IP de sortie.
 
-11. **Analyse de la Séquence des Requêtes (Path Traversal Patterns)** :
+10. **Analyse de la Séquence des Requêtes (Path Traversal Patterns)** :
     *   **Description** : Au-delà de la vitesse, analyser la séquence des URL visitées. Un humain navigue de manière semi-aléatoire, tandis qu'un scraper suit souvent un ordre alphabétique ou séquentiel (ex: `/product/1`, `/product/2`, ...).
     *   **Bénéfice** : Détection plus fine des robots de scraping qui tentent de masquer leur activité en ralentissant leurs requêtes.
 
-12. **Support de JA4/JA4S/JA4H** :
-    *   **Description** : Étendre la détection TLS au-delà de JA3 pour inclure les nouvelles spécifications JA4, qui offrent une granularité encore plus fine, notamment pour le trafic HTTP/2 et HTTP/3.
-    *   **Bénéfice** : Garder une longueur d'avance sur les techniques d'évasion et améliorer l'identification des clients modernes.
-
 ### Axe 5 : Expérience Développeur et Intégration
 
-13. **Tableau de Bord de Monitoring (Dashboard)** :
+11. **Tableau de Bord de Monitoring (Dashboard)** :
     *   **Description** : Créer un petit package compagnon (ou une route intégrée) qui fournit un tableau de bord web simple. Il afficherait des statistiques en temps réel : nombre de requêtes bloquées/challengées, scores moyens, principaux vecteurs de suspicion, et progression des "Useful PoW".
     *   **Bénéfice** : Offrir une visibilité immédiate sur l'efficacité de la protection et aider au diagnostic sans avoir à parser des logs bruts.
 
-14. **Export des Métriques au format Prometheus** :
+12. **Export des Métriques au format Prometheus** :
     *   **Description** : Ajouter un endpoint (ex: `/metrics`) qui expose les métriques clés (requêtes passées, bloquées, challengées, scores, etc.) au format standard de Prometheus.
     *   **Bénéfice** : Intégration native avec les écosystèmes de monitoring et d'alerting modernes comme Prometheus et Grafana.
 
-15. **Mode "Shadow Challenge"** :
+13. **Mode "Shadow Challenge"** :
     *   **Description** : Similaire au `dryRun`, mais au lieu de ne rien faire, le moteur enverrait un challenge avec une difficulté quasi-nulle. Le résultat serait logué mais n'affecterait pas la requête.
     *   **Bénéfice** : Permet de tester en production la capacité des utilisateurs légitimes à résoudre les challenges (ex: compatibilité navigateur) sans impacter leur expérience.
 
-16. **Génération de Code pour les Intégrations de Datastore** :
+14. **Génération de Code pour les Intégrations de Datastore** :
     *   **Description** : Fournir un script CLI qui génère le schéma SQL (`CREATE TABLE ...`) ou la commande d'index TTL pour MongoDB, en fonction de la configuration.
     *   **Bénéfice** : Simplifier la configuration initiale des datastores externes et réduire les erreurs de déploiement.
 
 ### Axe 6 : Sécurité et Robustesse
 
-17. **Signature des Métriques Comportementales Côté Client** :
+15. **Signature des Métriques Comportementales Côté Client** :
     *   **Description** : Le serveur pourrait envoyer un token à usage unique à la page. Le client utiliserait ce token pour signer (HMAC) le header `X-Behavior-Metrics` avant de l'envoyer.
     *   **Bénéfice** : Empêcher un bot de forger de fausses métriques comportementales (ex: faux mouvements de souris) pour tromper le serveur.
 
-18. **Détection des Incohérences de Client-Hints** :
-    *   **Description** : Croiser les informations du `User-Agent` avec celles des en-têtes `Sec-CH-UA-*` (Client Hints). Un `User-Agent` indiquant Chrome 108 mais des Client Hints pour Chrome 120 est un signe de manipulation.
-    *   **Bénéfice** : Ajout d'une couche de validation supplémentaire pour démasquer les tentatives d'usurpation de User-Agent.
-
-19. **Analyse de l'Entropie des Mouvements de la Molette (Scroll)** :
+16. **Analyse de l'Entropie des Mouvements de la Molette (Scroll)** :
     *   **Description** : Côté client, suivre les événements de défilement. Un défilement humain est souvent saccadé et irrégulier, tandis qu'un bot peut simuler un défilement parfaitement lisse ou instantané.
     *   **Bénéfice** : Ajout d'un nouveau signal comportemental simple à collecter mais difficile à simuler de manière réaliste pour un bot.
 
-20. **Détection des Environnements de Virtualisation/Headless via le Fingerprint** :
+17. **Détection des Environnements de Virtualisation/Headless via le Fingerprint** :
     *   **Description** : Côté client, utiliser des caractéristiques connues des navigateurs headless (comme Puppeteer ou Playwright) pour les identifier. Par exemple, des incohérences dans les propriétés de `navigator`, des temps de rendu de canvas spécifiques, ou la présence de propriétés injectées par ces outils.
     *   **Bénéfice** : Détection directe des outils d'automatisation les plus courants, même s'ils tentent de masquer leur présence.

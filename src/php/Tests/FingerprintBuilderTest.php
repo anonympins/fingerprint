@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Tests;
 
-use PHPUnit\Framework\TestCase;
 use Anonympins\Fingerprint\FingerprintBuilder;
+use PHPUnit\Framework\TestCase;
 
 class FingerprintBuilderTest extends TestCase
 {

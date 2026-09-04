@@ -11,7 +11,7 @@
  *
  */
 
-import { Worker } from "node:worker_threads";
+import {Worker} from "node:worker_threads";
 import os from "node:os";
 import crypto from "node:crypto";
 

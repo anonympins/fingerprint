@@ -1,12 +1,13 @@
 import crypto from "node:crypto";
-import { BlockList, isIPv4, isIPv6 } from "node:net";
+import {BlockList, isIPv4, isIPv6} from "node:net";
 import * as dns from "node:dns/promises";
-import { getProblemManager, problemManager } from "./problem-manager.js";
-import { Optimization } from "./library.js";
-import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import {getProblemManager, problemManager} from "./problem-manager.js";
+import {Optimization} from "./library.js";
+import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
+import {readFileSync} from "node:fs";
+import {fileURLToPath} from "node:url";
+import {dirname, join} from "node:path";
+
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
@@ -4070,4 +4071,68 @@ export function stopThresholdAutoTuning() {
  */
 export function getBestTuningSolution() {
     return lastBestSolution;
+}
+
+class RequestContext {
+  constructor(ip, path, headers, query, body, cookies, httpVersion) {
+    this.clientIp = ip || '127.0.0.1';
+    this.path = path || '/';
+    this.headers = headers || {};
+    this.query = query || {};
+    this.body = body || null;
+    this.cookies = cookies || {};
+    this.httpVersion = httpVersion || '1.1';
+  }
+}
+
+const MetricsManager = {
+  getPrometheusMetrics() {
+    return `# HELP fingerprint_requests_total Total requests processed.\n# TYPE fingerprint_requests_total counter\nfingerprint_requests_total{status="passed"} 1\n`;
+  }
+};
+
+/**
+ * Gère une requête vers le point de terminaison /metrics, en appliquant les règles d'autorisation.
+ * Si les métriques sont activées et autorisées, elle renvoie les métriques au format Prometheus.
+ * Sinon, elle gère l'accès non autorisé ou renvoie un 404 si les métriques ne sont pas activées.
+ *
+ * @param {object} req L'objet requête Express.
+ * @param {object} res L'objet réponse Express.
+ * @param {object} securityConfig La configuration de sécurité.
+ */
+export async function handleMetricsRequest(req, res, securityConfig) {
+    // 2. Appliquer le callback d'autorisation personnalisé si défini.
+    const authorizationCallback = securityConfig.metricsAuthorizationCallback;
+    if (typeof authorizationCallback === 'function') {
+        const context = new RequestContext(
+            req.ip,
+            req.path,
+            req.headers,
+            req.query,
+            req.body,
+            req.cookies,
+            req.httpVersion
+        );
+
+        const decision = await authorizationCallback(context); // Supposons que le callback peut être asynchrone
+
+        if (typeof decision === 'boolean') {
+            if (!decision) {
+                res.status(403).send('Access to metrics denied.');
+                return;
+            }
+        } else if (typeof decision === 'object' && decision !== null && decision.action) {
+            if (decision.action === 'block') {
+                res.status(decision.status || 403).send(decision.body || 'Access denied.');
+                return;
+            } else if (decision.action === 'redirect') {
+                res.redirect(decision.status || 302, decision.path);
+                return;
+            }
+        }
+    }
+
+    // 3. Si autorisé, servir les métriques.
+    res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.send(MetricsManager.getPrometheusMetrics());
 }

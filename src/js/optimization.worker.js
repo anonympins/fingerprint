@@ -4,8 +4,8 @@
  * Ce script s'exécute sur un thread séparé pour ne pas bloquer l'interface utilisateur.
  */
 
-import { parentPort, workerData } from 'worker_threads';
-import { Optimization } from './library.js'; // Assurez-vous que le chemin est correct
+import {parentPort, workerData} from 'worker_threads';
+import {Optimization} from './library.js'; // Assurez-vous que le chemin est correct
 
 if (parentPort) {
     parentPort.on('message', async () => { // Le message est vide, on utilise workerData

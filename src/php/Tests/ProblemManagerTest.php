@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Tests;
 
-use PHPUnit\Framework\TestCase;
+use Anonympins\Fingerprint\Optimization\FunctionRegistry;
 use Anonympins\Fingerprint\ProblemManager;
-use Anonympins\Fingerprint\Store\IStore;
 use Anonympins\Fingerprint\Store\InMemoryStore;
-use Anonympins\Fingerprint\Optimization\FunctionRegistry; // Assurez-vous que cette classe est autoloadable
+use Anonympins\Fingerprint\Store\IStore;
+use PHPUnit\Framework\TestCase;
+
+// Assurez-vous que cette classe est autoloadable
 
 class ProblemManagerTest extends TestCase
 {
