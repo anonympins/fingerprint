@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Challenge;
 
+use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\Utils\BigInt;
+use Anonympins\Fingerprint\Utils\RequestUtils;
 
 /**
  * Classe utilitaire pour la génération et la vérification des challenges Proof-of-Work.
@@ -34,11 +36,52 @@ class ChallengeUtils
     }
 
     /**
-     * Vérifie si un ticket de passage est valide.
+     * Vérifie si un ticket de passage est valide (supporte les tickets opaques via store et le fallback legacy).
      */
-    public static function isTicketValid(?string $ip, ?string $ticket): bool
-    {
-        if (empty($ip) || empty($ticket) || !str_contains($ticket, ':')) {
+    public static function isTicketValid(
+        ?string $ip,
+        ?string $ticket,
+        string $deviceId = '',
+        string $deviceHash = '',
+        bool $allowCrossNetworkRoaming = false
+    ): bool {
+        if (empty($ip) || empty($ticket)) {
+            return false;
+        }
+
+        $store = StoreManager::getStore();
+        $ticketData = $store->get("ticket:{$ticket}");
+
+        if ($ticketData !== null) {
+            $expiry = $ticketData['expiry'] ?? null;
+            $originalIp = $ticketData['originalIp'] ?? null;
+            $storedDeviceId = $ticketData['deviceId'] ?? '';
+            $storedDeviceHash = $ticketData['deviceHash'] ?? '';
+
+            if (!$expiry || (int)floor(microtime(true) * 1000) > (int)$expiry) {
+                $store->delete("ticket:{$ticket}");
+                return false;
+            }
+
+            if ($ip === $originalIp) {
+                return true;
+            }
+
+            $currentSubnet = RequestUtils::getIpSubnet($ip);
+            $originalSubnet = RequestUtils::getIpSubnet($originalIp);
+            if ($currentSubnet !== null && $originalSubnet !== null && $currentSubnet === $originalSubnet) {
+                return true;
+            }
+
+            if (!$allowCrossNetworkRoaming) {
+                return false;
+            }
+
+            return !empty($deviceId) && $deviceId === $storedDeviceId && !empty($deviceHash) && $deviceHash === $storedDeviceHash;
+        }
+
+        // Fallback rétrocompatible pour les anciens tickets signés (sans état)
+        if (!str_contains($ticket, ':')) {
             return false;
         }
 
@@ -87,14 +130,16 @@ class ChallengeUtils
 
     /**
      * Vérifie une solution de PoW CPU et génère un ticket si elle est valide.
-     * @return string|null Le ticket en cas de succès, sinon null.
+     * @return string|null Le ticket opaque en cas de succès, sinon null.
      */
     public static function verifyCpuTargetPoWAndGenerateTicket(
         string $clientIp,
         int $ticketTtl,
         string $nonce,
         string $solution,
-        array $challengeContext
+        array $challengeContext,
+        string $deviceId = '',
+        string $deviceHash = ''
     ): ?string {
         $cpuTargetHex = $challengeContext['cpuTarget'] ?? null;
         $baseBlock = $challengeContext['baseBlock'] ?? null;
@@ -114,9 +159,20 @@ class ChallengeUtils
 
         if ($isValid) {
             error_log('[FP Server Verify] CPU PoW verification PASSED.');
+            
+            // Génération d'un jeton opaque et unique
+            $ticketId = bin2hex(random_bytes(16));
             $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
-            $signature = hash_hmac('sha256', "{$clientIp}:{$expiry}", self::getPowSecret());
-            return "{$expiry}:{$signature}";
+            
+            $store = StoreManager::getStore();
+            $store->set("ticket:{$ticketId}", [
+                'expiry' => $expiry,
+                'originalIp' => $clientIp,
+                'deviceId' => $deviceId,
+                'deviceHash' => $deviceHash
+            ], (int)ceil($ticketTtl / 1000));
+            
+            return $ticketId;
         }
 
         // Log details on failure
