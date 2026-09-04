@@ -49,6 +49,13 @@ We welcome community contributions! Please read our **[Contributing Guidelines](
 - Running the test suites (`Vitest` and `PHPUnit`).
 - Coding and pull request standards.
 
+Thanks to our contributors : 
+- [anonympins](https://github.com/anonympins)
+
+## Used actively on
+
+- https://primals.net and sub-sites
+
 ## License
 
 This project is licensed under the MIT License.
