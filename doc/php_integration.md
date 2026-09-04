@@ -149,12 +149,3 @@ You can expose a Prometheus-compatible endpoint. **It is CRUCIAL to secure this 
 
 * See Full Configuration Options to discover all options you can tune.
 * See Client Side Integration to enable proactive browser challenges and behavioral trackers.
-  Diff
-  +50
-# Node.js Integration Guide
-
-This guide details how to integrate and use the `fingerprint` library within a Node.js ecosystem, using Express middleware or other raw routing systems.
-
-## Prerequisites
-
-Make sure you have middlewar

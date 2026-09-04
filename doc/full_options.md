@@ -177,8 +177,34 @@ For quick starts without manually defining everything, use pre-made profiles:
  import { createSecurityProfile } from '@anonympins/fingerprint';
  
  const config = createSecurityProfile('ecommerce', {
+     verbose: true
      // overrides here...
  });
- ```
 
-**PHP**:
+```
+
+**PHP**
+```php
+<?php
+
+declare(strict_types=1);
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+use Anonympins\Fingerprint\Config\SecurityProfiles;
+use Anonympins\Fingerprint\DirectFingerprint;
+
+// Création du profil avec surcharges
+$securityConfig = SecurityProfiles::createSecurityProfile('ecommerce', [
+    'verbose' => true, 
+]);
+
+// Initialisation du protecteur avec la configuration
+$protector = new DirectFingerprint($securityConfig);
+
+// Analyse et protection de la requête (bloque ou lance un challenge si suspect)
+$fingerprint = $protector->protect();
+
+// Si le script continue, la requête est légitime
+echo "Welcome on the secured page !";
+```
