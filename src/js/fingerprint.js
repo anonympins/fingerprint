@@ -65,6 +65,7 @@ const securityProfiles = {
             decayFactor: 0.9,
             inactivityReset: 5000,
         },
+        allowCrossNetworkRoaming: true, // Profil balancé : tolérant par défaut
     },
     /**
      * @summary **Strict Profile**
@@ -98,6 +99,7 @@ const securityProfiles = {
             inactivityReset: 4000,
         },
         challengeNewDevices: true, // Challenge all new devices
+        allowCrossNetworkRoaming: false, // Strict : interdiction de changer complètement de réseau sans re-challenge
     },
     /**
      * @summary **API Profile**
@@ -131,6 +133,7 @@ const securityProfiles = {
             inactivityReset: 10000,
         },
         isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
+        allowCrossNetworkRoaming: false, // Les API ne doivent pas subir de roaming inter-IP suspect
     }
     ,
     /**
@@ -164,6 +167,7 @@ const securityProfiles = {
             decayFactor: 0.92,
             inactivityReset: 10000,
         },
+        allowCrossNetworkRoaming: true,
     },
     /**
      * @summary **E-commerce Profile**
@@ -199,6 +203,7 @@ const securityProfiles = {
         },
         challengeNewDevices: true, // New devices are suspicious in e-commerce
         isApiRequest: (req) => req.path.startsWith('/api/cart') || req.path.startsWith('/api/stock') || req.path.startsWith('/api/checkout'),
+        allowCrossNetworkRoaming: false, // E-commerce : interdiction de changer de réseau sans re-challenge
     }
 };
 
@@ -825,7 +830,7 @@ export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret =
   }
   return finalHash === parseInt(solution, 10);
 };
-export const isTicketValid = (ip, ticket, deviceId = '', deviceHash = '') => {
+export const isTicketValid = (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
   if (typeof ticket !== 'string') return false;
 
@@ -877,6 +882,10 @@ export const isTicketValid = (ip, ticket, deviceId = '', deviceHash = '') => {
   const currentSubnet = getIpSubnet(ip);
   const originalSubnet = getIpSubnet(originalIp);
   if (currentSubnet && originalSubnet && currentSubnet === originalSubnet) return true;
+
+  // Si le changement de réseau complet n'est pas autorisé, on refuse le ticket
+  // et on force un re-challenge (Proof of Work)
+  if (!allowCrossNetworkRoaming) return false;
 
   // Perfect terminal identity matched via HMAC signature
   return !!(deviceId && deviceHash);
@@ -2509,6 +2518,7 @@ export class FingerprintEngine {
       'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
       'honeypot', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger',
       'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
+      'trustedProxies',
       'similarityThreshold'
     ]);
 
@@ -2808,8 +2818,9 @@ export class FingerprintEngine {
   }
 
   async processRequest(requestContext) {
+      sanitizeProxyHeaders(requestContext, this.securityConfig);
 
-    const { clientIp = "unknown", path, cookies, query, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
+      const { clientIp = "unknown", path, cookies, query, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     
     this._log('Processing request', { clientIp, path, isStatic });
@@ -2823,6 +2834,7 @@ export class FingerprintEngine {
     const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
     const currentDeviceHash = getCompositeDeviceHash(requestContext);
     const isNewDevice = !!newCookie;
+    const allowRoaming = this.securityConfig?.allowCrossNetworkRoaming ?? false;
 
     // 1. Check static IP allowlist first for maximum performance.
     if (this._isIpInAllowlist(clientIp)) {
@@ -2862,7 +2874,7 @@ export class FingerprintEngine {
     // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot probe.
     if (pow_nonce) {
         const powCookie = cookies?.pow_clearance;
-        if (!isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash)) { // Only check if there's no valid ticket
+        if (!isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming)) { // Only check if there's no valid ticket
             // This is a potential probe. We'll let the main logic confirm if it's not a legitimate challenge response.
             // The final decision is made later, after calculating the score.
         }
@@ -3236,7 +3248,7 @@ export class FingerprintEngine {
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
     // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
-    const hasValidTicket = isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash);
+    const hasValidTicket = isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming);
     const mustReChallenge = isSuspiciousHigh && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
@@ -3394,7 +3406,7 @@ export class FingerprintEngine {
     }
 
     // Basic log for each non-static request that passed without a challenge
-    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash) });
+    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming) });
     
     if (logger) {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
@@ -3409,7 +3421,8 @@ export class FingerprintEngine {
    * @returns {Promise<string>} An identification string (e.g., "device:<id>", "suspicious_high:<ip>").
    */
   async identifyRequest(requestContext) {
-    const { clientIp, cookies, rawReq, rawRes } = requestContext;
+      sanitizeProxyHeaders(requestContext, this.securityConfig);
+      const { clientIp, cookies, rawReq, rawRes } = requestContext;
 
     // --- Update IP reputation ---
     const ipProfile = (await store.get(`ip:${clientIp}`)) || {
@@ -3459,6 +3472,57 @@ const isStaticResource = (path) => staticExtensions.test(path);
 
 /** @type {Map<number, number>} Cache des TTL optimisés par score de suspicion (clés de 0 à 100 par pas de 10) */
 let optimizedTtlCache = new Map();
+/**
+ * @private
+ * Sanitizes headers injected by proxies if the request does not come from a trusted proxy.
+ * @param {object} context - The request context.
+ * @param {object} securityConfig - The security configuration.
+ */
+function sanitizeProxyHeaders(context, securityConfig) {
+    if (!context || !context.headers) return;
+
+    const proxyHeaders = [
+        'x-ja3-hash',
+        'x-ja4-hash',
+        'x-http2-fingerprint',
+        'x-tcp-fingerprint',
+        'x-ja3-raw'
+    ];
+
+    if (securityConfig && securityConfig.trustedProxies) {
+        const blockList = new BlockList();
+        const entries = Array.isArray(securityConfig.trustedProxies)
+            ? securityConfig.trustedProxies
+            : [securityConfig.trustedProxies];
+
+        let hasValidEntry = false;
+        for (const entry of entries) {
+            if (typeof entry !== 'string') continue;
+            if (entry.includes('/')) {
+                try {
+                    const [address, prefix] = entry.split('/');
+                    blockList.addSubnet(address, parseInt(prefix, 10));
+                    hasValidEntry = true;
+                } catch (e) {}
+            } else {
+                try {
+                    blockList.addAddress(entry);
+                    hasValidEntry = true;
+                } catch (e) {}
+            }
+        }
+
+        const isTrusted = hasValidEntry ? blockList.check(context.clientIp) : false;
+
+        if (!isTrusted) {
+            for (const header of proxyHeaders) {
+                if (context.headers[header]) {
+                    delete context.headers[header];
+                }
+            }
+        }
+    }
+}
 
 /**
  * Exécute l'optimisation des TTL en tâche de fond de manière asynchrone et non-bloquante.
@@ -3552,28 +3616,39 @@ function determineOptimalTicketTtl(suspicionScore) {
     const MAX_TTL = 86400000;
     const score = Math.max(0, Math.min(100, suspicionScore));
 
+    let ttl;
     if (!optimizedTtlCache || optimizedTtlCache.size === 0) {
         // Formule mathématique instantanée de secours si le cache de fond n'est pas encore prêt
-        return Math.round(MAX_TTL - (score / 100) * (MAX_TTL - MIN_TTL));
+        ttl = Math.round(MAX_TTL - (score / 100) * (MAX_TTL - MIN_TTL));
+    } else {
+        const lowerKey = Math.floor(score / 10) * 10;
+        const upperKey = Math.ceil(score / 10) * 10;
+
+        const lowerTtl = optimizedTtlCache.get(lowerKey);
+        const upperTtl = optimizedTtlCache.get(upperKey);
+
+        if (lowerTtl === undefined || upperTtl === undefined) {
+            ttl = Math.round(MAX_TTL - (score / 100) * (MAX_TTL - MIN_TTL));
+        } else if (lowerKey === upperKey) {
+            ttl = lowerTtl;
+        } else {
+            // Interpolation linéaire entre les deux points clés optimisés du front de Pareto
+            const fraction = (score - lowerKey) / (upperKey - lowerKey);
+            ttl = Math.round(lowerTtl + fraction * (upperTtl - lowerTtl));
+        }
     }
 
-    const lowerKey = Math.floor(score / 10) * 10;
-    const upperKey = Math.ceil(score / 10) * 10;
-
-    const lowerTtl = optimizedTtlCache.get(lowerKey);
-    const upperTtl = optimizedTtlCache.get(upperKey);
-
-    if (lowerTtl === undefined || upperTtl === undefined) {
-        return Math.round(MAX_TTL - (score / 100) * (MAX_TTL - MIN_TTL));
+    // Sécurité: Si le score de suspicion est élevé, on applique un plafond strict
+    // pour garantir un TTL court et sécuritaire (ex: max 30 minutes à partir de score 80).
+    if (score >= 80) {
+        const maxAllowedTtl = Math.round(1800000 - ((score - 80) / 20) * (1800000 - MIN_TTL));
+        ttl = Math.min(ttl, maxAllowedTtl);
+    } else if (score >= 50) {
+        const maxAllowedTtl = Math.round(7200000 - ((score - 50) / 30) * (7200000 - 1800000));
+        ttl = Math.min(ttl, maxAllowedTtl);
     }
 
-    if (lowerKey === upperKey) {
-        return lowerTtl;
-    }
-
-    // Interpolation linéaire entre les deux points clés optimisés du front de Pareto
-    const fraction = (score - lowerKey) / (upperKey - lowerKey);
-    return Math.round(lowerTtl + fraction * (upperTtl - lowerTtl));
+    return ttl;
 }
 
 /**

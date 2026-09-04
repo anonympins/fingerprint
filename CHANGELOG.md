@@ -1,5 +1,8 @@
 ## Version 0.3.7
 
+### 🛡️ Reverse Proxy Header Spoofing Protection (JS)
+- **Trusted Proxies verification**: Added `trustedProxies` configuration to restrict proxy-injected headers (`X-JA3-Hash`, `X-JA4-Hash`, `X-HTTP2-Fingerprint`, `X-TCP-Fingerprint`, `X-JA3-Raw`) only to requests originating from configured trusted proxy IPs/networks. Unauthenticated clients attempting to send these headers will have them automatically stripped.
+
 ### 📊 Prometheus Metrics & Monitoring (JS/PHP)
 - **Prometheus metrics export support**:
 - Implemented a metrics generator using the standard Prometheus format (`text/plain`).

@@ -733,6 +733,9 @@ const securityConfig = {
     // (Optional) Enable "dry run" mode. The engine will calculate scores and log intended actions
     // but will never actually block or challenge a request. Useful for testing new configs in production.
     dryRun: false,
+    // (Optional) List of trusted proxy IPs or CIDR blocks. If set, sensitive headers (like X-JA3-Hash, X-JA4-Hash, etc.)
+    // will only be accepted from these IPs. All other clients will have these headers stripped to prevent spoofing.
+    trustedProxies: ['127.0.0.1', '192.168.1.0/24'],
 };
 
 // Create an instance of the middleware with your security configuration.
