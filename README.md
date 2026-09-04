@@ -32,7 +32,7 @@ composer require anonympins/fingerprint
 
 ## Documentation
 
-To prevent documentation drift, all detailed guides and reference materials are maintained in the `doc/` directory. Please refer to [these resources](home) to configure and integrate the engine:
+To prevent documentation drift, all detailed guides and reference materials are maintained in the `doc/` directory. Please refer to [these resources](https://github.com/anonympins/fingerprint/wiki/home) to configure and integrate the engine:
 
 1. **[Key Concepts & Suspicion Vectors](https://github.com/anonympins/fingerprint/wiki/concepts)**: Learn how the engine calculates suspicion scores across the 15 distinct vectors and manages the Proof-of-Work mitigation layers.
 2. **[Node.js Integration Guide](https://github.com/anonympins/fingerprint/wiki/nodejs_integration)**: Step-by-step instructions for Express.js middleware and raw HTTP server integrations.
@@ -40,7 +40,7 @@ To prevent documentation drift, all detailed guides and reference materials are 
 4. **[Full Configuration Options](https://github.com/anonympins/fingerprint/wiki/full_options)**: Complete parameter list for fine-tuning weights, custom honeypots, and security profile overrides.
 5. **[API Reference](https://github.com/anonympins/fingerprint/wiki/api_reference)**: Public API signatures and guides on substituting the in-memory datastore with Redis or MongoDB.
 
-Start with the **[Documentation Portal](home)** for a complete index.
+Start with the **[Documentation Portal](https://github.com/anonympins/fingerprint/wiki/home)** for a complete index.
 
 ## Contributing
 
