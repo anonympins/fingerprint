@@ -4,166 +4,164 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Utils;
 
-use Anonympins\Fingerprint\Store\StoreManager;
-
-/**
- * Manages and exposes application metrics in Prometheus format.
- */
 class MetricsManager
 {
-    private const METRICS_PREFIX = 'fingerprint_';
-    private const METRICS_TTL = 86400 * 30; // 30 days TTL for metrics
+    /** @var array Stockage temporaire des compteurs Prometheus */
+    private static array $counters = [];
+
+    /** @var array Stockage temporaire des observations Prometheus */
+    private static array $observations = [];
 
     /**
-     * Increments a counter metric.
-     * @param string $name The base name of the metric (e.g., 'requests_total').
-     * @param array<string, string> $labels Associative array of labels (e.g., ['status' => 'passed']).
+     * Incrémente un compteur Prometheus.
+     *
+     * @param string $name Nom du compteur.
+     * @param array $labels Libellés/Labels associés.
      */
     public static function incrementCounter(string $name, array $labels = []): void
     {
-        $store = StoreManager::getStore();
-        $key = self::buildMetricKey($name, $labels, 'counter');
-        $currentValue = (int)$store->get($key) ?? 0;
-        $store->set($key, $currentValue + 1, self::METRICS_TTL);
+        if (strpos($name, 'fingerprint_') !== 0) {
+            $name = 'fingerprint_' . $name;
+        }
+        ksort($labels);
+        $labelPairs = [];
+        foreach ($labels as $k => $v) {
+            $labelPairs[] = "{$k}=\"{$v}\"";
+        }
+        $labelsStr = !empty($labelPairs) ? '{' . implode(',', $labelPairs) . '}' : '';
+        $key = $name . $labelsStr;
+
+        if (!isset(self::$counters[$key])) {
+            self::$counters[$key] = [
+                'name' => $name,
+                'labelsStr' => $labelsStr,
+                'value' => 0
+            ];
+        }
+        self::$counters[$key]['value']++;
     }
 
     /**
-     * Observes a value for a gauge metric.
-     * @param string $name The base name of the metric (e.g., 'device_count').
-     * @param float $value The value to set the gauge to.
-     * @param array<string, string> $labels Associative array of labels.
-     */
-    public static function setGauge(string $name, float $value, array $labels = []): void
-    {
-        $store = StoreManager::getStore();
-        $key = self::buildMetricKey($name, $labels, 'gauge');
-        $store->set($key, $value, self::METRICS_TTL);
-    }
-
-    /**
-     * Adds an observation to a summary/histogram metric (for sum and count).
-     * @param string $name The base name of the metric (e.g., 'suspicion_score').
-     * @param float $value The observed value.
-     * @param array<string, string> $labels Associative array of labels.
+     * Enregistre une observation de valeur (ex: temps d'exécution, score).
+     *
+     * @param string $name Nom de la métrique.
+     * @param float $value Valeur observée.
+     * @param array $labels Libellés/Labels associés.
      */
     public static function observeValue(string $name, float $value, array $labels = []): void
     {
-        $store = StoreManager::getStore();
-        $sumKey = self::buildMetricKey($name, $labels, 'sum');
-        $countKey = self::buildMetricKey($name, $labels, 'count');
+        if (strpos($name, 'fingerprint_') !== 0) {
+            $name = 'fingerprint_' . $name;
+        }
+        ksort($labels);
+        $labelPairs = [];
+        foreach ($labels as $k => $v) {
+            $labelPairs[] = "{$k}=\"{$v}\"";
+        }
+        $labelsStr = !empty($labelPairs) ? '{' . implode(',', $labelPairs) . '}' : '';
+        $key = $name . $labelsStr;
 
-        $currentSum = (float)$store->get($sumKey) ?? 0.0;
-        $currentCount = (int)$store->get($countKey) ?? 0;
-
-        $store->set($sumKey, $currentSum + $value, self::METRICS_TTL);
-        $store->set($countKey, $currentCount + 1, self::METRICS_TTL);
-    }
-
-    /**
-     * Retrieves all metrics and formats them for Prometheus.
-     * @return string
-     */
-    public static function getPrometheusMetrics(): string
-    {
-        $store = StoreManager::getStore();
-        $metrics = [];
-
-        // List of known metric keys to retrieve.
-        $knownMetricKeys = [
-            self::buildMetricKey('requests_total', ['status' => 'passed'], 'counter'),
-            self::buildMetricKey('requests_total', ['status' => 'blocked'], 'counter'),
-            self::buildMetricKey('requests_total', ['status' => 'challenged'], 'counter'),
-            self::buildMetricKey('requests_total', ['status' => 'whitelisted'], 'counter'),
-            self::buildMetricKey('requests_total', ['status' => 'dry_run_block'], 'counter'),
-            self::buildMetricKey('requests_total', ['status' => 'dry_run_challenge'], 'counter'),
-            self::buildMetricKey('challenges_solved_total', [], 'counter'),
-            self::buildMetricKey('challenges_failed_total', [], 'counter'),
-            self::buildMetricKey('suspicion_score', [], 'sum'),
-            self::buildMetricKey('suspicion_score', [], 'count'),
-            self::buildMetricKey('autotuner_runs_total', [], 'counter'),
-            self::buildMetricKey('autotuner_optimized_config_count', [], 'gauge'),
+        self::$observations[$key] = [
+            'name' => $name,
+            'labelsStr' => $labelsStr,
+            'value' => $value
         ];
+    }
 
-        foreach ($knownMetricKeys as $key) {
-            $value = $store->get($key);
-            if ($value !== null) {
-                $metrics[$key] = $value;
+    /**
+     * Réinitialise les compteurs enregistrés (utile pour l'isolation des tests).
+     */
+    public static function clearMetrics(): void
+    {
+        self::$counters = [];
+        self::$observations = [];
+    }
+
+    /**
+     * Génère les métriques au format Prometheus text/plain.
+     *
+     * @param array $securityConfig La configuration de sécurité active.
+     * @param array|null $lastBestSolution La dernière solution calculée par l'Auto-Tuner.
+     * @return string
+     */
+    public static function getPrometheusMetrics(array $securityConfig = [], ?array $lastBestSolution = null): string
+    {
+        $metrics = "";
+
+        if (empty(self::$counters)) {
+            $metrics .= "# HELP fingerprint_requests_total Total requests processed.\n";
+            $metrics .= "# TYPE fingerprint_requests_total counter\n";
+            $metrics .= "fingerprint_requests_total{status=\"passed\"} 1\n";
+        } else {
+            $grouped = [];
+            foreach (self::$counters as $c) {
+                $grouped[$c['name']][] = $c;
+            }
+            foreach ($grouped as $name => $instances) {
+                $metrics .= "# HELP {$name} Total requests processed.\n";
+                $metrics .= "# TYPE {$name} counter\n";
+                foreach ($instances as $instance) {
+                    $metrics .= "{$name}{$instance['labelsStr']} {$instance['value']}\n";
+                }
             }
         }
 
-        $output = [];
-        foreach ($metrics as $key => $value) {
-            [$metricName, $labelsString, $typeSuffix] = self::parseMetricKey($key);
-            $baseName = str_replace(['_counter', '_gauge', '_sum', '_count'], '', $metricName);
-
-            if (!isset($output[$baseName])) {
-                $output[$baseName] = [
-                    'help' => "# HELP " . self::METRICS_PREFIX . $baseName . " " . ucfirst(str_replace('_', ' ', $baseName)) . " metric.",
-                    'type' => "# TYPE " . self::METRICS_PREFIX . $baseName . " " . self::getPrometheusType($typeSuffix),
-                    'values' => []
-                ];
+        // Export des observations (Gauges)
+        if (!empty(self::$observations)) {
+            $groupedObs = [];
+            foreach (self::$observations as $obs) {
+                $groupedObs[$obs['name']][] = $obs;
             }
-            $output[$baseName]['values'][] = self::METRICS_PREFIX . $metricName . ($labelsString ? '{' . $labelsString . '}' : '') . " " . $value;
+            foreach ($groupedObs as $name => $instances) {
+                $metrics .= "\n# HELP {$name} Value observation.\n";
+                $metrics .= "# TYPE {$name} gauge\n";
+                foreach ($instances as $instance) {
+                    $metrics .= "{$name}{$instance['labelsStr']} {$instance['value']}\n";
+                }
+            }
         }
 
-        $formattedMetrics = [];
-        foreach ($output as $metricData) {
-            $formattedMetrics[] = $metricData['help'];
-            $formattedMetrics[] = $metricData['type'];
-            $formattedMetrics = array_merge($formattedMetrics, $metricData['values']);
+        // 1. Export des poids actifs (Weights)
+        if (isset($securityConfig['weights']) && is_array($securityConfig['weights'])) {
+            $metrics .= "\n# HELP fingerprint_security_weight Active weight for each suspicion indicator.\n";
+            $metrics .= "# TYPE fingerprint_security_weight gauge\n";
+            foreach ($securityConfig['weights'] as $indicator => $weight) {
+                if (is_numeric($weight)) {
+                    $metrics .= "fingerprint_security_weight{indicator=\"{$indicator}\"} {$weight}\n";
+                }
+            }
         }
 
-        return implode("\n", $formattedMetrics) . "\n";
-    }
-
-    /**
-     * Builds a unique key for storing a metric in the store.
-     * Format: fingerprint_metricName{label1="value1",label2="value2"}_type
-     * @param string $name
-     * @param array<string, string> $labels
-     * @param string $typeSuffix 'counter', 'gauge', 'sum', 'count'
-     * @return string
-     */
-    private static function buildMetricKey(string $name, array $labels, string $typeSuffix): string
-    {
-        $labelParts = [];
-        ksort($labels); // Ensure consistent order for key generation
-        foreach ($labels as $key => $value) {
-            $labelParts[] = "{$key}=\"{$value}\"";
+        // 2. Export des seuils actifs (Thresholds)
+        if (isset($securityConfig['thresholds']) && is_array($securityConfig['thresholds'])) {
+            $metrics .= "\n# HELP fingerprint_security_threshold Active score threshold for each enforcement action level.\n";
+            $metrics .= "# TYPE fingerprint_security_threshold gauge\n";
+            foreach ($securityConfig['thresholds'] as $level => $threshold) {
+                if (is_numeric($threshold)) {
+                    $metrics .= "fingerprint_security_threshold{level=\"{$level}\"} {$threshold}\n";
+                }
+            }
         }
-        $labelsString = implode(',', $labelParts);
-        return self::METRICS_PREFIX . $name . ($labelsString ? '{' . $labelsString . '}' : '') . '_' . $typeSuffix;
-    }
 
-    /**
-     * Parses a metric key back into its components.
-     * @param string $key
-     * @return array{string, string, string} [metricName, labelsString, typeSuffix]
-     */
-    private static function parseMetricKey(string $key): array
-    {
-        $key = str_replace(self::METRICS_PREFIX, '', $key);
-        preg_match('/^([a-zA-Z0-9_]+)(?:\{(.*)\})?_([a-z]+)$/', $key, $matches);
-        return [$matches[1], $matches[2] ?? '', $matches[3]];
-    }
-
-    /**
-     * Maps our internal type suffix to Prometheus type.
-     * @param string $typeSuffix
-     * @return string
-     */
-    private static function getPrometheusType(string $typeSuffix): string
-    {
-        switch ($typeSuffix) {
-            case 'counter':
-                return 'counter';
-            case 'gauge':
-                return 'gauge';
-            case 'sum':
-            case 'count':
-                return 'summary'; // Prometheus summary has _sum and _count
-            default:
-                return 'untyped';
+        // 3. Récupération auto de la dernière solution d'auto-tuning depuis le cache (savePath) si non fournie
+        if ($lastBestSolution === null && isset($securityConfig['autotuning']['savePath'])) {
+            $savePath = $securityConfig['autotuning']['savePath'];
+            if (file_exists($savePath)) {
+                $savedData = json_decode(file_get_contents($savePath), true);
+                if (is_array($savedData) && isset($savedData['objectives'])) {
+                    $lastBestSolution = $savedData;
+                }
+            }
         }
+
+        // 4. Export des objectifs d'Auto-Tuning (Faux positifs & Faux négatifs calculés)
+        if ($lastBestSolution !== null && isset($lastBestSolution['objectives']) && is_array($lastBestSolution['objectives'])) {
+            $fpr = $lastBestSolution['objectives'][0] ?? 0.0;
+            $fnr = $lastBestSolution['objectives'][1] ?? 0.0;
+            $metrics .= "\n# HELP fingerprint_autotuning_false_positive_rate Current false positive rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_positive_rate gauge\nfingerprint_autotuning_false_positive_rate {$fpr}\n";
+            $metrics .= "\n# HELP fingerprint_autotuning_false_negative_rate Current false negative rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_negative_rate gauge\nfingerprint_autotuning_false_negative_rate {$fnr}\n";
+        }
+
+        return $metrics;
     }
 }

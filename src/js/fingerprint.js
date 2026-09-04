@@ -3855,6 +3855,7 @@ export const __internal = {
     getSubnetScore, // Expose for testing
     getIpReputationScore, // Expose for testing
     updateIpReputationScore, // Expose for testing
+    setLastBestSolution: (val) => { lastBestSolution = val; }, // Expose to test auto-tuning metrics
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
@@ -4086,8 +4087,34 @@ class RequestContext {
 }
 
 const MetricsManager = {
-  getPrometheusMetrics() {
-    return `# HELP fingerprint_requests_total Total requests processed.\n# TYPE fingerprint_requests_total counter\nfingerprint_requests_total{status="passed"} 1\n`;
+  getPrometheusMetrics(securityConfig = {}) {
+    let metrics = `# HELP fingerprint_requests_total Total requests processed.\n# TYPE fingerprint_requests_total counter\nfingerprint_requests_total{status="passed"} 1\n`;
+
+    if (securityConfig.weights) {
+      metrics += `\n# HELP fingerprint_security_weight Active weight for each suspicion indicator.\n# TYPE fingerprint_security_weight gauge\n`;
+      for (const [indicator, weight] of Object.entries(securityConfig.weights)) {
+        if (typeof weight === 'number') {
+          metrics += `fingerprint_security_weight{indicator="${indicator}"} ${weight}\n`;
+        }
+      }
+    }
+
+    if (securityConfig.thresholds) {
+      metrics += `\n# HELP fingerprint_security_threshold Active score threshold for each enforcement action level.\n# TYPE fingerprint_security_threshold gauge\n`;
+      for (const [level, threshold] of Object.entries(securityConfig.thresholds)) {
+        if (typeof threshold === 'number') {
+          metrics += `fingerprint_security_threshold{level="${level}"} ${threshold}\n`;
+        }
+      }
+    }
+
+    // Include auto-tuning objectives metrics if the auto-tuner has run
+    if (lastBestSolution && lastBestSolution.objectives) {
+      metrics += `\n# HELP fingerprint_autotuning_false_positive_rate Current false positive rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_positive_rate gauge\nfingerprint_autotuning_false_positive_rate ${lastBestSolution.objectives[0]}\n`;
+      metrics += `\n# HELP fingerprint_autotuning_false_negative_rate Current false negative rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_negative_rate gauge\nfingerprint_autotuning_false_negative_rate ${lastBestSolution.objectives[1]}\n`;
+    }
+
+    return metrics;
   }
 };
 
@@ -4134,5 +4161,5 @@ export async function handleMetricsRequest(req, res, securityConfig) {
 
     // 3. Si autorisé, servir les métriques.
     res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
-    res.send(MetricsManager.getPrometheusMetrics());
+    res.send(MetricsManager.getPrometheusMetrics(securityConfig));
 }
