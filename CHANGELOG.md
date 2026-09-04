@@ -1,5 +1,12 @@
 ## Version 0.3.8
 
+### 🎫 Opaque Tickets Implementation (JS/PHP)
+- **Opaque Clearance Tickets**: Upgraded clearance tickets to use cryptographically secure, random, and opaque token identifiers. This completely mitigates client-side prediction, token tampering, and replay/unauthorized reuse.
+- **PHP Parity**: Implemented secure opaque ticket handling and validation inside the PHP engine to match the Node.js architecture.
+
+### 🌐 Independent Subnet Score (JS/PHP)
+- **Independent Subnet Scoring**: Decoupled and isolated the subnet activity and reputation calculation from individual host/device threat vectors. This ensures distributed crawler attacks on specific IP ranges are mitigated at the subnet level without cascading penalties to unaffected neighboring residential IPs.
+
 ### 🛡️ Reverse Proxy Header Spoofing Protection (JS)
 - **Trusted Proxies verification**: Added `trustedProxies` configuration to restrict proxy-injected headers (`X-JA3-Hash`, `X-JA4-Hash`, `X-HTTP2-Fingerprint`, `X-TCP-Fingerprint`, `X-JA3-Raw`) only to requests originating from configured trusted proxy IPs/networks. Unauthenticated clients attempting to send these headers will have them automatically stripped.
 
