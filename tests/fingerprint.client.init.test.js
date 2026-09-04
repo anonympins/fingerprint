@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { JSDOM } from 'jsdom';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {JSDOM} from 'jsdom';
 import ClientLibrary from '../src/js/fingerprint.client.js';
 
 // --- Setup JSDOM Environment ---

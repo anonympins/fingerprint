@@ -1,7 +1,7 @@
-import { it, describe, expect, vi, beforeEach, afterEach } from 'vitest';
-import { promises as fs } from 'node:fs';
-import { getProblemManager, problemManager as problemManagerPromise, __internal as problemManagerInternal } from '../src/js/problem-manager.js';
-import { Optimization } from '../src/js/library.js';
+import {beforeEach, describe, expect, it, vi} from 'vitest';
+import {promises as fs} from 'node:fs';
+import {__internal as problemManagerInternal, getProblemManager} from '../src/js/problem-manager.js';
+import {Optimization} from '../src/js/library.js';
 
 // Mock the in-memory store for testing
 const inMemoryStore = {

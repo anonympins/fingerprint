@@ -6,9 +6,9 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Utils;
 
 use Anonympins\Fingerprint\FingerprintBuilder;
-use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\Optimization\Optimization;
 use Anonympins\Fingerprint\RequestContext;
+use Anonympins\Fingerprint\Store\StoreManager;
 
 /**
  * Classe utilitaire pour l'analyse des requêtes et le calcul des scores de suspicion.

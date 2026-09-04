@@ -1,6 +1,6 @@
-import { it, describe, expect, vi, beforeEach, afterEach } from 'vitest';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import * as fingerprint from '../src/js/fingerprint.js';
-import { solveCpuTargetInline, solveMemory } from '../src/js/pow.solver.js';
+import {solveCpuTargetInline, solveMemory} from '../src/js/pow.solver.js';
 
 // Mock the internal store to be a simple in-memory map for testing
 const inMemoryStore = {

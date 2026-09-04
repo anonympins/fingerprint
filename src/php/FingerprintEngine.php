@@ -4,12 +4,15 @@
 
  namespace Anonympins\Fingerprint;
 
- use Anonympins\Fingerprint\Config\SecurityProfiles;
- use Anonympins\Fingerprint\Store\StoreManager; // Correction de l'import
  use Anonympins\Fingerprint\Challenge\ChallengeUtils;
+ use Anonympins\Fingerprint\Config\SecurityProfiles;
+ use Anonympins\Fingerprint\Store\StoreManager;
  use Anonympins\Fingerprint\Utils\BlockList;
  use Anonympins\Fingerprint\Utils\Logger;
- use Anonympins\Fingerprint\Utils\RequestUtils; 
+ use Anonympins\Fingerprint\Utils\MetricsManager;
+ use Anonympins\Fingerprint\Utils\RequestUtils;
+
+ // Correction de l'import
 
  /**
   * Le moteur principal de la bibliothèque de fingerprinting.
@@ -525,6 +528,7 @@
          // 1. Vérifier les listes blanches
          if ($this->checkAllowlists($context)) {
              return ['action' => 'next', 'score' => 0.0, 'vector' => ['whitelisted' => 100.0]];
+            MetricsManager::incrementCounter('requests_total', ['status' => 'whitelisted']);
          }
  
          // Initialiser le vecteur de suspicion
@@ -602,6 +606,7 @@
                  if ($isValid) {
                      $store->delete("secret:{$powNonce}");
                      $ticketTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000;
+                    MetricsManager::incrementCounter('challenges_solved_total');
                      $this->log('Challenge solution valid - issuing ticket', ['ticketMaxAge' => $ticketTtl]);
  
                      return [
@@ -618,6 +623,7 @@
                  }
              }
              // Si la solution est invalide ou le nonce est expiré, on pénalise fortement pour la suite.
+            MetricsManager::incrementCounter('challenges_failed_total');
              $this->log('Challenge solution invalid or context expired', ['nonce' => $powNonce], 'warn');
              $suspicionVector['honeypotScore'] = 100.0;
          }
@@ -627,6 +633,7 @@
          $powCookie = $context->cookies['pow_clearance'] ?? null;
          if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie)) {
              $hasValidTicket = true;
+            MetricsManager::incrementCounter('tickets_valid_total');
              // On ne retourne pas tout de suite pour permettre le re-challenge
              // $this->log('Valid clearance ticket found');
              // return ['action' => 'next', 'score' => 0.0, 'vector' => ['ticket_valid' => 100]];
@@ -660,6 +667,7 @@
          // Mettre à jour les métriques du sous-réseau après le calcul du score final
          if ($finalScore > ($thresholds['low'] ?? 20)) {
             RequestUtils::updateSubnetMetrics($context, $deviceId, $finalScore);
+            MetricsManager::observeValue('suspicion_score', $finalScore, ['action' => 'high_score_subnet_update']);
          }
  
          // Logique pour challenger les nouveaux appareils (déplacée ici pour avoir le score final)
@@ -695,6 +703,7 @@
          $blockThreshold = $thresholds['block'] ?? 95;
          if ($finalScore >= $blockThreshold) {
              if ($this->logger) {
+                MetricsManager::incrementCounter('requests_total', ['status' => 'blocked']);
                  $this->logger->log('info', 'request_blocked', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
              }
              $decision = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector];
@@ -703,6 +712,7 @@
                  $decision['intendedAction'] = $decision['action'];
                  $decision['action'] = 'next';
                  unset($decision['status'], $decision['body']);
+                MetricsManager::incrementCounter('requests_total', ['status' => 'dry_run_block']);
              }
              $response = $decision;
          } else {
@@ -715,6 +725,7 @@
                  $decision = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector];
                  // Apply dry run logic here as well
                  if ($this->dryRun) {
+                    MetricsManager::incrementCounter('requests_total', ['status' => 'dry_run_block']);
                      $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
                      $decision['intendedAction'] = $decision['action'];
                      $decision['action'] = 'next';
@@ -735,6 +746,7 @@
                  $decision = ['action' => 'challenge', 'score' => $finalScore, 'vector' => $suspicionVector, 'status' => 403];
  
                  if ($this->dryRun) {
+                    MetricsManager::incrementCounter('requests_total', ['status' => 'dry_run_challenge']);
                      $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
                      $decision['intendedAction'] = $decision['action'];
                      $decision['action'] = 'next';
@@ -742,6 +754,7 @@
                      return $decision;
                  }
  
+                MetricsManager::incrementCounter('requests_total', ['status' => 'challenged']);
                  $this->log('Suspicious request - selecting challenge type', ['finalScore' => $finalScore]);
  
                  $nonce = bin2hex(random_bytes(16));
@@ -853,12 +866,15 @@
                  $response = $decision;
              } elseif ($hasValidTicket) {
                  // Si on arrive ici avec un ticket valide et un score bas, on autorise
+                MetricsManager::incrementCounter('requests_total', ['status' => 'passed']);
                  $this->log('Valid clearance ticket found and score is low - allowing request');
                  $response = ['action' => 'next', 'score' => 0.0, 'vector' => ['ticket_valid' => 100], 'intendedAction' => 'next'];
              } else {
                  // 6. Si le score est bas et qu'il n'y a pas de ticket, autoriser la requête
+                MetricsManager::incrementCounter('requests_total', ['status' => 'passed']);
                  $this->log('Request passed - no challenge required', ['finalScore' => $finalScore]);
                  if ($this->logger) {
+                    MetricsManager::observeValue('suspicion_score', $finalScore, ['action' => 'passed']);
                      $this->logger->log('info', 'request_passed', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
                  }
                  $response = ['action' => 'next', 'score' => $finalScore, 'vector' => $suspicionVector, 'intendedAction' => 'next'];

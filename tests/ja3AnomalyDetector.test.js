@@ -1,6 +1,6 @@
 import crypto from 'crypto';
-import { getTlsSpoofingScore, parseJa3 } from '../src/js/fingerprint.js';
-import { vi } from 'vitest';
+import {getTlsSpoofingScore, parseJa3} from '../src/js/fingerprint.js';
+import {vi} from 'vitest';
 
 describe('JA3 Anomaly Detector (Node.js)', () => {
     

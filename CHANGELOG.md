@@ -1,3 +1,27 @@
+## Version 0.3.8
+
+### 🛡️ Reverse Proxy Header Spoofing Protection (JS)
+- **Trusted Proxies verification**: Added `trustedProxies` configuration to restrict proxy-injected headers (`X-JA3-Hash`, `X-JA4-Hash`, `X-HTTP2-Fingerprint`, `X-TCP-Fingerprint`, `X-JA3-Raw`) only to requests originating from configured trusted proxy IPs/networks. Unauthenticated clients attempting to send these headers will have them automatically stripped.
+
+## Version 0.3.7
+
+### 📊 Prometheus Metrics & Monitoring (JS/PHP)
+- **Prometheus metrics export support**:
+- Implemented a metrics generator using the standard Prometheus format (`text/plain`).
+- Exported active configuration indicators: weight (`fingerprint_security_weight`) and thresholds (`fingerprint_security_threshold`).
+- Real-time export of Auto-Tuner performance metrics: false positive rate (`fingerprint_autotuning_false_positive_rate`) and false negative rate (`fingerprint_autotuning_false_negative_rate`).
+- Secured access via a customizable authorization callback (`metricsAuthorizationCallback`) supporting blocking and secure redirects.
+
+### ⚙️ Background Pareto-Optimal TTL Tuning (JS)
+- **Non-blocking asynchronous optimization**:
+- Added `runBackgroundTtlOptimization`, which runs periodically in the background without blocking the event loop.
+- Utilized a multi-objective genetic algorithm to dynamically calculate a Pareto front of optimal TTLs based on suspicion scores.
+- Implemented instant linear interpolation from the optimization cache for efficient ticket TTL assignment (`determineOptimalTicketTtl`).
+
+### 🚀 Maintenance
+- **Repository cleanup**:
+- Removed obsolete temporary specification files (`enhancements.md`).
+
 ## Version 0.3.6
 
 ### 🛡️ Sybil Protection & Auto-Tuner Hardening (JS/PHP)
@@ -114,7 +138,7 @@ This release marks a major expansion of the library, introducing a full-featured
 
 ### ✨ New Features
 
-*   **Full PHP Support**: The library is now available for PHP 7.4+ with a feature set equivalent to the Node.js version.
+*   **Full PHP Support**: The library is now available for PHP 8.0+ with a feature set equivalent to the Node.js version.
     *   **Direct Integration**: A `DirectFingerprint` class allows for easy integration into any PHP application, including legacy codebases, by interacting directly with PHP's superglobals.
     *   **PSR-15 Middleware**: A `FingerprintMiddleware` is provided for modern, framework-agnostic integration with applications that follow PSR-7, PSR-15, and PSR-17 standards (e.g., Slim, Laminas).
     *   **Pluggable Datastores**: The PHP version supports the same pluggable store architecture, allowing state to be persisted in Redis, databases, or other external systems.

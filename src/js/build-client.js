@@ -1,9 +1,8 @@
-import { promises as fs } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { exec } from 'node:child_process';
+import {promises as fs} from 'node:fs';
+import {dirname, join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {exec} from 'node:child_process';
 import JavaScriptObfuscator from 'javascript-obfuscator';
-import { minify } from 'terser';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

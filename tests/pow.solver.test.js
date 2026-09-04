@@ -1,14 +1,9 @@
-import { it, describe, expect, vi, beforeEach } from 'vitest';
-import { createHash } from 'node:crypto';
+import {describe, expect, it, vi} from 'vitest';
+import {createHash} from 'node:crypto';
 // Import the functions to be tested.
 // Since the inline file doesn't use exports, we can't directly import.
 // Instead, we'll test the ES module version which shares the same logic.
-import {
-    solveCpuTargetInline,
-    solveMemory,
-    solveTsp,
-    solveChallenge
-} from '../src/js/pow.solver.js';
+import {solveChallenge, solveCpuTargetInline, solveMemory, solveTsp} from '../src/js/pow.solver.js';
 
 describe('Proof-of-Work Solvers', () => {
 

@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Tests;
 
-use PHPUnit\Framework\TestCase;
 use Anonympins\Fingerprint\Ja3AnomalyDetector;
+use PHPUnit\Framework\TestCase;
 
 /**
  * Tests unitaires pour la classe Ja3AnomalyDetector.

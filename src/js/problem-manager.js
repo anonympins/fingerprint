@@ -1,5 +1,5 @@
-import { promises as fs } from 'node:fs';
-import { Optimization } from './library.js';
+import {promises as fs} from 'node:fs';
+import {Optimization} from './library.js';
 
 /**
  * @namespace FunctionRegistry

@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { createRedisStore } from '../src/js/redis-store.js';
-import { createMongoDbStore } from '../src/js/mongodb-store.js';
+import {afterAll, beforeAll, beforeEach, describe, expect, it} from 'vitest';
+import {createRedisStore} from '../src/js/redis-store.js';
+import {createMongoDbStore} from '../src/js/mongodb-store.js';
 
 // Helper function to wait for TTL expiration in tests
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -100,17 +100,10 @@ describe.runIf(process.env.MONGODB_URL)('MongoDB Store', () => {
         mongoClient = new MongoClient(process.env.MONGODB_URL);
         await mongoClient.connect();
         const db = mongoClient.db('fingerprint_test_db');
+        const store = createMongoDbStore(db, 'store');
+        await store.init();
         collection = db.collection('store');
-
-        // Ensure TTL index exists for tests
-        try {
-            await collection.dropIndex("expiresAt_1");
-        } catch (e) {
-            // Index might not exist, which is fine
-        }
-        await collection.createIndex({ "expiresAt": 1 }, { expireAfterSeconds: 0 });
-
-        return createMongoDbStore(db, 'store');
+        return store;
     };
 
     beforeEach(async () => {

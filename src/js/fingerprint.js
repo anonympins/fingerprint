@@ -1,12 +1,13 @@
 import crypto from "node:crypto";
-import { BlockList, isIPv4, isIPv6 } from "node:net";
+import {BlockList, isIPv4, isIPv6} from "node:net";
 import * as dns from "node:dns/promises";
-import { getProblemManager, problemManager } from "./problem-manager.js";
-import { Optimization } from "./library.js";
-import { cyrb53, FingerprintBuilder } from "./fingerprint.builder.js";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import {getProblemManager, problemManager} from "./problem-manager.js";
+import {Optimization} from "./library.js";
+import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
+import {readFileSync} from "node:fs";
+import {fileURLToPath} from "node:url";
+import {dirname, join} from "node:path";
+
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
@@ -64,6 +65,7 @@ const securityProfiles = {
             decayFactor: 0.9,
             inactivityReset: 5000,
         },
+        allowCrossNetworkRoaming: true, // Profil balancé : tolérant par défaut
     },
     /**
      * @summary **Strict Profile**
@@ -97,6 +99,7 @@ const securityProfiles = {
             inactivityReset: 4000,
         },
         challengeNewDevices: true, // Challenge all new devices
+        allowCrossNetworkRoaming: false, // Strict : interdiction de changer complètement de réseau sans re-challenge
     },
     /**
      * @summary **API Profile**
@@ -130,6 +133,7 @@ const securityProfiles = {
             inactivityReset: 10000,
         },
         isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
+        allowCrossNetworkRoaming: false, // Les API ne doivent pas subir de roaming inter-IP suspect
     }
     ,
     /**
@@ -163,6 +167,7 @@ const securityProfiles = {
             decayFactor: 0.92,
             inactivityReset: 10000,
         },
+        allowCrossNetworkRoaming: true,
     },
     /**
      * @summary **E-commerce Profile**
@@ -198,6 +203,7 @@ const securityProfiles = {
         },
         challengeNewDevices: true, // New devices are suspicious in e-commerce
         isApiRequest: (req) => req.path.startsWith('/api/cart') || req.path.startsWith('/api/stock') || req.path.startsWith('/api/checkout'),
+        allowCrossNetworkRoaming: false, // E-commerce : interdiction de changer de réseau sans re-challenge
     }
 };
 
@@ -824,7 +830,7 @@ export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret =
   }
   return finalHash === parseInt(solution, 10);
 };
-export const isTicketValid = (ip, ticket, deviceId = '', deviceHash = '') => {
+export const isTicketValid = (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
   if (typeof ticket !== 'string') return false;
 
@@ -876,6 +882,10 @@ export const isTicketValid = (ip, ticket, deviceId = '', deviceHash = '') => {
   const currentSubnet = getIpSubnet(ip);
   const originalSubnet = getIpSubnet(originalIp);
   if (currentSubnet && originalSubnet && currentSubnet === originalSubnet) return true;
+
+  // Si le changement de réseau complet n'est pas autorisé, on refuse le ticket
+  // et on force un re-challenge (Proof of Work)
+  if (!allowCrossNetworkRoaming) return false;
 
   // Perfect terminal identity matched via HMAC signature
   return !!(deviceId && deviceHash);
@@ -2508,6 +2518,7 @@ export class FingerprintEngine {
       'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
       'honeypot', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger',
       'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
+      'trustedProxies',
       'similarityThreshold'
     ]);
 
@@ -2807,8 +2818,9 @@ export class FingerprintEngine {
   }
 
   async processRequest(requestContext) {
+      sanitizeProxyHeaders(requestContext, this.securityConfig);
 
-    const { clientIp = "unknown", path, cookies, query, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
+      const { clientIp = "unknown", path, cookies, query, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     
     this._log('Processing request', { clientIp, path, isStatic });
@@ -2822,6 +2834,7 @@ export class FingerprintEngine {
     const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
     const currentDeviceHash = getCompositeDeviceHash(requestContext);
     const isNewDevice = !!newCookie;
+    const allowRoaming = this.securityConfig?.allowCrossNetworkRoaming ?? false;
 
     // 1. Check static IP allowlist first for maximum performance.
     if (this._isIpInAllowlist(clientIp)) {
@@ -2861,7 +2874,7 @@ export class FingerprintEngine {
     // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot probe.
     if (pow_nonce) {
         const powCookie = cookies?.pow_clearance;
-        if (!isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash)) { // Only check if there's no valid ticket
+        if (!isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming)) { // Only check if there's no valid ticket
             // This is a potential probe. We'll let the main logic confirm if it's not a legitimate challenge response.
             // The final decision is made later, after calculating the score.
         }
@@ -3235,7 +3248,7 @@ export class FingerprintEngine {
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
     // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
-    const hasValidTicket = isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash);
+    const hasValidTicket = isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming);
     const mustReChallenge = isSuspiciousHigh && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
@@ -3393,7 +3406,7 @@ export class FingerprintEngine {
     }
 
     // Basic log for each non-static request that passed without a challenge
-    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash) });
+    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming) });
     
     if (logger) {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
@@ -3408,7 +3421,8 @@ export class FingerprintEngine {
    * @returns {Promise<string>} An identification string (e.g., "device:<id>", "suspicious_high:<ip>").
    */
   async identifyRequest(requestContext) {
-    const { clientIp, cookies, rawReq, rawRes } = requestContext;
+      sanitizeProxyHeaders(requestContext, this.securityConfig);
+      const { clientIp, cookies, rawReq, rawRes } = requestContext;
 
     // --- Update IP reputation ---
     const ipProfile = (await store.get(`ip:${clientIp}`)) || {
@@ -3456,68 +3470,185 @@ const staticExtensions = new RegExp(
 const isStaticResource = (path) => staticExtensions.test(path);
 
 
+/** @type {Map<number, number>} Cache des TTL optimisés par score de suspicion (clés de 0 à 100 par pas de 10) */
+let optimizedTtlCache = new Map();
 /**
- * Détermine le TTL optimal pour un ticket en utilisant un algorithme génétique multi-objectifs.
- * @param {number} suspicionScore - Le score de suspicion de la requête.
- * @returns {number} Le TTL optimal calculé en millisecondes.
-*/
-function determineOptimalTicketTtl(suspicionScore) {
-    // Définir les bornes pour la durée de vie du ticket (5 minutes à 24 heures)
+ * @private
+ * Sanitizes headers injected by proxies if the request does not come from a trusted proxy.
+ * @param {object} context - The request context.
+ * @param {object} securityConfig - The security configuration.
+ */
+function sanitizeProxyHeaders(context, securityConfig) {
+    if (!context || !context.headers) return;
+
+    const proxyHeaders = [
+        'x-ja3-hash',
+        'x-ja4-hash',
+        'x-http2-fingerprint',
+        'x-tcp-fingerprint',
+        'x-ja3-raw'
+    ];
+
+    if (securityConfig && securityConfig.trustedProxies) {
+        const blockList = new BlockList();
+        const entries = Array.isArray(securityConfig.trustedProxies)
+            ? securityConfig.trustedProxies
+            : [securityConfig.trustedProxies];
+
+        let hasValidEntry = false;
+        for (const entry of entries) {
+            if (typeof entry !== 'string') continue;
+            if (entry.includes('/')) {
+                try {
+                    const [address, prefix] = entry.split('/');
+                    blockList.addSubnet(address, parseInt(prefix, 10));
+                    hasValidEntry = true;
+                } catch (e) {}
+            } else {
+                try {
+                    blockList.addAddress(entry);
+                    hasValidEntry = true;
+                } catch (e) {}
+            }
+        }
+
+        const isTrusted = hasValidEntry ? blockList.check(context.clientIp) : false;
+
+        if (!isTrusted) {
+            for (const header of proxyHeaders) {
+                if (context.headers[header]) {
+                    delete context.headers[header];
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Exécute l'optimisation des TTL en tâche de fond de manière asynchrone et non-bloquante.
+ * Utilise l'algorithme génétique multi-objectifs de Pareto pour trouver des solutions stables.
+ */
+export async function runBackgroundTtlOptimization() {
     const MIN_TTL = 300000;
     const MAX_TTL = 86400000;
+    const tempCache = new Map();
+    const keyScores = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
-    const solverFunction = () => {
-        const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
+    for (const suspicionScore of keyScores) {
+        // Rend la main à la boucle d'événements Node.js à chaque itération pour ne pas bloquer les requêtes web actives
+        await new Promise(resolve => {
+            if (typeof setImmediate === 'function') {
+                setImmediate(resolve);
+            } else {
+                setTimeout(resolve, 0);
+            }
+        });
 
-        // Un "individu" est simplement une valeur de TTL en millisecondes.
-        const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
-        const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
-        const mutate = (ttl) => {
-            const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1; // Mutation de +/- 10% max
-            return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
+        const solverFunction = () => {
+            const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
+            const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
+            const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
+            const mutate = (ttl) => {
+                const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1;
+                return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
+            };
+
+            const paretoFront = Optimization.geneticAlgorithmMultiObjective(
+                createIndividual,
+                fitnessFunction,
+                crossover,
+                mutate,
+                {
+                    generations: 40,
+                    populationSize: 30,
+                }
+            );
+
+            if (!paretoFront || paretoFront.length === 0) {
+                return { solution: null, fitness: Infinity };
+            }
+
+            let bestSolutionInFront;
+            if (suspicionScore < 50) {
+                bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
+            } else {
+                bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
+            }
+            return { solution: bestSolutionInFront, fitness: 0 };
         };
 
-        const paretoFront = Optimization.geneticAlgorithmMultiObjective(
-            createIndividual,
-            fitnessFunction,
-            crossover,
-            mutate,
-            {
-                generations: 40,
-                populationSize: 30,
-            }
-        );
-
-        // Pour runMultiple, on doit retourner un objet avec une propriété "fitness" ou "energy".
-        // Pour un front de Pareto, il n'y a pas de score unique. On choisit la meilleure solution
-        // en fonction du score de suspicion et on lui assigne un score de 0 pour que runMultiple la sélectionne.
-        if (!paretoFront || paretoFront.length === 0) {
-            return { solution: null, fitness: Infinity };
-        }
-
-        // Stratégie de sélection :
-        // Pour un score faible (< 50), on privilégie la solution avec le plus grand TTL (minimise la friction).
-        // Pour un score élevé (>= 50), on privilégie la solution avec le plus petit TTL (minimise le risque).
-        let bestSolutionInFront;
-        if (suspicionScore < 50) {
-            bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
+        const { bestResult } = Optimization.runMultiple(solverFunction, 20);
+        if (bestResult && bestResult.solution && bestResult.solution !== Infinity) {
+            tempCache.set(suspicionScore, Math.round(bestResult.solution));
         } else {
-            bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
+            tempCache.set(suspicionScore, Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL));
         }
-        return { solution: bestSolutionInFront, fitness: 0 }; // fitness=0 car on a déjà la meilleure solution du cycle.
-    };
-
-    // On exécute le solveur 20 fois pour trouver une solution plus stable et robuste.
-    const { bestResult } = Optimization.runMultiple(solverFunction, 20);
-
-    if (!bestResult || !bestResult.solution || bestResult.solution === Infinity) {
-        // Fallback : si l'algo ne retourne rien, on applique une règle simple et sûre.
-        return Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL);
     }
 
-    // runMultiple choisit le meilleur résultat sur la base du score (ici, 0).
-    // La "meilleure" solution dépendra du cycle qui a trouvé le meilleur compromis.
-    return Math.round(bestResult.solution);
+    optimizedTtlCache = tempCache;
+}
+
+// Lancement de l'optimisation initiale immédiate en arrière-plan
+runBackgroundTtlOptimization().catch(err => {
+    console.error('[Fingerprint] Error in background TTL optimization:', err);
+});
+
+// Planification périodique toutes les 30 minutes sans bloquer la fermeture du processus Node.js (via unref)
+const ttlInterval = setInterval(() => {
+    runBackgroundTtlOptimization().catch(err => {
+        console.error('[Fingerprint] Error in background TTL optimization:', err);
+    });
+}, 1800000);
+if (ttlInterval && typeof ttlInterval.unref === 'function') {
+    ttlInterval.unref();
+}
+
+/**
+ * Détermine le TTL optimal pour un ticket.
+ * Utilise les valeurs pré-calculées de la tâche d'optimisation en arrière-plan et effectue
+ * une interpolation linéaire instantanée pour le score requis.
+ *
+ * @param {number} suspicionScore - Le score de suspicion de la requête.
+ * @returns {number} Le TTL optimal calculé en millisecondes.
+ */
+function determineOptimalTicketTtl(suspicionScore) {
+    const MIN_TTL = 300000;
+    const MAX_TTL = 86400000;
+    const score = Math.max(0, Math.min(100, suspicionScore));
+
+    let ttl;
+    if (!optimizedTtlCache || optimizedTtlCache.size === 0) {
+        // Formule mathématique instantanée de secours si le cache de fond n'est pas encore prêt
+        ttl = Math.round(MAX_TTL - (score / 100) * (MAX_TTL - MIN_TTL));
+    } else {
+        const lowerKey = Math.floor(score / 10) * 10;
+        const upperKey = Math.ceil(score / 10) * 10;
+
+        const lowerTtl = optimizedTtlCache.get(lowerKey);
+        const upperTtl = optimizedTtlCache.get(upperKey);
+
+        if (lowerTtl === undefined || upperTtl === undefined) {
+            ttl = Math.round(MAX_TTL - (score / 100) * (MAX_TTL - MIN_TTL));
+        } else if (lowerKey === upperKey) {
+            ttl = lowerTtl;
+        } else {
+            // Interpolation linéaire entre les deux points clés optimisés du front de Pareto
+            const fraction = (score - lowerKey) / (upperKey - lowerKey);
+            ttl = Math.round(lowerTtl + fraction * (upperTtl - lowerTtl));
+        }
+    }
+
+    // Sécurité: Si le score de suspicion est élevé, on applique un plafond strict
+    // pour garantir un TTL court et sécuritaire (ex: max 30 minutes à partir de score 80).
+    if (score >= 80) {
+        const maxAllowedTtl = Math.round(1800000 - ((score - 80) / 20) * (1800000 - MIN_TTL));
+        ttl = Math.min(ttl, maxAllowedTtl);
+    } else if (score >= 50) {
+        const maxAllowedTtl = Math.round(7200000 - ((score - 50) / 30) * (7200000 - 1800000));
+        ttl = Math.min(ttl, maxAllowedTtl);
+    }
+
+    return ttl;
 }
 
 /**
@@ -3835,6 +3966,7 @@ export const __internal = {
     FingerprintBuilder, // Export for testing
     calculateTarget,
     determineOptimalTicketTtl,
+    runBackgroundTtlOptimization,
     getRequestPatternScore, // Expose for testing
     getBehaviorScore, // Expose for testing
     getCrossLayerInconsistency, // Expose for testing
@@ -3854,6 +3986,7 @@ export const __internal = {
     getSubnetScore, // Expose for testing
     getIpReputationScore, // Expose for testing
     updateIpReputationScore, // Expose for testing
+    setLastBestSolution: (val) => { lastBestSolution = val; }, // Expose to test auto-tuning metrics
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
@@ -4070,4 +4203,94 @@ export function stopThresholdAutoTuning() {
  */
 export function getBestTuningSolution() {
     return lastBestSolution;
+}
+
+class RequestContext {
+  constructor(ip, path, headers, query, body, cookies, httpVersion) {
+    this.clientIp = ip || '127.0.0.1';
+    this.path = path || '/';
+    this.headers = headers || {};
+    this.query = query || {};
+    this.body = body || null;
+    this.cookies = cookies || {};
+    this.httpVersion = httpVersion || '1.1';
+  }
+}
+
+const MetricsManager = {
+  getPrometheusMetrics(securityConfig = {}) {
+    let metrics = `# HELP fingerprint_requests_total Total requests processed.\n# TYPE fingerprint_requests_total counter\nfingerprint_requests_total{status="passed"} 1\n`;
+
+    if (securityConfig.weights) {
+      metrics += `\n# HELP fingerprint_security_weight Active weight for each suspicion indicator.\n# TYPE fingerprint_security_weight gauge\n`;
+      for (const [indicator, weight] of Object.entries(securityConfig.weights)) {
+        if (typeof weight === 'number') {
+          metrics += `fingerprint_security_weight{indicator="${indicator}"} ${weight}\n`;
+        }
+      }
+    }
+
+    if (securityConfig.thresholds) {
+      metrics += `\n# HELP fingerprint_security_threshold Active score threshold for each enforcement action level.\n# TYPE fingerprint_security_threshold gauge\n`;
+      for (const [level, threshold] of Object.entries(securityConfig.thresholds)) {
+        if (typeof threshold === 'number') {
+          metrics += `fingerprint_security_threshold{level="${level}"} ${threshold}\n`;
+        }
+      }
+    }
+
+    // Include auto-tuning objectives metrics if the auto-tuner has run
+    if (lastBestSolution && lastBestSolution.objectives) {
+      metrics += `\n# HELP fingerprint_autotuning_false_positive_rate Current false positive rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_positive_rate gauge\nfingerprint_autotuning_false_positive_rate ${lastBestSolution.objectives[0]}\n`;
+      metrics += `\n# HELP fingerprint_autotuning_false_negative_rate Current false negative rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_negative_rate gauge\nfingerprint_autotuning_false_negative_rate ${lastBestSolution.objectives[1]}\n`;
+    }
+
+    return metrics;
+  }
+};
+
+/**
+ * Gère une requête vers le point de terminaison /metrics, en appliquant les règles d'autorisation.
+ * Si les métriques sont activées et autorisées, elle renvoie les métriques au format Prometheus.
+ * Sinon, elle gère l'accès non autorisé ou renvoie un 404 si les métriques ne sont pas activées.
+ *
+ * @param {object} req L'objet requête Express.
+ * @param {object} res L'objet réponse Express.
+ * @param {object} securityConfig La configuration de sécurité.
+ */
+export async function handleMetricsRequest(req, res, securityConfig) {
+    // 2. Appliquer le callback d'autorisation personnalisé si défini.
+    const authorizationCallback = securityConfig.metricsAuthorizationCallback;
+    if (typeof authorizationCallback === 'function') {
+        const context = new RequestContext(
+            req.ip,
+            req.path,
+            req.headers,
+            req.query,
+            req.body,
+            req.cookies,
+            req.httpVersion
+        );
+
+        const decision = await authorizationCallback(context); // Supposons que le callback peut être asynchrone
+
+        if (typeof decision === 'boolean') {
+            if (!decision) {
+                res.status(403).send('Access to metrics denied.');
+                return;
+            }
+        } else if (typeof decision === 'object' && decision !== null && decision.action) {
+            if (decision.action === 'block') {
+                res.status(decision.status || 403).send(decision.body || 'Access denied.');
+                return;
+            } else if (decision.action === 'redirect') {
+                res.redirect(decision.status || 302, decision.path);
+                return;
+            }
+        }
+    }
+
+    // 3. Si autorisé, servir les métriques.
+    res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.send(MetricsManager.getPrometheusMetrics(securityConfig));
 }

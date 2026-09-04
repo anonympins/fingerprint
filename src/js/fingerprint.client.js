@@ -1,5 +1,5 @@
-import { cyrb53 as jsCyrb53, FingerprintBuilder } from './fingerprint.builder.js';
-import { solveChallenge } from './pow.solver.js';
+import {cyrb53 as jsCyrb53, FingerprintBuilder} from './fingerprint.builder.js';
+import {solveChallenge} from './pow.solver.js';
 
 // Variable pour stocker la fonction de hachage active.
 // Par défaut, c'est l'implémentation JavaScript.

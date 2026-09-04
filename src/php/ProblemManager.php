@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint;
 
-use Anonympins\Fingerprint\Store\IStore;
 use Anonympins\Fingerprint\Optimization\FunctionRegistry;
 use Anonympins\Fingerprint\Optimization\ProblemInitializers;
+use Anonympins\Fingerprint\Store\IStore;
 
 class ProblemManager
 {

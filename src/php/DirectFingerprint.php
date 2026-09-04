@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint;
 
+use Anonympins\Fingerprint\Utils\MetricsManager;
+
 /**
  * Intégration directe du moteur de fingerprinting pour les applications PHP sans framework PSR.
  * Cette classe interagit directement avec les superglobales PHP et les fonctions de réponse.
  */
 class DirectFingerprint
 {
+    private array $securityConfig;
     private FingerprintEngine $engine;
 
     /**
@@ -18,6 +21,7 @@ class DirectFingerprint
     public function __construct(array $securityConfig)
     {
         $this->engine = new FingerprintEngine($securityConfig);
+        $this->securityConfig = $securityConfig;
     }
 
     /**
@@ -77,5 +81,66 @@ class DirectFingerprint
                 // La requête est autorisée, on retourne les informations du fingerprint.
                 return ['score' => $decision['score'], 'vector' => $decision['vector']];
         }
+    }
+
+    /**
+     * Handles a request to the /metrics endpoint, applying authorization rules.
+     * If metrics are enabled and authorized, it outputs Prometheus formatted metrics and exits.
+     * Otherwise, it handles unauthorized access or returns a 404 if metrics are not enabled.
+     *
+     * @param RequestContext $context The current request context.
+     */
+    public function handleMetricsRequest(RequestContext $context): void
+    {
+        // 2. Appliquer le callback d'autorisation personnalisé si défini.
+        $authorizationCallback = $this->securityConfig['metricsAuthorizationCallback'] ?? null;
+        if (is_callable($authorizationCallback)) {
+            $decision = call_user_func($authorizationCallback, $context);
+
+            if (is_bool($decision)) {
+                if (!$decision) {
+                    http_response_code(403); // Forbidden
+                    echo "Access to metrics denied.";
+                    exit();
+                }
+            } elseif (is_array($decision) && isset($decision['action'])) {
+                switch ($decision['action']) {
+                    case 'block':
+                        http_response_code($decision['status'] ?? 403);
+                        echo $decision['body'] ?? "Access denied.";
+                        exit();
+                    case 'redirect':
+                        header('Location: ' . $decision['path'], true, $decision['status'] ?? 302);
+                        exit();
+                    case 'next':
+                        // Autorisé, continuer pour servir les métriques
+                        break;
+                    default:
+                        // Action inconnue, refuser par défaut
+                        http_response_code(403);
+                        echo "Invalid authorization decision.";
+                        exit();
+                }
+            } else {
+                // Retour inattendu du callback, refuser par défaut
+                http_response_code(403);
+                echo "Invalid authorization callback response.";
+                exit();
+            }
+        }
+
+        // 3. Si autorisé, servir les métriques.
+        header('Content-Type: text/plain; version=0.0.4; charset=utf-8');
+        echo MetricsManager::getPrometheusMetrics();
+        exit();
+    }
+
+    /**
+     * Returns Prometheus formatted metrics if enabled in the security configuration.
+     * @return string|null
+     */
+    public function getPrometheusMetrics(): ?string
+    {
+        return MetricsManager::getPrometheusMetrics();
     }
 }
