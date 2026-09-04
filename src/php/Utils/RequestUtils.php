@@ -906,10 +906,20 @@ class RequestUtils
         $subnetData = $store->get($key) ?? [
             'highScoreCount' => 0,
             'deviceIds' => [],
+            'highScoreDevices' => [],
             'lastActivity' => 0
         ];
 
-        $subnetData['highScoreCount']++;
+        if (!isset($subnetData['highScoreDevices'])) {
+            $subnetData['highScoreDevices'] = [];
+        }
+
+        $currentDeviceContributions = $subnetData['highScoreDevices'][$deviceId] ?? 0;
+        if ($currentDeviceContributions < 5 && $finalScore < 95) {
+            $subnetData['highScoreDevices'][$deviceId] = $currentDeviceContributions + 1;
+            $subnetData['highScoreCount']++;
+        }
+
         if (!in_array($deviceId, $subnetData['deviceIds'])) {
             $subnetData['deviceIds'][] = $deviceId;
         }
@@ -917,7 +927,12 @@ class RequestUtils
 
         // Limiter la taille du tableau des deviceIds pour éviter une consommation mémoire excessive.
         if (count($subnetData['deviceIds']) > 100) {
-            array_shift($subnetData['deviceIds']);
+            $oldDeviceId = array_shift($subnetData['deviceIds']);
+            if (isset($subnetData['highScoreDevices'][$oldDeviceId])) {
+                $oldContributions = $subnetData['highScoreDevices'][$oldDeviceId];
+                $subnetData['highScoreCount'] = max(0, $subnetData['highScoreCount'] - $oldContributions);
+                unset($subnetData['highScoreDevices'][$oldDeviceId]);
+            }
         }
 
         // TTL de 24 heures pour les données de sous-réseau.
@@ -945,16 +960,28 @@ class RequestUtils
             return ['subnetScore' => 0.0];
         }
 
+        // Application d'une décroissance temporelle (demi-vie de 30 minutes soit 1800 secondes)
+        $now = time();
+        $inactivitySec = $now - ($subnetData['lastActivity'] ?? $now);
+        $halfLives = (int)floor($inactivitySec / 1800);
+
+        $highScoreCount = $subnetData['highScoreCount'] ?? 0;
+        $deviceCount = isset($subnetData['deviceIds']) ? count($subnetData['deviceIds']) : 0;
+
+        if ($halfLives > 0) {
+            $highScoreCount = max(0, (int)floor($highScoreCount / pow(2, $halfLives)));
+            $deviceCount = max(0, (int)floor($deviceCount / pow(2, $halfLives)));
+        }
+
         $score = 0.0;
 
         // Pénalité basée sur le nombre de devices uniques vus depuis ce sous-réseau.
-        $deviceCount = count($subnetData['deviceIds']);
         if ($deviceCount > 10) {
             $score += min(80.0, ($deviceCount - 10) * 5);
         }
 
         // Pénalité basée sur le nombre de scores élevés enregistrés.
-        $score += min(40.0, $subnetData['highScoreCount'] * 2);
+        $score += min(40.0, $highScoreCount * 2);
 
         return ['subnetScore' => min(100.0, $score)];
     }

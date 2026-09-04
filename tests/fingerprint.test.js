@@ -2185,3 +2185,67 @@ describe('Firefox TE Header Anomaly', () => {
         expect(vector.headerAnomalyScore).toBe(30);
     });
 });
+
+describe('FingerprintEngine.processRequest - updateSubnetMetrics call logic', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        async has(key) { return this._map.has(key); },
+        async delete(key) { this._map.delete(key); },
+    };
+
+    let securityConfig;
+    let engine;
+    let updateSubnetMetricsSpy;
+    let getSuspicionVectorSpy;
+    let calculateFinalScoreSpy;
+
+    beforeEach(() => {
+        inMemoryStore._map.clear();
+        configureStore(inMemoryStore);
+
+        securityConfig = {
+            weights: { historyScore: 1.0 },
+            thresholds: { low: 20, medium: 45, high: 75, block: 95 }, // Default blockThreshold
+        };
+        engine = new FingerprintEngine(securityConfig);
+
+        // Spy on the internal updateSubnetMetrics function
+        updateSubnetMetricsSpy = vi.spyOn(__internal, 'updateSubnetMetrics').mockResolvedValue(undefined);
+        // Spy on getSuspicionVector to control the input to calculateFinalScore
+        getSuspicionVectorSpy = vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({});
+        // Spy on calculateFinalScore to directly control the finalScore
+        calculateFinalScoreSpy = vi.spyOn(engine, 'calculateFinalScore');
+    });
+
+    afterEach(() => {
+        updateSubnetMetricsSpy.mockRestore();
+        getSuspicionVectorSpy.mockRestore();
+        calculateFinalScoreSpy.mockRestore();
+    });
+
+    it('should call updateSubnetMetrics if finalScore is between lowThreshold and blockThreshold', async () => {
+        calculateFinalScoreSpy.mockReturnValue(50); // Score between 20 and 95
+        const requestContext = { clientIp: '192.168.1.1', cookies: {}, query: {}, headers: {} };
+
+        await engine.processRequest(requestContext);
+
+        expect(updateSubnetMetricsSpy).toHaveBeenCalledTimes(1);
+        expect(updateSubnetMetricsSpy).toHaveBeenCalledWith(requestContext, expect.any(String), 50);
+    });
+
+    it('should NOT call updateSubnetMetrics if finalScore is equal to or above blockThreshold', async () => {
+        calculateFinalScoreSpy.mockReturnValue(95); // Score equals blockThreshold
+        const requestContext = { clientIp: '192.168.1.1', cookies: {}, query: {}, headers: {} };
+
+        await engine.processRequest(requestContext);
+
+        expect(updateSubnetMetricsSpy).not.toHaveBeenCalled();
+
+        calculateFinalScoreSpy.mockReturnValue(100); // Score above blockThreshold
+        await engine.processRequest(requestContext);
+
+        expect(updateSubnetMetricsSpy).not.toHaveBeenCalled();
+    });
+});
