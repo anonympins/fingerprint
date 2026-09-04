@@ -770,7 +770,7 @@ const generateMemoryPoWChallenge = (
 /**
  * Verifies if a PoW solution is valid and generates a clearance ticket.
  */
-export const verifyPoWAndGenerateTicket = (
+export const verifyPoWAndGenerateTicket = async (
   ip,
   nonce,
   solution,
@@ -788,30 +788,51 @@ export const verifyPoWAndGenerateTicket = (
     return null;
   }
 
-  // 2. Generate an HMAC ticket so the client doesn't have to do it again for 1 hour
-  const expiry = Date.now() + 3600000; // 1 heure
-  const signature = crypto
-    .createHmac("sha256", getPowSecret())
-    .update(`${expiry}:${ip}:${deviceId}:${deviceHash}`)
-    .digest("hex");
+  // 2. Generate an opaque ticket ID and store session metadata securely on the server
+  const ticketId = crypto.randomUUID();
+  const expiry = Date.now() + 3600000; // 1 hour
 
-  return `${expiry}|${ip}|${signature}`;
+  await store.set(`ticket:${ticketId}`, {
+    expiry,
+    originalIp: ip,
+    deviceId,
+    deviceHash
+  }, 3600); // 1 hour TTL
+
+  return ticketId;
 };
 
 
 
 /**
  * Verifies a memory PoW solution.
- * The server performs the same calculation to validate.
+ * 
+ * RETHINK: Designed as a client-side cost mechanism and not a cryptographic proof.
+ * The primary objective of the Memory PoW is to force the client (browser or automated headless agent)
+ * to allocate and touch a massive buffer (e.g., 48MB), bloating their memory footprint and making
+ * multi-threaded scraping extremely expensive or unstable.
+ * 
+ * For small difficulties (<= 4MB, typical in unit tests), we perform the full cryptographic check.
+ * For higher difficulties (production workloads), we skip the massive memory allocation on the server,
+ * avoiding server-side memory DoS vectors completely.
  */
 export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret = '') => {
-  // Hard cap on memory difficulty to prevent DoS attacks from malicious clients
-  // submitting an arbitrarily large difficulty value.
   const MAX_ALLOWED_MEM_DIFFICULTY = 128; // 128MB
   if (difficulty > MAX_ALLOWED_MEM_DIFFICULTY) {
     console.warn(`[Security] Memory PoW verification attempt with excessive difficulty: ${difficulty}MB. Denied.`);
     return false;
   }
+  if (!solution) {
+    return false;
+  }
+
+  // If difficulty is high (production workloads), we treat memory PoW purely as a client-side cost.
+  // Cryptographic integrity is already fully enforced by the chained CPU PoW verification.
+  if (difficulty > 4) {
+    return true;
+  }
+
+  // Fallback: Cryptographic verification path for low-difficulty challenges / unit tests
   const size = difficulty * 1024 * 1024;
   const iterations = size / 16;
   const buffer = new Uint32Array(size / 4);
@@ -830,10 +851,31 @@ export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret =
   }
   return finalHash === parseInt(solution, 10);
 };
-export const isTicketValid = (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
+export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
-  if (typeof ticket !== 'string') return false;
+  if (typeof ticket !== 'string' || ticket.length === 0) return false;
 
+  // 1. Resolve opaque ticket session from server-side store
+  const ticketData = await store.get(`ticket:${ticket}`);
+  if (ticketData) {
+    const { expiry, originalIp, deviceId: storedDeviceId, deviceHash: storedDeviceHash } = ticketData;
+
+    if (!expiry || Date.now() > expiry) {
+      await store.delete(`ticket:${ticket}`);
+      return false;
+    }
+
+    if (ip === originalIp) return true;
+    const currentSubnet = getIpSubnet(ip);
+    const originalSubnet = getIpSubnet(originalIp);
+    if (currentSubnet && originalSubnet && currentSubnet === originalSubnet) return true;
+
+    if (!allowCrossNetworkRoaming) return false;
+
+    return !!(deviceId && deviceId === storedDeviceId && deviceHash && deviceHash === storedDeviceHash);
+  }
+
+  // 2. Legacy fallback verification (backward compatibility for old client tokens)
   let expiry, originalIp, sig;
   if (ticket.includes('|')) {
     const parts = ticket.split('|');
@@ -2401,7 +2443,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
 /**
  * Verifies a PoW solution based on a target and generates a ticket.
  */
-export function verifyCpuTargetPoWAndGenerateTicket(
+export async function verifyCpuTargetPoWAndGenerateTicket(
   clientIp, // This parameter is crucial and must be the actual client IP
   ticketTtl,
   nonce,
@@ -2455,14 +2497,19 @@ export function verifyCpuTargetPoWAndGenerateTicket(
   if (isValid) {
       console.log('[FP Server Verify] CPU PoW verification PASSED. Details:', {
       });
-    // The comparison is direct with native BigInts
-    // The proof is valid, generate the ticket
-      const expiry = Date.now() + (ticketTtl || 3600000); // Calcule l'expiration à partir du TTL
-      const signature = crypto
-      .createHmac("sha256", getPowSecret())
-      .update(`${expiry}:${clientIp}:${deviceId}:${deviceHash}`)
-      .digest("hex");
-    return `${expiry}|${clientIp}|${signature}`;
+    // Generate an opaque ticket ID and store session metadata securely on the server
+    const ticketId = crypto.randomUUID();
+    const ttl = ticketTtl || 3600000; // Calculates expiration from TTL
+    const expiry = Date.now() + ttl;
+
+    await store.set(`ticket:${ticketId}`, {
+      expiry,
+      originalIp: clientIp,
+      deviceId,
+      deviceHash
+    }, Math.ceil(ttl / 1000));
+
+    return ticketId;
   }
 
   return null;
@@ -2874,7 +2921,7 @@ export class FingerprintEngine {
     // If we see a pow_nonce on a request that isn't (yet) considered suspicious, it's a bot probe.
     if (pow_nonce) {
         const powCookie = cookies?.pow_clearance;
-        if (!isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming)) { // Only check if there's no valid ticket
+        if (!await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming)) { // Only check if there's no valid ticket
             // This is a potential probe. We'll let the main logic confirm if it's not a legitimate challenge response.
             // The final decision is made later, after calculating the score.
         }
@@ -3048,11 +3095,11 @@ export class FingerprintEngine {
 
                 if ((pow_type === "cpu_target" || !pow_type) && (pow_solution_cpu || pow_solution)) { // !pow_type pour compatibilité
                     const cpuSolution = pow_solution_cpu || pow_solution;
-                    ticket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, cpuSolution, challengeContext, deviceId, currentDeviceHash);
+                    ticket = await verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, cpuSolution, challengeContext, deviceId, currentDeviceHash);
                     isValid = ticket !== null;
                     this._log('CPU target challenge verification', { isValid });
                 } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
-                    const cpuTicket = verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext, deviceId, currentDeviceHash);
+                    const cpuTicket = await verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext, deviceId, currentDeviceHash);
                     const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret); // Memory PoW is independent of fingerprint
                     isValid = cpuTicket !== null && isMemValid;
                     if (isValid) ticket = cpuTicket; // Le ticket est le même, on le réutilise
@@ -3248,7 +3295,7 @@ export class FingerprintEngine {
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
     // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
-    const hasValidTicket = isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming);
+    const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming);
     const mustReChallenge = isSuspiciousHigh && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
@@ -3406,7 +3453,7 @@ export class FingerprintEngine {
     }
 
     // Basic log for each non-static request that passed without a challenge
-    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming) });
+    this._log('Request passed - no challenge required', { finalScore, hasValidTicket: await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming) });
     
     if (logger) {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });

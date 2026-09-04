@@ -144,7 +144,7 @@ describe('Fingerprint & PoW Security Suite', () => {
         const suspicionFactor = 0.1; // Low suspicion for a quick test
         const clientSecret = 'my-super-secret-client-key';
 
-        test('should solve and verify correctly without a clientSecret (fallback)', () => {
+        test('should solve and verify correctly without a clientSecret (fallback)', async () => {
             const securityConfig = { cpu: { minDifficultyBits: 2, maxDifficultyBits: 4 } }; // Difficulté plus faible pour le test
             let solution = 0;
             const target = __internal.calculateTarget(suspicionFactor, securityConfig);
@@ -157,9 +157,9 @@ describe('Fingerprint & PoW Security Suite', () => {
             }
             const challengeContext = { cpuTarget: target.toString(16), baseBlock };
 
-            const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, challengeContext);
+            const ticket = await verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, challengeContext);
             expect(ticket, "Ticket should be generated for a valid solution without secret").toBeTruthy();
-            expect(isTicketValid(ip, ticket), "Ticket should be valid").toBe(true);
+            expect(await isTicketValid(ip, ticket), "Ticket should be valid").toBe(true);
         });
 
         test('should solve and verify correctly WITH a clientSecret', async () => {
@@ -180,10 +180,10 @@ describe('Fingerprint & PoW Security Suite', () => {
             const challengeContext = { cpuTarget: target.toString(16), baseBlock };
 
             // Server-side verification includes the secret
-            const ticket = verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, challengeContext);
+            const ticket = await verifyCpuTargetPoWAndGenerateTicket(ip, null, nonce, solution, challengeContext);
             expect(ticket, "Ticket should be generated for a valid solution with secret").toBeTruthy();
-            expect(isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
-            expect(isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
+            expect(await isTicketValid(ip, ticket), "Ticket should be valid for the same IP").toBe(true);
+            expect(await isTicketValid('1.1.1.1', ticket), "Ticket should not be valid for a different IP").toBe(false);
         });
 
         test('should solve a medium-difficulty challenge within a reasonable time', async () => {
@@ -210,13 +210,13 @@ describe('Fingerprint & PoW Security Suite', () => {
         }, 40000); // Timeout de 8 secondes pour ce test
     });
 
-    test('PoW Ticket Expiration', () => {
+    test('PoW Ticket Expiration', async () => {
         const ip = '127.0.0.1';
         // Simulate an expired ticket by manipulating the string (for testing)
         const expiredTimestamp = Date.now() - 1000;
         const signature = createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiredTimestamp}`).digest("hex");
         const ticket = `${expiredTimestamp}:${signature}`;
-        expect(isTicketValid(ip, ticket), "An expired ticket should be rejected").toBe(false);
+        expect(await isTicketValid(ip, ticket), "An expired ticket should be rejected").toBe(false);
     });
 
     describe('Memory PoW Verification', () => {
