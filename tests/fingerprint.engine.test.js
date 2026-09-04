@@ -301,7 +301,7 @@ describe("Node.js Storage Security & Signature Verification", () => {
 
         // Configuration de test
         const securityConfig = {
-            weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8, honeypotScore: 1.0 },
+            weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 1.0, inconsistencyScore: 0.8, honeypotScore: 1.0 },
             thresholds: { low: 20, medium: 45, high: 75, block: 95 },
             challengeTtl: 300,
             verbose: false

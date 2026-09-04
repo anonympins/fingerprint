@@ -50,6 +50,7 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.9,
             tlsSpoofingScore: 0.8, // NOUVEAU: Poids pour la détection de spoofing TLS
+            subnetScore: 0.4, // NOUVEAU: Poids pour la réputation du sous-réseau
             ipReputationScore: 0.5 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
@@ -83,6 +84,7 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.6,
             timeInconsistencyScore: 1.0,
             tlsSpoofingScore: 1.0, // Plus agressif pour le spoofing TLS
+            subnetScore: 0.5,
             ipReputationScore: 0.6 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
@@ -117,6 +119,7 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.5,
             timeInconsistencyScore: 0.8,
             tlsSpoofingScore: 0.7, // Important pour les API
+            subnetScore: 0.4,
             ipReputationScore: 0.5 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
@@ -152,6 +155,7 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.8,
             tlsSpoofingScore: 0.6, // Moins critique pour les blogs
+            subnetScore: 0.2,
             ipReputationScore: 0.3 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
@@ -186,6 +190,7 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.7,
             timeInconsistencyScore: 0.9,
             tlsSpoofingScore: 0.9, // Très important pour l'e-commerce
+            subnetScore: 0.5,
             ipReputationScore: 0.6 // NOUVEAU: Poids pour la réputation IP
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
@@ -1719,17 +1724,32 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
     const subnetData = (await store.get(key)) || {
         highScoreCount: 0,
         deviceIds: [],
+        highScoreDevices: {},
         lastActivity: 0
     };
 
-    subnetData.highScoreCount++;
+    if (!subnetData.highScoreDevices) {
+        subnetData.highScoreDevices = {};
+    }
+
+    const currentDeviceContributions = subnetData.highScoreDevices[deviceId] || 0;
+    if (currentDeviceContributions < 5) {
+        subnetData.highScoreDevices[deviceId] = currentDeviceContributions + 1;
+        subnetData.highScoreCount++;
+    }
+
     if (!subnetData.deviceIds.includes(deviceId)) {
         subnetData.deviceIds.push(deviceId);
     }
     subnetData.lastActivity = Date.now();
 
     if (subnetData.deviceIds.length > 100) {
-        subnetData.deviceIds.shift();
+        const oldDeviceId = subnetData.deviceIds.shift();
+        if (subnetData.highScoreDevices[oldDeviceId] !== undefined) {
+            const oldContributions = subnetData.highScoreDevices[oldDeviceId];
+            subnetData.highScoreCount = Math.max(0, subnetData.highScoreCount - oldContributions);
+            delete subnetData.highScoreDevices[oldDeviceId];
+        }
     }
 
     await store.set(key, subnetData, 86400); // 24-hour TTL
@@ -1747,8 +1767,21 @@ async function getSubnetScore(context) {
     const subnetData = await store.get(`subnet:${subnet}`);
     if (!subnetData) return { subnetScore: 0 };
 
-    const deviceCountPenalty = Math.min(80, Math.max(0, subnetData.deviceIds.length - 10) * 5);
-    const highScorePenalty = Math.min(40, subnetData.highScoreCount * 2);
+    // Application d'une décroissance temporelle (demi-vie de 30 minutes)
+    const now = Date.now();
+    const inactivityMs = now - (subnetData.lastActivity || now);
+    const halfLives = Math.floor(inactivityMs / (30 * 60 * 1000));
+
+    let highScoreCount = subnetData.highScoreCount || 0;
+    let deviceCount = subnetData.deviceIds ? subnetData.deviceIds.length : 0;
+
+    if (halfLives > 0) {
+        highScoreCount = Math.max(0, Math.floor(highScoreCount / Math.pow(2, halfLives)));
+        deviceCount = Math.max(0, Math.floor(deviceCount / Math.pow(2, halfLives)));
+    }
+
+    const deviceCountPenalty = Math.min(80, Math.max(0, deviceCount - 10) * 5);
+    const highScorePenalty = Math.min(40, highScoreCount * 2);
 
     return { subnetScore: Math.min(100, deviceCountPenalty + highScorePenalty) };
 }
@@ -2964,9 +2997,11 @@ export class FingerprintEngine {
     
     this._log('Final score calculated', { finalScore });
 
+    const blockThreshold = thresholds.block ?? 95;
+
     // Mettre à jour les métriques du sous-réseau après le calcul du score final
-    if (finalScore > (thresholds.low ?? 20)) {
-        await updateSubnetMetrics(requestContext, deviceId, finalScore);
+    if (finalScore > (thresholds.low ?? 20) && finalScore < blockThreshold) {
+        await __internal.updateSubnetMetrics(requestContext, deviceId, finalScore);
     }
 
     // Si c'est un nouvel appareil, on lui impose un challenge de base, même si son score est bas.
@@ -2980,34 +3015,6 @@ export class FingerprintEngine {
       });
       finalScore = thresholds.low;
     }
-
-    const blockThreshold = thresholds.block ?? 95;
-    const isBlocked = finalScore >= blockThreshold;
-
-    const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
-    const isSuspiciousMedium = finalScore >= thresholds.medium;
-    const isSuspicious = finalScore >= thresholds.low;
-    const isVerySuspicious = finalScore >= thresholds.medium; // Seuil pour le challenge d'optimisation
-
-    // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
-    const suspicionFactor = isSuspicious
-        ? Math.min(
-            1.5, // On autorise un dépassement pour rendre les challenges très difficiles si le score est très élevé
-            (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
-        )
-        : 0;
-
-    this._log('Suspicion levels evaluated', { 
-        finalScore, 
-        isBlocked, 
-        isSuspiciousHigh, 
-        isSuspiciousMedium, 
-        isSuspicious, 
-        suspicionFactor,
-        thresholds: { low: thresholds.low, medium: thresholds.medium, high: thresholds.high, block: blockThreshold }
-    });
-
-    const powCookie = cookies?.pow_clearance;
 
     // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
     // Si une solution de challenge est soumise, on la traite en priorité absolue,
@@ -3113,7 +3120,7 @@ export class FingerprintEngine {
         } else {
             this._log('Challenge context not found or expired', { pow_nonce });
             // --- NOUVELLE MESURE DE SÉCURITÉ ---
-            // Si un client soumet un nonce invalide ou expiré, c'est une tentative de probing.
+            // Si un client soumet un nonce invalide ou expiré, c'est une tentative de probing ou de rejeu.
             // On applique une pénalité maximale pour bloquer ou re-challenger lourdement.
             suspicionVector.honeypotScore = 100;
             finalScore = this.calculateFinalScore(suspicionVector);
@@ -3167,7 +3174,7 @@ export class FingerprintEngine {
         } else {
             // If the solution is invalid, we should treat it as a high-suspicion event.
             // This prevents the request from proceeding and forces a new, likely harder, challenge.
-            this._log('Challenge solution invalid', { pow_nonce });
+            this._log('Challenge solution invalid or fingerprint mismatch', { pow_nonce });
             suspicionVector.honeypotScore = 100; // Invalid solution is a strong bot signal.
             finalScore = this.calculateFinalScore(suspicionVector);
             // --- FIX: After invalidating a solution, immediately check if the new score triggers a block ---
@@ -3185,6 +3192,10 @@ export class FingerprintEngine {
                 return decision;
             }
             // If not blocked, the request will proceed to be re-challenged.
+            // To ensure a challenge is issued, set the score to just below the block threshold.
+            // This ensures it falls into the 'challenge' category (>= high, < block).
+            finalScore = Math.min(finalScore, (thresholds.block ?? 95) - 1);
+            this._log('Invalid solution leads to re-challenge', { finalScore });
         }
     } else if (pow_nonce && pow_type === 'optimization_task' && pow_solution_population) {
         this._log('Optimization task solution submitted', { pow_nonce });
@@ -3246,6 +3257,57 @@ export class FingerprintEngine {
     }
     // --- FIN DE LA LOGIQUE DE PRIORITÉ ---
 
+    // Honeypot: Direct probing of challenge endpoints is highly suspicious.
+    // A legitimate user only hits these endpoints via the challenge page itself.
+    // If we see a pow_nonce on a request that has no valid ticket,
+    // AND it's not a legitimate response to a challenge we issued, it's a probe.
+    const isChallengeResponse = query.pow_solution || (query.pow_solution_cpu && query.pow_solution_mem);
+    if (pow_nonce && !isChallengeResponse) {
+        this._log('Honeypot probe detected - blocking request', { path, pow_nonce });
+        if (logger) {
+            logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now(), vector: suspicionVector });
+        }
+        suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
+        // Recalculate the final score with the updated vector.
+        finalScore = this.calculateFinalScore(suspicionVector);
+        const decision = { action: 'block', status: 404, body: 'Forbidden', score: finalScore, vector: suspicionVector };
+        if (this.dryRun) {
+            this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+            decision.intendedAction = decision.action;
+            decision.action = 'next';
+            delete decision.status;
+            delete decision.body;
+        }
+        return decision;
+    }
+
+    const isBlocked = finalScore >= blockThreshold;
+
+    const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
+    const isSuspiciousMedium = finalScore >= thresholds.medium;
+    const isSuspicious = finalScore >= thresholds.low;
+    const isVerySuspicious = finalScore >= thresholds.medium; // Seuil pour le challenge d'optimisation
+
+    // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
+    const suspicionFactor = isSuspicious
+        ? Math.min(
+            1.5, // On autorise un dépassement pour rendre les challenges très difficiles si le score est très élevé
+            (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
+        )
+        : 0;
+
+    this._log('Suspicion levels evaluated', { 
+        finalScore, 
+        isBlocked, 
+        isSuspiciousHigh, 
+        isSuspiciousMedium, 
+        isSuspicious, 
+        suspicionFactor,
+        thresholds: { low: thresholds.low, medium: thresholds.medium, high: thresholds.high, block: blockThreshold }
+    });
+
+    const powCookie = cookies?.pow_clearance;
+
     // If the action is to block, we should still include the score and vector for logging/testing.
     if (isBlocked) {
       this._log('Request blocked - score exceeded block threshold', { finalScore, blockThreshold });
@@ -3303,29 +3365,6 @@ export class FingerprintEngine {
             this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
         }
         this._log('Suspicious request without valid ticket - issuing challenge', { finalScore, hasPowCookie: !!powCookie });
-        // Honeypot: Direct probing of challenge endpoints is highly suspicious.
-        // A legitimate user only hits these endpoints via the challenge page itself.
-        // If we see a pow_nonce on a request that IS suspicious but has no valid ticket,
-        // AND it's not a legitimate response to a challenge we issued, it's a probe.
-        const isChallengeResponse = query.pow_solution || (query.pow_solution_cpu && query.pow_solution_mem);
-        if (pow_nonce && !isChallengeResponse) {
-            this._log('Honeypot probe detected - blocking request', { path, pow_nonce });
-            if (logger) {
-                logger({ type: 'honeypot_probe', deviceId: cookies?.device_id, score: finalScore, path: path, timestamp: Date.now(), vector: suspicionVector });
-            }
-            suspicionVector.honeypotScore = 100; // Bot is probing. Max penalty.
-            // Recalculate the final score with the updated vector.
-            const newFinalScore = this.calculateFinalScore(suspicionVector);
-            const decision = { action: 'block', status: 404, body: 'Forbidden', score: newFinalScore, vector: suspicionVector };
-            if (this.dryRun) {
-                this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
-                decision.intendedAction = decision.action;
-                decision.action = 'next';
-                delete decision.status;
-                delete decision.body;
-            }
-            return decision;
-        }
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
