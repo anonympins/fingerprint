@@ -2973,7 +2973,7 @@ export class FingerprintEngine {
     // Cela augmente le coût pour les bots qui tentent de simplement supprimer leurs cookies.
     // NOUVEAU : Cette logique est maintenant configurable.
     const challengeNewDevices = this.securityConfig.challengeNewDevices === true;
-    if (isNewDevice && finalScore < thresholds.low) {
+    if (challengeNewDevices isNewDevice && finalScore < thresholds.low) {
       this._log('New device - enforcing minimum challenge score', { 
           originalScore: finalScore, 
           enforcedScore: thresholds.low 
