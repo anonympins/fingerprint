@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\Tests;
 
+use Anonympins\Fingerprint\FingerprintBuilder;
 use Anonympins\Fingerprint\RequestContext;
 use Anonympins\Fingerprint\Utils\RequestUtils;
 use PHPUnit\Framework\TestCase;
@@ -142,5 +143,112 @@ class RequestUtilsTest extends TestCase
         // 5. Absence de signature
         $isMissingSigValid = RequestUtils::verifyChallengePayload($secret, $payload, $clientIp);
         $this->assertFalse($isMissingSigValid, "Un payload sans signature doit être rejeté.");
+    }
+
+    public function testGetBehaviorScoreReturnsProperScores(): void
+    {
+        $contextEmpty = $this->createRequestContext();
+        $scoreEmpty = RequestUtils::getBehaviorScore($contextEmpty);
+        $this->assertEquals(0.0, $scoreEmpty['behaviorScore']);
+
+        $metricsHoneypot = ['honeypotInteraction' => true];
+        $contextHoneypot = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metricsHoneypot)]
+        ]);
+        $scoreHoneypot = RequestUtils::getBehaviorScore($contextHoneypot);
+        $this->assertEquals(100.0, $scoreHoneypot['behaviorScore']);
+
+        $metricsNoActivity = ['honeypotInteraction' => false, 'mouseMovementsHistory' => [], 'keystrokeLatency' => 0];
+        $contextNoActivity = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metricsNoActivity)]
+        ]);
+        $scoreNoActivity = RequestUtils::getBehaviorScore($contextNoActivity);
+        $this->assertEquals(40.0, $scoreNoActivity['behaviorScore']);
+    }
+
+    public function testGetTimeInconsistencyScore(): void
+    {
+        $requestTimestamp = time() * 1000;
+
+        $metricsNormal = ['clientTimestamp' => $requestTimestamp - 100];
+        $contextNormal = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metricsNormal)]
+        ]);
+        $contextNormal->requestTimestamp = $requestTimestamp;
+        $scoreNormal = RequestUtils::getTimeInconsistencyScore($contextNormal);
+        $this->assertEquals(0.0, $scoreNormal['timeInconsistencyScore']);
+
+        $metricsReplay = ['clientTimestamp' => $requestTimestamp - 10000];
+        $contextReplay = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metricsReplay)]
+        ]);
+        $contextReplay->requestTimestamp = $requestTimestamp;
+        $scoreReplay = RequestUtils::getTimeInconsistencyScore($contextReplay);
+        $this->assertGreaterThan(0.0, $scoreReplay['timeInconsistencyScore']);
+    }
+
+    public function testGetCrossLayerInconsistencyOSMismatch(): void
+    {
+        $windowsHash = FingerprintBuilder::cyrb53("Windows");
+        $context = $this->createRequestContext([
+            'headers' => [
+                'x-device-fingerprint' => "os:{$windowsHash}",
+                'user-agent' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15'
+            ]
+        ]);
+
+        $score = RequestUtils::getCrossLayerInconsistency($context);
+        $this->assertEquals(50.0, $score['crossLayerInconsistencyScore']);
+    }
+
+    public function testGetBotScoreDetections(): void
+    {
+        $contextBot = $this->createRequestContext([
+            'headers' => ['x-device-fingerprint' => 'ua:123|bot:true']
+        ]);
+        $scoreBot = RequestUtils::getBotScore($contextBot);
+        $this->assertEquals(100.0, $scoreBot['botScore']);
+
+        $contextCdp = $this->createRequestContext([
+            'headers' => ['x-device-fingerprint' => 'ua:123|cdp:true']
+        ]);
+        $scoreCdp = RequestUtils::getBotScore($contextCdp);
+        $this->assertEquals(100.0, $scoreCdp['botScore']);
+
+        $contextClean = $this->createRequestContext([
+            'headers' => ['x-device-fingerprint' => 'ua:123|os:456']
+        ]);
+        $scoreClean = RequestUtils::getBotScore($contextClean);
+        $this->assertEquals(0.0, $scoreClean['botScore']);
+    }
+
+    public function testGetHeaderAnomaliesFirefoxTE(): void
+    {
+        $contextFirefoxNoTe = $this->createRequestContext([
+            'headers' => [
+                'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+                'accept-language' => 'en-US,en;q=0.9',
+            ]
+        ]);
+        $scoreFirefoxNoTe = RequestUtils::getHeaderAnomalies($contextFirefoxNoTe);
+        $this->assertEquals(30.0, $scoreFirefoxNoTe['headerAnomalyScore']);
+    }
+
+    public function testGetBehavioralIndicatorsRotationAndHistory(): void
+    {
+        $deviceData = [
+            'ips' => ['127.0.0.1'],
+            'lastFpHash' => 'cvs:original-canvas|gpu:original-gpu',
+            'lastChangeTimestamp' => (time() * 1000) - 500,
+            'rapidChangeCount' => 1
+        ];
+
+        $context = $this->createRequestContext([
+            'headers' => ['x-device-fingerprint' => 'cvs:new-canvas|gpu:new-gpu']
+        ]);
+
+        $indicators = RequestUtils::getBehavioralIndicators($context, $deviceData);
+        $this->assertEquals(2, $deviceData['rapidChangeCount']);
+        $this->assertGreaterThan(0, $indicators['rotationScore']);
     }
 }

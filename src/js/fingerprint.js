@@ -1250,7 +1250,7 @@ function getCrossLayerInconsistency(context) {
         const clientOsHash = clientFpMap.get('os');
         if (clientOsHash) {
             const serverOsParts = parseUserAgent(ua);
-            if (serverOsParts.os && clientOsHash !== cyrb53(serverOsParts.os)) {
+            if (serverOsParts.os && clientOsHash !== String(cyrb53(serverOsParts.os))) {
                 // Exemple: le client prétend être 'Windows' mais le UA est 'macOS'.
                 score += 50;
             }
@@ -1273,7 +1273,7 @@ function getCrossLayerInconsistency(context) {
         // Un attaquant sophistiqué peut forger le canvas, mais il est très difficile de forger
         // le JA3 qui dépend de la librairie TLS. Une forte incohérence ici est un signal fort.
         const clientGpuHash = clientFpMap.get('gpu');
-        const ja3 = getJa3Hash(context);
+        const ja3 = getTlsFingerprint(context)?.ja3;
         if (clientGpuHash && ja3) {
             // Une vraie implémentation nécessiterait une base de données mappant les GPU connus
             // à des signatures JA3 typiques. Pour l'exemple, on simule une pénalité si les deux
