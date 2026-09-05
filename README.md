@@ -10,6 +10,8 @@ PHP tests : [![PHP](https://img.shields.io/github/actions/workflow/status/anonym
 
 A multi-layered behavioral, cryptographic, and network analysis engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking) in real-time. Supports both **Node.js** and **PHP** environments.
 
+![illustration](https://i.ibb.co/fV1QT6Mf/image-c6e10859baae53bb595112ec08fc9e27.png)
+
 ## Key Features
 
 - **Multi-Layered Detection**: Combines TLS/JA3/JA4 analysis, HTTP header consistency checks, IP reputation, and behavioral tracking (mouse movements, keystrokes).

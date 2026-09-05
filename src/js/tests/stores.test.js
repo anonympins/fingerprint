@@ -1,6 +1,6 @@
 import {afterAll, beforeAll, beforeEach, describe, expect, it} from 'vitest';
-import {createRedisStore} from '../src/js/redis-store.js';
-import {createMongoDbStore} from '../src/js/mongodb-store.js';
+import {createRedisStore} from '../redis-store.js';
+import {createMongoDbStore} from '../mongodb-store.js';
 
 // Helper function to wait for TTL expiration in tests
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));

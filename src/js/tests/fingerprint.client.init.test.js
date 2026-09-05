@@ -1,6 +1,6 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {JSDOM} from 'jsdom';
-import ClientLibrary from '../src/js/fingerprint.client.js';
+import ClientLibrary from '../fingerprint.client.js';
 
 // --- Setup JSDOM Environment ---
 // Vitest peut être configuré pour le faire automatiquement, mais le faire manuellement
