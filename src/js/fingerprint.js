@@ -6,7 +6,10 @@ import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
 import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
-import {dirname, join} from "node:path";
+import {dirname, join, resolve} from "node:path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
@@ -67,6 +70,7 @@ const securityProfiles = {
             inactivityReset: 5000,
         },
         allowCrossNetworkRoaming: true, // Profil balancé : tolérant par défaut
+    wasm: true,
     },
     /**
      * @summary **Strict Profile**
@@ -102,6 +106,7 @@ const securityProfiles = {
         },
         challengeNewDevices: true, // Challenge all new devices
         allowCrossNetworkRoaming: false, // Strict : interdiction de changer complètement de réseau sans re-challenge
+    wasm: true,
     },
     /**
      * @summary **API Profile**
@@ -137,6 +142,7 @@ const securityProfiles = {
         },
         isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
         allowCrossNetworkRoaming: false, // Les API ne doivent pas subir de roaming inter-IP suspect
+    wasm: true,
     }
     ,
     /**
@@ -172,6 +178,7 @@ const securityProfiles = {
             inactivityReset: 10000,
         },
         allowCrossNetworkRoaming: true,
+    wasm: true,
     },
     /**
      * @summary **E-commerce Profile**
@@ -209,6 +216,7 @@ const securityProfiles = {
         challengeNewDevices: true, // New devices are suspicious in e-commerce
         isApiRequest: (req) => req.path.startsWith('/api/cart') || req.path.startsWith('/api/stock') || req.path.startsWith('/api/checkout'),
         allowCrossNetworkRoaming: false, // E-commerce : interdiction de changer de réseau sans re-challenge
+    wasm: true,
     }
 };
 
@@ -242,8 +250,6 @@ const getPowSecret = () => {
 const getPowSolverCode = () => {
   // On supprime le try/catch. Si le fichier n'est pas trouvé, le processus plantera,
   // ce qui est préférable à servir un code de secours potentiellement désynchronisé.
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
   const solverPath = join(__dirname, 'pow.solver.inline.js'); // Utilise la version inline
   return readFileSync(solverPath, 'utf-8');
 };
@@ -1250,7 +1256,7 @@ function getCrossLayerInconsistency(context) {
         const clientOsHash = clientFpMap.get('os');
         if (clientOsHash) {
             const serverOsParts = parseUserAgent(ua);
-            if (serverOsParts.os && clientOsHash !== cyrb53(serverOsParts.os)) {
+            if (serverOsParts.os && clientOsHash !== String(cyrb53(serverOsParts.os))) {
                 // Exemple: le client prétend être 'Windows' mais le UA est 'macOS'.
                 score += 50;
             }
@@ -1273,7 +1279,7 @@ function getCrossLayerInconsistency(context) {
         // Un attaquant sophistiqué peut forger le canvas, mais il est très difficile de forger
         // le JA3 qui dépend de la librairie TLS. Une forte incohérence ici est un signal fort.
         const clientGpuHash = clientFpMap.get('gpu');
-        const ja3 = getJa3Hash(context);
+        const ja3 = getTlsFingerprint(context)?.ja3;
         if (clientGpuHash && ja3) {
             // Une vraie implémentation nécessiterait une base de données mappant les GPU connus
             // à des signatures JA3 typiques. Pour l'exemple, on simule une pénalité si les deux
@@ -2599,6 +2605,7 @@ export class FingerprintEngine {
       'honeypot', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger',
       'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
       'trustedProxies',
+      'wasm',
       'similarityThreshold'
     ]);
 
@@ -3974,6 +3981,47 @@ export const powMiddleware = (securityConfig) => {
   }
 
   return async (req, res, next) => {
+    if (securityConfig?.wasm) {
+      const wasmConfig = securityConfig.wasm;
+      let jsPath = '/fp.js';
+      let wasmPath = '/fp.wasm';
+      let jsFile = '';
+      let wasmFile = '';
+
+      if (wasmConfig === true) {
+        const defaultDir = resolve(__dirname, '..', '..', 'public');
+        jsFile = resolve(defaultDir, 'fp.js');
+        wasmFile = resolve(defaultDir, 'fp.wasm');
+      } else if (typeof wasmConfig === 'string') {
+        jsFile = resolve(wasmConfig, 'fp.js');
+        wasmFile = resolve(wasmConfig, 'fp.wasm');
+      } else if (typeof wasmConfig === 'object') {
+        jsPath = wasmConfig.jsPath || '/fp.js';
+        wasmPath = wasmConfig.wasmPath || '/fp.wasm';
+        jsFile = wasmConfig.jsFile ? resolve(wasmConfig.jsFile) : resolve(__dirname, '..', '..', 'public', 'fp.js');
+        wasmFile = wasmConfig.wasmFile ? resolve(wasmConfig.wasmFile) : resolve(__dirname, '..', '..', 'public', 'fp.wasm');
+      }
+
+      if (jsFile && req.path === jsPath) {
+        try {
+          const fileContent = readFileSync(jsFile);
+          res.setHeader('Content-Type', 'application/javascript');
+          return res.send(fileContent);
+        } catch (e) {
+          // Fallback
+        }
+      }
+      if (wasmFile && req.path === wasmPath) {
+        try {
+          const fileContent = readFileSync(wasmFile);
+          res.setHeader('Content-Type', 'application/wasm');
+          return res.send(fileContent);
+        } catch (e) {
+          // Fallback
+        }
+      }
+    }
+
     const requestContext = {
       clientIp: req.ip || req.socket?.remoteAddress || "unknown",
       path: req.path,

@@ -22,6 +22,24 @@ async function solveCpuTargetInline(baseBlock, target, progressCallback) {
     const cpuTarget = typeof target === 'bigint' ? target : BigInt('0x' + target);
     // --- END FIX ---
     const encoder = new TextEncoder();
+
+    const wasmModule = typeof window !== 'undefined' ? (window.wasmModule || (window.ClientLibrary && window.ClientLibrary.wasmModule)) : null;
+    if (wasmModule && typeof wasmModule._solve_cpu_target === 'function') {
+        const len = baseBlock.length;
+        const ptr = wasmModule._malloc(len);
+        wasmModule.HEAPU8.set(baseBlock, ptr);
+        const targetStr = typeof target === 'string' ? target : target.toString(16);
+        const targetPtr = wasmModule._malloc(targetStr.length + 1);
+        for (let i = 0; i < targetStr.length; i++) {
+            wasmModule.HEAP8[targetPtr + i] = targetStr.charCodeAt(i);
+        }
+        wasmModule.HEAP8[targetPtr + targetStr.length] = 0;
+        const solution = wasmModule._solve_cpu_target(ptr, len, targetPtr);
+        wasmModule._free(ptr);
+        wasmModule._free(targetPtr);
+        return solution;
+    }
+
     let cpuSolution = 0;
 
     while (true) {
@@ -101,6 +119,19 @@ async function solveMemory(seed, difficulty) {
     const YIELD_THRESHOLD = 100000;
     const size = difficulty * 1024 * 1024;
     const buffer = new Uint32Array(size / 4);
+
+    const wasmModule = typeof window !== 'undefined' ? (window.wasmModule || (window.ClientLibrary && window.ClientLibrary.wasmModule)) : null;
+    if (wasmModule && typeof wasmModule._solve_memory_challenge === 'function') {
+        const seedPtr = wasmModule._malloc(seed.length + 1);
+        for (let i = 0; i < seed.length; i++) {
+            wasmModule.HEAP8[seedPtr + i] = seed.charCodeAt(i);
+        }
+        wasmModule.HEAP8[seedPtr + seed.length] = 0;
+        const solution = wasmModule._solve_memory_challenge(seedPtr, difficulty);
+        wasmModule._free(seedPtr);
+        return solution;
+    }
+
     let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
     for (let i = 0; i < buffer.length; i++) {
         buffer[i] = (h = Math.imul(h ^ i, 1597334677));

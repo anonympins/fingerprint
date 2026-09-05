@@ -2249,3 +2249,71 @@ describe('FingerprintEngine.processRequest - updateSubnetMetrics call logic', ()
         expect(updateSubnetMetricsSpy).not.toHaveBeenCalled();
     });
 });
+
+describe('Additional Suspicion Vectors Coverage', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        async has(key) { return this._map.has(key); },
+        async delete(key) { this._map.delete(key); },
+    };
+
+    beforeEach(() => {
+        inMemoryStore._map.clear();
+        configureStore(inMemoryStore);
+    });
+
+    it('should calculate a high rotationScore for rapid fingerprint changes', async () => {
+        const context = {
+            clientIp: '127.0.0.1',
+            cookies: { device_id: 'rotating-device' },
+            headers: { 'user-agent': 'test-ua' }
+        };
+
+        await inMemoryStore.set('device:rotating-device', {
+            initialDeviceHash: 'hash-A',
+            ips: new Set(['127.0.0.1']),
+            lastUpdate: Date.now(),
+            lastFpHash: 'hash-A',
+            lastChangeTimestamp: Date.now(),
+            rapidChangeCount: 3,
+        });
+
+        const vector = await __internal.getSuspicionVector(context, {
+            weights: { rotationScore: 1.0 },
+            thresholds: { low: 20 }
+        });
+
+        expect(vector.rotationScore).toBe(100);
+    });
+
+    it('should calculate a high botScore when bot or cdp markers are present in device fingerprint', async () => {
+        const contextBot = {
+            clientIp: '127.0.0.1',
+            headers: { 'x-device-fingerprint': 'ua:123|bot:true' }
+        };
+        const contextCdp = {
+            clientIp: '127.0.0.1',
+            headers: { 'x-device-fingerprint': 'ua:123|cdp:true' }
+        };
+
+        const vectorBot = await __internal.getSuspicionVector(contextBot, { weights: { botScore: 1.0 } });
+        const vectorCdp = await __internal.getSuspicionVector(contextCdp, { weights: { botScore: 1.0 } });
+
+        expect(vectorBot.botScore).toBe(100);
+        expect(vectorCdp.botScore).toBe(100);
+    });
+
+    it('should calculate a high crossLayerInconsistencyScore when OS mismatch is detected', () => {
+        const context = {
+            headers: {
+                'x-device-fingerprint': `os:${cyrb53("Windows")}`,
+                'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15'
+            }
+        };
+
+        const { crossLayerInconsistencyScore } = __internal.getCrossLayerInconsistency(context);
+        expect(crossLayerInconsistencyScore).toBe(50);
+    });
+});

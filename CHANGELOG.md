@@ -1,3 +1,78 @@
+## Version 0.4.0
+
+### ⚡ WebAssembly (WASM) v2 Client-Side Solver & Autoloader
+- **WASM by Default**: WebAssembly acceleration is now active by default (`wasm: true`). The client library automatically attempts to load the WASM modules from the public library path (`/fp.js` and `/fp.wasm`), falling back to pure JavaScript only if loading fails.
+- **Full WASM v2 Solver**: Re-engineered the client-side solvers (`solveCpuTargetInline`, `solveMemory`) to execute fully inside WebAssembly, ensuring high-speed cryptographic evaluations and significantly increasing resistance to client-side reverse engineering and tampering.
+
+### 🧬 Native PHP TLS Fingerprinting & `TLSClientHelloParser`
+- **Introducing TLSClientHelloParser**: Added native binary parser in PHP to inspect raw TLS Client Hello packets. This enables real-time extraction and computation of JA3 and JA4 TLS fingerprints directly inside PHP.
+- **Asynchronous PHP Support**: Built-in support for event-driven PHP runtimes (Swoole, ReactPHP, Workerman). This allows intercepting the raw TCP socket stream, parsing the TLS handshake, and attaching the calculated TLS fingerprint before upgrading to SSL/TLS.
+- **Architectural Documentation**: Added detailed guides on why standard PHP (PHP-FPM, Apache) cannot extract TLS fingerprints natively (due to TLS termination at Nginx/CDN layer) and how to bypass this using modern asynchronous PHP application servers.
+
+### 📊 Documentation & Monitoring Updates
+- **Prometheus Metrics**: Updated `prometheus_metrics.md` to reflect newer indicators and score metrics.
+- **Home Documentation**: Updated `home.md` with guidelines on WASM integrations and native PHP event-loop setups.
+
+---
+
+## Why can't PHP calculate TLS fingerprints natively?
+
+Unlike Node.js, which often acts as a direct web server terminating TLS connections itself and exposing socket metadata (like `socket.clientHello`), standard PHP (PHP-FPM, Apache `mod_php`) runs behind a web server or a reverse proxy.
+
+1. **TLS Termination**: Your web server (Nginx, Apache) or CDN (Cloudflare) terminates the TLS connection. It performs the cryptographic handshake and decrypts the traffic.
+2. **FastCGI / SAPI Abstraction**: The web server forwards a clean, plain-text HTTP request to PHP. By the time PHP gets the request, the raw **TLS Client Hello** packet (which contains the cipher suites and extensions order needed to compute JA3/JA4) has already been processed and discarded.
+
+### Alternatives to compiling server modules:
+If you cannot install custom modules like `ngx_http_ssl_ja3_module` on your server, you can use one of the following approaches:
+
+* **Cloudflare**: Cloudflare automatically calculates the JA3 signature and forwards it in the `CF-JA3-Sig` header. You can map this header to `X-JA3-Hash` in your configuration.
+* **AWS Cloudfront**: Cloudfront can be configured to forward TLS client handshakes headers.
+* **PHP Application Servers (Swoole / ReactPHP / Workerman)**: By bypassing standard reverse proxies and handling sockets directly, you can use the built-in native `TLSClientHelloParser` to intercept the binary handshake directly inside PHP's Event Loop.
+
+### Native TLS Extraction inside PHP Event Loops (e.g., Workerman)
+
+If you run a raw TCP worker, you can peek at the first incoming bytes of the stream connection (the raw **Client Hello** payload) before upgrading the connection stream to SSL/TLS.
+
+Here is a concrete example using the native `TLSClientHelloParser` within a Workerman connection listener:
+
+```php
+<?php
+
+use Workerman\Worker;
+use Workerman\Connection\TcpConnection;
+use Anonympins\Fingerprint\Utils\TLSClientHelloParser;
+
+$worker = new Worker('tcp://0.0.0.0:443');
+
+$worker->onConnect = function(TcpConnection $connection) {
+    // Intercept the first chunk of data (the raw TLS handshake)
+    $connection->onMessage = function(TcpConnection $connection, $rawData) {
+        // Parse the binary payload to calculate JA3 natively in PHP
+        $tlsData = TLSClientHelloParser::parse($rawData);
+        if ($tlsData) {
+            // Attach the fingerprint directly to the connection context
+            $connection->ja3Hash = $tlsData['ja3_hash'];
+        }
+
+        // Clear the temporary plain-text parser callback
+        $connection->onMessage = null;
+
+        // Dynamically upgrade the socket transport layer to SSL (initiates cryptographic handshake)
+        $connection->transport = 'ssl';
+
+        // Bind your final application logic/HTTP router
+        $connection->onMessage = function($conn, $httpPayload) {
+            // $conn->ja3Hash is available here for real-time security score checks!
+        };
+
+        // Pipe back the buffered bytes so the SSL engine can consume the Client Hello
+        $connection->consumeFirstLocalBuffer($rawData);
+    };
+};
+
+Worker::runAll();
+```
+
 ## Version 0.3.8
 
 ### 🎫 Opaque Tickets Implementation (JS/PHP)

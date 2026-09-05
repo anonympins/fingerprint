@@ -153,6 +153,7 @@ Here is the same full configuration tailored for Node.js:
      enableUsefulWork: true,
      dryRun: false,
      trustedProxies: ['127.0.0.1', '192.168.1.0/24'],
+     wasm: './public',
  };
  ```
  

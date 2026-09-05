@@ -553,6 +553,8 @@ const ClientLibrary = {
             if (typeof wasmModule._hash_string !== 'function') {
                 throw new Error('WASM module did not export _hash_string.');
             }
+        window.wasmModule = wasmModule;
+        ClientLibrary.wasmModule = wasmModule;
 
             // 4. Remplacer la fonction de hachage par la version WASM
             activeCyrb53 = (str) => {

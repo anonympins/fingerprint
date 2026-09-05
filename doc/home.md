@@ -46,6 +46,11 @@ Review public method signatures and persistent storage system configurations.
 * **PHP Public API**: `DirectFingerprint`, `SecurityProfiles`, and `StoreManager`.
 * **Datastore Configuration**: Replacing in-memory storage with external databases (examples using **MongoDB** and **Redis**).
 
+### 6. [Prometheus Metrics](prometheus_metrics)
+Expose and secure Prometheus-compatible metrics for real-time monitoring and observability.
+* **Exposed Metrics**: Track request decisions, challenges (solved/failed), and auto-tuning performance.
+* **Integration and Security**: Best practices for securing the `/metrics` endpoint in PHP and Node.js.
+
 ---
 
 *To contribute to the project or run the test suite (Vitest / PHPUnit), please consult the CONTRIBUTING.md file in the project root.*
