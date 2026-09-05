@@ -3385,30 +3385,45 @@ export class FingerprintEngine {
         // Utilisation de crypto pour un choix plus sécurisé.
         const shouldUseUsefulWork = this.securityConfig.enableUsefulWork && crypto.randomBytes(1).readUInt8(0) / 255 > 0.5;
 
+        let usefulWorkDispatched = false;
+        let challengePayload = null;
+
         if (isSuspicious && shouldUseUsefulWork) {
             this._log('Issuing a useful work challenge', { finalScore });
 
-            const defaultPath = resolve(process.cwd(), 'problems.config.json');
-            const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
-            const manager = await getProblemManager({
-                configPath,
-                config: this.securityConfig.usefulWorkConfig
-            }, store);
-            const { problemId, task } = manager.dispatchWork(suspicionFactor);
+            try {
+                const defaultPath = resolve(process.cwd(), 'problems.config.json');
+                const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
+                const manager = await getProblemManager({
+                    configPath,
+                    config: this.securityConfig.usefulWorkConfig
+                }, store);
+                const work = manager?.dispatchWork(suspicionFactor);
+                if (work) {
+                    const { problemId, task } = work;
+                    await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
 
-            await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
-
-            const challengePayload = {
-                challenge: {
-                    type: 'useful_work_task',
-                    nonce: nonce,
-                    clientSecret: clientSecret,
-                    usefulWorkTask: { problemId, task }
+                    challengePayload = {
+                        challenge: {
+                            type: 'useful_work_task',
+                            nonce: nonce,
+                            clientSecret: clientSecret,
+                            usefulWorkTask: { problemId, task }
+                        }
+                    };
+                    usefulWorkDispatched = true;
+                } else {
+                    this._log('Useful work dispatch returned null (no problems available). Falling back to PoW.');
                 }
-            };
+            } catch (err) {
+                this._log('Failed to dispatch useful work. Falling back to PoW:', err);
+            }
+        }
+
+        if (isSuspicious && usefulWorkDispatched) {
             return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
-            } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi                
-                const decision = { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404 };
+        } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi / a échoué                
+            const decision = { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404 };
                 if (this.dryRun) {
                     this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
                     decision.intendedAction = decision.action;
