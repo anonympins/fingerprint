@@ -58,6 +58,13 @@ FunctionRegistry['security.tune'] = Optimization.Operators.solveFullSecurityTuni
 // --- Fonctions "Utilitaires" ---
 FunctionRegistry['utils.evaluatePathDistance'] = Optimization.Utils.evaluatePathDistance;
 
+const yieldToEventLoop = () => new Promise(resolve => {
+    if (typeof setImmediate === 'function') {
+        setImmediate(resolve);
+    } else {
+        setTimeout(resolve, 0);
+    }
+});
 
 /**
  * @namespace ProblemInitializers
@@ -69,27 +76,43 @@ const ProblemInitializers = {
      * @param {object} params - Les paramètres de génération.
      * @param {number} params.count - Le nombre de points à générer.
      * @param {{x: number, y: number}} [params.bounds={x: 1000, y: 1000}] - Les limites spatiales.
-     * @returns {Array<{x: number, y: number}>}
+     * @returns {Promise<Array<{x: number, y: number}>>}
      */
-    'generate:randomPoints': (params) => {
+    'generate:randomPoints': async (params) => {
         const { count, bounds = { x: 1000, y: 1000 } } = params;
         if (isNaN(count)) return [];
-        return Array.from({ length: count }, () => ({ x: Math.random() * bounds.x, y: Math.random() * bounds.y }));
+        const points = [];
+        const chunkSize = 5000;
+        for (let i = 0; i < count; i++) {
+            points.push({ x: Math.random() * bounds.x, y: Math.random() * bounds.y });
+            if (i > 0 && i % chunkSize === 0) {
+                await yieldToEventLoop();
+            }
+        }
+        return points;
     },
 
     /**
      * Génère un ensemble d'actifs financiers aléatoires pour un problème de portefeuille.
      * @param {object} params - Les paramètres de génération.
      * @param {number} params.count - Le nombre d'actifs à générer.
-     * @returns {Array<{expectedReturn: number, volatility: number}>}
+     * @returns {Promise<Array<{expectedReturn: number, volatility: number}>>}
      */
-    'generate:randomAssets': (params) => {
+    'generate:randomAssets': async (params) => {
         const { count } = params;
         if (isNaN(count)) return [];
-        return Array.from({ length: count }, () => ({
-            expectedReturn: Math.random() * 0.2,
-            volatility: 0.1 + Math.random() * 0.3
-        }));
+        const assets = [];
+        const chunkSize = 5000;
+        for (let i = 0; i < count; i++) {
+            assets.push({
+                expectedReturn: Math.random() * 0.2,
+                volatility: 0.1 + Math.random() * 0.3
+            });
+            if (i > 0 && i % chunkSize === 0) {
+                await yieldToEventLoop();
+            }
+        }
+        return assets;
     },
 
     /**
@@ -181,19 +204,21 @@ class ProblemManager {
             // Initialisation dynamique des problèmes
             for (const problem of problems) {
                 // Résolution des fonctions via le registre
-                if (problem.workUnit.scoreFunction) {
+                    if (problem.workUnit && problem.workUnit.scoreFunction) {
                     problem.workUnit.scoreFunction = FunctionRegistry[problem.workUnit.scoreFunction] || null;
                 }
-                for (const key in problem.payload) {
-                    const value = problem.payload[key];
-                    // On cherche une instruction d'initialisation (ex: { "$init": "generate:randomPoints", ... })
-                    if (typeof value === 'object' && value !== null && value.$init) {
-                        const initializer = ProblemInitializers[value.$init];
-                        // On cherche une instruction de fonction (ex: { "$func": "tsp.calculateEnergy" })
-                        // Note: Actuellement non utilisé, mais prêt pour une future extension.
-                        if (initializer) {
-                            // On remplace l'objet d'instruction par les données générées.
-                            problem.payload[key] = initializer(value.params || {});
+                    if (problem.payload) {
+                        for (const key in problem.payload) {
+                            const value = problem.payload[key];
+                            // On cherche une instruction d'initialisation (ex: { "$init": "generate:randomPoints", ... })
+                            if (typeof value === 'object' && value !== null && value.$init) {
+                                const initializer = ProblemInitializers[value.$init];
+                                // On cherche une instruction de fonction (ex: { "$func": "tsp.calculateEnergy" })
+                                // Note: Actuellement non utilisé, mais prêt pour une future extension.
+                                if (initializer) {
+                                    // On remplace l'objet d'instruction par les données générées de manière asynchrone.
+                                    problem.payload[key] = await initializer(value.params || {});
+                                }
                         }
                     }
                 }

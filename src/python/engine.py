@@ -635,12 +635,22 @@ class FingerprintEngine:
         if pow_nonce and pow_sol_cpu:
             challenge_context = await self.store.get(f"secret:{pow_nonce}")
             if challenge_context:
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.get_event_loop()
+
                 base_block = f"{pow_nonce}:{challenge_context.get('client_secret', '')}:{challenge_context.get('fingerprint', '')}:".encode("utf-8")
-                cpu_valid = ChallengeUtils.verify_cpu_pow(base_block, challenge_context.get("cpu_target", ""), pow_sol_cpu)
+                cpu_valid = await loop.run_in_executor(
+                    None, ChallengeUtils.verify_cpu_pow, base_block, challenge_context.get("cpu_target", ""), pow_sol_cpu
+                )
                 mem_difficulty = challenge_context.get("mem_difficulty", 0)
                 mem_valid = True
                 if mem_difficulty > 0 and pow_sol_mem:
-                    mem_valid = ChallengeUtils.verify_memory_pow(pow_nonce, pow_sol_mem, mem_difficulty, challenge_context.get("client_secret", ""))
+                    mem_valid = await loop.run_in_executor(
+                        None, ChallengeUtils.verify_memory_pow, pow_nonce, pow_sol_mem, mem_difficulty, challenge_context.get("client_secret", "")
+                    )
                 
                 if cpu_valid and mem_valid:
                     await self.store.delete(f"secret:{pow_nonce}")
