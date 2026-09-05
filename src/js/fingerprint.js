@@ -3982,14 +3982,18 @@ export const powMiddleware = (securityConfig) => {
       let jsFile = '';
       let wasmFile = '';
 
-      if (typeof wasmConfig === 'string') {
+      if (wasmConfig === true) {
+        const defaultDir = resolve(__dirname, '..', '..', 'public');
+        jsFile = resolve(defaultDir, 'fp.js');
+        wasmFile = resolve(defaultDir, 'fp.wasm');
+      } else if (typeof wasmConfig === 'string') {
         jsFile = resolve(wasmConfig, 'fp.js');
         wasmFile = resolve(wasmConfig, 'fp.wasm');
       } else if (typeof wasmConfig === 'object') {
         jsPath = wasmConfig.jsPath || '/fp.js';
         wasmPath = wasmConfig.wasmPath || '/fp.wasm';
-        jsFile = wasmConfig.jsFile ? resolve(wasmConfig.jsFile) : resolve(process.cwd(), 'public', 'fp.js');
-        wasmFile = wasmConfig.wasmFile ? resolve(wasmConfig.wasmFile) : resolve(process.cwd(), 'public', 'fp.wasm');
+        jsFile = wasmConfig.jsFile ? resolve(wasmConfig.jsFile) : resolve(__dirname, '..', '..', 'public', 'fp.js');
+        wasmFile = wasmConfig.wasmFile ? resolve(wasmConfig.wasmFile) : resolve(__dirname, '..', '..', 'public', 'fp.wasm');
       }
 
       if (jsFile && req.path === jsPath) {
