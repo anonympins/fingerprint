@@ -8,6 +8,9 @@ import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
@@ -247,8 +250,6 @@ const getPowSecret = () => {
 const getPowSolverCode = () => {
   // On supprime le try/catch. Si le fichier n'est pas trouvé, le processus plantera,
   // ce qui est préférable à servir un code de secours potentiellement désynchronisé.
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = dirname(__filename);
   const solverPath = join(__dirname, 'pow.solver.inline.js'); // Utilise la version inline
   return readFileSync(solverPath, 'utf-8');
 };
