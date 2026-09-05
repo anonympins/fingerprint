@@ -15,7 +15,6 @@ const FunctionRegistry = {};
 FunctionRegistry['cpc.solve'] = Optimization.Operators.solveOptimalCPC; // NOUVEAU: Enregistrement du solveur CPC
 
 /**
-/**
  * Évalue la distance totale d'un chemin pour le problème du voyageur de commerce (TSP).
  * @param {Array<{x: number, y: number}>} path - Un tableau de points représentant le chemin.
  * @returns {number} La distance totale du chemin.
@@ -79,7 +78,7 @@ const ProblemInitializers = {
      * @returns {Promise<Array<{x: number, y: number}>>}
      */
     'generate:randomPoints': async (params) => {
-        const { count, bounds = { x: 1000, y: 1000 } } = params;
+        const { count, bounds = { x: 1000, y: 1000 } } = params || {};
         if (isNaN(count)) return [];
         const points = [];
         const chunkSize = 5000;
@@ -99,7 +98,7 @@ const ProblemInitializers = {
      * @returns {Promise<Array<{expectedReturn: number, volatility: number}>>}
      */
     'generate:randomAssets': async (params) => {
-        const { count } = params;
+        const { count } = params || {};
         if (isNaN(count)) return [];
         const assets = [];
         const chunkSize = 5000;
@@ -124,12 +123,12 @@ const ProblemInitializers = {
      * @returns {function(number): Array<any>} La fonction `workerDataGenerator`.
      */
     'generate:parallelArgs': (params) => {
-        const { baseArgs, variations } = params;
+        const { baseArgs, variations } = params || {};
         return (cycleIndex) => {
-            const cycleArgs = [...baseArgs];
+            const cycleArgs = baseArgs ? [...baseArgs] : [];
             // Pour l'instant, on gère la variation de la solution initiale pour le TSP
             if (variations?.initialSolution === 'random') {
-                cycleArgs[0] = cycleArgs[0].sort(() => Math.random() - 0.5);
+                cycleArgs[0] = cycleArgs[0]?.sort(() => Math.random() - 0.5);
             }
             return cycleArgs;
         };
@@ -300,60 +299,81 @@ class ProblemManager {
         const problem = this.problems.find(p => p.id === problemId);
         if (!problem) return;
         const storeKey = `problem-state:${problem.id}`;
-        switch (problem.workUnit.type) {
-            case 'simulated_annealing_iterations':
-            // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
-            const scoreFunction = problem.workUnit.scoreFunction;
-            if (!scoreFunction) {
-                console.error(`[ProblemManager] Aucune fonction de score définie pour ${problemId}. Impossible de vérifier la solution.`);
-                return;
-            }
-            const recalculatedEnergy = scoreFunction(solutionData.solution, problem.payload);
 
-                const currentBest = parseFloat(problem.state.bestEnergy) || Infinity;
-            // 2. Comparer le score recalculé, pas celui du client.
-            const isBetter = recalculatedEnergy < currentBest;
-
-                if (isBetter) {
-                    problem.state.bestSolution = solutionData.solution;
-                problem.state.bestEnergy = recalculatedEnergy; // 3. Stocker le score vérifié.
-                problem.state.lastUpdate = new Date().toISOString();
-                console.log(`[ProblemManager] Nouvelle meilleure solution pour ${problemId}: ${recalculatedEnergy.toFixed(2)}`);
-                }
-                break;
-            case 'genetic_algorithm_generations':
-                // VÉRIFICATION PAR ÉCHANTILLONNAGE pour équilibrer sécurité et performance.
-                const fitnessFunction = FunctionRegistry['portfolio.calculateMetrics']; // Ou une fonction plus générique
-                if (!fitnessFunction || !solutionData.population || solutionData.population.length === 0) {
-                    console.error(`[ProblemManager] Impossible de vérifier la population pour ${problemId}.`);
-                    return; // Ne rien faire si la vérification est impossible.
-                }
-
-                // 1. On choisit un petit échantillon aléatoire de la population soumise.
-                const sampleSize = Math.min(5, solutionData.population.length);
-                const sampleIndices = new Set();
-                while (sampleIndices.size < sampleSize) {
-                    sampleIndices.add(Math.floor(Math.random() * solutionData.population.length));
-                }
-
-                // 2. On recalcule le score pour cet échantillon.
-                let totalRecalculatedFitness = 0;
-                for (const index of sampleIndices) {
-                    const individual = solutionData.population[index];
-                    totalRecalculatedFitness += fitnessFunction(individual.chromosome, problem.payload);
-                }
-
-                problem.state.population = solutionData.population; // On accepte la population
-                console.log(`[ProblemManager] Population mise à jour pour ${problemId}. Fitness moyen de l'échantillon: ${(totalRecalculatedFitness / sampleSize).toFixed(4)}`);
-                break;
-            
-            case 'multi_objective_genetic_algorithm':
-                // Pour le multi-objectifs, on fusionne le front de Pareto existant avec celui du client.
-                await this._integrateParetoFront(problem, solutionData.paretoFront);
-                break;
+        if (!solutionData || typeof solutionData !== 'object') {
+            console.error(`[ProblemManager] Données de solution invalides ou manquantes pour ${problemId}.`);
+            return;
         }
-        // Persist the updated state to the datastore immediately.
-        await this.store.set(storeKey, problem.state);
+
+        try {
+            switch (problem.workUnit.type) {
+                case 'simulated_annealing_iterations':
+                    if (!('solution' in solutionData)) {
+                        console.error(`[ProblemManager] Propriété 'solution' manquante dans solutionData pour ${problemId}.`);
+                        return;
+                    }
+                    // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
+                    const scoreFunction = problem.workUnit.scoreFunction;
+                    if (!scoreFunction) {
+                        console.error(`[ProblemManager] Aucune fonction de score définie pour ${problemId}. Impossible de vérifier la solution.`);
+                        return;
+                    }
+                    const recalculatedEnergy = scoreFunction(solutionData.solution, problem.payload);
+
+                    const currentBest = parseFloat(problem.state.bestEnergy) || Infinity;
+                    // 2. Comparer le score recalculé, pas celui du client.
+                    const isBetter = recalculatedEnergy < currentBest;
+
+                    if (isBetter) {
+                        problem.state.bestSolution = solutionData.solution;
+                        problem.state.bestEnergy = recalculatedEnergy; // 3. Stocker le score vérifié.
+                        problem.state.lastUpdate = new Date().toISOString();
+                        console.log(`[ProblemManager] Nouvelle meilleure solution pour ${problemId}: ${recalculatedEnergy.toFixed(2)}`);
+                    }
+                    break;
+                case 'genetic_algorithm_generations':
+                    // VÉRIFICATION PAR ÉCHANTILLONNAGE pour équilibrer sécurité et performance.
+                    const fitnessFunction = FunctionRegistry['portfolio.calculateMetrics']; // Ou une fonction plus générique
+                    if (!fitnessFunction || !Array.isArray(solutionData.population) || solutionData.population.length === 0) {
+                        console.error(`[ProblemManager] Impossible de vérifier la population pour ${problemId}.`);
+                        return; // Ne rien faire si la vérification est impossible.
+                    }
+
+                    // 1. On choisit un petit échantillon aléatoire de la population soumise.
+                    const sampleSize = Math.min(5, solutionData.population.length);
+                    const sampleIndices = new Set();
+                    while (sampleIndices.size < sampleSize) {
+                        sampleIndices.add(Math.floor(Math.random() * solutionData.population.length));
+                    }
+
+                    // 2. On recalcule le score pour cet échantillon.
+                    let totalRecalculatedFitness = 0;
+                    for (const index of sampleIndices) {
+                        const individual = solutionData.population[index];
+                        if (!individual || !individual.chromosome) {
+                            throw new Error("Structure d'individu ou chromosome invalide dans la population.");
+                        }
+                        totalRecalculatedFitness += fitnessFunction(individual.chromosome, problem.payload);
+                    }
+
+                    problem.state.population = solutionData.population; // On accepte la population
+                    console.log(`[ProblemManager] Population mise à jour pour ${problemId}. Fitness moyen de l'échantillon: ${(totalRecalculatedFitness / sampleSize).toFixed(4)}`);
+                    break;
+                
+                case 'multi_objective_genetic_algorithm':
+                    if (!Array.isArray(solutionData.paretoFront)) {
+                        console.error(`[ProblemManager] Propriété 'paretoFront' manquante ou invalide dans solutionData pour ${problemId}.`);
+                        return;
+                    }
+                    // Pour le multi-objectifs, on fusionne le front de Pareto existant avec celui du client.
+                    await this._integrateParetoFront(problem, solutionData.paretoFront);
+                    break;
+                }
+            // Persist the updated state to the datastore immediately.
+            await this.store.set(storeKey, problem.state);
+        } catch (error) {
+            console.error(`[ProblemManager] Erreur lors de l'intégration de la solution pour ${problemId}: ${error.message}`);
+        }
     }
 
     /**
@@ -551,7 +571,7 @@ export function getProblemManager(options = {}, store) {
     }
     return managerPromise;
 }
-export const problemManager = getProblemManager(); // This now exports a Promise
+export const problemManager = await getProblemManager(); // This now exports the resolved ProblemManager instance
 
 /**
  * @internal

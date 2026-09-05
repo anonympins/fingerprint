@@ -3244,10 +3244,11 @@ export class FingerprintEngine {
         if (challengeContext) {
             try {
                 const workResult = JSON.parse(pow_solution_work_result);
-                getProblemManager({
+                const manager = await getProblemManager({
                     configPath: this.securityConfig.usefulWorkConfigPath,
                     config: this.securityConfig.usefulWorkConfig
-                }, store).integrateSolution(pow_problem_id, workResult);
+                }, store);
+                await manager.integrateSolution(pow_problem_id, workResult);
 
                 await store.delete(`secret:${pow_nonce}`);
                 // Accorder un ticket de passage comme pour un PoW normal
@@ -3385,10 +3386,11 @@ export class FingerprintEngine {
         if (isSuspicious && shouldUseUsefulWork) {
             this._log('Issuing a useful work challenge', { finalScore });
 
-            const { problemId, task } = getProblemManager({
+            const manager = await getProblemManager({
                 configPath: this.securityConfig.usefulWorkConfigPath,
                 config: this.securityConfig.usefulWorkConfig
-            }, store).dispatchWork(suspicionFactor);
+            }, store);
+            const { problemId, task } = manager.dispatchWork(suspicionFactor);
 
             await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
 
