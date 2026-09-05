@@ -53,6 +53,7 @@ class SecurityProfiles
                 'decayFactor' => 0.9,
                 'inactivityReset' => 5000,
             ],
+        'wasm' => true,
         ],
 
         /**
@@ -96,6 +97,7 @@ class SecurityProfiles
                 'inactivityReset' => 4000,
             ],
             'challengeNewDevices' => true, // Challenge all new devices
+        'wasm' => true,
         ],
 
         /**
@@ -139,6 +141,7 @@ class SecurityProfiles
             ],
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/") || req.headers.accept?.includes("application/json")',
+        'wasm' => true,
         ],
 
         /**
@@ -181,6 +184,7 @@ class SecurityProfiles
                 'decayFactor' => 0.92,
                 'inactivityReset' => 10000,
             ],
+        'wasm' => true,
         ],
 
         /**
@@ -227,6 +231,7 @@ class SecurityProfiles
             'challengeNewDevices' => true, // New devices are suspicious in e-commerce
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/cart") || req.path.startsWith("/api/stock") || req.path.startsWith("/api/checkout")',
+        'wasm' => true,
         ],
     ];
 

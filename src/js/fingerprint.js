@@ -67,6 +67,7 @@ const securityProfiles = {
             inactivityReset: 5000,
         },
         allowCrossNetworkRoaming: true, // Profil balancé : tolérant par défaut
+    wasm: true,
     },
     /**
      * @summary **Strict Profile**
@@ -102,6 +103,7 @@ const securityProfiles = {
         },
         challengeNewDevices: true, // Challenge all new devices
         allowCrossNetworkRoaming: false, // Strict : interdiction de changer complètement de réseau sans re-challenge
+    wasm: true,
     },
     /**
      * @summary **API Profile**
@@ -137,6 +139,7 @@ const securityProfiles = {
         },
         isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
         allowCrossNetworkRoaming: false, // Les API ne doivent pas subir de roaming inter-IP suspect
+    wasm: true,
     }
     ,
     /**
@@ -172,6 +175,7 @@ const securityProfiles = {
             inactivityReset: 10000,
         },
         allowCrossNetworkRoaming: true,
+    wasm: true,
     },
     /**
      * @summary **E-commerce Profile**
@@ -209,6 +213,7 @@ const securityProfiles = {
         challengeNewDevices: true, // New devices are suspicious in e-commerce
         isApiRequest: (req) => req.path.startsWith('/api/cart') || req.path.startsWith('/api/stock') || req.path.startsWith('/api/checkout'),
         allowCrossNetworkRoaming: false, // E-commerce : interdiction de changer de réseau sans re-challenge
+    wasm: true,
     }
 };
 

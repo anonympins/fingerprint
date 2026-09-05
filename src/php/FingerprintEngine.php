@@ -24,7 +24,7 @@
      private bool $isProduction;
      private BlockList $allowlist;
      private bool $verbose;
-     private ?Logger $logger;
+     private ?Logger $logger = null;
      private bool $dryRun;
 
      public function __construct(array $securityConfig)
@@ -33,9 +33,9 @@
          $this->securityConfig = $securityConfig;
          $this->verbose = $securityConfig['verbose'] ?? false;
          $this->allowlist = $this->buildAllowlist();
-         $this->validateConfig($securityConfig);
          $this->logger = isset($securityConfig['logger']) && is_callable($securityConfig['logger']) ? new Logger($securityConfig['logger']) : null;
          $this->dryRun = $securityConfig['dryRun'] ?? false;
+         $this->validateConfig($securityConfig);
      }
 
      private function validateConfig(array $config): void
