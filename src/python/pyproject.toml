@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fingerprint-engine"
+version = "0.4.0"
+description = "Multi-layered behavioral, cryptographic, and network analysis fingerprinting protection engine"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    { name = "Anonympins" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "fastapi>=0.100.0",
+    "httpx>=0.24.0"
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
