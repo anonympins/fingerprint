@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 // Import the functions to be tested.
 // Since the inline file doesn't use exports, we can't directly import.
 // Instead, we'll test the ES module version which shares the same logic.
-import {solveChallenge, solveCpuTargetInline, solveMemory, solveTsp} from '../src/js/pow.solver.js';
+import {solveChallenge, solveCpuTargetInline, solveMemory, solveTsp} from '../pow.solver.js';
 
 describe('Proof-of-Work Solvers', () => {
 

@@ -3,7 +3,7 @@
  */
 
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import ClientLibrary from '../src/js/fingerprint.client.js';
+import ClientLibrary from '../fingerprint.client.js';
 
 describe('ClientLibrary WASM Integration', () => {
     beforeEach(() => {
@@ -59,7 +59,7 @@ describe('ClientLibrary WASM Integration', () => {
 
         // 3. Vérifier que le hasher est toujours l'implémentation JS
         const jsHash = ClientLibrary._hasher("test");
-        const originalJsHash = (await import('../src/js/fingerprint.builder.js')).cyrb53("test");
+        const originalJsHash = (await import('../fingerprint.builder.js')).cyrb53("test");
         
         expect(jsHash).toBe(originalJsHash);
         expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('WASM module failed to load'), expect.any(Error));
@@ -80,7 +80,7 @@ describe('ClientLibrary WASM Integration', () => {
 
         // 3. Vérifier le fallback
         const jsHash = ClientLibrary._hasher("test");
-        const originalJsHash = (await import('../src/js/fingerprint.builder.js')).cyrb53("test");
+        const originalJsHash = (await import('../fingerprint.builder.js')).cyrb53("test");
         expect(jsHash).toBe(originalJsHash); 
         // L'assertion est maintenant plus précise : elle vérifie le message générique ET le message d'erreur spécifique.
         expect(console.warn).toHaveBeenCalledWith(

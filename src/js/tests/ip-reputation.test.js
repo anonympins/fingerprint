@@ -1,5 +1,5 @@
 import {beforeEach, describe, expect, it} from 'vitest';
-import {__internal, configureStore, FingerprintEngine} from '../src/js/fingerprint.js';
+import {__internal, configureStore, FingerprintEngine} from '../fingerprint.js';
 
 describe('IP Reputation Local System (Node.js)', () => {
     let mockStore;

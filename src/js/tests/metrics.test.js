@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { handleMetricsRequest, __internal } from '../src/js/fingerprint.js';
+import { handleMetricsRequest, __internal } from '../fingerprint.js';
 
 describe('Metrics & Authorization Callback Integration', () => {
     let req, res;
