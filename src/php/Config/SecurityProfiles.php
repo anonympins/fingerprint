@@ -250,7 +250,7 @@ class SecurityProfiles
      * @param array<string, mixed> $source Le tableau source.
      * @return array<string, mixed> Le tableau fusionné.
      */
-    private static function deepMerge(array $target, array $source): array
+    public static function deepMerge(array $target, array $source): array
     {
         $output = $target;
 

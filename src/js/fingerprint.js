@@ -6,7 +6,7 @@ import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
 import {readFileSync} from "node:fs";
 import {fileURLToPath} from "node:url";
-import {dirname, join} from "node:path";
+import {dirname, join, resolve} from "node:path";
 
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
@@ -2599,6 +2599,7 @@ export class FingerprintEngine {
       'honeypot', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger',
       'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
       'trustedProxies',
+      'wasm',
       'similarityThreshold'
     ]);
 
@@ -3974,6 +3975,43 @@ export const powMiddleware = (securityConfig) => {
   }
 
   return async (req, res, next) => {
+    if (securityConfig?.wasm) {
+      const wasmConfig = securityConfig.wasm;
+      let jsPath = '/fp.js';
+      let wasmPath = '/fp.wasm';
+      let jsFile = '';
+      let wasmFile = '';
+
+      if (typeof wasmConfig === 'string') {
+        jsFile = resolve(wasmConfig, 'fp.js');
+        wasmFile = resolve(wasmConfig, 'fp.wasm');
+      } else if (typeof wasmConfig === 'object') {
+        jsPath = wasmConfig.jsPath || '/fp.js';
+        wasmPath = wasmConfig.wasmPath || '/fp.wasm';
+        jsFile = wasmConfig.jsFile ? resolve(wasmConfig.jsFile) : resolve(process.cwd(), 'public', 'fp.js');
+        wasmFile = wasmConfig.wasmFile ? resolve(wasmConfig.wasmFile) : resolve(process.cwd(), 'public', 'fp.wasm');
+      }
+
+      if (jsFile && req.path === jsPath) {
+        try {
+          const fileContent = readFileSync(jsFile);
+          res.setHeader('Content-Type', 'application/javascript');
+          return res.send(fileContent);
+        } catch (e) {
+          // Fallback
+        }
+      }
+      if (wasmFile && req.path === wasmPath) {
+        try {
+          const fileContent = readFileSync(wasmFile);
+          res.setHeader('Content-Type', 'application/wasm');
+          return res.send(fileContent);
+        } catch (e) {
+          // Fallback
+        }
+      }
+    }
+
     const requestContext = {
       clientIp: req.ip || req.socket?.remoteAddress || "unknown",
       path: req.path,

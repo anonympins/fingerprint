@@ -88,4 +88,18 @@ describe('ClientLibrary WASM Integration', () => {
             expect.objectContaining({ message: 'WASM module did not export _hash_string.' })
         );
     });
+
+    it('should use the default JS hasher if WASM is not configured', async () => {
+        // Ensure no WASM path is provided in the config
+        ClientLibrary.initializeClient({});
+
+        // Verify that the active hasher is the original JS implementation
+        const jsHash = ClientLibrary._hasher("another test string");
+        const originalJsHash = (await import('../fingerprint.builder.js')).cyrb53("another test string");
+
+        expect(jsHash).toBe(originalJsHash);
+        // Ensure no WASM-related console logs or warnings were made
+        expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining('WASM module loaded successfully'));
+        expect(console.warn).not.toHaveBeenCalledWith(expect.stringContaining('WASM module failed to load'));
+    });
 });

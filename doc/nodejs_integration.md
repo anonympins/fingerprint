@@ -120,3 +120,35 @@ app.listen(3000);
 
 * See [Full Configuration Options](full_options) to discover all options you can tune.
 * See [Client Side Integration](client_side) to enable proactive browser challenges and behavioral trackers.
+
+---
+
+## Serving WebAssembly (WASM) & Client JS Files
+
+If you use WebAssembly to accelerate hashing on the client side, you can let the middleware host `/fp.js` and `/fp.wasm` automatically by configuring the `wasm` property in your `securityConfig`.
+
+Specify the directory containing these built files (relative or absolute):
+
+```javascript
+const securityConfig = createSecurityProfile('balanced', {
+    verbose: process.env.NODE_ENV !== 'production',
+    wasm: './public' // Directory containing fp.js and fp.wasm
+});
+```
+
+When `wasm` is set, requests to `/fp.js` and `/fp.wasm` will be intercepted and served with the correct MIME types directly.
+
+### Advanced WASM Filename & Path Customization
+
+If you want to rename the files or expose them on different route paths, pass a configuration object instead of a string:
+
+```javascript
+const securityConfig = createSecurityProfile('balanced', {
+    wasm: {
+        jsPath: '/custom-fp.js',         // URL route to serve the client script
+        jsFile: './public/custom-fp.js',  // Physical file path on disk
+        wasmPath: '/custom-fp.wasm',     // URL route to serve the WASM file
+        wasmFile: './public/custom-fp.wasm' // Physical file path on disk
+    }
+});
+```
