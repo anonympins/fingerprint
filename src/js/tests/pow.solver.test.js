@@ -1,4 +1,4 @@
-import {describe, expect, it, vi} from 'vitest';
+import {describe, expect, it, vi, beforeEach, afterEach} from 'vitest';
 import {createHash} from 'node:crypto';
 // Import the functions to be tested.
 // Since the inline file doesn't use exports, we can't directly import.
@@ -139,6 +139,60 @@ describe('Proof-of-Work Solvers', () => {
         it('should throw an error for an unknown challenge type', async () => {
             const challenge = { type: 'unknown' };
             await expect(solveChallenge(challenge)).rejects.toThrow('Unknown challenge type: unknown');
+        });
+    });
+
+    describe('WASM Solver Path Integration (Mocked)', () => {
+        let mockWasmModule;
+
+        beforeEach(() => {
+            mockWasmModule = {
+                _malloc: vi.fn().mockImplementation(() => 1234), // Simule un pointeur mémoire
+                _free: vi.fn(),
+                HEAPU8: new Uint8Array(10000),
+                HEAP8: new Int8Array(10000),
+                _solve_cpu_target: vi.fn().mockReturnValue(1337),
+                _solve_memory_challenge: vi.fn().mockReturnValue(777)
+            };
+
+            // Injecter le module WASM globalement pour simuler le comportement du navigateur
+            global.window = {
+                wasmModule: mockWasmModule
+            };
+        });
+
+        afterEach(() => {
+            // Nettoyer l'environnement global après chaque test
+            delete global.window;
+        });
+
+        it('should redirect solveCpuTargetInline to WASM and manage heap memory safely', async () => {
+            const baseBlock = new Uint8Array([1, 2, 3, 4]);
+            const target = '0000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF';
+
+            const solution = await solveCpuTargetInline(baseBlock, target);
+
+            // 1. Vérification du résultat natif retourné par le mock
+            expect(solution).toBe(1337);
+
+            // 2. Vérification des allocations et libérations mémoire pour le bloc de base et la cible hexadécimale
+            expect(mockWasmModule._malloc).toHaveBeenCalledTimes(2);
+            expect(mockWasmModule._free).toHaveBeenCalledTimes(2);
+
+            // 3. Vérification de l'appel à la fonction C++ exportée
+            expect(mockWasmModule._solve_cpu_target).toHaveBeenCalledWith(1234, baseBlock.length, 1234);
+        });
+
+        it('should redirect solveMemory to WASM and manage heap memory safely', async () => {
+            const seed = 'test-wasm-seed';
+            const difficulty = 4; // 4 MB
+
+            const solution = await solveMemory(seed, difficulty);
+
+            expect(solution).toBe(777);
+            expect(mockWasmModule._malloc).toHaveBeenCalledTimes(1);
+            expect(mockWasmModule._free).toHaveBeenCalledTimes(1);
+            expect(mockWasmModule._solve_memory_challenge).toHaveBeenCalledWith(1234, difficulty);
         });
     });
 });
