@@ -4,7 +4,7 @@ import * as dns from "node:dns/promises";
 import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
-import {readFileSync} from "node:fs";
+import {readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
 
@@ -3244,8 +3244,10 @@ export class FingerprintEngine {
         if (challengeContext) {
             try {
                 const workResult = JSON.parse(pow_solution_work_result);
+                const defaultPath = resolve(process.cwd(), 'problems.config.json');
+                const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
                 const manager = await getProblemManager({
-                    configPath: this.securityConfig.usefulWorkConfigPath,
+                    configPath,
                     config: this.securityConfig.usefulWorkConfig
                 }, store);
                 await manager.integrateSolution(pow_problem_id, workResult);
@@ -3386,8 +3388,10 @@ export class FingerprintEngine {
         if (isSuspicious && shouldUseUsefulWork) {
             this._log('Issuing a useful work challenge', { finalScore });
 
+            const defaultPath = resolve(process.cwd(), 'problems.config.json');
+            const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
             const manager = await getProblemManager({
-                configPath: this.securityConfig.usefulWorkConfigPath,
+                configPath,
                 config: this.securityConfig.usefulWorkConfig
             }, store);
             const { problemId, task } = manager.dispatchWork(suspicionFactor);
@@ -3962,10 +3966,14 @@ export const powMiddleware = (securityConfig) => {
 
   // Initialize the problem manager with the configured path, if provided.
   if (securityConfig.enableUsefulWork) {
+    const defaultPath = resolve(process.cwd(), 'problems.config.json');
+    const configPath = securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
     getProblemManager({
-        configPath: securityConfig.usefulWorkConfigPath,
+        configPath,
         config: securityConfig.usefulWorkConfig
-    }, store);
+    }, store).catch(err => {
+        console.warn('[Fingerprint] ProblemManager background initialization failed:', err.message);
+    });
   }
 
   if (securityConfig.autotuning) {
