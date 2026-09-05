@@ -1,3 +1,22 @@
+## Version 0.4.1
+
+### 🐍 Full Python Engine Support & Middlewares
+- **Introducing the Python Fingerprint Engine**: Ported the entire behavioral, cryptographic, and network analysis engine to Python 3.8+, ensuring complete cross-language parity with the Node.js and PHP versions.
+- **JS-Compatible Hashing (`cyrb53` & `imul`)**: Implemented deterministic JS-compatible `cyrb53` hashing by emulating JavaScript's signed 32-bit integer multiplication (`Math.imul`) for consistent fingerprint generation.
+- **Universal Middlewares (ASGI & WSGI)**:
+  - `ASGIFingerprintMiddleware`: Universal ASGI 3.0 middleware designed for FastAPI, Starlette, Quart, Sanic, and more.
+  - `WSGIFingerprintMiddleware`: Universal WSGI 1.0 middleware compatible with Flask, Django, and legacy python applications, featuring safe asynchronous bridges under the hood.
+  - `FastAPIFingerprintMiddleware`: Dedicated integration class utilizing Starlette's `BaseHTTPMiddleware` for seamless FastAPI injection.
+- **Full Detection Suite Ported**:
+  - Real-time CPU and Memory Proof-of-Work (PoW) verification.
+  - Advanced TLS Spoofing Detection cross-referencing JA3/JA4 signatures against User-Agents.
+  - Client Hints and HTTP header anomaly scoring.
+  - Honeypot form fields & trap URLs condemnation mechanism.
+- **Asynchronous Storage & State Management**: Ported the TTL-capable memory store to Python (`InMemoryStore`) supporting high-performance asynchronous lookups.
+- **Robust Testing & CI Integration**: Added complete pytest coverage (`test_engine.py`) and integrated Python testing matrix (Python 3.8 to 3.12) in the GitHub Actions CI pipeline.
+
+---
+
 ## Version 0.4.0
 
 ### ⚡ WebAssembly (WASM) v2 Client-Side Solver & Autoloader
