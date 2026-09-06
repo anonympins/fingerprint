@@ -1033,15 +1033,35 @@ class RequestUtils
 
         $tempSanitized = [];
         $deviceCounts = [];
-        $maxLogsPerDevice = max(3, (int)floor(count($trafficData) * 0.02));
+        $ipCounts = [];
+        $subnetCounts = [];
+
+        $totalCount = count($trafficData);
+        $maxLogsPerDevice = max(3, (int)floor($totalCount * 0.02)); // Max 2% contribution per device
+        $maxLogsPerIp = max(3, (int)floor($totalCount * 0.02));      // Max 2% par adresse IP individuelle
+        $maxLogsPerSubnet = max(5, (int)floor($totalCount * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
 
         foreach ($trafficData as $log) {
-            $deviceId = $log['deviceId'] ?? 'anonymous';
-            if (!isset($deviceCounts[$deviceId])) {
-                $deviceCounts[$deviceId] = 0;
-            }
-            if ($deviceCounts[$deviceId] < $maxLogsPerDevice) {
-                $deviceCounts[$deviceId]++;
+            $devId = $log['deviceId'] ?? 'anonymous';
+            $ip = $log['clientIp'] ?? $log['ip'] ?? 'unknown';
+            $subnet = self::getIpSubnet($ip) ?? 'unknown-subnet';
+
+            $currentDeviceCount = $deviceCounts[$devId] ?? 0;
+            $currentIpCount = $ipCounts[$ip] ?? 0;
+            $currentSubnetCount = $subnetCounts[$subnet] ?? 0;
+
+            if (
+                $currentDeviceCount < $maxLogsPerDevice &&
+                ($ip === 'unknown' || $currentIpCount < $maxLogsPerIp) &&
+                ($subnet === 'unknown-subnet' || $currentSubnetCount < $maxLogsPerSubnet)
+            ) {
+                $deviceCounts[$devId] = $currentDeviceCount + 1;
+                if ($ip !== 'unknown') {
+                    $ipCounts[$ip] = $currentIpCount + 1;
+                }
+                if ($subnet !== 'unknown-subnet') {
+                    $subnetCounts[$subnet] = $currentSubnetCount + 1;
+                }
                 $tempSanitized[] = $log;
             }
         }

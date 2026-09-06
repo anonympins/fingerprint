@@ -4,7 +4,7 @@ import * as dns from "node:dns/promises";
 import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
-import {readFileSync} from "node:fs";
+import {readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
 
@@ -3244,10 +3244,13 @@ export class FingerprintEngine {
         if (challengeContext) {
             try {
                 const workResult = JSON.parse(pow_solution_work_result);
-                getProblemManager({
-                    configPath: this.securityConfig.usefulWorkConfigPath,
+                const defaultPath = resolve(__dirname, '..', '..', 'problems.config.json');
+                const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
+                const manager = await getProblemManager({
+                    configPath,
                     config: this.securityConfig.usefulWorkConfig
-                }, store).integrateSolution(pow_problem_id, workResult);
+                }, store);
+                await manager.integrateSolution(pow_problem_id, workResult);
 
                 await store.delete(`secret:${pow_nonce}`);
                 // Accorder un ticket de passage comme pour un PoW normal
@@ -3382,27 +3385,45 @@ export class FingerprintEngine {
         // Utilisation de crypto pour un choix plus sécurisé.
         const shouldUseUsefulWork = this.securityConfig.enableUsefulWork && crypto.randomBytes(1).readUInt8(0) / 255 > 0.5;
 
+        let usefulWorkDispatched = false;
+        let challengePayload = null;
+
         if (isSuspicious && shouldUseUsefulWork) {
             this._log('Issuing a useful work challenge', { finalScore });
 
-            const { problemId, task } = getProblemManager({
-                configPath: this.securityConfig.usefulWorkConfigPath,
-                config: this.securityConfig.usefulWorkConfig
-            }, store).dispatchWork(suspicionFactor);
+            try {
+                const defaultPath = resolve(process.cwd(), 'problems.config.json');
+                const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
+                const manager = await getProblemManager({
+                    configPath,
+                    config: this.securityConfig.usefulWorkConfig
+                }, store);
+                const work = manager?.dispatchWork(suspicionFactor);
+                if (work) {
+                    const { problemId, task } = work;
+                    await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
 
-            await store.set(`secret:${nonce}`, { clientSecret, originalPath: path }, 300);
-
-            const challengePayload = {
-                challenge: {
-                    type: 'useful_work_task',
-                    nonce: nonce,
-                    clientSecret: clientSecret,
-                    usefulWorkTask: { problemId, task }
+                    challengePayload = {
+                        challenge: {
+                            type: 'useful_work_task',
+                            nonce: nonce,
+                            clientSecret: clientSecret,
+                            usefulWorkTask: { problemId, task }
+                        }
+                    };
+                    usefulWorkDispatched = true;
+                } else {
+                    this._log('Useful work dispatch returned null (no problems available). Falling back to PoW.');
                 }
-            };
+            } catch (err) {
+                this._log('Failed to dispatch useful work. Falling back to PoW:', err);
+            }
+        }
+
+        if (isSuspicious && usefulWorkDispatched) {
             return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
-            } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi                
-                const decision = { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404 };
+        } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi / a échoué                
+            const decision = { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404 };
                 if (this.dryRun) {
                     this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
                     decision.intendedAction = decision.action;
@@ -3557,7 +3578,7 @@ export class FingerprintEngine {
 }
 
 const staticExtensions = new RegExp(
-  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest|webmanifest)$",
+  "\\.(js|css|png|jpg|jpeg|gif|svg|mp3|webp|ico|woff|woff2|ttf|otf|map|json|manifest|webmanifest|wasm)$",
   "i",
 );
 const isStaticResource = (path) => staticExtensions.test(path);
@@ -3960,10 +3981,14 @@ export const powMiddleware = (securityConfig) => {
 
   // Initialize the problem manager with the configured path, if provided.
   if (securityConfig.enableUsefulWork) {
+    const defaultPath = resolve(__dirname, '..', '..', 'problems.config.json');
+    const configPath = securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
     getProblemManager({
-        configPath: securityConfig.usefulWorkConfigPath,
+        configPath,
         config: securityConfig.usefulWorkConfig
-    }, store);
+    }, store).catch(err => {
+        console.warn('[Fingerprint] ProblemManager background initialization failed:', err.message);
+    });
   }
 
   if (securityConfig.autotuning) {
@@ -4141,13 +4166,33 @@ export function sanitizeTrafficData(trafficData) {
   }
   const tempSanitized = [];
   const deviceCounts = new Map();
+  const ipCounts = new Map();
+  const subnetCounts = new Map();
+
+  // Calcul des quotas maximums pour éviter l'influence démesurée d'une entité
   const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
+  const maxLogsPerIp = Math.max(3, Math.floor(trafficData.length * 0.02));      // Max 2% par adresse IP individuelle
+  const maxLogsPerSubnet = Math.max(5, Math.floor(trafficData.length * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
 
   for (const log of trafficData) {
     const devId = log.deviceId || 'anonymous';
-    const currentCount = deviceCounts.get(devId) || 0;
-    if (currentCount < maxLogsPerDevice) {
-      deviceCounts.set(devId, currentCount + 1);
+    const ip = log.clientIp || log.ip || 'unknown';
+    const subnet = getIpSubnet(ip) || 'unknown-subnet';
+
+    const currentDeviceCount = deviceCounts.get(devId) || 0;
+    const currentIpCount = ipCounts.get(ip) || 0;
+    const currentSubnetCount = subnetCounts.get(subnet) || 0;
+
+    // Filtrage anti-poisoning strict sur 3 axes cumulatifs
+    if (
+      currentDeviceCount < maxLogsPerDevice &&
+      (ip === 'unknown' || currentIpCount < maxLogsPerIp) &&
+      (subnet === 'unknown-subnet' || currentSubnetCount < maxLogsPerSubnet)
+    ) {
+      deviceCounts.set(devId, currentDeviceCount + 1);
+      if (ip !== 'unknown') ipCounts.set(ip, currentIpCount + 1);
+      if (subnet !== 'unknown-subnet') subnetCounts.set(subnet, currentSubnetCount + 1);
+
       tempSanitized.push(log);
     }
   }
@@ -4200,16 +4245,36 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     return;
   }
 
+  // Règles de gardiennage (Sanity Guardrails) pour filtrer le front de Pareto
+  const isValidSecurityConfig = (config) => {
+    if (!config || !config.weights || !config.thresholds) return false;
+    const w = config.weights;
+    const t = config.thresholds;
+    const activeWeightsSum = (w.inconsistencyScore || 0) + (w.tlsSpoofingScore || 0) + (w.requestPatternScore || 0) + (w.behaviorScore || 0) + (w.botScore || 0);
+    if (activeWeightsSum < 1.5) return false;
+    if (t.low < 10 || t.low > 35) return false;
+    if (t.medium < t.low + 5 || t.medium > 70) return false;
+    if (t.high < t.medium + 5 || t.high > 90) return false;
+    if (t.block < t.high + 5 || t.block > 99) return false;
+    return true;
+  };
+
+  let filteredFront = paretoFront.filter(p => isValidSecurityConfig(p.solution));
+  if (filteredFront.length === 0) {
+    console.warn("[AutoTuning] Toutes les solutions du front de Pareto ont enfreint les règles de gardiennage sécuritaires. Rétablissement du front brut.");
+    filteredFront = paretoFront;
+  }
+
   // Stratégie de sélection : choisir la solution la plus équilibrée du front de Pareto.
   // On cherche la solution la plus proche de l'origine (0,0) dans l'espace des objectifs.
-  let bestSolution = paretoFront[0];
+  let bestSolution = filteredFront[0];
   let minDistance = Math.sqrt(Math.pow(bestSolution.objectives[0], 2) + Math.pow(bestSolution.objectives[1], 2));
 
-  for (let i = 1; i < paretoFront.length; i++) {
-    const distance = Math.sqrt(Math.pow(paretoFront[i].objectives[0], 2) + Math.pow(paretoFront[i].objectives[1], 2));
+  for (let i = 1; i < filteredFront.length; i++) {
+    const distance = Math.sqrt(Math.pow(filteredFront[i].objectives[0], 2) + Math.pow(filteredFront[i].objectives[1], 2));
     if (distance < minDistance) {
       minDistance = distance;
-      bestSolution = paretoFront[i];
+      bestSolution = filteredFront[i];
     }
   }
 
@@ -4217,47 +4282,74 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   // Au lieu d'appliquer directement la nouvelle configuration, on fait "glisser"
   // l'ancienne vers la nouvelle, avec une vélocité de changement maximale.
   const newConfig = bestSolution.solution;
-  const MAX_CHANGE_VELOCITY = 0.15; // 15% de changement maximum par cycle
 
   /**
    * Met à jour un objet de configuration (ex: thresholds, weights) en douceur.
-   * Cette nouvelle version préserve la proportionnalité des valeurs initiales.
+   * Cette version intègre un apprentissage adaptatif basé sur la confiance du signal
+   * et applique des limites physiques pour garantir la cohérence en production.
    * @param {object} currentConfig - La configuration actuelle à modifier.
    * @param {object} targetConfig - La configuration cible proposée par l'optimiseur.
+   * @param {'thresholds' | 'weights' | 'patterns'} type - Le type de configuration.
+   * @param {number} confidenceFactor - Facteur multiplicateur de vitesse d'apprentissage (0.1 à 1.5) basé sur la qualité du signal de trafic.
    */
-  const applyInertialUpdate = (currentConfig, targetConfig) => {
-    if (!currentConfig || !targetConfig) return; // Vérifier aussi currentConfig
+  const applyInertialUpdate = (currentConfig, targetConfig, type, confidenceFactor = 1.0) => {
+    if (!currentConfig || !targetConfig) return;
+    
+    // Base de vitesse d'apprentissage (15%). On l'ajuste dynamiquement selon la confiance du signal.
+    // Si le trafic est peu fiable/bruyant, on ralentit l'apprentissage pour lisser les dérives.
+    // Si le trafic contient des attaques claires, on accélère la transition.
+    const BASE_LEARNING_RATE = 0.15;
+    const learningRate = Math.max(0.02, Math.min(0.40, BASE_LEARNING_RATE * confidenceFactor));
 
-    // --- NOUVELLE LOGIQUE PROPORTIONNELLE ---
-    let totalCurrentWeight = 0;
-    let totalTargetWeight = 0;
-
-    // 1. Calculer la somme des poids actuels et cibles pour les clés communes.
     for (const key in currentConfig) {
-      if (Object.hasOwnProperty.call(targetConfig, key)) {
-        totalCurrentWeight += currentConfig[key];
-        totalTargetWeight += targetConfig[key];
+      if (Object.prototype.hasOwnProperty.call(targetConfig, key) && typeof currentConfig[key] === 'number') {
+        const currentVal = currentConfig[key];
+        const targetVal = targetConfig[key];
+
+        // Ajustement individuel progressif vers la cible
+        let updatedVal = currentVal + (targetVal - currentVal) * learningRate;
+
+        // Bornage strict selon la nature du paramètre pour éviter les dérives absurdes
+        if (type === 'weights') {
+          // Les coefficients de score doivent rester réalistes
+          // Un poids ne doit jamais tomber à zéro complet (perte du signal) ni dépasser 2.0 (hyper-sensibilité)
+          updatedVal = Math.max(0.05, Math.min(1.8, updatedVal));
+        } else if (type === 'patterns') {
+          // Limitation des paramètres de pattern pour éviter l'empoisonnement par le trafic bruyant
+          if (key === 'benfordThreshold') updatedVal = Math.max(0.05, Math.min(0.30, updatedVal));
+          else if (key === 'decayFactor') updatedVal = Math.max(0.70, Math.min(0.98, updatedVal));
+          else if (key === 'minSamples') updatedVal = Math.max(3, Math.min(15, Math.round(updatedVal)));
+          else if (key === 'historySize') updatedVal = Math.max(5, Math.min(30, Math.round(updatedVal)));
+          else if (key.endsWith('Threshold')) updatedVal = Math.max(50, Math.min(3000, Math.round(updatedVal)));
+        }
+
+        currentConfig[key] = updatedVal;
       }
     }
 
-    if (totalCurrentWeight === 0) return; // Éviter la division par zéro
+    // Cohérence globale après mise à jour individuelle pour les seuils de blocage
+    if (type === 'thresholds') {
+      // Garantit strictement la hiérarchie low < medium < high < block
+      // Empêche également les écarts trop resserrés (minimum 5 points de différence entre chaque palier)
+      let low = Math.max(10, Math.min(35, currentConfig.low));
+      let medium = Math.max(low + 8, Math.min(65, currentConfig.medium));
+      let high = Math.max(medium + 8, Math.min(85, currentConfig.high));
+      let block = Math.max(high + 8, Math.min(98, currentConfig.block));
 
-    // 2. Déterminer le ratio de changement global et le limiter par la vélocité.
-    // Cela crée un "facteur d'ajustement" unique pour l'ensemble de la configuration.
-    const globalChangeRatio = (totalTargetWeight - totalCurrentWeight) / totalCurrentWeight;
-    const adjustmentFactor = Math.max(-MAX_CHANGE_VELOCITY, Math.min(MAX_CHANGE_VELOCITY, globalChangeRatio));
-
-    // 3. Appliquer ce facteur à chaque valeur de la configuration actuelle.
-    // Cela fait "glisser" l'ensemble de la configuration tout en préservant les proportions.
-    for (const key in currentConfig) {
-      if (Object.hasOwnProperty.call(targetConfig, key)) {
-        currentConfig[key] *= (1 + adjustmentFactor);
-      }
+      currentConfig.low = Math.round(low);
+      currentConfig.medium = Math.round(medium);
+      currentConfig.high = Math.round(high);
+      currentConfig.block = Math.round(block);
     }
   };
-  applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds);
-  applyInertialUpdate(securityConfig.weights, newConfig.weights);
-  applyInertialUpdate(securityConfig.patterns, newConfig.patterns);
+
+  // Calcul du facteur de confiance basé sur la proportion de signaux d'attaques clairs et de volume
+  // Plus le ratio est équilibré et le volume important, plus nous faisons confiance au Front de Pareto.
+  const trafficConfidence = Math.min(1.5, Math.max(0.3, highConfidenceRatio * 4));
+
+  applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds, 'thresholds', trafficConfidence);
+  applyInertialUpdate(securityConfig.weights, newConfig.weights, 'weights', trafficConfidence);
+  applyInertialUpdate(securityConfig.patterns, newConfig.patterns, 'patterns', trafficConfidence);
 
   // NOUVEAU: Stocker la meilleure solution pour une consultation externe
   lastBestSolution = bestSolution;
