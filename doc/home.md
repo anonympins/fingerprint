@@ -29,7 +29,14 @@ Integrate protection into your server-side JavaScript applications. * **Prerequi
 * **Express.js Middleware**: Quick and easy usage with `powMiddleware`.
 * **Raw HTTP Integration**: Manual use of the engine for other frameworks (Koa, Fastify, native HTTP).
 
-### 4. [Full Configuration Options](full_options)
+### 4. [Python Integration Guide](python_integration)
+Integrate protection into your Python applications (ASGI & WSGI).
+* **Prerequisites**: Python 3.8+, ASGI/WSGI frameworks.
+* **ASGI Middleware**: Seamless async integration with FastAPI, Starlette, and Quart.
+* **WSGI Middleware**: Traditional sync integration with Flask and Django.
+* **Custom Storage**: Persisting sessions and fingerprint states.
+
+### 5. [Full Configuration Options](full_options)
 Find the comprehensive list of all available configuration properties to fine-tune your security.
 * **Complete PHP configuration example** (associative array).
 * **Complete Node.js configuration example** (JS object).
@@ -40,13 +47,13 @@ Find the comprehensive list of all available configuration properties to fine-tu
 * `blog`: Human-friendly; protects against spam and content scraping.
 * `ecommerce`: Protects against account takeover and scalper bots.
 
-### 5. [API Reference](api_reference)
+### 6. [API Reference](api_reference)
 Review public method signatures and persistent storage system configurations.
 * **Node.js Public API**: `powMiddleware`, `identifyRequest`, `createSecurityProfile`, and `FingerprintBuilder`.
 * **PHP Public API**: `DirectFingerprint`, `SecurityProfiles`, and `StoreManager`.
 * **Datastore Configuration**: Replacing in-memory storage with external databases (examples using **MongoDB** and **Redis**).
 
-### 6. [Prometheus Metrics](prometheus_metrics)
+### 7. [Prometheus Metrics](prometheus_metrics)
 Expose and secure Prometheus-compatible metrics for real-time monitoring and observability.
 * **Exposed Metrics**: Track request decisions, challenges (solved/failed), and auto-tuning performance.
 * **Integration and Security**: Best practices for securing the `/metrics` endpoint in PHP and Node.js.
