@@ -1,3 +1,20 @@
+## Version 0.4.2 (Hotfix)
+
+### 🧬 Auto-Tuner Rework & Sanity Guardrails
+- **Genetic Optimizer Guardrails**: Hardened the auto-tuning engine (JS & PHP) with strict guardrails, ensuring optimized configurations maintain proper threshold hierarchies (`low < medium < high < block`) and prevent weights from collapsing below safe minimum thresholds.
+- **Inertial Parameter Sliding**: Implemented a smooth update algorithm (`applyInertialUpdate`) that applies changes progressively using an adaptive learning rate to prevent configuration spikes.
+- **Traffic-Confidence Learning**: Auto-tuning transitions are now weighted dynamically based on high-confidence traffic signals, slowing adjustments down in noisy/unreliable traffic and accelerating them during verified attacks.
+
+### ⚙️ Non-Blocking Useful Work & Problem Inits
+- **Event Loop Cooperation (`yieldToEventLoop`)**: Integrated asynchronous cooperativeness during large dataset generation (such as `generate:randomPoints` and `generate:randomAssets`) to yield control back to the runtime and avoid freezing web servers.
+- **Path Resolution Fixes**: Standardized `problems.config.json` file-path resolution using reliable absolute directory joining (`resolve` / `dirname`), mitigating boot crashes across varying execution contexts.
+- **Useful Work Corrections**: Fixed uPoW integration issues to guarantee proper solution ingestion and accurate server-side verification.
+
+### ⚡ WASM Client & Packaging
+- **WASM Loader Enhancements**: Refined WebAssembly initialization and asset-delivery routes (`wasmPath` / `wasmFile`), optimizing fallbacks and improving asset-delivery reliability.
+
+---
+
 ## Version 0.4.1
 
 ### 🐍 Full Python Engine Support & Middlewares
