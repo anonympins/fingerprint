@@ -606,6 +606,9 @@ class RequestUtils:
         pattern_weight = pattern_config.get("patternWeight", 80)
         decay_factor = pattern_config.get("decayFactor", 0.95)
         inactivity_reset = pattern_config.get("inactivityReset", 180000)
+        regularity_ratio = pattern_config.get("regularityRatio", 0.4)
+        benford_ratio = pattern_config.get("benfordRatio", 0.3)
+        enumeration_ratio = pattern_config.get("enumerationRatio", 0.3)
         now = int(time.time() * 1000)
         history = device_data.get("requestHistory", [])
         device_data["timingHistory"] = device_data.get("timingHistory", [])
@@ -617,15 +620,20 @@ class RequestUtils:
         if len(history) > history_size: history.pop(0)
         if len(device_data["timingHistory"]) > history_size: device_data["timingHistory"].pop(0)
         device_data["requestHistory"] = history
-        instant_score = 0.0
+        regularity_score = 0.0
+        benford_score = 0.0
         timings = device_data["timingHistory"]
         if len(timings) >= min_samples:
             mean = sum(timings) / len(timings)
             variance = sum((t - mean) ** 2 for t in timings) / len(timings)
             std_dev = math.sqrt(variance)
             benford_deviation = Optimization.benford_test(timings)
-            if std_dev < regularity_threshold: instant_score = pattern_weight
-            elif benford_deviation > benford_threshold: instant_score = pattern_weight
+            if std_dev < regularity_threshold:
+                regularity_score = 1.0 - (std_dev / regularity_threshold)
+            if benford_deviation > benford_threshold:
+                benford_score = min(1.0, (benford_deviation - benford_threshold) / (0.5 - benford_threshold))
+
+        # Path enumeration progressif
         enumeration_score = 0.0
         if len(history) >= 3:
             templates = [re.sub(r"\d+", "{num}", h["path"]) for h in history]
@@ -634,11 +642,17 @@ class RequestUtils:
             template_counts = Counter(templates)
             max_template_repetition = max(template_counts.values()) if template_counts else 0
             if max_template_repetition >= 3 and len(unique_paths) == len(history):
-                enumeration_score = pattern_weight * 0.8
+                enumeration_score = min(1.0, (max_template_repetition - 2) / 5.0)
+
+        weighted_score = (regularity_score * regularity_ratio) + \
+                         (benford_score * benford_ratio) + \
+                         (enumeration_score * enumeration_ratio)
+        instant_score = weighted_score * pattern_weight
+
         new_pattern_score = device_data.get("lastPatternScore", 0.0)
         if time_since_last > inactivity_reset: new_pattern_score = 0.0
         else: new_pattern_score *= decay_factor
-        device_data["lastPatternScore"] = max(0.0, new_pattern_score) + instant_score + enumeration_score
+        device_data["lastPatternScore"] = max(0.0, max(instant_score, new_pattern_score))
         return {"requestPatternScore": min(100.0, device_data["lastPatternScore"])}
 
     @staticmethod

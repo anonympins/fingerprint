@@ -1747,7 +1747,9 @@ describe('getRequestPatternScore', () => {
         dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10000);
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(requestPatternScore).toBe(patternConfig.patternWeight); // 80
+        // regularityScore = 1.0 (stdDev = 0). regularityRatio = 0.4.
+        // instantScore = 1.0 * 0.4 * 80 = 32.
+        expect(requestPatternScore).toBe(32);
     });
 
     test('should assign a high pattern score for non-natural (Benford-violating) timings', () => {
@@ -1760,7 +1762,11 @@ describe('getRequestPatternScore', () => {
         dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10000);
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(requestPatternScore).toBe(patternConfig.patternWeight); // 80
+        // stdDev ~ 31.29. regularityScore = 1 - (31.29 / 50) = ~0.374.
+        // benfordDeviation ~ 2.07. benfordScore = 1.0 (capped).
+        // weightedScore = (0.374 * 0.4) + (1.0 * 0.3) = ~0.4496.
+        // instantScore = 0.4496 * 80 = ~35.97.
+        expect(requestPatternScore).toBeCloseTo(35.97, 1);
     });
 
     test('should apply decay factor to the score over time', () => {
@@ -1963,8 +1969,9 @@ describe('Regularity Detection (Standard Deviation)', () => {
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
 
-        // stdDev is 0, which is < regularityThreshold, so the full patternWeight is applied.
-        expect(requestPatternScore).toBe(regularityConfig.patternWeight);
+                // stdDev is 0 (regularityScore = 1.0). regularityRatio = 0.4.
+                // Expected score: 1.0 * 0.4 * 60 = 24.
+                expect(requestPatternScore).toBe(24);
     });
 
     it('should apply a low penalty for slightly irregular requests', () => {
@@ -1975,7 +1982,9 @@ describe('Regularity Detection (Standard Deviation)', () => {
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, localConfig);
 
-        expect(requestPatternScore).toBe(localConfig.patternWeight);
+                // stdDev is ~7.07 (regularityScore = 1 - 7.07/10 = 0.293).
+                // Expected score: 0.293 * 0.4 * 60 = 7.03.
+                expect(requestPatternScore).toBeCloseTo(7.03, 1);
     });
 
     it('should apply no penalty for highly irregular (human-like) requests', () => {

@@ -1858,7 +1858,10 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         benfordThreshold = 0.15,    // Seuil de déviation de Benford au-dessus duquel la distribution est "non naturelle".
         patternWeight = 80,         // Pénalité FORTE et unique si un pattern est détecté.
         decayFactor = 0.95,         // Décroissance du score dans le temps.
-        inactivityReset = 180000    // Réinitialisation du score après 3 minutes d'inactivité.
+        inactivityReset = 180000,   // Réinitialisation du score après 3 minutes d'inactivité.
+        regularityRatio = 0.4,      // (NOUVEAU) Poids relatif de l'écart-type
+        benfordRatio = 0.3,         // (NOUVEAU) Poids relatif de Benford
+        enumerationRatio = 0.3      // (NOUVEAU) Poids relatif de l'énumération de chemins
     } = patternConfig;
 
     const now = Date.now();
@@ -1888,24 +1891,24 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         deviceData.timingHistory.push(timeSinceLast);
     }
 
-    let instantScore = 0;
+    let regularityScore = 0;
+    let benfordScore = 0;
     const timings = deviceData.timingHistory;
 
     // Analyse statistique unifiée si nous avons assez de données
     if (timings.length >= minSamples) {
-        const timings = deviceData.timingHistory;
         const mean = timings.reduce((a, b) => a + b, 0) / timings.length;
         const variance = timings.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / timings.length;
         const stdDev = Math.sqrt(variance);
         const benfordDeviation = Optimization.Operators.benfordTest(timings);
 
-        // Détection de régularité (bots de type "cron")
+        // Calcul progressif de la régularité (stdDev proche de 0 = score max)
         if (stdDev < regularityThreshold) {
-            instantScore = patternWeight;
+            regularityScore = 1 - (stdDev / regularityThreshold);
         }
-        // Détection de distribution non-naturelle (bots "faussement aléatoires")
-        else if (benfordDeviation > benfordThreshold) {
-            instantScore = patternWeight;
+        // Calcul progressif de Benford (excès par rapport au seuil)
+        if (benfordDeviation > benfordThreshold) {
+            benfordScore = Math.min(1, (benfordDeviation - benfordThreshold) / (0.5 - benfordThreshold));
         }
     }
 
@@ -1919,11 +1922,17 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         templates.forEach(t => templateCounts[t] = (templateCounts[t] || 0) + 1);
 
         const maxTemplateRepetition = Math.max(...Object.values(templateCounts), 0);
-        // Si une même structure de route est répétée mais sur des URLs réelles différentes
         if (maxTemplateRepetition >= 3 && uniquePaths.size === history.length) {
-            enumerationScore = patternWeight * 0.8; // Appliquer une forte pénalité
+            enumerationScore = Math.min(1, (maxTemplateRepetition - 2) / 5);
         }
     }
+
+    // Score instantané combiné linéaire pondéré
+    const weightedScore = (regularityScore * regularityRatio) +
+        (benfordScore * benfordRatio) +
+        (enumerationScore * enumerationRatio);
+
+    const instantScore = weightedScore * patternWeight;
 
     // Garder l'historique à une taille raisonnable
     if (history.length > historySize) {

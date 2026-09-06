@@ -254,4 +254,30 @@ class RequestUtilsTest extends TestCase
         $this->assertEquals(2, $deviceData['rapidChangeCount']);
         $this->assertGreaterThan(0, $indicators['rotationScore']);
     }
+
+    public function testGetRequestPatternScoreWeightedSubscores(): void
+    {
+        $context = $this->createRequestContext(['path' => '/search']);
+        $deviceData = [
+            'requestHistory' => [],
+            'timingHistory' => [100, 100, 100, 100, 100, 100], // stdDev = 0
+            'lastPatternScore' => 0.0
+        ];
+        $patternConfig = [
+            'minSamples' => 5,
+            'regularityThreshold' => 50,
+            'benfordThreshold' => 0.15,
+            'patternWeight' => 80,
+            'decayFactor' => 0.9,
+            'inactivityReset' => 5000,
+            'regularityRatio' => 0.4,
+            'benfordRatio' => 0.3,
+            'enumerationRatio' => 0.3
+        ];
+
+        $result = RequestUtils::getRequestPatternScore($context, $deviceData, $patternConfig);
+        // regularityScore = 1.0. regularityRatio = 0.4.
+        // instantScore = 1.0 * 0.4 * 80 = 32.
+        $this->assertEquals(32.0, $result['requestPatternScore']);
+    }
 }

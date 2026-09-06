@@ -584,6 +584,9 @@ class RequestUtils
         $patternWeight = $patternConfig['patternWeight'] ?? 80;
         $decayFactor = $patternConfig['decayFactor'] ?? 0.95;
         $inactivityReset = $patternConfig['inactivityReset'] ?? 180000;
+        $regularityRatio = $patternConfig['regularityRatio'] ?? 0.4;
+        $benfordRatio = $patternConfig['benfordRatio'] ?? 0.3;
+        $enumerationRatio = $patternConfig['enumerationRatio'] ?? 0.3;
 
         $now = time() * 1000;
         $history = $deviceData['requestHistory'] ?? [];
@@ -606,7 +609,8 @@ class RequestUtils
         }
         $deviceData['requestHistory'] = $history;
 
-        $instantScore = 0;
+        $regularityScore = 0.0;
+        $benfordScore = 0.0;
         $timings = $deviceData['timingHistory'];
 
         // Analyse statistique si nous avons assez de données
@@ -621,18 +625,16 @@ class RequestUtils
             $stdDev = sqrt($variance);
             $benfordDeviation = Optimization::benfordTest($timings);
 
-            // Détection de régularité (bots de type "cron")
             if ($stdDev < $regularityThreshold) {
-                $instantScore = $patternWeight;
+                $regularityScore = 1.0 - ($stdDev / $regularityThreshold);
             }
-            // Détection de distribution non-naturelle (bots "faussement aléatoires")
-            elseif ($benfordDeviation > $benfordThreshold) {
-                $instantScore = $patternWeight;
+            if ($benfordDeviation > $benfordThreshold) {
+                $benfordScore = min(1.0, ($benfordDeviation - $benfordThreshold) / (0.5 - $benfordThreshold));
             }
         }
 
-        // Détection d'énumération de chemins (crawling/scraping de ressources séquentielles)
-        $enumerationScore = 0;
+        // Path enumeration progressif
+        $enumerationScore = 0.0;
         if (count($history) >= 3) {
             $templates = array_map(function($h) {
                 return preg_replace('/\d+/', '{num}', $h['path']);
@@ -646,9 +648,14 @@ class RequestUtils
             $maxTemplateRepetition = !empty($templateCounts) ? max($templateCounts) : 0;
 
             if ($maxTemplateRepetition >= 3 && count($uniquePaths) === count($history)) {
-                $enumerationScore = $patternWeight * 0.8;
+                $enumerationScore = min(1.0, ($maxTemplateRepetition - 2) / 5.0);
             }
         }
+
+        $weightedScore = ($regularityScore * $regularityRatio) +
+                         ($benfordScore * $benfordRatio) +
+                         ($enumerationScore * $enumerationRatio);
+        $instantScore = $weightedScore * $patternWeight;
 
         // Logique de décroissance et de score final
         $newPatternScore = $deviceData['lastPatternScore'] ?? 0;
@@ -660,7 +667,7 @@ class RequestUtils
         }
         $newPatternScore = max(0, $newPatternScore);
 
-        $deviceData['lastPatternScore'] = $newPatternScore + $instantScore + $enumerationScore;
+        $deviceData['lastPatternScore'] = max((float)$instantScore, (float)$newPatternScore);
 
         return ['requestPatternScore' => min(100.0, $deviceData['lastPatternScore'])];
     }
