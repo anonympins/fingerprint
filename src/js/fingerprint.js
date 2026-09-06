@@ -263,7 +263,7 @@ function extractStablePart(fpString) {
     if (!fpString) {
         return '';
     }
-    const stableKeys = ['cvs', 'gpu', 'hw', 'client_fp_hash', 'os', 'scr'];
+    const stableKeys = ['ua', 'ja3', 'ja4', 'h2', 'tcp'];
     const parts = fpString.split('|');
     const stableParts = [];
     for (const part of parts) {

@@ -555,7 +555,7 @@ class RequestUtils
      */
     private static function extractStablePart(string $fpString): string
     {
-        $stableKeys = ['cvs', 'gpu', 'hw', 'client_fp_hash', 'os', 'scr'];
+        $stableKeys = ['ua', 'ja3', 'ja4', 'h2', 'tcp'];
         $parts = explode('|', $fpString);
         $stableParts = [];
         foreach ($parts as $part) {

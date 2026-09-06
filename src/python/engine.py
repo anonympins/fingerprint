@@ -1147,7 +1147,7 @@ class FingerprintEngine:
         return self.weights.get(key, 0.0)
 
     def _extract_stable_part(self, fp_str: str) -> str:
-        stable_keys = {"cvs", "gpu", "hw", "client_fp_hash", "os", "scr"}
+        stable_keys = {"ua", "ja3", "ja4", "h2", "tcp"}
         parts = fp_str.split("|")
         stable_parts = [part for part in parts if part.split(":", 1)[0] in stable_keys]
         return "|".join(sorted(stable_parts))
