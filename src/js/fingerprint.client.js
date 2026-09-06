@@ -419,12 +419,12 @@ const ClientLibrary = {
       trapContainer.style.transform = 'scale(0)';
       trapContainer.style.pointerEvents = 'none';
 
-    urls.forEach(url => {
+    urls.forEach((url,i) => {
       const link = document.createElement('a');
       link.href = url;
       link.rel = 'nofollow';
       link.tabIndex = -1; // Make it unfocusable
-      link.textContent = 'config'; // Some plausible text
+      link.innerHTML = `<span>&gt; ${i+1}</span>`; // SEO-insignificant content
       trapContainer.appendChild(link);
     });
 

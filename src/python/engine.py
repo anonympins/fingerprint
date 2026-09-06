@@ -1097,10 +1097,10 @@ class FingerprintClient:
     def generate_honeypot_field(self, field_name: str) -> str:
         if field_name not in self.client_config["honeypots"]:
             self.client_config["honeypots"].append(field_name)
-        styles = "position:absolute; left:-9999px; top:-9999px; opacity:0;"
+        styles = "position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;"
         from html import escape
         f_name = escape(field_name)
-        return f'<div style="{styles}" aria-hidden="true"><label for="{f_name}">Do not fill</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></div>'
+        return f'<div style="{styles}" aria-hidden="true"><label for="{f_name}">&gt;</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></div>'
 
     def get_script_tag(self) -> str:
         config_json = json.dumps(self.client_config)

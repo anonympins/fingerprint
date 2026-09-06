@@ -312,7 +312,11 @@ class ChallengeUtils
         $baseBlock = self::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint);
         $baseBlockBytes = '[' . implode(',', array_values(unpack('C*', $baseBlock))) . ']';
 
-        $trapLinksHtml = implode(' ', array_map(fn($url) => "<a href=\"{$url}\" tabindex=\"-1\"></a>", $trapUrls));
+        $trapLinksHtml = implode(' ', array_map(
+            fn($url, $index) => "<a href=\"{$url}\" tabindex=\"-1\"><span>&gt; " . ($index + 1) . "</span></a>",
+            $trapUrls,
+            array_keys($trapUrls)
+        ));
         $trapContainerHtml = "<div style=\"position:absolute;left:-9999px;top:-9999px;transform:scale(0);pointer-events:none;\" aria-hidden=\"true\">{$trapLinksHtml}</div>";
 
         $challengeScript = <<<JS
