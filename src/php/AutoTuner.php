@@ -84,15 +84,37 @@ class AutoTuner
             return;
         }
 
+        // Règles de gardiennage (Sanity Guardrails) pour filtrer le front de Pareto
+        $isValidSecurityConfig = function (array $config): bool {
+            if (!isset($config['weights']) || !isset($config['thresholds'])) return false;
+            $w = $config['weights'];
+            $t = $config['thresholds'];
+            $activeWeightsSum = ($w['inconsistencyScore'] ?? 0) + ($w['tlsSpoofingScore'] ?? 0) + ($w['requestPatternScore'] ?? 0) + ($w['behaviorScore'] ?? 0) + ($w['botScore'] ?? 0);
+            if ($activeWeightsSum < 1.5) return false;
+            if ($t['low'] < 10 || $t['low'] > 35) return false;
+            if ($t['medium'] < $t['low'] + 5 || $t['medium'] > 70) return false;
+            if ($t['high'] < $t['medium'] + 5 || $t['high'] > 90) return false;
+            if ($t['block'] < $t['high'] + 5 || $t['block'] > 99) return false;
+            return true;
+        };
+
+        $filteredFront = array_filter($paretoFront, fn ($p) => $isValidSecurityConfig($p['solution']));
+        if (empty($filteredFront)) {
+            echo "[AutoTuning] Attention : Toutes les solutions ont été rejetées par les règles de gardiennage. Rétablissement du front brut.\n";
+            $filteredFront = $paretoFront;
+        } else {
+            $filteredFront = array_values($filteredFront);
+        }
+
         // Stratégie de sélection : choisir la solution la plus équilibrée (la plus proche de l'origine).
-        $bestSolution = $paretoFront[0];
+        $bestSolution = $filteredFront[0];
         $minDistance = sqrt(pow($bestSolution['objectives'][0], 2) + pow($bestSolution['objectives'][1], 2));
 
-        for ($i = 1; $i < count($paretoFront); $i++) {
-            $distance = sqrt(pow($paretoFront[$i]['objectives'][0], 2) + pow($paretoFront[$i]['objectives'][1], 2));
+        for ($i = 1; $i < count($filteredFront); $i++) {
+            $distance = sqrt(pow($filteredFront[$i]['objectives'][0], 2) + pow($filteredFront[$i]['objectives'][1], 2));
             if ($distance < $minDistance) {
                 $minDistance = $distance;
-                $bestSolution = $paretoFront[$i];
+                $bestSolution = $filteredFront[$i];
             }
         }
 

@@ -4245,16 +4245,36 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     return;
   }
 
+  // Règles de gardiennage (Sanity Guardrails) pour filtrer le front de Pareto
+  const isValidSecurityConfig = (config) => {
+    if (!config || !config.weights || !config.thresholds) return false;
+    const w = config.weights;
+    const t = config.thresholds;
+    const activeWeightsSum = (w.inconsistencyScore || 0) + (w.tlsSpoofingScore || 0) + (w.requestPatternScore || 0) + (w.behaviorScore || 0) + (w.botScore || 0);
+    if (activeWeightsSum < 1.5) return false;
+    if (t.low < 10 || t.low > 35) return false;
+    if (t.medium < t.low + 5 || t.medium > 70) return false;
+    if (t.high < t.medium + 5 || t.high > 90) return false;
+    if (t.block < t.high + 5 || t.block > 99) return false;
+    return true;
+  };
+
+  let filteredFront = paretoFront.filter(p => isValidSecurityConfig(p.solution));
+  if (filteredFront.length === 0) {
+    console.warn("[AutoTuning] Toutes les solutions du front de Pareto ont enfreint les règles de gardiennage sécuritaires. Rétablissement du front brut.");
+    filteredFront = paretoFront;
+  }
+
   // Stratégie de sélection : choisir la solution la plus équilibrée du front de Pareto.
   // On cherche la solution la plus proche de l'origine (0,0) dans l'espace des objectifs.
-  let bestSolution = paretoFront[0];
+  let bestSolution = filteredFront[0];
   let minDistance = Math.sqrt(Math.pow(bestSolution.objectives[0], 2) + Math.pow(bestSolution.objectives[1], 2));
 
-  for (let i = 1; i < paretoFront.length; i++) {
-    const distance = Math.sqrt(Math.pow(paretoFront[i].objectives[0], 2) + Math.pow(paretoFront[i].objectives[1], 2));
+  for (let i = 1; i < filteredFront.length; i++) {
+    const distance = Math.sqrt(Math.pow(filteredFront[i].objectives[0], 2) + Math.pow(filteredFront[i].objectives[1], 2));
     if (distance < minDistance) {
       minDistance = distance;
-      bestSolution = paretoFront[i];
+      bestSolution = filteredFront[i];
     }
   }
 

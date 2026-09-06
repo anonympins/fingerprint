@@ -453,6 +453,12 @@ class FingerprintEngine:
         self.store = store
         self.thresholds = config.get("thresholds", {"low": 20, "high": 75, "block": 95})
         self.weights = config.get("weights", {})
+        
+        # Bouclier thermique local (Fast-Path Cache) pour amortir les attaques de masse
+        # Format: {"ip_or_subnet": (expiration_timestamp, action_to_take)}
+        self._fast_path_cache: Dict[str, tuple] = {}
+        self._last_prune_time: float = time.time()
+        self._prune_interval: float = 10.0 # secondes
 
     def get_composite_device_hash(self, context: RequestContext) -> str:
         """
@@ -611,6 +617,34 @@ class FingerprintEngine:
             Dict[str, Any]: A dictionary describing the action to be taken and any associated data.
         """
         identity = await self.resolve_identity(context)
+        current_time = time.time()
+
+        # 1. Nettoyage périodique du bouclier thermique local
+        if current_time - self._last_prune_time > self._prune_interval:
+            self._fast_path_cache = {
+                k: v for k, v in self._fast_path_cache.items() if v[0] > current_time
+            }
+            self._last_prune_time = current_time
+
+        # 2. Vérification du Bouclier Thermique (Short-Circuit Fast-Path)
+        # Si l'IP ou le sous-réseau est actuellement dans le cache local, on applique l'action immédiatement
+        client_ip = context.client_ip
+        subnet = get_ip_subnet(client_ip) or "unknown-subnet"
+        
+        for key in (client_ip, subnet):
+            if key in self._fast_path_cache:
+                expiry, fast_action = self._fast_path_cache[key]
+                if expiry > current_time:
+                    if fast_action == "block":
+                        return {"action": "block", "status": 403, "body": "Forbidden"}
+                    elif fast_action == "challenge":
+                        # On retourne une structure simplifiée sans régénérer de nonce coûteux
+                        return {
+                            "action": "challenge",
+                            "status": 403,
+                            "body": "<html><body>Suspicious activity detected. Please refresh.</body></html>"
+                        }
+
         device_id = identity["device_id"]
         device_data = identity["device_data"]
 
@@ -623,6 +657,7 @@ class FingerprintEngine:
         for trap in honeypot_config.get("trapUrls", []):
             if context.path.startswith(trap):
                 device_data["condemned"] = True
+                self._fast_path_cache[client_ip] = (current_time + 60.0, "block") # Bloquer l'IP localement pendant 1 minute
                 await self.store.set(f"device:{device_id}", device_data)
                 return {"action": "block", "status": 403, "body": "Forbidden"}
 
@@ -677,6 +712,11 @@ class FingerprintEngine:
         score = await self.get_suspicion_score(context)
 
         if score >= self.thresholds.get("block", 95):
+            # Protection contre le flood : On enregistre le blocage localement pour 10 secondes
+            # Évite d'interroger la DB ou de recalculer le fingerprint pour les requêtes suivantes du flood
+            self._fast_path_cache[client_ip] = (current_time + 10.0, "block")
+            if subnet != "unknown-subnet":
+                self._fast_path_cache[subnet] = (current_time + 5.0, "block") # Calme le sous-réseau complet 5s
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
         if score >= self.thresholds.get("low", 20) and not has_valid_ticket:
@@ -688,6 +728,9 @@ class FingerprintEngine:
 
             cpu_target = ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config)
             mem_difficulty = int(round(max(0.0, suspicion_factor - 0.25) * 48))
+
+            # Forcer temporairement l'IP au challenge dans le bouclier thermique (5 secondes)
+            self._fast_path_cache[client_ip] = (current_time + 5.0, "challenge")
 
             original_fingerprint = self.get_composite_device_hash(context)
             challenge_context = {
@@ -1031,11 +1074,40 @@ class AutoTuner:
             print("[AutoTuning] L'optimisation n'a retourné aucune solution.")
             return
 
+        def is_valid_security_config(config: Dict[str, Any]) -> bool:
+            if not config or "weights" not in config or "thresholds" not in config:
+                return False
+            w = config["weights"]
+            t = config["thresholds"]
+            active_weights_sum = (
+                w.get("inconsistencyScore", 0.0) +
+                w.get("tlsSpoofingScore", 0.0) +
+                w.get("requestPatternScore", 0.0) +
+                w.get("behaviorScore", 0.0) +
+                w.get("botScore", 0.0)
+            )
+            if active_weights_sum < 1.5:
+                return False
+            if t.get("low", 0.0) < 10 or t.get("low", 0.0) > 35:
+                return False
+            if t.get("medium", 0.0) < t.get("low", 0.0) + 5 or t.get("medium", 0.0) > 70:
+                return False
+            if t.get("high", 0.0) < t.get("medium", 0.0) + 5 or t.get("high", 0.0) > 90:
+                return False
+            if t.get("block", 0.0) < t.get("high", 0.0) + 5 or t.get("block", 0.0) > 99:
+                return False
+            return True
+
+        filtered_front = [p for p in pareto_front if is_valid_security_config(p["solution"])]
+        if not filtered_front:
+            print("[AutoTuning] Toutes les solutions du front de Pareto ont été rejetées par les règles de gardiennage. Fallback.")
+            filtered_front = pareto_front
+
         # Selecting most balanced solution
-        best_solution = pareto_front[0]
+        best_solution = filtered_front[0]
         min_distance = math.sqrt(best_solution["objectives"][0]**2 + best_solution["objectives"][1]**2)
 
-        for candidate in pareto_front[1:]:
+        for candidate in filtered_front[1:]:
             dist = math.sqrt(candidate["objectives"][0]**2 + candidate["objectives"][1]**2)
             if dist < min_distance:
                 min_distance = dist
