@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint;
 
 use Anonympins\Fingerprint\Optimization\OptimizationOperators;
+use Anonympins\Fingerprint\Utils\RequestUtils;
 
 /**
  * Gère le processus d'auto-ajustement en arrière-plan pour les seuils et poids de sécurité.
@@ -48,18 +49,23 @@ class AutoTuner
      */
     public function runOptimizationCycle(): void
     {
-        $highConfidenceLogs = count(array_filter(
-            $this->trafficData,
-            fn ($log) => in_array($log['type'], ['challenge_solved', 'trap_triggered'])
-        ));
-        $highConfidenceRatio = count($this->trafficData) > 0 ? $highConfidenceLogs / count($this->trafficData) : 0;
-        $minConfidenceRatio = 0.05; // Exiger au moins 5% de signaux forts.
+        $sanitizedData = RequestUtils::sanitizeTrafficData($this->trafficData);
 
-        if (count($this->trafficData) < $this->minDataPoints || $highConfidenceRatio < $minConfidenceRatio) {
-            if (count($this->trafficData) < $this->minDataPoints) {
-                echo sprintf("[AutoTuning] Reporté : %d/%d points de données.\n", count($this->trafficData), $this->minDataPoints);
+        $highConfidenceLogs = count(array_filter(
+            $sanitizedData,
+            fn ($log) => in_array($log['type'] ?? '', ['challenge_solved', 'trap_triggered'])
+        ));
+        $highConfidenceRatio = count($sanitizedData) > 0 ? $highConfidenceLogs / count($sanitizedData) : 0;
+        $minConfidenceRatio = 0.05; // Exiger au moins 5% de signaux forts.
+        $minHighConfidenceCount = 10; // Absolu de secours pour éviter le gel lors de floods
+
+        $hasEnoughSignal = $highConfidenceRatio >= $minConfidenceRatio || $highConfidenceLogs >= $minHighConfidenceCount;
+
+        if (count($sanitizedData) < $this->minDataPoints || !$hasEnoughSignal) {
+            if (count($sanitizedData) < $this->minDataPoints) {
+                echo sprintf("[AutoTuning] Reporté : %d/%d points de données.\n", count($sanitizedData), $this->minDataPoints);
             } else {
-                echo sprintf("[AutoTuning] Reporté : Ratio de confiance insuffisant (%.2f%% < %.2f%%).\n", $highConfidenceRatio * 100, $minConfidenceRatio * 100);
+                echo sprintf("[AutoTuning] Reporté : Signaux de confiance insuffisants (Ratio: %.2f%% < %.2f%% et absolu: %d < %d).\n", $highConfidenceRatio * 100, $minConfidenceRatio * 100, $highConfidenceLogs, $minHighConfidenceCount);
             }
             return;
         }
@@ -69,9 +75,9 @@ class AutoTuner
             $this->trafficData = array_slice($this->trafficData, count($this->trafficData) - $this->maxDataPoints);
         }
 
-        echo sprintf("[AutoTuning] Démarrage du cycle d'optimisation avec %d points de données.\n", count($this->trafficData));
+        echo sprintf("[AutoTuning] Démarrage du cycle d'optimisation complet avec %d points de données assainis.\n", count($sanitizedData));
 
-        $paretoFront = OptimizationOperators::solveFullSecurityTuning(['trafficData' => $this->trafficData]);
+        $paretoFront = OptimizationOperators::solveFullSecurityTuning(['trafficData' => $sanitizedData]);
 
         if (empty($paretoFront)) {
             echo "[AutoTuning] L'optimisation n'a retourné aucune solution.\n";
@@ -92,36 +98,51 @@ class AutoTuner
 
         // Logique d'inertie pour l'application de la configuration.
         $newConfig = $bestSolution['solution'];
-        $maxChangeVelocity = 0.15; // 15% de changement maximum par cycle.
+        $trafficConfidence = min(1.5, max(0.3, $highConfidenceRatio * 4));
 
-        $applyInertialUpdate = function (&$currentConfig, $targetConfig) use ($maxChangeVelocity) {
+        $applyInertialUpdate = function (&$currentConfig, $targetConfig, string $type, float $confidenceFactor = 1.0) {
             if (empty($currentConfig) || empty($targetConfig)) return;
 
-            $totalCurrentWeight = 0;
-            $totalTargetWeight = 0;
+            $baseLearningRate = 0.15;
+            $learningRate = max(0.02, min(0.40, $baseLearningRate * $confidenceFactor));
 
-            foreach ($currentConfig as $key => $value) {
-                if (isset($targetConfig[$key])) {
-                    $totalCurrentWeight += $value;
-                    $totalTargetWeight += $targetConfig[$key];
+            foreach ($currentConfig as $key => &$value) {
+                if (isset($targetConfig[$key]) && is_numeric($value)) {
+                    $currentVal = (float)$value;
+                    $targetVal = (float)$targetConfig[$key];
+
+                    $updatedVal = $currentVal + ($targetVal - $currentVal) * $learningRate;
+
+                    if ($type === 'weights') {
+                        $updatedVal = max(0.05, min(1.8, $updatedVal));
+                    } elseif ($type === 'patterns') {
+                        if ($key === 'benfordThreshold') $updatedVal = max(0.05, min(0.30, $updatedVal));
+                        elseif ($key === 'decayFactor') $updatedVal = max(0.70, min(0.98, $updatedVal));
+                        elseif ($key === 'minSamples') $updatedVal = max(3, min(15, (int)round($updatedVal)));
+                        elseif ($key === 'historySize') $updatedVal = max(5, min(30, (int)round($updatedVal)));
+                        elseif (str_ends_with($key, 'Threshold')) $updatedVal = max(50, min(3000, (int)round($updatedVal)));
+                    }
+
+                    $value = $updatedVal;
                 }
             }
 
-            if ($totalCurrentWeight === 0) return;
+            if ($type === 'thresholds') {
+                $low = max(10, min(35, $currentConfig['low']));
+                $medium = max($low + 8, min(65, $currentConfig['medium']));
+                $high = max($medium + 8, min(85, $currentConfig['high']));
+                $block = max($high + 8, min(98, $currentConfig['block']));
 
-            $globalChangeRatio = ($totalTargetWeight - $totalCurrentWeight) / $totalCurrentWeight;
-            $adjustmentFactor = max(-$maxChangeVelocity, min($maxChangeVelocity, $globalChangeRatio));
-
-            foreach ($currentConfig as $key => &$value) {
-                if (isset($targetConfig[$key])) {
-                    $value *= (1 + $adjustmentFactor);
-                }
+                $currentConfig['low'] = (int)round($low);
+                $currentConfig['medium'] = (int)round($medium);
+                $currentConfig['high'] = (int)round($high);
+                $currentConfig['block'] = (int)round($block);
             }
         };
 
-        $applyInertialUpdate($this->securityConfig['thresholds'], $newConfig['thresholds']);
-        $applyInertialUpdate($this->securityConfig['weights'], $newConfig['weights']);
-        $applyInertialUpdate($this->securityConfig['patterns'], $newConfig['patterns']);
+        $applyInertialUpdate($this->securityConfig['thresholds'], $newConfig['thresholds'], 'thresholds', $trafficConfidence);
+        $applyInertialUpdate($this->securityConfig['weights'], $newConfig['weights'], 'weights', $trafficConfidence);
+        $applyInertialUpdate($this->securityConfig['patterns'], $newConfig['patterns'], 'patterns', $trafficConfidence);
 
         self::$lastBestSolution = $bestSolution;
 
