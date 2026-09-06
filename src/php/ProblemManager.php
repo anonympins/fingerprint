@@ -133,6 +133,28 @@ class ProblemManager
                 $task['payload'] = $task['payload'] ?? [];
                 $task['initialSolution'] = $problem['state']['bestSolution'] ?? null;
                 break;
+                
+            case 'genetic_algorithm_generations':
+                $baseGenerations = max(50, $problem['workUnit']['baseGenerations'] ?? 0);
+                $task['generations'] = $scalingFactor
+                    ? (int)floor($baseGenerations * pow($scalingFactor, $suspicionFactor))
+                    : (int)floor($baseGenerations * (0.5 + $suspicionFactor));
+                if (isset($problem['payload'])) {
+                    $task['payload'] = $problem['payload'];
+                }
+                $task['payload'] = $task['payload'] ?? [];
+                $task['initialPopulation'] = $problem['state']['population'] ?? null;
+                break;
+
+            case 'run_multiple_parallel':
+                $task['solverName'] = $problem['workUnit']['solverName'] ?? null;
+                $task['numCycles'] = $problem['workUnit']['numCycles'] ?? null;
+                $task['baseSolverArgs'] = $problem['payload']['baseSolverArgs'] ?? null;
+                $task['workerDataGenerator'] = $problem['payload']['workerDataGenerator'] ?? null;
+                $task['logProgress'] = $problem['payload']['logProgress'] ?? false;
+                $task['concurrency'] = $problem['payload']['concurrency'] ?? null;
+                break;
+                
             case 'multi_objective_genetic_algorithm':
                 $baseGenerationsMulti = max(30, $problem['workUnit']['baseGenerations'] ?? 0);
                 $task['generations'] = $scalingFactor
@@ -192,6 +214,13 @@ class ProblemManager
                         $stateChanged = true;
                         error_log("[ProblemManager] New best solution for {$problemId}: {$recalculatedEnergy}"); // @phpstan-ignore-line
                     }
+                }
+                break;
+            case 'genetic_algorithm_generations':
+                if (isset($solutionData['population']) && is_array($solutionData['population'])) {
+                    $problem['state']['population'] = $solutionData['population'];
+                    $problem['state']['lastUpdate'] = (new \DateTime())->format(\DateTime::ATOM);
+                    $stateChanged = true;
                 }
                 break;
             case 'multi_objective_genetic_algorithm':

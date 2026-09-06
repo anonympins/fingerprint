@@ -614,6 +614,26 @@ async def test_problem_manager_dispatch_and_integrate():
                 "options": {"fixedCostPerFacility": 1500}
             },
             "state": {"bestSolution": None, "bestEnergy": "Infinity"}
+            },
+            {
+                "id": "portfolio_optimization",
+                "workUnit": {
+                    "type": "genetic_algorithm_generations",
+                    "baseGenerations": 10
+                },
+                "payload": {
+                    "assets": [{"name": "Asset 1", "expectedReturn": 0.1, "volatility": 0.2}]
+                },
+                "state": {"population": None}
+            },
+            {
+                "id": "cpc_optimization",
+                "workUnit": {
+                    "type": "multi_objective_genetic_algorithm",
+                    "solverName": "cpc.solve"
+                },
+                "payload": {},
+                "state": {"paretoFront": []}
         }
     ]
     with open(config_path, "w", encoding="utf-8") as f:
@@ -638,6 +658,30 @@ async def test_problem_manager_dispatch_and_integrate():
         stored_state = await store.get("problem-state:facility_location_challenge")
         assert stored_state is not None
         assert stored_state["bestEnergy"] < float("inf")
+
+        # Test genetic_algorithm_generations
+        work_ga = await pm.dispatch_work(0.5)
+        assert work_ga["problemId"] == "portfolio_optimization"
+        assert "generations" in work_ga["task"]
+        client_sol_ga = {
+            "population": [{"chromosome": [1.0], "fitness": -0.1}]
+        }
+        await pm.integrate_solution("portfolio_optimization", client_sol_ga)
+        stored_state_ga = await store.get("problem-state:portfolio_optimization")
+        assert stored_state_ga is not None
+        assert stored_state_ga["population"] == client_sol_ga["population"]
+
+        # Test multi_objective_genetic_algorithm
+        work_mo = await pm.dispatch_work(0.5)
+        assert work_mo["problemId"] == "cpc_optimization"
+        assert "generations" in work_mo["task"]
+        client_sol_mo = {
+            "paretoFront": [{"solution": 1.5, "objectives": [10.0, 20.0]}]
+        }
+        await pm.integrate_solution("cpc_optimization", client_sol_mo)
+        stored_state_mo = await store.get("problem-state:cpc_optimization")
+        assert stored_state_mo is not None
+        assert stored_state_mo["paretoFront"] == client_sol_mo["paretoFront"]
     finally:
         if os.path.exists(config_path):
             os.remove(config_path)

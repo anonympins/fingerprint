@@ -1037,6 +1037,14 @@ class ProblemManager:
                 task["iterations"] = int(math.floor(base_iterations * (0.5 + suspicion_factor)))
             task["payload"] = problem.get("payload", {})
             task["initialSolution"] = problem.get("state", {}).get("bestSolution")
+        elif task_type == "genetic_algorithm_generations":
+            base_generations = max(50, work_unit.get("baseGenerations", 0))
+            if scaling_factor:
+                task["generations"] = int(math.floor(base_generations * math.pow(scaling_factor, suspicion_factor)))
+            else:
+                task["generations"] = int(math.floor(base_generations * (0.5 + suspicion_factor)))
+            task["payload"] = problem.get("payload", {})
+            task["initialPopulation"] = problem.get("state", {}).get("population")
         elif task_type == "multi_objective_genetic_algorithm":
             base_generations_multi = max(30, work_unit.get("baseGenerations", 0))
             if scaling_factor:
@@ -1083,6 +1091,11 @@ class ProblemManager:
                     problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     state_changed = True
                     print(f"[ProblemManager] New best solution for {problem_id}: {recalculated_energy}")
+        elif work_unit_type == "genetic_algorithm_generations":
+            if "population" in solution_data and isinstance(solution_data["population"], list):
+                problem["state"]["population"] = solution_data["population"]
+                problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                state_changed = True
         elif work_unit_type == "multi_objective_genetic_algorithm":
             if "paretoFront" in solution_data and isinstance(solution_data["paretoFront"], list):
                 state_changed = await self._integrate_pareto_front(problem, solution_data["paretoFront"])

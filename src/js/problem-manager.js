@@ -20,6 +20,30 @@ const FunctionRegistry = {};
 FunctionRegistry['cpc.solve'] = Optimization.Operators.solveOptimalCPC; // NOUVEAU: Enregistrement du solveur CPC
 
 /**
+ * Évalue le coût total pour le problème de placement d'infrastructures.
+ * @param {Array<{x: number, y: number}>} facilities - Les installations.
+ * @param {object} payload - Le payload contenant les clients et les options.
+ * @returns {number} Le coût total.
+ */
+FunctionRegistry['facility.calculateEnergy'] = (facilities, payload) => {
+    const customers = payload.customers || [];
+    const fixedCostPerFacility = payload.options?.fixedCostPerFacility || 0;
+    const distanceSq = (p1, p2) => Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2);
+    let totalConnectionCost = 0;
+    for (const customer of customers) {
+        let minDistanceToCustomer = Infinity;
+        for (const facility of facilities) {
+            const d = distanceSq(customer, facility);
+            if (d < minDistanceToCustomer) {
+                minDistanceToCustomer = d;
+            }
+        }
+        totalConnectionCost += Math.sqrt(minDistanceToCustomer);
+    }
+    return totalConnectionCost + facilities.length * fixedCostPerFacility;
+};
+
+/**
  * Évalue la distance totale d'un chemin pour le problème du voyageur de commerce (TSP).
  * @param {Array<{x: number, y: number}>} path - Un tableau de points représentant le chemin.
  * @returns {number} La distance totale du chemin.

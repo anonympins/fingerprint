@@ -342,4 +342,36 @@ class ProblemManagerTest extends TestCase
         $this->assertEquals($problemId, $work['problemId']);
         $this->assertEquals($initialState['bestSolution'], $work['task']['initialSolution']);
     }
+
+    public function testIntegrateSolutionUpdatesStateForGeneticAlgorithmGenerations(): void
+    {
+        $problemId = 'ga-problem';
+        $storeMock = $this->createMock(IStore::class);
+
+        $this->createConfigFile([
+            [
+                "id" => $problemId,
+                "workUnit" => [
+                    "type" => "genetic_algorithm_generations",
+                    "baseGenerations" => 10
+                ]
+            ]
+        ]);
+
+        $storeMock->method('get')
+            ->with("problem-state:{$problemId}")
+            ->willReturn(['population' => null]);
+
+        $storeMock->expects($this->once())
+            ->method('set')
+            ->with(
+                "problem-state:{$problemId}",
+                $this->callback(function ($state) {
+                    return isset($state['population']) && is_array($state['population']);
+                })
+            );
+
+        $manager = ProblemManager::getInstance($this->configPath, $storeMock);
+        $manager->integrateSolution($problemId, ['population' => [['chromosome' => [1.0], 'fitness' => -0.15]]]);
+    }
 }
