@@ -1,5 +1,10 @@
 import {promises as fs} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {dirname, join} from 'node:path';
 import {Optimization} from './library.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 /**
  * @namespace FunctionRegistry
@@ -557,7 +562,8 @@ let managerPromise = null;
  * @returns {Promise<ProblemManager>} The singleton instance.
  */
 export function getProblemManager(options = {}, store) {
-    const { configPath = './problems.config.json', config } = options;
+    const defaultPath = join(__dirname, '..', '..', 'problems.config.json');
+    const { configPath = defaultPath, config } = options;
 
     const hasConfigChanged = problemManagerInstance && (
         (config && problemManagerInstance.config !== config) ||

@@ -589,7 +589,9 @@
                              ]);
                              if (json_last_error() === JSON_ERROR_NONE) {
                                  // @phpstan-ignore-next-line - L'instance est gérée par le singleton
-                                 $problemManager = \Anonympins\Fingerprint\ProblemManager::getInstance($this->securityConfig['usefulWorkConfigPath'] ?? null, $store);
+                                $defaultPath = dirname(__DIR__, 2) . '/problems.config.json';
+                                $configPath = $this->securityConfig['usefulWorkConfigPath'] ?? (file_exists($defaultPath) ? $defaultPath : null);
+                                $problemManager = \Anonympins\Fingerprint\ProblemManager::getInstance($configPath, $store);
                                  // FIX: La solution est directement le $workResult, pas une sous-propriété.
                                  $problemManager->integrateSolution($problemId, $workResult);
                                  $isValid = true;
@@ -773,7 +775,9 @@
 
                  if ($shouldUseUsefulWork) {
                      $this->log('Issuing a useful work challenge', ['finalScore' => $finalScore]);
-                     $problemManager = ProblemManager::getInstance($this->securityConfig['usefulWorkConfigPath'] ?? null, $store);
+                    $defaultPath = dirname(__DIR__, 2) . '/problems.config.json';
+                    $configPath = $this->securityConfig['usefulWorkConfigPath'] ?? (file_exists($defaultPath) ? $defaultPath : null);
+                    $problemManager = ProblemManager::getInstance($configPath, $store);
                      $work = $problemManager->dispatchWork($finalScore);
 
                      if ($work !== null) {

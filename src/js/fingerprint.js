@@ -3244,7 +3244,7 @@ export class FingerprintEngine {
         if (challengeContext) {
             try {
                 const workResult = JSON.parse(pow_solution_work_result);
-                const defaultPath = resolve(process.cwd(), 'problems.config.json');
+                const defaultPath = resolve(__dirname, '..', '..', 'problems.config.json');
                 const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
                 const manager = await getProblemManager({
                     configPath,
@@ -3981,7 +3981,7 @@ export const powMiddleware = (securityConfig) => {
 
   // Initialize the problem manager with the configured path, if provided.
   if (securityConfig.enableUsefulWork) {
-    const defaultPath = resolve(process.cwd(), 'problems.config.json');
+    const defaultPath = resolve(__dirname, '..', '..', 'problems.config.json');
     const configPath = securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
     getProblemManager({
         configPath,

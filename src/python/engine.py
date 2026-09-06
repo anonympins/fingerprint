@@ -5,6 +5,9 @@ import uuid
 import math
 import ctypes
 import re
+import random
+import copy
+import json
 from typing import Dict, Any, List, Optional, Callable, Set
 from dataclasses import dataclass, field
 
@@ -40,6 +43,83 @@ def cyrb53(string: str, seed: int = 0) -> int:
     unsigned_h1 = h1 & 0xffffffff
     return 4294967296 * (2097151 & h2) + unsigned_h1
 
+def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Optional[str]:
+    """Calculates the subnet of an IP address (IPv4 or IPv6)."""
+    import socket
+    import struct
+    try:
+        # Check IPv4
+        socket.inet_pton(socket.AF_INET, ip)
+        ip_ints = [int(x) for x in ip.split('.')]
+        mask = (0xffffffff << (32 - ipv4_prefix)) & 0xffffffff
+        ip_val = (ip_ints[0] << 24) | (ip_ints[1] << 16) | (ip_ints[2] << 8) | ip_ints[3]
+        net_val = ip_val & mask
+        net_ints = [
+            (net_val >> 24) & 0xff,
+            (net_val >> 16) & 0xff,
+            (net_val >> 8) & 0xff,
+            net_val & 0xff
+        ]
+        return f"{'.'.join(map(str, net_ints))}/{ipv4_prefix}"
+    except socket.error:
+        try:
+            # Check IPv6
+            ip_bin = socket.inet_pton(socket.AF_INET6, ip)
+            words = struct.unpack("!8H", ip_bin)
+            keep_words = ipv6_prefix // 16
+            net_words = list(words[:keep_words]) + [0] * (8 - keep_words)
+            net_str = ":".join(f"{w:x}" for w in net_words)
+            return f"{net_str}/{ipv6_prefix}"
+        except socket.error:
+            return None
+
+def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sanitizes traffic data to protect the auto-tuner from poisoning attacks."""
+    if not traffic_data:
+        return []
+    
+    temp_sanitized = []
+    device_counts = {}
+    ip_counts = {}
+    subnet_counts = {}
+
+    total_count = len(traffic_data)
+    max_logs_per_device = max(3, total_count // 50) # 2%
+    max_logs_per_ip = max(3, total_count // 50)      # 2%
+    max_logs_per_subnet = max(5, total_count // 20)  # 5%
+
+    for log in traffic_data:
+        dev_id = log.get("deviceId") or "anonymous"
+        ip = log.get("clientIp") or log.get("ip") or "unknown"
+        subnet = get_ip_subnet(ip) or "unknown-subnet"
+
+        current_device_count = device_counts.get(dev_id, 0)
+        current_ip_count = ip_counts.get(ip, 0)
+        current_subnet_count = subnet_counts.get(subnet, 0)
+
+        if (
+            current_device_count < max_logs_per_device and
+            (ip == "unknown" or current_ip_count < max_logs_per_ip) and
+            (subnet == "unknown-subnet" or current_subnet_count < max_logs_per_subnet)
+        ):
+            device_counts[dev_id] = current_device_count + 1
+            if ip != "unknown":
+                ip_counts[ip] = current_ip_count + 1
+            if subnet != "unknown-subnet":
+                subnet_counts[subnet] = current_subnet_count + 1
+            temp_sanitized.append(log)
+
+    passed_logs = [log for log in temp_sanitized if log.get("type") == "request_passed"]
+    suspicious_logs = [log for log in temp_sanitized if log.get("type") != "request_passed"]
+
+    min_data_points = 200
+    max_passed_allowed = max(min_data_points, len(suspicious_logs) * 9)
+
+    if len(passed_logs) > max_passed_allowed:
+        random.shuffle(passed_logs)
+        passed_logs = passed_logs[:max_passed_allowed]
+
+    return suspicious_logs + passed_logs
 
 # --- DATASTRUCTURES: Request Context & Storage ---
 @dataclass

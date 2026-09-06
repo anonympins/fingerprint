@@ -35,6 +35,10 @@ class ProblemManager
     public static function getInstance(?string $configPath = null, ?IStore $store = null): self
     {
         if (self::$instance === null) {
+            if ($configPath === null) {
+                $defaultPath = dirname(__DIR__, 2) . '/problems.config.json';
+                $configPath = file_exists($defaultPath) ? $defaultPath : null;
+            }
             // Si on essaie d'obtenir l'instance sans l'initialiser d'abord, c'est une erreur.
             if ($configPath === null || $store === null) {
                 throw new \RuntimeException("ProblemManager must be initialized with configPath and store.");
