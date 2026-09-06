@@ -1952,7 +1952,7 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     }
     newPatternScore = Math.max(0, newPatternScore);
 
-    deviceData.lastPatternScore = newPatternScore + instantScore + enumerationScore;
+    deviceData.lastPatternScore = Math.max(instantScore, newPatternScore);
 
     return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
 }
