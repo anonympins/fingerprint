@@ -244,7 +244,10 @@ class RequestUtilsTest extends TestCase
         ];
 
         $context = $this->createRequestContext([
-            'headers' => ['x-device-fingerprint' => 'cvs:new-canvas|gpu:new-gpu']
+            'headers' => [
+                'x-device-fingerprint' => 'cvs:new-canvas|gpu:new-gpu',
+                'user-agent' => 'Test UA'
+            ]
         ]);
 
         $indicators = RequestUtils::getBehavioralIndicators($context, $deviceData);

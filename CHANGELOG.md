@@ -1,3 +1,20 @@
+## Version 0.4.3
+
+### 🔒 Rotation Score Hardening (Anti-Spoofing & No-JS Parity)
+- **Server-Only Rotation Analysis**: Completely removed all client-side telemetry (`X-Device-Fingerprint`, canvas, gpu, hardware concurrency) from the `rotationScore` computation across all engines (Node.js, PHP, Python).
+- **Zero-Trust Client Inputs**: Fixed a vulnerability where client-side fingerprint spoofing or the absence of JS headers on static/API requests could trick the engines into triggering false-positive rotation alerts. The stable part analysis now relies exclusively on server-side signatures (`ua`, `ja3`, `ja4`, `h2`, `tcp`).
+
+### 🐍 Python Engine Parity & uPoW
+- **Useful Proof-of-Work (uPoW) in Python**: Fully implemented uPoW support in Python, bringing complete parity to task dispatching and solution integration with the Node.js and PHP versions.
+- **Dry Run & Score Matching**: Added robust Dry Run mode and suspicion score calculations in the Python engine, allowing passive security evaluation without request interruption.
+
+### 🐘 PHP Engine Enhancements
+- **PHP uPoW Coverage**: Greatly expanded test coverage for the PHP `ProblemManager` and useful work integrations, ensuring reliability under heavy workloads.
+
+### 🛡️ Challenge Routing & Better Re-challenge
+- **Refined Challenge Router**: Restructured challenge routing and solution validation pipelines for direct, consistent handling of cryptographic results.
+- **Smarter Re-challenging**: Improved re-challenge behavior across all engines. If an already cleared device's score spikes above the high threshold again, the existing clearance ticket is bypassed, instantly prompting a fresh security challenge.
+
 ## Version 0.4.2 (Hotfix)
 
 ### 🧬 Auto-Tuner Rework & Sanity Guardrails

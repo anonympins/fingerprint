@@ -263,7 +263,7 @@ function extractStablePart(fpString) {
     if (!fpString) {
         return '';
     }
-    const stableKeys = ['cvs', 'gpu', 'hw', 'client_fp_hash', 'os', 'scr'];
+    const stableKeys = ['ua', 'ja3', 'ja4', 'h2', 'tcp'];
     const parts = fpString.split('|');
     const stableParts = [];
     for (const part of parts) {
@@ -3421,7 +3421,15 @@ export class FingerprintEngine {
         }
 
         if (isSuspicious && usefulWorkDispatched) {
-            return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
+            const isApi = requestContext.rawReq && this.securityConfig?.isApiRequest?.(requestContext.rawReq);
+            if (isApi) {
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
+            } else {
+                const html = `<html><body><script>
+                    window.location.href = "${path}?pow_type=useful_work_task&pow_nonce=${nonce}&pow_problem_id=${challengePayload.challenge.usefulWorkTask.problemId}&pow_solution_work_result=" + encodeURIComponent(JSON.stringify({ solution: [], energy: 0 }));
+                </script></body></html>`;
+                return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: html };
+            }
         } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi / a échoué                
             const decision = { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404 };
                 if (this.dryRun) {

@@ -793,8 +793,16 @@
                                  ]
                              ]
                          ];
-                         $decision['body'] = $challengePayload;
-                         return $decision;
+                         if ($isApiRequest) {
+                             $decision['body'] = $challengePayload;
+                             return $decision;
+                         } else {
+                             $html = '<html><body><script>';
+                             $html .= 'window.location.href = "' . $context->path . '?pow_type=useful_work_task&pow_nonce=' . $nonce . '&pow_problem_id=' . $work['problemId'] . '&pow_solution_work_result=" + encodeURIComponent(JSON.stringify({"solution": [], "energy": 0}));';
+                             $html .= '</script></body></html>';
+                             $decision['body'] = $html;
+                             return $decision;
+                         }
                      } else {
                          // This case handles when uPoW is enabled but dispatching a task fails (e.g., config not found).
                          // We log it and fall through to the standard PoW challenge.

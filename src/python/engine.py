@@ -8,6 +8,8 @@ import re
 import random
 import copy
 import json
+import os
+import asyncio
 from typing import Dict, Any, List, Optional, Callable, Set
 from dataclasses import dataclass, field
 
@@ -463,6 +465,262 @@ class RequestUtils:
         return 0.0
 
     @staticmethod
+    def get_time_inconsistency_score(context: RequestContext) -> float:
+        header = context.headers.get("x-behavior-metrics")
+        if not header:
+            return 0.0
+        try:
+            metrics = json.loads(header)
+        except Exception:
+            return 0.0
+        client_ts = metrics.get("clientTimestamp")
+        if not client_ts or not context.request_timestamp:
+            return 0.0
+        time_delta = context.request_timestamp - client_ts
+        replay_threshold = 5000
+        if time_delta > replay_threshold:
+            return min(100.0, (time_delta / replay_threshold - 1.0) * 50.0)
+        return 0.0
+
+    @staticmethod
+    def get_click_variance_score(context: RequestContext) -> float:
+        header = context.headers.get("x-behavior-metrics")
+        if not header:
+            return 0.0
+        try:
+            metrics = json.loads(header)
+        except Exception:
+            return 0.0
+        history = metrics.get("clicksHistory")
+        if not history or len(history) < 3:
+            return 0.0
+        clicks_by_target = {}
+        for click in history:
+            tid = click.get("targetId")
+            if tid:
+                clicks_by_target.setdefault(tid, []).append(click)
+        max_score = 0.0
+        for clicks in clicks_by_target.values():
+            if len(clicks) < 3:
+                continue
+            n = len(clicks)
+            mean_x = sum(c["x"] for c in clicks) / n
+            mean_y = sum(c["y"] for c in clicks) / n
+            variance = sum((c["x"] - mean_x)**2 + (c["y"] - mean_y)**2 for c in clicks) / n
+            if variance < 1.0:
+                score = (1.0 - math.sqrt(variance) / 5.0) * 100.0
+                if score > max_score:
+                    max_score = score
+        return min(100.0, max_score)
+
+    @staticmethod
+    def get_cross_layer_inconsistency(context: RequestContext) -> float:
+        client_fp = context.headers.get("x-device-fingerprint")
+        if not client_fp:
+            return 0.0
+        try:
+            fp_map = dict(part.split(":", 1) for part in client_fp.split("|") if ":" in part)
+        except Exception:
+            return 10.0
+        ua = context.headers.get("user-agent", "")
+        score = 0.0
+        client_os_hash = fp_map.get("os")
+        if client_os_hash:
+            srv_os = RequestUtils.parse_user_agent(ua).get("os")
+            if srv_os and client_os_hash != str(cyrb53(srv_os)):
+                score += 50.0
+        return min(100.0, score)
+
+    @staticmethod
+    def get_threat_intel_score(context: RequestContext, threat_intel_config: Optional[Dict[str, Any]] = None) -> float:
+        if not threat_intel_config:
+            return 0.0
+        known_ips = threat_intel_config.get("knownIps", [])
+        if context.client_ip in known_ips:
+            return 100.0
+        return 0.0
+
+    @staticmethod
+    def analyze_mouse_movements(history: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        if not history or len(history) < 3:
+            return {"avgSpeed": 0.0, "avgAcceleration": 0.0, "straightness": 1.0, "pauses": 0, "segments": []}
+        segments, total_distance, pauses = [], 0.0, 0
+        for i in range(1, len(history)):
+            p1, p2 = history[i-1], history[i]
+            dx, dy, dt = p2["x"] - p1["x"], p2["y"] - p1["y"], p2["t"] - p1["t"]
+            distance = math.sqrt(dx*dx + dy*dy)
+            if dt > 0:
+                segments.append({"distance": distance, "dt": dt, "speed": distance / dt})
+                total_distance += distance
+            if dt > 100 and distance < 5:
+                pauses += 1
+        if len(segments) < 2:
+            return {"avgSpeed": 0.0, "avgAcceleration": 0.0, "straightness": 1.0, "pauses": pauses, "segments": []}
+        total_time = history[-1]["t"] - history[0]["t"]
+        avg_speed = sum(s["speed"] for s in segments) / len(segments) if total_time > 0 else 0.0
+        total_abs_acc = sum(abs((segments[i]["speed"] - segments[i-1]["speed"]) / segments[i]["dt"]) for i in range(1, len(segments)) if segments[i]["dt"] > 0)
+        avg_acceleration = total_abs_acc / (len(segments) - 1)
+        straight_dist = math.sqrt((history[-1]["x"] - history[0]["x"])**2 + (history[-1]["y"] - history[0]["y"])**2)
+        return {"avgSpeed": avg_speed, "avgAcceleration": avg_acceleration, "straightness": straight_dist / total_distance if total_distance > 0 else 1.0, "pauses": pauses, "segments": [s["distance"] for s in segments]}
+
+    @staticmethod
+    def get_behavior_score(context: RequestContext) -> float:
+        header = context.headers.get("x-behavior-metrics")
+        if not header:
+            return 0.0
+        try:
+            metrics = json.loads(header)
+        except Exception:
+            return 10.0
+        if metrics.get("honeypotInteraction"):
+            return 100.0
+        score = 0.0
+        mouse_analysis = RequestUtils.analyze_mouse_movements(metrics.get("mouseMovementsHistory"))
+        if "historyLength" in metrics:
+            hl = metrics["historyLength"]
+            if hl == 1: score += 15.0
+            elif hl >= 5: score -= 20.0
+            elif hl >= 2: score -= 10.0
+        else:
+            if mouse_analysis["avgSpeed"] == 0.0 and metrics.get("keystrokeLatency", 0.0) == 0.0:
+                score += 40.0
+        if mouse_analysis["avgSpeed"] > 0.0:
+            if mouse_analysis["avgSpeed"] > 3.0: score += 25.0
+            if mouse_analysis["avgAcceleration"] > 0.5: score += 20.0
+            if mouse_analysis["straightness"] > 0.95: score += 30.0
+            if mouse_analysis["pauses"] == 0 and len(mouse_analysis["segments"]) > 20: score += 15.0
+        ks_latency = metrics.get("keystrokeLatency", 0.0)
+        if 0.0 < ks_latency < 40.0: score += 25.0
+        if ks_latency > 1000.0: score += 15.0
+        if len(mouse_analysis["segments"]) > 10:
+            benford_deviation = Optimization.benford_test(mouse_analysis["segments"])
+            if benford_deviation > 0.18: score += 35.0
+        return min(100.0, score)
+
+    @staticmethod
+    def get_request_pattern_score(context: RequestContext, device_data: Dict[str, Any], pattern_config: Dict[str, Any]) -> Dict[str, float]:
+        history_size = pattern_config.get("historySize", 20)
+        min_samples = pattern_config.get("minSamples", 10)
+        regularity_threshold = pattern_config.get("regularityThreshold", 150)
+        benford_threshold = pattern_config.get("benfordThreshold", 0.15)
+        pattern_weight = pattern_config.get("patternWeight", 80)
+        decay_factor = pattern_config.get("decayFactor", 0.95)
+        inactivity_reset = pattern_config.get("inactivityReset", 180000)
+        now = int(time.time() * 1000)
+        history = device_data.get("requestHistory", [])
+        device_data["timingHistory"] = device_data.get("timingHistory", [])
+        last_request = history[-1] if history else None
+        time_since_last = now - last_request["timestamp"] if last_request else float("inf")
+        history.append({"timestamp": now, "path": context.path})
+        if last_request:
+            device_data["timingHistory"].append(time_since_last)
+        if len(history) > history_size: history.pop(0)
+        if len(device_data["timingHistory"]) > history_size: device_data["timingHistory"].pop(0)
+        device_data["requestHistory"] = history
+        instant_score = 0.0
+        timings = device_data["timingHistory"]
+        if len(timings) >= min_samples:
+            mean = sum(timings) / len(timings)
+            variance = sum((t - mean) ** 2 for t in timings) / len(timings)
+            std_dev = math.sqrt(variance)
+            benford_deviation = Optimization.benford_test(timings)
+            if std_dev < regularity_threshold: instant_score = pattern_weight
+            elif benford_deviation > benford_threshold: instant_score = pattern_weight
+        enumeration_score = 0.0
+        if len(history) >= 3:
+            templates = [re.sub(r"\d+", "{num}", h["path"]) for h in history]
+            unique_paths = set(h["path"] for h in history)
+            from collections import Counter
+            template_counts = Counter(templates)
+            max_template_repetition = max(template_counts.values()) if template_counts else 0
+            if max_template_repetition >= 3 and len(unique_paths) == len(history):
+                enumeration_score = pattern_weight * 0.8
+        new_pattern_score = device_data.get("lastPatternScore", 0.0)
+        if time_since_last > inactivity_reset: new_pattern_score = 0.0
+        else: new_pattern_score *= decay_factor
+        device_data["lastPatternScore"] = max(0.0, new_pattern_score) + instant_score + enumeration_score
+        return {"requestPatternScore": min(100.0, device_data["lastPatternScore"])}
+
+    @staticmethod
+    async def get_ip_reputation_score(store, ip: str) -> float:
+        key = f"ip-reputation:{ip}"
+        data = await store.get(key)
+        if not data: return 0.0
+        now = time.time()
+        hours_passed = (now - data.get("lastUpdate", now)) / 3600.0
+        decay = int(math.floor(hours_passed * 2))
+        return max(0.0, float(data.get("score", 0.0) - decay))
+
+    @staticmethod
+    async def update_ip_reputation_score(store, ip: str, change: float) -> None:
+        key = f"ip-reputation:{ip}"
+        current = await RequestUtils.get_ip_reputation_score(store, ip)
+        new_score = min(100.0, max(0.0, current + change))
+        await store.set(key, {"score": new_score, "lastUpdate": time.time()}, 86400 * 7)
+
+    @staticmethod
+    async def update_subnet_metrics(store, client_ip: str, device_id: str, final_score: float) -> None:
+        subnet = get_ip_subnet(client_ip)
+        if not subnet: return
+        key = f"subnet:{subnet}"
+        subnet_data = await store.get(key) or {"highScoreCount": 0, "deviceIds": [], "highScoreDevices": {}, "lastActivity": 0}
+        subnet_data.setdefault("highScoreDevices", {})
+        current_contributions = subnet_data["highScoreDevices"].get(device_id, 0)
+        if current_contributions < 5 and final_score < 95:
+            subnet_data["highScoreDevices"][device_id] = current_contributions + 1
+            subnet_data["highScoreCount"] += 1
+        if device_id not in subnet_data["deviceIds"]:
+            subnet_data["deviceIds"].append(device_id)
+        subnet_data["lastActivity"] = int(time.time())
+        if len(subnet_data["deviceIds"]) > 100:
+            old_device_id = subnet_data["deviceIds"].pop(0)
+            if old_device_id in subnet_data["highScoreDevices"]:
+                old_contrib = subnet_data["highScoreDevices"].pop(old_device_id)
+                subnet_data["highScoreCount"] = max(0, subnet_data["highScoreCount"] - old_contrib)
+        await store.set(key, subnet_data, 86400)
+
+    @staticmethod
+    async def get_subnet_score(store, client_ip: str, current_device_id: str) -> Dict[str, float]:
+        subnet = get_ip_subnet(client_ip)
+        if not subnet: return {"subnetScore": 0.0}
+        key = f"subnet:{subnet}"
+        subnet_data = await store.get(key)
+        if not subnet_data: return {"subnetScore": 0.0}
+        now = int(time.time())
+        inactivity_sec = now - subnet_data.get("lastActivity", now)
+        half_lives = int(math.floor(inactivity_sec / 1800))
+        high_score_count = subnet_data.get("highScoreCount", 0)
+        device_count = len(subnet_data.get("deviceIds", []))
+        if half_lives > 0:
+            high_score_count = max(0, int(math.floor(high_score_count / (2 ** half_lives))))
+            device_count = max(0, int(math.floor(device_count / (2 ** half_lives))))
+        score = 0.0
+        if device_count > 10: score += min(80.0, (device_count - 10) * 5)
+        score += min(40.0, high_score_count * 2)
+        return {"subnetScore": min(100.0, score)}
+
+    @staticmethod
+    def get_honeypot_score(context: RequestContext, honeypot_config: Optional[Dict[str, Any]] = None) -> float:
+        if not honeypot_config: return 0.0
+        fields = honeypot_config.get("fields", [])
+        trap_urls = honeypot_config.get("trapUrls", [])
+        detect_injections = honeypot_config.get("detectInjections", True)
+        for trap in trap_urls:
+            if context.path.startswith(trap): return 100.0
+        data = {}
+        if isinstance(context.query_params, dict): data.update(context.query_params)
+        if isinstance(context.body, dict): data.update(context.body)
+        for field_name in fields:
+            if field_name.startswith("pow_") or field_name in ("pow_nonce", "pow_solution_cpu", "pow_solution_mem"): continue
+            if field_name in data and data[field_name]: return 100.0
+        if detect_injections:
+            types_to_detect = detect_injections if isinstance(detect_injections, list) else None
+            for k, v in data.items():
+                if isinstance(v, str) and MaliciousPatterns.is_malicious(v, types_to_detect): return 100.0
+                elif isinstance(v, dict) and MaliciousPatterns.is_malicious(json.dumps(v), types_to_detect): return 100.0
+        return 0.0
+
+    @staticmethod
     def get_bot_score(context: RequestContext) -> float:
         """
         Calculates a suspicion score based on explicit bot detection markers
@@ -518,6 +776,339 @@ class RequestUtils:
                 
         return 0.0
 
+class RedisStore:
+    """
+    Production-grade Redis adapter for FingerprintEngine.
+    Handles serialization, deserialization, and Set-to-list conversions.
+    """
+    def __init__(self, redis_client):
+        self._client = redis_client
+
+    def _serialize(self, value: Any) -> str:
+        def convert(obj):
+            if isinstance(obj, set):
+                return list(obj)
+            return obj
+        return json.dumps(value, default=convert)
+
+    def _deserialize(self, value: str) -> Any:
+        obj = json.loads(value)
+        if isinstance(obj, dict) and "ips" in obj and isinstance(obj["ips"], list):
+            obj["ips"] = set(obj["ips"])
+        return obj
+
+    async def get(self, key: str) -> Optional[Any]:
+        val = await self._client.get(key)
+        if not val:
+            return None
+        return self._deserialize(val.decode("utf-8") if isinstance(val, bytes) else val)
+
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        val_str = self._serialize(value)
+        if ttl:
+            await self._client.setex(key, ttl, val_str)
+        else:
+            await self._client.set(key, val_str)
+
+    async def has(self, key: str) -> bool:
+        return await self._client.exists(key) > 0
+
+    async def delete(self, key: str) -> None:
+        await self._client.delete(key)
+
+class MongoDbStore:
+    """
+    Production-grade MongoDB adapter using motor or pymongo async.
+    Includes dynamic active expiration and Set-to-list conversions.
+    """
+    def __init__(self, collection):
+        self._collection = collection
+
+    def _serialize(self, value: Any) -> str:
+        def convert(obj):
+            if isinstance(obj, set):
+                return list(obj)
+            return obj
+        return json.dumps(value, default=convert)
+
+    def _deserialize(self, value: str) -> Any:
+        obj = json.loads(value)
+        if isinstance(obj, dict) and "ips" in obj and isinstance(obj["ips"], list):
+            obj["ips"] = set(obj["ips"])
+        return obj
+
+    async def get(self, key: str) -> Optional[Any]:
+        doc = await self._collection.find_one({"_id": key})
+        if not doc:
+            return None
+        if "expiresAt" in doc:
+            expires_at = doc["expiresAt"]
+            if expires_at.tzinfo is None:
+                now = datetime.datetime.utcnow()
+            else:
+                now = datetime.datetime.now(datetime.timezone.utc)
+            if expires_at < now:
+                await self.delete(key)
+                return None
+        return self._deserialize(doc["value"])
+
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+        doc = {
+            "_id": key,
+            "value": self._serialize(value)
+        }
+        if ttl:
+            doc["expiresAt"] = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=ttl)
+        await self._collection.replace_one({"_id": key}, doc, upsert=True)
+
+    async def has(self, key: str) -> bool:
+        doc = await self._collection.find_one({"_id": key}, {"expiresAt": 1})
+        if not doc:
+            return False
+        if "expiresAt" in doc:
+            expires_at = doc["expiresAt"]
+            if expires_at.tzinfo is None:
+                now = datetime.datetime.utcnow()
+            else:
+                now = datetime.datetime.now(datetime.timezone.utc)
+            if expires_at < now:
+                await self.delete(key)
+                return False
+        return True
+
+    async def delete(self, key: str) -> None:
+        await self._collection.delete_one({"_id": key})
+
+    async def init(self) -> None:
+        import pymongo
+        await self._collection.create_index([("expiresAt", pymongo.ASCENDING)], expireAfterSeconds=0)
+
+class MaliciousPatterns:
+    """Provides utilities for recursive WAF detection on inputs."""
+    INJECTION_PATTERNS = {
+        "sql": re.compile(r"(\$ne|' *OR *'1'='1|['\";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|(?:SLEEP|BENCHMARK)\s*\(|WAITFOR DELAY)", re.IGNORECASE),
+        "log4shell": re.compile(r"\$\{jndi:(ldap|rmi|dns):", re.IGNORECASE),
+        "ssti": re.compile(r"\{\{.*\}\}|\{%.*%\}"),
+        "xxe": re.compile(r"<!ENTITY\s+.*SYSTEM", re.IGNORECASE),
+        "traversal": re.compile(r"(\.\.\/|\.\.)"),
+        "rce": re.compile(r"`.*`|(?:^|[\n;&|]\s*)(?:ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b", re.IGNORECASE)
+    }
+
+    @staticmethod
+    def is_malicious(string: str, types_to_detect: Optional[List[str]] = None) -> bool:
+        if not types_to_detect:
+            types_to_detect = list(MaliciousPatterns.INJECTION_PATTERNS.keys())
+        for t in types_to_detect:
+            pattern = MaliciousPatterns.INJECTION_PATTERNS.get(t)
+            if pattern and pattern.search(string):
+                return True
+        return False
+
+class MetricsManager:
+    """Prometheus-compatible real-time metrics manager."""
+    _counters: Dict[str, Dict[str, Any]] = {}
+    _observations: Dict[str, Dict[str, Any]] = {}
+
+    @classmethod
+    def increment_counter(cls, name: str, labels: Optional[Dict[str, str]] = None) -> None:
+        if not name.startswith("fingerprint_"):
+            name = "fingerprint_" + name
+        labels = labels or {}
+        sorted_labels = sorted(labels.items())
+        if labels:
+            pairs = [f'{k}="{v}"' for k, v in sorted_labels]
+            labels_str = f"{{{','.join(pairs)}}}"
+        else:
+            labels_str = ""
+        if labels:
+            pairs = [f'{k}="{v}"' for k, v in sorted_labels]
+            labels_str = f"{{{','.join(pairs)}}}"
+        else:
+            labels_str = ""
+        key = f"{name}{labels_str}"
+        if key not in cls._counters:
+            cls._counters[key] = {"name": name, "labelsStr": labels_str, "value": 0}
+        cls._counters[key]["value"] += 1
+
+    @classmethod
+    def observe_value(cls, name: str, value: float, labels: Optional[Dict[str, str]] = None) -> None:
+        if not name.startswith("fingerprint_"):
+            name = "fingerprint_" + name
+        labels = labels or {}
+        sorted_labels = sorted(labels.items())
+        if labels:
+            pairs = [f'{k}="{v}"' for k, v in sorted_labels]
+            labels_str = f"{{{','.join(pairs)}}}"
+        else:
+            labels_str = ""
+        key = f"{name}{labels_str}"
+        cls._observations[key] = {"name": name, "labelsStr": labels_str, "value": value}
+
+    @classmethod
+    def clear_metrics(cls) -> None:
+        cls._counters = {}
+        cls._observations = {}
+
+    @classmethod
+    def get_prometheus_metrics(cls, security_config: Optional[Dict[str, Any]] = None, last_best_solution: Optional[Dict[str, Any]] = None) -> str:
+        metrics = []
+        if not cls._counters:
+            metrics.append("# HELP fingerprint_requests_total Total requests processed.")
+            metrics.append("# TYPE fingerprint_requests_total counter")
+            metrics.append('fingerprint_requests_total{status="passed"} 1')
+        else:
+            grouped = {}
+            for k, c in cls._counters.items():
+                grouped.setdefault(c["name"], []).append(c)
+            for name, instances in grouped.items():
+                metrics.append(f"# HELP {name} Total requests processed.")
+                metrics.append(f"# TYPE {name} counter")
+                for inst in instances:
+                    metrics.append(f"{name}{inst['labelsStr']} {inst['value']}")
+
+        if cls._observations:
+            grouped_obs = {}
+            for k, obs in cls._observations.items():
+                grouped_obs.setdefault(obs["name"], []).append(obs)
+            for name, instances in grouped_obs.items():
+                metrics.append(f"\n# HELP {name} Value observation.")
+                metrics.append(f"# TYPE {name} gauge")
+                for inst in instances:
+                    metrics.append(f"{name}{inst['labelsStr']} {inst['value']}")
+
+        config = security_config or {}
+        if "weights" in config and isinstance(config["weights"], dict):
+            metrics.append("\n# HELP fingerprint_security_weight Active weight for each suspicion indicator.")
+            metrics.append("# TYPE fingerprint_security_weight gauge")
+            for indicator, weight in config["weights"].items():
+                if isinstance(weight, (int, float)):
+                    metrics.append(f'fingerprint_security_weight{{indicator="{indicator}"}} {weight}')
+
+        if "thresholds" in config and isinstance(config["thresholds"], dict):
+            metrics.append("\n# HELP fingerprint_security_threshold Active score threshold for each enforcement action level.")
+            metrics.append("# TYPE fingerprint_security_threshold gauge")
+            for level, val in config["thresholds"].items():
+                if isinstance(val, (int, float)):
+                    metrics.append(f'fingerprint_security_threshold{{level="{level}"}} {val}')
+
+        if last_best_solution and "objectives" in last_best_solution:
+            fpr = last_best_solution["objectives"][0]
+            fnr = last_best_solution["objectives"][1]
+            metrics.append("\n# HELP fingerprint_autotuning_false_positive_rate Current false positive rate calculated by the auto-tuner.")
+            metrics.append("# TYPE fingerprint_autotuning_false_positive_rate gauge")
+            metrics.append(f"fingerprint_autotuning_false_positive_rate {fpr}")
+            metrics.append("\n# HELP fingerprint_autotuning_false_negative_rate Current false negative rate calculated by the auto-tuner.")
+            metrics.append("# TYPE fingerprint_autotuning_false_negative_rate gauge")
+            metrics.append(f"fingerprint_autotuning_false_negative_rate {fnr}")
+
+        return "\n".join(metrics) + "\n"
+class TLSClientHelloParser:
+    """Binary TLS Client Hello decoder to natively extract JA3 strings."""
+    GREASE_VALUES = {
+        2570, 6682, 10794, 14906, 19018, 23130, 27242, 31354,
+        35466, 39578, 43690, 47802, 51914, 55926, 60038, 64150
+    }
+
+    @staticmethod
+    def parse(binary: bytes) -> Optional[Dict[str, str]]:
+        length = len(binary)
+        if length < 43:
+            return None
+        if binary[0] != 0x16 or binary[5] != 0x01:
+            return None
+
+        import struct
+        offset = 43
+        if length < offset + 1:
+            return None
+
+        session_len = binary[offset]
+        offset += 1 + session_len
+        if length < offset + 2:
+            return None
+
+        ciphers_len = struct.unpack("!H", binary[offset:offset+2])[0]
+        offset += 2
+        if length < offset + ciphers_len + 1:
+            return None
+
+        ciphers = [struct.unpack("!H", binary[offset+i:offset+i+2])[0] for i in range(0, ciphers_len, 2)]
+        offset += ciphers_len
+
+        compression_len = binary[offset]
+        offset += 1 + compression_len
+        if length < offset + 2:
+            return None
+
+        extensions_len = struct.unpack("!H", binary[offset:offset+2])[0]
+        offset += 2
+
+        extensions, curves, points = [], [], []
+        ext_limit = offset + extensions_len
+        while offset < ext_limit and offset + 4 <= length:
+            ext_type = struct.unpack("!H", binary[offset:offset+2])[0]
+            ext_len = struct.unpack("!H", binary[offset+2:offset+4])[0]
+            offset += 4
+            if offset + ext_len > length:
+                break
+            extensions.append(ext_type)
+            if ext_type == 10 and ext_len >= 2:
+                curves_len = struct.unpack("!H", binary[offset:offset+2])[0]
+                curves.extend(struct.unpack(f"!{curves_len//2}H", binary[offset+2:offset+2+curves_len]))
+            elif ext_type == 11 and ext_len >= 1:
+                points_len = binary[offset]
+                points.extend(binary[offset+1:offset+1+points_len])
+            offset += ext_len
+
+        filter_grease = lambda arr: [v for v in arr if v not in TLSClientHelloParser.GREASE_VALUES]
+        ssl_version = struct.unpack("!H", binary[9:11])[0]
+        ja3_string = f"{ssl_version},{'-'.join(map(str, filter_grease(ciphers)))},{'-'.join(map(str, filter_grease(extensions)))},{'-'.join(map(str, filter_grease(curves)))},{'-'.join(map(str, filter_grease(points)))}"
+        return {"ja3_string": ja3_string, "ja3_hash": hashlib.md5(ja3_string.encode("utf-8")).hexdigest()}
+
+
+class FingerprintClient:
+    """HTML templating and script tag injection utilities."""
+    def __init__(self, client_script_path: str, client_config: Optional[Dict[str, Any]] = None):
+        self.client_script_path = client_script_path
+        default_config = {
+            "mouse": True, "keystrokes": True, "clicks": True, "honeypots": [],
+            "fetch": {"handleChallenges": True, "probationaryTtl": 30000},
+            "wasm": True, "wasmPath": "/fp.js"
+        }
+        self.client_config = copy.deepcopy(default_config)
+        if client_config:
+            self.client_config.update(client_config)
+        self.nonce = uuid.uuid4().hex[:16]
+
+    def generate_honeypot_field(self, field_name: str) -> str:
+        if field_name not in self.client_config["honeypots"]:
+            self.client_config["honeypots"].append(field_name)
+        styles = "position:absolute; left:-9999px; top:-9999px; opacity:0;"
+        from html import escape
+        f_name = escape(field_name)
+        return f'<div style="{styles}" aria-hidden="true"><label for="{f_name}">Do not fill</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></div>'
+
+    def get_script_tag(self) -> str:
+        config_json = json.dumps(self.client_config)
+        from html import escape
+        nonce_attr = f' nonce="{self.nonce}"' if self.nonce else ""
+        init_script = f"""
+         document.addEventListener('DOMContentLoaded', function() {{
+             const config = {config_json};
+             if (window.ClientLibrary) {{
+                 if (config.wasmPath) {{
+                     const wasmScript = document.createElement('script');
+                     wasmScript.src = config.wasmPath;
+                     wasmScript.async = true;
+                     wasmScript.nonce = '{self.nonce}';
+                     document.head.appendChild(wasmScript);
+                 }}
+                 window.ClientLibrary.initializeClient(config);
+             }} else {{
+                 console.error('Fingerprint client library not loaded.');
+             }}
+         }});"""
+        return f'<script src="{escape(self.client_script_path)}"{nonce_attr}></script><script{nonce_attr}>{init_script}</script>'
 
 # --- CORE: FingerprintEngine ---
 class FingerprintEngine:
@@ -533,12 +1124,46 @@ class FingerprintEngine:
         self.store = store
         self.thresholds = config.get("thresholds", {"low": 20, "high": 75, "block": 95})
         self.weights = config.get("weights", {})
-        
+        self.dry_run = config.get("dryRun", False)
+
         # Bouclier thermique local (Fast-Path Cache) pour amortir les attaques de masse
         # Format: {"ip_or_subnet": (expiration_timestamp, action_to_take)}
         self._fast_path_cache: Dict[str, tuple] = {}
         self._last_prune_time: float = time.time()
         self._prune_interval: float = 10.0 # secondes
+
+        if config.get("enableUsefulWork"):
+            try:
+                default_path = os.path.join(os.getcwd(), "problems.config.json")
+                config_path = config.get("usefulWorkConfigPath") or (default_path if os.path.exists(default_path) else None)
+                if config_path:
+                    pm = ProblemManager.get_instance(config_path, self.store)
+                    if not pm.initialized:
+                        try:
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(pm.load_problems())
+                        except RuntimeError:
+                            try:
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    loop.create_task(pm.load_problems())
+                                else:
+                                    loop.run_until_complete(pm.load_problems())
+                            except Exception:
+                                pass
+            except Exception as e:
+                print(f"[FingerprintEngine] Background initialization of ProblemManager failed: {e}")
+
+    def _get_weight(self, key: str, default: float) -> float:
+        if not self.weights:
+            return default
+        return self.weights.get(key, 0.0)
+
+    def _extract_stable_part(self, fp_str: str) -> str:
+        stable_keys = {"ua", "ja3", "ja4", "h2", "tcp"}
+        parts = fp_str.split("|")
+        stable_parts = [part for part in parts if part.split(":", 1)[0] in stable_keys]
+        return "|".join(sorted(stable_parts))
 
     def get_composite_device_hash(self, context: RequestContext) -> str:
         """
@@ -583,6 +1208,7 @@ class FingerprintEngine:
         existing_device_id = context.cookies.get("device_id")
         current_hash = self.get_composite_device_hash(context)
         new_cookie = None
+        cookie_dropping_score = 0.0
         
         if existing_device_id:
             device_data = await self.store.get(f"device:{existing_device_id}")
@@ -590,6 +1216,9 @@ class FingerprintEngine:
             device_data = None
 
         if not device_data:
+            pending_device_id = await self.store.get(f"pending_cookie:{context.client_ip}")
+            if pending_device_id and not existing_device_id:
+                cookie_dropping_score = 100.0
             device_id = str(uuid.uuid4())
             new_cookie = {
                 "name": "device_id",
@@ -600,46 +1229,80 @@ class FingerprintEngine:
                     "path": "/",
                 }
             }
+            context.cookies["device_id"] = device_id
             device_data = {
                 "initialDeviceHash": current_hash,
                 "ips": {context.client_ip},
                 "lastUpdate": int(time.time() * 1000)
             }
             await self.store.set(f"device:{device_id}", device_data)
+            await self.store.set(f"pending_cookie:{context.client_ip}", device_id, 120)
         else:
             device_id = existing_device_id
+            if "ips" not in device_data:
+                device_data["ips"] = set()
+            elif isinstance(device_data["ips"], list):
+                device_data["ips"] = set(device_data["ips"])
             device_data["ips"].add(context.client_ip)
-            
-        return {"device_id": device_id, "device_data": device_data, "new_cookie": new_cookie}
 
-    async def get_suspicion_score(self, context: RequestContext) -> float:
-        """
-        Calculates the overall suspicion score for a request by combining various
-        suspicion vectors with their configured weights.
+        return {"device_id": device_id, "device_data": device_data, "new_cookie": new_cookie, "cookie_dropping_score": cookie_dropping_score}
 
-        Args:
-            context (RequestContext): The request context.
+    async def get_behavioral_indicators(self, context: RequestContext, device_data: Dict[str, Any]) -> Dict[str, float]:
+        now = int(time.time() * 1000)
+        client_ip = context.client_ip
+        current_fp = self.get_composite_device_hash(context)
+        last_fp = device_data.get("lastFpHash")
+        if last_fp and current_fp != last_fp:
+            stable1 = self._extract_stable_part(last_fp)
+            stable2 = self._extract_stable_part(current_fp)
+            time_since_last_change = now - device_data.get("lastChangeTimestamp", 0)
+            if stable1 != stable2:
+                if time_since_last_change < 2000:
+                    device_data["rapidChangeCount"] = device_data.get("rapidChangeCount", 0) + 1
+                else:
+                    device_data["rapidChangeCount"] = max(0, device_data.get("rapidChangeCount", 0) - 1)
+                device_data["lastChangeTimestamp"] = now
+        elif not last_fp:
+            device_data["lastChangeTimestamp"] = now
+        device_data["lastFpHash"] = current_fp
+        if "ips" not in device_data:
+            device_data["ips"] = set()
+        elif isinstance(device_data["ips"], list):
+            device_data["ips"] = set(device_data["ips"])
+        device_data["ips"].add(client_ip)
+        max_ips, free_ips = 15, 3
+        history_score = min(100.0, (max(0, len(device_data["ips"]) - free_ips) / max_ips) * 100.0)
+        rotation_score = min(100.0, (device_data.get("rapidChangeCount", 0) / 3.0) * 100.0)
+        return {"historyScore": history_score, "rotationScore": rotation_score}
 
-        Returns:
-            float: The final suspicion score (0.0 to 100.0).
-        """
+    async def get_suspicion_vector(self, context: RequestContext, suspicion_vector: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+        if suspicion_vector is None:
+            suspicion_vector = {}
+
         identity = await self.resolve_identity(context)
         device_data = identity["device_data"]
-        
-        # Inconsistency score
+        device_id = identity["device_id"]
+        cookie_dropping_score = identity.get("cookie_dropping_score", 0.0)
+
+        if device_data and device_data.get("condemned"):
+            suspicion_vector["honeypotScore"] = 100.0
+            return suspicion_vector
+    # Inconsistency score
         current_hash = self.get_composite_device_hash(context)
         similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash"), current_hash)
         inconsistency_score = max(0.0, (1.0 - similarity) * 200.0)
         if similarity < self.config.get("similarityThreshold", 0.7):
             inconsistency_score = 100.0
 
-        # 1. Anomalies d'en-têtes
+        behavioral_indicators = await self.get_behavioral_indicators(context, device_data)
+        history_score = behavioral_indicators["historyScore"]
+        rotation_score = behavioral_indicators["rotationScore"]
+
+    # 1. Anomalies d'en-têtes
         header_anomaly = RequestUtils.get_header_anomalies(context)
 
-        # 2. Incohérence des Client Hints
         client_hints_score = RequestUtils.get_client_hints_inconsistency(context)
 
-        # 3. Spoofing TLS (JA3/JA4 vs User-Agent)
         tls_spoofing_score = 0.0
         ua = context.headers.get("user-agent", "")
         ja3 = context.headers.get("x-ja3-hash")
@@ -675,15 +1338,51 @@ class FingerprintEngine:
         # Calculate weighted average
         bot_score = RequestUtils.get_bot_score(context)
         honeypot_score = RequestUtils.get_honeypot_score(context, self.config.get("honeypot"))
-        score = (
-            inconsistency_score * self.weights.get("inconsistencyScore", 0.3) +
-            header_anomaly * self.weights.get("headerAnomalyScore", 0.2) +
-            client_hints_score * self.weights.get("clientHintsInconsistencyScore", 0.2) +
-            tls_spoofing_score * self.weights.get("tlsSpoofingScore", 0.3) +
-            bot_score * self.weights.get("botScore", 0.1) +
-            honeypot_score * self.weights.get("honeypotScore", 1.0)
-        )
+        behavior_score = RequestUtils.get_behavior_score(context)
+        time_inconsistency_score = RequestUtils.get_time_inconsistency_score(context)
+        cross_layer_inconsistency_score = RequestUtils.get_cross_layer_inconsistency(context)
+        click_variance_score = RequestUtils.get_click_variance_score(context)
+        request_pattern_score = RequestUtils.get_request_pattern_score(context, device_data, self.config.get("patterns", {}))["requestPatternScore"]
+        threat_intel_score = RequestUtils.get_threat_intel_score(context, self.config.get("threatIntel"))
+        ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
+        subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id))["subnetScore"]
+
+
+        await self.store.set(f"device:{device_id}", device_data)
+
+        suspicion_vector.update({
+            "inconsistencyScore": inconsistency_score,
+            "historyScore": history_score,
+            "rotationScore": rotation_score,
+            "headerAnomalyScore": header_anomaly,
+            "clientHintsInconsistencyScore": client_hints_score,
+            "tlsSpoofingScore": tls_spoofing_score,
+            "botScore": bot_score,
+            "honeypotScore": honeypot_score,
+            "behaviorScore": behavior_score,
+            "timeInconsistencyScore": time_inconsistency_score,
+            "crossLayerInconsistencyScore": cross_layer_inconsistency_score,
+            "clickVarianceScore": click_variance_score,
+            "requestPatternScore": request_pattern_score,
+            "threatIntelScore": threat_intel_score,
+            "ipReputationScore": ip_reputation_score,
+            "cookieDroppingScore": cookie_dropping_score,
+            "subnetScore": subnet_score,
+        })
+        return suspicion_vector
+
+    def calculate_final_score(self, suspicion_vector: Dict[str, float]) -> float:
+        weights = self.config.get("weights", {})
+        if not weights:
+            return 0.0
+        score = 0.0
+        for key, weight in weights.items():
+            score += suspicion_vector.get(key, 0.0) * weight
         return min(100.0, score)
+
+    async def get_suspicion_score(self, context: RequestContext) -> float:
+        vector = await self.get_suspicion_vector(context)
+        return self.calculate_final_score(vector)
 
     async def process_request(self, context: RequestContext) -> Dict[str, Any]:
         """
@@ -697,6 +1396,15 @@ class FingerprintEngine:
             Dict[str, Any]: A dictionary describing the action to be taken and any associated data.
         """
         identity = await self.resolve_identity(context)
+        decision = await self._process_request_internal(context, identity)
+        if identity.get("new_cookie"):
+            decision["newCookieForResponse"] = identity["new_cookie"]
+        return decision
+
+    async def _process_request_internal(self, context: RequestContext, identity: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Internal request processing logic.
+        """
         current_time = time.time()
 
         # 1. Nettoyage périodique du bouclier thermique local
@@ -716,9 +1424,15 @@ class FingerprintEngine:
                 expiry, fast_action = self._fast_path_cache[key]
                 if expiry > current_time:
                     if fast_action == "block":
+                        MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+                        if self.dry_run:
+                            return {"action": "next", "intendedAction": "block"}
                         return {"action": "block", "status": 403, "body": "Forbidden"}
                     elif fast_action == "challenge":
+                        MetricsManager.increment_counter("requests_total", {"status": "challenged"})
                         # On retourne une structure simplifiée sans régénérer de nonce coûteux
+                        if self.dry_run:
+                            return {"action": "next", "intendedAction": "challenge"}
                         return {
                             "action": "challenge",
                             "status": 403,
@@ -730,6 +1444,9 @@ class FingerprintEngine:
 
         # Early block for condemned devices
         if device_data and device_data.get("condemned"):
+            MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+            if self.dry_run:
+                return {"action": "next", "intendedAction": "block"}
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
         # Honeypot trap URL instant check & condemnation
@@ -737,8 +1454,11 @@ class FingerprintEngine:
         for trap in honeypot_config.get("trapUrls", []):
             if context.path.startswith(trap):
                 device_data["condemned"] = True
-                self._fast_path_cache[client_ip] = (current_time + 60.0, "block") # Bloquer l'IP localement pendant 1 minute
+                self._fast_path_cache[client_ip] = (current_time + 60.0, "block")
                 await self.store.set(f"device:{device_id}", device_data)
+                MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+                if self.dry_run:
+                    return {"action": "next", "intendedAction": "block"}
                 return {"action": "block", "status": 403, "body": "Forbidden"}
 
         # Check for challenge submission
@@ -746,6 +1466,38 @@ class FingerprintEngine:
         pow_sol_cpu = context.query_params.get("pow_solution_cpu") or context.query_params.get("pow_solution")
         pow_sol_mem = context.query_params.get("pow_solution_mem")
         pow_fp = context.query_params.get("pow_fp") or self.get_composite_device_hash(context)
+        pow_type = context.query_params.get("pow_type")
+        pow_solution_work_result = context.query_params.get("pow_solution_work_result")
+        pow_problem_id = context.query_params.get("pow_problem_id")
+
+        if pow_nonce and pow_type == "useful_work_task" and pow_solution_work_result and pow_problem_id:
+            challenge_context = await self.store.get(f"secret:{pow_nonce}")
+            if challenge_context:
+                try:
+                    work_result = json.loads(pow_solution_work_result)
+                    default_path = os.path.join(os.getcwd(), "problems.config.json")
+                    config_path = self.config.get("usefulWorkConfigPath") or (default_path if os.path.exists(default_path) else None)
+                    pm = ProblemManager.get_instance(config_path, self.store)
+                    if not pm.initialized:
+                        await pm.load_problems()
+                    await pm.integrate_solution(pow_problem_id, work_result)
+
+                    await self.store.delete(f"secret:{pow_nonce}")
+                    ticket = str(uuid.uuid4())
+                    await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
+                    MetricsManager.increment_counter("challenges_solved_total")
+                    return {
+                        "action": "redirect",
+                        "path": context.path,
+                        "cookie": {
+                            "name": "pow_clearance",
+                            "value": ticket,
+                            "options": {"httponly": True, "max_age": 3600, "path": "/"}
+                        }
+                    }
+                except Exception as e:
+                    print(f"[FingerprintEngine] Error processing useful work solution: {e}")
+                    MetricsManager.increment_counter("challenges_failed_total")
 
         if pow_nonce and pow_sol_cpu:
             challenge_context = await self.store.get(f"secret:{pow_nonce}")
@@ -771,6 +1523,7 @@ class FingerprintEngine:
                     await self.store.delete(f"secret:{pow_nonce}")
                     ticket = str(uuid.uuid4())
                     await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
+                    MetricsManager.increment_counter("challenges_solved_total")
                     return {
                         "action": "redirect",
                         "path": context.path,
@@ -780,6 +1533,8 @@ class FingerprintEngine:
                             "options": {"httponly": True, "max_age": 3600, "path": "/"}
                         }
                     }
+                else:
+                    MetricsManager.increment_counter("challenges_failed_total")
 
         # Check existing ticket
         pow_cookie = context.cookies.get("pow_clearance")
@@ -788,28 +1543,101 @@ class FingerprintEngine:
             ticket_data = await self.store.get(f"ticket:{pow_cookie}")
             if ticket_data and ticket_data.get("ip") == context.client_ip:
                 has_valid_ticket = True
+                MetricsManager.increment_counter("tickets_valid_total")
 
-        score = await self.get_suspicion_score(context)
+        suspicion_vector = await self.get_suspicion_vector(context)
+        score = self.calculate_final_score(suspicion_vector)
 
-        if score >= self.thresholds.get("block", 95):
+        low_threshold = self.thresholds.get("low", 20)
+        high_threshold = self.thresholds.get("high", 75)
+        block_threshold = self.thresholds.get("block", 95)
+
+        if score > low_threshold and score < block_threshold:
+            await RequestUtils.update_subnet_metrics(self.store, client_ip, device_id, score)
+            MetricsManager.observe_value("suspicion_score", score, {"action": "high_score_subnet_update"})
+
+
+        if score >= block_threshold:
             # Protection contre le flood : On enregistre le blocage localement pour 10 secondes
             # Évite d'interroger la DB ou de recalculer le fingerprint pour les requêtes suivantes du flood
             self._fast_path_cache[client_ip] = (current_time + 10.0, "block")
             if subnet != "unknown-subnet":
-                self._fast_path_cache[subnet] = (current_time + 5.0, "block") # Calme le sous-réseau complet 5s
+                self._fast_path_cache[subnet] = (current_time + 5.0, "block")
+            MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+            if self.dry_run:
+                return {"action": "next", "intendedAction": "block", "score": score, "vector": suspicion_vector}
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
-        if score >= self.thresholds.get("low", 20) and not has_valid_ticket:
-            # Issue a new challenge
+        high_threshold = self.thresholds.get("high", 75)
+        must_rechallenge = score >= high_threshold and has_valid_ticket
+        low_threshold = self.thresholds.get("low", 20)
+
+        if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
             nonce = str(uuid.uuid4()).replace("-", "")[:16]
             client_secret = str(uuid.uuid4()).replace("-", "")[:16]
-            suspicion_factor = (score - self.thresholds["low"]) / (self.thresholds["high"] - self.thresholds["low"]) if "high" in self.thresholds else 0.5
+            suspicion_factor = (score - low_threshold) / (high_threshold - low_threshold) if high_threshold > low_threshold else 0.5
             suspicion_factor = max(0.0, min(1.0, suspicion_factor))
+
+            should_use_useful_work = self.config.get("enableUsefulWork", False) and (
+                    self.config.get("forceUsefulWork", False) or random.random() > 0.5
+            )
+
+            if should_use_useful_work:
+                try:
+                    default_path = os.path.join(os.getcwd(), "problems.config.json")
+                    config_path = self.config.get("usefulWorkConfigPath") or (default_path if os.path.exists(default_path) else None)
+                    pm = ProblemManager.get_instance(config_path, self.store)
+                    if not pm.initialized:
+                        await pm.load_problems()
+                    work = await pm.dispatch_work(suspicion_factor)
+                    if work:
+                        await self.store.set(f"secret:{nonce}", {
+                            "client_secret": client_secret,
+                            "cpu_target": ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config),
+                            "mem_difficulty": int(round(max(0.0, suspicion_factor - 0.25) * 48)),
+                            "fingerprint": self.get_composite_device_hash(context),
+                            "original_path": context.path
+                        }, 300)
+
+                        challenge_payload = {
+                            "challenge": {
+                                "type": "useful_work_task",
+                                "nonce": nonce,
+                                "clientSecret": client_secret,
+                                "usefulWorkTask": {
+                                    "problemId": work["problemId"],
+                                    "task": work["task"]
+                                }
+                            }
+                        }
+
+                        is_api = self.config.get("isApiRequest")
+                        MetricsManager.increment_counter("requests_total", {"status": "challenged"})
+                        if is_api and callable(is_api) and is_api(context):
+                            if self.dry_run:
+                                return {"action": "next", "intendedAction": "challenge", "score": score, "vector": suspicion_vector}
+                            return {
+                                "action": "challenge",
+                                "status": 403,
+                                "body": challenge_payload
+                            }
+                        else:
+                            html = f"""<html><body>
+                             <script>
+                                 window.location.href = "{context.path}?pow_type=useful_work_task&pow_nonce={nonce}&pow_problem_id={work['problemId']}&pow_solution_work_result=" + encodeURIComponent(JSON.stringify({{ "solution": [], "energy": 0 }}));
+                             </script>
+                             </body></html>"""
+                            return {
+                                "action": "challenge",
+                                "status": 403,
+                                "body": html
+                            }
+                except Exception as e:
+                    print(f"[FingerprintEngine] Failed to dispatch useful work, falling back to PoW: {e}")
 
             cpu_target = ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config)
             mem_difficulty = int(round(max(0.0, suspicion_factor - 0.25) * 48))
 
-            # Forcer temporairement l'IP au challenge dans le bouclier thermique (5 secondes)
             self._fast_path_cache[client_ip] = (current_time + 5.0, "challenge")
 
             original_fingerprint = self.get_composite_device_hash(context)
@@ -828,13 +1656,184 @@ class FingerprintEngine:
             </script>
             </body></html>"""
 
+            if self.dry_run:
+                return {"action": "next", "intendedAction": "challenge", "score": score, "vector": suspicion_vector}
+            MetricsManager.increment_counter("requests_total", {"status": "challenged"})
             return {
                 "action": "challenge",
                 "status": 403,
                 "body": html
             }
 
+        MetricsManager.increment_counter("requests_total", {"status": "passed"})
+        MetricsManager.observe_value("suspicion_score", score, {"action": "passed"})
         return {"action": "next"}
+
+    # --- CORE: ProblemManager for uPoW ---
+class ProblemManager:
+    _instance = None
+
+    @classmethod
+    def get_instance(cls, config_path: Optional[str] = None, store: Optional[Any] = None) -> "ProblemManager":
+        if cls._instance is None:
+            if config_path is None:
+                default_path = os.path.join(os.getcwd(), "problems.config.json")
+                config_path = default_path if os.path.exists(default_path) else None
+            if config_path is None or store is None:
+                raise RuntimeError("ProblemManager must be initialized with config_path and store.")
+            cls._instance = cls(config_path, store)
+        return cls._instance
+
+    def __init__(self, config_path: str, store: Any):
+        self.config_path = config_path
+        self.store = store
+        self.problems: List[Dict[str, Any]] = []
+        self.current_problem_index = 0
+        self.initialized = False
+
+    async def load_problems(self):
+        if not os.path.exists(self.config_path):
+            print(f"[ProblemManager] Problem config file not found: {self.config_path}")
+            return
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                problems_from_file = json.load(f)
+        except Exception as e:
+            print(f"[ProblemManager] Failed to read/parse problem config file: {e}")
+            return
+
+        for problem in problems_from_file:
+            store_key = f"problem-state:{problem['id']}"
+            stored_state = await self.store.get(store_key)
+
+            if stored_state is None:
+                stored_state = problem.get("state", {})
+                await self.store.set(store_key, stored_state)
+            problem["state"] = stored_state
+
+            # Resolve dynamic initializers
+            payload = problem.get("payload", {})
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    if isinstance(value, dict) and "$init" in value:
+                        init_type = value["$init"]
+                        params = value.get("params", {})
+                        if init_type == "generate:randomPoints":
+                            count = params.get("count", 0)
+                            bounds = params.get("bounds", {"x": 1000, "y": 1000})
+                            points = []
+                            for _ in range(count):
+                                points.append({
+                                    "x": random.random() * bounds.get("x", 1000),
+                                    "y": random.random() * bounds.get("y", 1000)
+                                })
+                            payload[key] = points
+                        elif init_type == "generate:randomAssets":
+                            count = params.get("count", 0)
+                            assets = []
+                            for i in range(count):
+                                assets.append({
+                                    "name": f"Asset {i + 1}",
+                                    "expectedReturn": random.random() * 0.2,
+                                    "volatility": 0.1 + random.random() * 0.3
+                                })
+                            payload[key] = assets
+            self.problems.append(problem)
+        self.initialized = True
+
+    async def dispatch_work(self, suspicion_factor: float) -> Optional[Dict[str, Any]]:
+        if not self.problems:
+            return None
+        problem = self.problems[self.current_problem_index]
+        self.current_problem_index = (self.current_problem_index + 1) % len(self.problems)
+
+        work_unit = problem.get("workUnit", {})
+        task_type = work_unit.get("type")
+        task = {"type": task_type}
+        scaling_factor = work_unit.get("scalingFactor")
+
+        if task_type == "simulated_annealing_iterations":
+            base_iterations = work_unit.get("baseIterations", 15000)
+            if scaling_factor:
+                task["iterations"] = int(math.floor(base_iterations * math.pow(scaling_factor, suspicion_factor)))
+            else:
+                task["iterations"] = int(math.floor(base_iterations * (0.5 + suspicion_factor)))
+            task["payload"] = problem.get("payload", {})
+            task["initialSolution"] = problem.get("state", {}).get("bestSolution")
+        elif task_type == "genetic_algorithm_generations":
+            base_generations = max(50, work_unit.get("baseGenerations", 0))
+            if scaling_factor:
+                task["generations"] = int(math.floor(base_generations * math.pow(scaling_factor, suspicion_factor)))
+            else:
+                task["generations"] = int(math.floor(base_generations * (0.5 + suspicion_factor)))
+            task["payload"] = problem.get("payload", {})
+            task["initialPopulation"] = problem.get("state", {}).get("population")
+        elif task_type == "multi_objective_genetic_algorithm":
+            base_generations_multi = max(30, work_unit.get("baseGenerations", 0))
+            if scaling_factor:
+                task["generations"] = int(math.floor(base_generations_multi * math.pow(scaling_factor, suspicion_factor)))
+            else:
+                task["generations"] = int(math.floor(base_generations_multi * (0.5 + suspicion_factor)))
+            task["payload"] = problem.get("payload", {})
+            task["initialFront"] = problem.get("state", {}).get("paretoFront")
+            task["solverName"] = work_unit.get("solverName")
+        else:
+            print(f"[ProblemManager] Unknown useful work type: {task_type}")
+            return None
+
+        return {"problemId": problem["id"], "task": task}
+
+    async def integrate_solution(self, problem_id: str, solution_data: Dict[str, Any]) -> None:
+        problem = None
+        for p in self.problems:
+            if p["id"] == problem_id:
+                problem = p
+                break
+        if not problem:
+            return
+
+        state_changed = False
+        store_key = f"problem-state:{problem['id']}"
+        work_unit_type = problem.get("workUnit", {}).get("type")
+
+        if work_unit_type == "simulated_annealing_iterations":
+            if "solution" in solution_data and "energy" in solution_data:
+                score_function_name = problem.get("workUnit", {}).get("scoreFunction")
+                recalculated_energy = float("inf")
+                if score_function_name == "facility.calculateEnergy":
+                    recalculated_energy = OptimizationOperators.evaluate_facility_location(
+                        solution_data["solution"], problem.get("payload", {})
+                    )
+                else:
+                    recalculated_energy = float(solution_data["energy"])
+
+                current_best = float(problem.get("state", {}).get("bestEnergy", float("inf")))
+                if recalculated_energy < current_best:
+                    problem["state"]["bestSolution"] = solution_data["solution"]
+                    problem["state"]["bestEnergy"] = recalculated_energy
+                    problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    state_changed = True
+                    print(f"[ProblemManager] New best solution for {problem_id}: {recalculated_energy}")
+        elif work_unit_type == "genetic_algorithm_generations":
+            if "population" in solution_data and isinstance(solution_data["population"], list):
+                problem["state"]["population"] = solution_data["population"]
+                problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                state_changed = True
+        elif work_unit_type == "multi_objective_genetic_algorithm":
+            if "paretoFront" in solution_data and isinstance(solution_data["paretoFront"], list):
+                state_changed = await self._integrate_pareto_front(problem, solution_data["paretoFront"])
+
+        if state_changed:
+            await self.store.set(store_key, problem["state"])
+
+    async def _integrate_pareto_front(self, problem: Dict[str, Any], new_front: List[Dict[str, Any]]) -> bool:
+        current_front = problem.get("state", {}).get("paretoFront", [])
+        if new_front and json.dumps(new_front, sort_keys=True) != json.dumps(current_front, sort_keys=True):
+            problem["state"]["paretoFront"] = new_front
+            problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            print(f"[ProblemManager] New Pareto front for {problem['id']} with {len(new_front)} solutions.")
+            return True
+        return False
 
 # --- CORE: Optimization & AutoTuning ---
 class Optimization:
@@ -1112,6 +2111,102 @@ class OptimizationOperators:
             create_individual, fitness_fn, crossover, mutate, options
         )
 
+
+    @staticmethod
+    def evaluate_facility_location(facilities: List[Dict[str, float]], payload: Dict[str, Any]) -> float:
+        """
+        Evaluates the connection cost + fixed cost for a given set of facilities.
+        Used by the server to safely verify uPoW results.
+        """
+        customers = payload.get("customers", [])
+        fixed_cost = payload.get("options", {}).get("fixedCostPerFacility", 0.0)
+        total_connection_cost = 0.0
+
+        for customer in customers:
+            min_dist_sq = float("inf")
+            for facility in facilities:
+                dx = customer["x"] - facility["x"]
+                dy = customer["y"] - facility["y"]
+                d_sq = dx * dx + dy * dy
+                if d_sq < min_dist_sq:
+                    min_dist_sq = d_sq
+            total_connection_cost += math.sqrt(min_dist_sq)
+
+        return total_connection_cost + len(facilities) * fixed_cost
+
+    @staticmethod
+    def solve_facility_location(
+            customers: List[Dict[str, float]],
+            num_facilities: int,
+            bounds: Dict[str, float],
+            options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Complete Simulated Annealing solver for the Facility Location Problem.
+        Matches client-side JS implementation.
+        """
+        options = options or {}
+        fixed_cost = options.get("fixedCostPerFacility", 0.0)
+        initial_temp = options.get("initialTemperature", 100000.0)
+        cooling_rate = options.get("coolingRate", 0.999)
+        max_iterations = options.get("maxIterations", 5000) # Seuil raisonnable de rapidité
+
+        def evaluator(facilities: List[Dict[str, float]]) -> float:
+            total_connection_cost = 0.0
+            for customer in customers:
+                min_dist_sq = float("inf")
+                for facility in facilities:
+                    dx = customer["x"] - facility["x"]
+                    dy = customer["y"] - facility["y"]
+                    d_sq = dx * dx + dy * dy
+                    if d_sq < min_dist_sq:
+                        min_dist_sq = d_sq
+                total_connection_cost += math.sqrt(min_dist_sq)
+            return total_connection_cost + len(facilities) * fixed_cost
+
+        def neighbor(facilities: List[Dict[str, float]]) -> List[Dict[str, float]]:
+            new_facilities = copy.deepcopy(facilities)
+            i = random.randint(0, num_facilities - 1)
+            move_x = (random.random() - 0.5) * (bounds["maxX"] - bounds["minX"]) * 0.1
+            move_y = (random.random() - 0.5) * (bounds["maxY"] - bounds["minY"]) * 0.1
+            new_facilities[i]["x"] = max(bounds["minX"], min(bounds["maxX"], new_facilities[i]["x"] + move_x))
+            new_facilities[i]["y"] = max(bounds["minY"], min(bounds["maxY"], new_facilities[i]["y"] + move_y))
+            return new_facilities
+
+        current_solution = [
+            {
+                "x": bounds["minX"] + random.random() * (bounds["maxX"] - bounds["minX"]),
+                "y": bounds["minY"] + random.random() * (bounds["maxY"] - bounds["minY"])
+            }
+            for _ in range(num_facilities)
+        ]
+
+        current_energy = evaluator(current_solution)
+        best_solution = current_solution
+        best_energy = current_energy
+        temperature = initial_temp
+
+        for _ in range(max_iterations):
+            new_sol = neighbor(current_solution)
+            new_energy = evaluator(new_sol)
+
+            try:
+                acceptance = math.exp((current_energy - new_energy) / temperature)
+            except OverflowError:
+                acceptance = 0.0 if new_energy > current_energy else 1.0
+
+            if new_energy < current_energy or random.random() < acceptance:
+                current_solution = new_sol
+                current_energy = new_energy
+
+            if current_energy < best_energy:
+                best_solution = current_solution
+                best_energy = current_energy
+
+            temperature *= cooling_rate
+
+        return {"solution": best_solution, "energy": best_energy}
+
 class AutoTuner:
     _last_best_solution: Optional[Dict[str, Any]] = None
 
@@ -1360,8 +2455,7 @@ class ASGIFingerprintMiddleware:
             return
 
         # Inject new tracking cookies if resolved
-        identity_resolution = await self.engine.resolve_identity(context)
-        new_cookie = identity_resolution["new_cookie"]
+        new_cookie = decision.get("newCookieForResponse")
 
         if new_cookie:
             async def custom_send(event):
@@ -1497,8 +2591,7 @@ class WSGIFingerprintMiddleware:
             return [b""]
 
         # Inject new tracking cookies on legacy synchronous start_response
-        identity_resolution = loop.run_until_complete(self.engine.resolve_identity(context))
-        new_cookie = identity_resolution["new_cookie"]
+        new_cookie = decision.get("newCookieForResponse")
 
         if new_cookie:
             def custom_start_response(status, response_headers, exc_info=None):

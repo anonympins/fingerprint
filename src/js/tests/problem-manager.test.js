@@ -194,6 +194,42 @@ describe('ProblemManager', () => {
             expect(storedState.bestEnergy).toBe(10);
         });
 
+        it('should update the best facility location solution with recalculated energy', async () => {
+            problemManagerInternal.resetManager();
+            mockConfig.push({
+                "id": "facility_location_test",
+                "workUnit": {
+                    "type": "simulated_annealing_iterations",
+                    "scoreFunction": "facility.calculateEnergy"
+                },
+                "payload": {
+                    "customers": [{"x": 100, "y": 100}, {"x": 200, "y": 200}],
+                    "options": {"fixedCostPerFacility": 1500}
+                },
+                "state": { "bestSolution": null, "bestEnergy": "Infinity" }
+            });
+            fs.readFile.mockResolvedValue(JSON.stringify(mockConfig));
+            manager = await getProblemManager(configPath, store);
+
+            const problem = manager.problems.find(p => p.id === 'facility_location_test');
+            problem.state.bestEnergy = 99999.0;
+
+            const newBetterSolution = {
+                solution: [
+                    { x: 100, y: 100 },
+                    { x: 200, y: 200 }
+                ],
+                energy: 1500.0
+            };
+
+            await manager.integrateSolution('facility_location_test', newBetterSolution);
+
+            expect(problem.state.bestSolution).toEqual(newBetterSolution.solution);
+            expect(problem.state.bestEnergy).toBeLessThan(99999.0);
+            const storedState = await store.get('problem-state:facility_location_test');
+            expect(storedState.bestEnergy).toBeLessThan(99999.0);
+        });
+
         it('should handle solutions for non-existent problems gracefully', async () => {
             // This should not throw an error
             await manager.integrateSolution('non_existent_problem', { energy: 1 });

@@ -1,9 +1,9 @@
 [
     {
-        "id": "problem-1",
+        "id": "ga-problem",
         "workUnit": {
-            "type": "simulated_annealing_iterations",
-            "baseIterations": 10000
+            "type": "genetic_algorithm_generations",
+            "baseGenerations": 10
         }
     }
 ]

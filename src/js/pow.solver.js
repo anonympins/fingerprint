@@ -271,6 +271,40 @@ async function solveUsefulWorkTask(task) {
 
     switch (task.type) {
         case 'simulated_annealing_iterations': {
+            if (task.payload && task.payload.customers) {
+                const { customers, numFacilities, bounds } = task.payload;
+                const distanceSq = (p1, p2) => Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2);
+                const evaluator = (facilities) => {
+                    let totalConnectionCost = 0;
+                    for (const customer of customers) {
+                        let minDistanceToCustomer = Infinity;
+                        for (const facility of facilities) {
+                            const d = distanceSq(customer, facility);
+                            if (d < minDistanceToCustomer) {
+                                minDistanceToCustomer = d;
+                            }
+                        }
+                        totalConnectionCost += Math.sqrt(minDistanceToCustomer);
+                    }
+                    const fixedCostPerFacility = task.payload.options?.fixedCostPerFacility || 0;
+                    return totalConnectionCost + facilities.length * fixedCostPerFacility;
+                };
+                const neighbor = (facilities) => {
+                    const newFacilities = facilities.map((f) => ({ ...f }));
+                    const i = Math.floor(Math.random() * numFacilities);
+                    const moveX = (Math.random() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
+                    const moveY = (Math.random() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
+                    newFacilities[i].x = Math.max(bounds.minX, Math.min(bounds.maxX, newFacilities[i].x + moveX));
+                    newFacilities[i].y = Math.max(bounds.minY, Math.min(bounds.maxY, newFacilities[i].y + moveY));
+                    return newFacilities;
+                };
+                const initialSolution = task.initialSolution || Array.from({ length: numFacilities }, () => ({
+                    x: bounds.minX + Math.random() * (bounds.maxX - bounds.minX),
+                    y: bounds.minY + Math.random() * (bounds.maxY - bounds.minY),
+                }));
+                return ClientOptimizers.simulatedAnnealing(initialSolution, evaluator, neighbor, task.iterations, task.payload.options.initialTemperature, task.payload.options.coolingRate);
+            }
+
             const { cities } = task.payload;
             const distance = (c1, c2) => Math.sqrt(Math.pow(c1.x - c2.x, 2) + Math.pow(c1.y - c2.y, 2));
             const evaluator = (path) => {

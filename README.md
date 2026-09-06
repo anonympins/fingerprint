@@ -30,6 +30,11 @@ npm install @anonympins/fingerprint
 composer require anonympins/fingerprint
 ```
 
+### Python
+```bash
+pip install fingerprint-engine
+```
+
 ## Documentation
 
 To prevent documentation drift, all detailed guides and reference materials are maintained in the `doc/` directory. Please refer to [these resources](https://github.com/anonympins/fingerprint/wiki/home) to configure and integrate the engine:
