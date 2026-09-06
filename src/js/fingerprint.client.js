@@ -416,10 +416,13 @@ const ClientLibrary = {
     trapContainer.style.position = 'absolute';
     trapContainer.style.left = '-9999px';
     trapContainer.style.top = '-9999px';
+      trapContainer.style.transform = 'scale(0)';
+      trapContainer.style.pointerEvents = 'none';
 
     urls.forEach(url => {
       const link = document.createElement('a');
       link.href = url;
+      link.rel = 'nofollow';
       link.tabIndex = -1; // Make it unfocusable
       link.textContent = 'config'; // Some plausible text
       trapContainer.appendChild(link);

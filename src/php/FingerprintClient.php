@@ -78,10 +78,10 @@ class FingerprintClient
         }
 
         // Styles CSS pour cacher le champ de manière robuste.
-        $styles = 'position:absolute; left:-9999px; top:-9999px; opacity:0;';
+        $styles = 'position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;';
 
         return '<div style="' . $styles . '" aria-hidden="true">'
-            . '<label for="' . htmlspecialchars($fieldName) . '">Ne pas remplir ce champ</label>'
+            . '<label for="' . htmlspecialchars($fieldName) . '">' . $fieldName . '</label>'
             . '<input type="text" id="' . htmlspecialchars($fieldName) . '" name="' . htmlspecialchars($fieldName) . '" tabindex="-1" autocomplete="off">'
             . '</div>';
     }
