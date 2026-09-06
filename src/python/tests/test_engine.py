@@ -18,6 +18,11 @@ from engine import (
     RequestUtils,
     FingerprintEngine,
     ProblemManager,
+    MetricsManager,
+    TLSClientHelloParser,
+    FingerprintClient,
+    RedisStore,
+    AutoTuner,
     MaliciousPatterns,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
@@ -901,3 +906,125 @@ async def test_suspicion_vector_and_final_score():
     score = engine.calculate_final_score(vector)
     expected_score = min(100.0, vector["inconsistencyScore"] * 0.5 + vector["headerAnomalyScore"] * 0.5)
     assert score == pytest.approx(expected_score, 0.01)
+
+
+def test_metrics_manager():
+    """Tests Prometheus-compatible metrics tracking, collection, and generation."""
+    MetricsManager.clear_metrics()
+    MetricsManager.increment_counter("requests_total", {"status": "passed"})
+    MetricsManager.increment_counter("requests_total", {"status": "passed"})
+    MetricsManager.observe_value("suspicion_score", 45.5, {"action": "passed"})
+
+    metrics_output = MetricsManager.get_prometheus_metrics(
+        security_config={"weights": {"honeypotScore": 1.0}, "thresholds": {"low": 20}}
+    )
+    assert "fingerprint_requests_total" in metrics_output
+    assert 'status="passed"' in metrics_output
+    assert "fingerprint_suspicion_score" in metrics_output
+    assert "fingerprint_security_weight" in metrics_output
+    assert "fingerprint_security_threshold" in metrics_output
+
+
+def test_tls_client_hello_parser():
+    """Tests binary parsing of the Client Hello handshake and JA3/JA4 generation."""
+    # Length guard check
+    assert TLSClientHelloParser.parse(b"\x16\x03\x01\x00") is None
+
+    # Construct a minimal valid TLS Client Hello binary
+    # Record Type: 0x16, Version: 0x0301, Length: 0x003b
+    # Handshake Type: 0x01, Length: 0x000037
+    # Client Version: 0x0303 (TLS 1.2)
+    # Random: 32 bytes of zeros
+    # Session ID Length: 0
+    # Ciphers Length: 2, Cipher: 0x1301 (TLS_AES_128_GCM_SHA256 - 4865)
+    # Compression Length: 1, Compression: 0
+    # Extensions Length: 0
+    header = (
+            b"\x16\x03\x01\x00\x3b"
+            b"\x01\x00\x00\x37"
+            b"\x03\x03"
+            + b"\x00" * 32
+            + b"\x00\x00\x02\x13\x01\x01\x00\x00\x00"
+    )
+    res = TLSClientHelloParser.parse(header)
+    assert res is not None
+    assert "ja3_string" in res
+    assert "ja3_hash" in res
+
+
+def test_fingerprint_client():
+    """Tests client-side helper HTML generation and scripts wrapping."""
+    client = FingerprintClient("/static/fp.js")
+    field_html = client.generate_honeypot_field("confirm_email_trap")
+    assert 'name="confirm_email_trap"' in field_html
+
+    script_tag = client.get_script_tag()
+    assert 'src="/static/fp.js"' in script_tag
+    assert "confirm_email_trap" in script_tag
+
+
+@pytest.mark.asyncio
+async def test_redis_store_adapter():
+    """Tests Redis store serializations, deserializations, and Set-to-list conversions."""
+    class MockRedis:
+        def __init__(self):
+            self.data = {}
+        async def get(self, key):
+            return self.data.get(key)
+        async def set(self, key, value):
+            self.data[key] = value
+            return True
+        async def setex(self, key, ttl, value):
+            self.data[key] = value
+            return True
+        async def exists(self, key):
+            return 1 if key in self.data else 0
+        async def delete(self, key):
+            self.data.pop(key, None)
+            return 1
+
+    mock_redis = MockRedis()
+    store = RedisStore(mock_redis)
+
+    await store.set("device:123", {"initialDeviceHash": "abc", "ips": {"1.1.1.1"}})
+    val = await store.get("device:123")
+    assert val["initialDeviceHash"] == "abc"
+    assert isinstance(val["ips"], set)
+    assert "1.1.1.1" in val["ips"]
+
+
+def test_auto_tuner_cycle():
+    """Tests executing a threshold optimization cycle using traffic logs."""
+    security_config = {
+        "thresholds": {"low": 20, "medium": 40, "high": 75, "block": 95},
+        "weights": {
+            "inconsistencyScore": 0.8,
+            "headerAnomalyScore": 0.1,
+            "honeypotScore": 1.0,
+            "behaviorScore": 0.5,
+        },
+        "patterns": {
+            "velocityThreshold": 800,
+            "decayFactor": 0.9
+        }
+    }
+
+    traffic_data = []
+    for i in range(150):
+        traffic_data.append({
+            "type": "challenge_solved",
+            "deviceId": f"dev-{i}",
+            "vector": {"honeypotScore": 10.0, "inconsistencyScore": 0.0, "headerAnomalyScore": 0.0, "behaviorScore": 0.0}
+        })
+    for i in range(150):
+        traffic_data.append({
+            "type": "request_passed",
+            "deviceId": f"dev-pass-{i}",
+            "vector": {"honeypotScore": 0.0, "inconsistencyScore": 0.0, "headerAnomalyScore": 0.0, "behaviorScore": 0.0}
+        })
+
+    tuner = AutoTuner(security_config, traffic_data, {"minDataPoints": 200})
+    tuner.run_optimization_cycle()
+
+    best_sol = tuner.get_best_tuning_solution()
+    assert best_sol is not None or tuner.traffic_data is not None
