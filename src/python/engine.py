@@ -1111,7 +1111,8 @@ class FingerprintEngine:
         self.store = store
         self.thresholds = config.get("thresholds", {"low": 20, "high": 75, "block": 95})
         self.weights = config.get("weights", {})
-        
+        self.dry_run = config.get("dryRun", False)
+
         # Bouclier thermique local (Fast-Path Cache) pour amortir les attaques de masse
         # Format: {"ip_or_subnet": (expiration_timestamp, action_to_take)}
         self._fast_path_cache: Dict[str, tuple] = {}
@@ -1261,22 +1262,18 @@ class FingerprintEngine:
         rotation_score = min(100.0, (device_data.get("rapidChangeCount", 0) / 3.0) * 100.0)
         return {"historyScore": history_score, "rotationScore": rotation_score}
 
-    async def get_suspicion_score(self, context: RequestContext) -> float:
-        """
-        Calculates the overall suspicion score for a request by combining various
-        suspicion vectors with their configured weights.
+    async def get_suspicion_vector(self, context: RequestContext, suspicion_vector: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+        if suspicion_vector is None:
+            suspicion_vector = {}
 
-        Args:
-            context (RequestContext): The request context.
-
-        Returns:
-            float: The final suspicion score (0.0 to 100.0).
-        """
         identity = await self.resolve_identity(context)
         device_data = identity["device_data"]
         device_id = identity["device_id"]
         cookie_dropping_score = identity.get("cookie_dropping_score", 0.0)
 
+        if device_data and device_data.get("condemned"):
+            suspicion_vector["honeypotScore"] = 100.0
+            return suspicion_vector
     # Inconsistency score
         current_hash = self.get_composite_device_hash(context)
         similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash"), current_hash)
@@ -1336,26 +1333,43 @@ class FingerprintEngine:
         threat_intel_score = RequestUtils.get_threat_intel_score(context, self.config.get("threatIntel"))
         ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
         subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id))["subnetScore"]
-        score = (
-            inconsistency_score * self._get_weight("inconsistencyScore", 0.3) +
-            history_score * self._get_weight("historyScore", 0.3) +
-            rotation_score * self._get_weight("rotationScore", 0.5) +
-            header_anomaly * self._get_weight("headerAnomalyScore", 0.2) +
-            client_hints_score * self._get_weight("clientHintsInconsistencyScore", 0.2) +
-            tls_spoofing_score * self._get_weight("tlsSpoofingScore", 0.3) +
-            bot_score * self._get_weight("botScore", 0.1) +
-            honeypot_score * self._get_weight("honeypotScore", 1.0) +
-            behavior_score * self._get_weight("behaviorScore", 0.7) +
-            time_inconsistency_score * self._get_weight("timeInconsistencyScore", 0.9) +
-            cross_layer_inconsistency_score * self._get_weight("crossLayerInconsistencyScore", 0.4) +
-            click_variance_score * self._get_weight("clickVarianceScore", 0.6) +
-            request_pattern_score * self._get_weight("requestPatternScore", 0.6) +
-            threat_intel_score * self._get_weight("threatIntelScore", 0.4) +
-            ip_reputation_score * self._get_weight("ipReputationScore", 0.5) +
-            cookie_dropping_score * self._get_weight("cookieDroppingScore", 0.9) +
-            subnet_score * self._get_weight("subnetScore", 0.5)
-        )
+
+
+        await self.store.set(f"device:{device_id}", device_data)
+
+        suspicion_vector.update({
+            "inconsistencyScore": inconsistency_score,
+            "historyScore": history_score,
+            "rotationScore": rotation_score,
+            "headerAnomalyScore": header_anomaly,
+            "clientHintsInconsistencyScore": client_hints_score,
+            "tlsSpoofingScore": tls_spoofing_score,
+            "botScore": bot_score,
+            "honeypotScore": honeypot_score,
+            "behaviorScore": behavior_score,
+            "timeInconsistencyScore": time_inconsistency_score,
+            "crossLayerInconsistencyScore": cross_layer_inconsistency_score,
+            "clickVarianceScore": click_variance_score,
+            "requestPatternScore": request_pattern_score,
+            "threatIntelScore": threat_intel_score,
+            "ipReputationScore": ip_reputation_score,
+            "cookieDroppingScore": cookie_dropping_score,
+            "subnetScore": subnet_score,
+        })
+        return suspicion_vector
+
+    def calculate_final_score(self, suspicion_vector: Dict[str, float]) -> float:
+        weights = self.config.get("weights", {})
+        if not weights:
+            return 0.0
+        score = 0.0
+        for key, weight in weights.items():
+            score += suspicion_vector.get(key, 0.0) * weight
         return min(100.0, score)
+
+    async def get_suspicion_score(self, context: RequestContext) -> float:
+        vector = await self.get_suspicion_vector(context)
+        return self.calculate_final_score(vector)
 
     async def process_request(self, context: RequestContext) -> Dict[str, Any]:
         """
@@ -1398,10 +1412,14 @@ class FingerprintEngine:
                 if expiry > current_time:
                     if fast_action == "block":
                         MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+                        if self.dry_run:
+                            return {"action": "next", "intendedAction": "block"}
                         return {"action": "block", "status": 403, "body": "Forbidden"}
                     elif fast_action == "challenge":
                         MetricsManager.increment_counter("requests_total", {"status": "challenged"})
                         # On retourne une structure simplifiée sans régénérer de nonce coûteux
+                        if self.dry_run:
+                            return {"action": "next", "intendedAction": "challenge"}
                         return {
                             "action": "challenge",
                             "status": 403,
@@ -1414,6 +1432,8 @@ class FingerprintEngine:
         # Early block for condemned devices
         if device_data and device_data.get("condemned"):
             MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+            if self.dry_run:
+                return {"action": "next", "intendedAction": "block"}
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
         # Honeypot trap URL instant check & condemnation
@@ -1424,6 +1444,8 @@ class FingerprintEngine:
                 self._fast_path_cache[client_ip] = (current_time + 60.0, "block")
                 await self.store.set(f"device:{device_id}", device_data)
                 MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+                if self.dry_run:
+                    return {"action": "next", "intendedAction": "block"}
                 return {"action": "block", "status": 403, "body": "Forbidden"}
 
         # Check for challenge submission
@@ -1510,7 +1532,8 @@ class FingerprintEngine:
                 has_valid_ticket = True
                 MetricsManager.increment_counter("tickets_valid_total")
 
-        score = await self.get_suspicion_score(context)
+        suspicion_vector = await self.get_suspicion_vector(context)
+        score = self.calculate_final_score(suspicion_vector)
 
         low_threshold = self.thresholds.get("low", 20)
         high_threshold = self.thresholds.get("high", 75)
@@ -1528,6 +1551,8 @@ class FingerprintEngine:
             if subnet != "unknown-subnet":
                 self._fast_path_cache[subnet] = (current_time + 5.0, "block")
             MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+            if self.dry_run:
+                return {"action": "next", "intendedAction": "block", "score": score, "vector": suspicion_vector}
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
         high_threshold = self.thresholds.get("high", 75)
@@ -1576,6 +1601,8 @@ class FingerprintEngine:
                         is_api = self.config.get("isApiRequest")
                         MetricsManager.increment_counter("requests_total", {"status": "challenged"})
                         if is_api and callable(is_api) and is_api(context):
+                            if self.dry_run:
+                                return {"action": "next", "intendedAction": "challenge", "score": score, "vector": suspicion_vector}
                             return {
                                 "action": "challenge",
                                 "status": 403,
@@ -1616,6 +1643,8 @@ class FingerprintEngine:
             </script>
             </body></html>"""
 
+            if self.dry_run:
+                return {"action": "next", "intendedAction": "challenge", "score": score, "vector": suspicion_vector}
             MetricsManager.increment_counter("requests_total", {"status": "challenged"})
             return {
                 "action": "challenge",

