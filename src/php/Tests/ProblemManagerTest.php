@@ -239,6 +239,54 @@ class ProblemManagerTest extends TestCase
         $manager->integrateSolution($problemId, $worseSolution);
     }
 
+    public function testIntegrateSolutionUpdatesStateForBetterFacilityLocationSolution(): void
+    {
+        $problemId = 'facility-location-test';
+        $storeMock = $this->createMock(IStore::class);
+
+        $this->createConfigFile([
+            [
+                "id" => $problemId,
+                "workUnit" => [
+                    "type" => "simulated_annealing_iterations",
+                    "baseIterations" => 10,
+                    "scoreFunction" => "facility.calculateEnergy"
+                ],
+                "payload" => [
+                    "customers" => [
+                        ["x" => 100, "y" => 100],
+                        ["x" => 200, "y" => 200]
+                    ],
+                    "options" => ["fixedCostPerFacility" => 1500]
+                ]
+            ]
+        ]);
+
+        $storeMock->method('get')
+            ->with("problem-state:{$problemId}")
+            ->willReturn(['bestEnergy' => 99999.0]);
+
+        $storeMock->expects($this->once())
+            ->method('set')
+            ->with(
+                "problem-state:{$problemId}",
+                $this->callback(function ($state) {
+                    return isset($state['bestEnergy']) && $state['bestEnergy'] < 99999.0 && isset($state['bestSolution']);
+                })
+            );
+
+        $manager = ProblemManager::getInstance($this->configPath, $storeMock);
+
+        $newBetterSolution = [
+            'solution' => [
+                ['x' => 100, 'y' => 100],
+                ['x' => 200, 'y' => 200]
+            ],
+            'energy' => 1500.0
+        ];
+        $manager->integrateSolution($problemId, $newBetterSolution);
+    }
+
     public function testIntegrateParetoFront(): void
     {
         $problemId = 'pareto-challenge';

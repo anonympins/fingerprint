@@ -5,3 +5,5 @@ composer.phar
 composer-setup.php
 *.cache
 .geminiignore
+/src/python/tests/__pycache__
+/src/python/__pycache__

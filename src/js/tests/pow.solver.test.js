@@ -136,6 +136,42 @@ describe('Proof-of-Work Solvers', () => {
             expect(solutions.rawSolution).toEqual([0, 1]);
         });
 
+        it('should solve a "useful_work_task" with facility location challenge', async () => {
+            const challenge = {
+                type: 'useful_work_task',
+                nonce: 'test-nonce-useful-work',
+                usefulWorkTask: {
+                    problemId: 'facility_location_challenge',
+                    task: {
+                        type: 'simulated_annealing_iterations',
+                        iterations: 10,
+                        payload: {
+                            customers: [
+                                { x: 100, y: 100 },
+                                { x: 200, y: 200 }
+                            ],
+                            numFacilities: 2,
+                            bounds: { minX: 0, maxX: 500, minY: 0, maxY: 500 },
+                            options: {
+                                fixedCostPerFacility: 1500,
+                                initialTemperature: 150000,
+                                coolingRate: 0.99
+                            }
+                        }
+                    }
+                }
+            };
+
+            const solutions = await solveChallenge(challenge);
+            expect(solutions.type).toBe('useful_work_task');
+            expect(solutions.nonce).toBe('test-nonce-useful-work');
+            expect(solutions.rawSolution.problem_id).toBe('facility_location_challenge');
+            expect(solutions.rawSolution.work_result).toBeDefined();
+            expect(solutions.rawSolution.work_result.solution).toBeInstanceOf(Array);
+            expect(solutions.rawSolution.work_result.solution.length).toBe(2);
+            expect(solutions.rawSolution.work_result.energy).toBeLessThan(Infinity);
+        });
+
         it('should throw an error for an unknown challenge type', async () => {
             const challenge = { type: 'unknown' };
             await expect(solveChallenge(challenge)).rejects.toThrow('Unknown challenge type: unknown');

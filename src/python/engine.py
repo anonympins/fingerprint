@@ -8,6 +8,8 @@ import re
 import random
 import copy
 import json
+import os
+import asyncio
 from typing import Dict, Any, List, Optional, Callable, Set
 from dataclasses import dataclass, field
 
@@ -540,6 +542,28 @@ class FingerprintEngine:
         self._last_prune_time: float = time.time()
         self._prune_interval: float = 10.0 # secondes
 
+        if config.get("enableUsefulWork"):
+            try:
+                default_path = os.path.join(os.getcwd(), "problems.config.json")
+                config_path = config.get("usefulWorkConfigPath") or (default_path if os.path.exists(default_path) else None)
+                if config_path:
+                    pm = ProblemManager.get_instance(config_path, self.store)
+                    if not pm.initialized:
+                        try:
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(pm.load_problems())
+                        except RuntimeError:
+                            try:
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    loop.create_task(pm.load_problems())
+                                else:
+                                    loop.run_until_complete(pm.load_problems())
+                            except Exception:
+                                pass
+            except Exception as e:
+                print(f"[FingerprintEngine] Background initialization of ProblemManager failed: {e}")
+
     def get_composite_device_hash(self, context: RequestContext) -> str:
         """
         Generates a composite device fingerprint hash from the request context.
@@ -746,6 +770,36 @@ class FingerprintEngine:
         pow_sol_cpu = context.query_params.get("pow_solution_cpu") or context.query_params.get("pow_solution")
         pow_sol_mem = context.query_params.get("pow_solution_mem")
         pow_fp = context.query_params.get("pow_fp") or self.get_composite_device_hash(context)
+        pow_type = context.query_params.get("pow_type")
+        pow_solution_work_result = context.query_params.get("pow_solution_work_result")
+        pow_problem_id = context.query_params.get("pow_problem_id")
+
+        if pow_nonce and pow_type == "useful_work_task" and pow_solution_work_result and pow_problem_id:
+            challenge_context = await self.store.get(f"secret:{pow_nonce}")
+            if challenge_context:
+                try:
+                    work_result = json.loads(pow_solution_work_result)
+                    default_path = os.path.join(os.getcwd(), "problems.config.json")
+                    config_path = self.config.get("usefulWorkConfigPath") or (default_path if os.path.exists(default_path) else None)
+                    pm = ProblemManager.get_instance(config_path, self.store)
+                    if not pm.initialized:
+                        await pm.load_problems()
+                    await pm.integrate_solution(pow_problem_id, work_result)
+
+                    await self.store.delete(f"secret:{pow_nonce}")
+                    ticket = str(uuid.uuid4())
+                    await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
+                    return {
+                        "action": "redirect",
+                        "path": context.path,
+                        "cookie": {
+                            "name": "pow_clearance",
+                            "value": ticket,
+                            "options": {"httponly": True, "max_age": 3600, "path": "/"}
+                        }
+                    }
+                except Exception as e:
+                    print(f"[FingerprintEngine] Error processing useful work solution: {e}")
 
         if pow_nonce and pow_sol_cpu:
             challenge_context = await self.store.get(f"secret:{pow_nonce}")
@@ -806,6 +860,62 @@ class FingerprintEngine:
             suspicion_factor = (score - self.thresholds["low"]) / (self.thresholds["high"] - self.thresholds["low"]) if "high" in self.thresholds else 0.5
             suspicion_factor = max(0.0, min(1.0, suspicion_factor))
 
+            # --- NOUVELLE LOGIQUE uPoW ---
+            should_use_useful_work = self.config.get("enableUsefulWork", False) and (
+                    self.config.get("forceUsefulWork", False) or random.random() > 0.5
+            )
+
+            if should_use_useful_work:
+                try:
+                    default_path = os.path.join(os.getcwd(), "problems.config.json")
+                    config_path = self.config.get("usefulWorkConfigPath") or (default_path if os.path.exists(default_path) else None)
+                    pm = ProblemManager.get_instance(config_path, self.store)
+                    if not pm.initialized:
+                        await pm.load_problems()
+                    work = await pm.dispatch_work(suspicion_factor)
+                    if work:
+                        await self.store.set(f"secret:{nonce}", {
+                            "client_secret": client_secret,
+                            "cpu_target": ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config),
+                            "mem_difficulty": int(round(max(0.0, suspicion_factor - 0.25) * 48)),
+                            "fingerprint": self.get_composite_device_hash(context),
+                            "original_path": context.path
+                        }, 300)
+
+                        challenge_payload = {
+                            "challenge": {
+                                "type": "useful_work_task",
+                                "nonce": nonce,
+                                "clientSecret": client_secret,
+                                "usefulWorkTask": {
+                                    "problemId": work["problemId"],
+                                    "task": work["task"]
+                                }
+                            }
+                        }
+
+                        is_api = self.config.get("isApiRequest")
+                        if is_api and callable(is_api) and is_api(context):
+                            return {
+                                "action": "challenge",
+                                "status": 403,
+                                "body": challenge_payload
+                            }
+                        else:
+                            html = f"""<html><body>
+                             <script>
+                                 window.location.href = "{context.path}?pow_type=useful_work_task&pow_nonce={nonce}&pow_problem_id={work['problemId']}&pow_solution_work_result=" + encodeURIComponent(JSON.stringify({{ "solution": [], "energy": 0 }}));
+                             </script>
+                             </body></html>"""
+                            return {
+                                "action": "challenge",
+                                "status": 403,
+                                "body": html
+                            }
+                except Exception as e:
+                    print(f"[FingerprintEngine] Failed to dispatch useful work, falling back to PoW: {e}")
+
+        # Calculate CPU target
             cpu_target = ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config)
             mem_difficulty = int(round(max(0.0, suspicion_factor - 0.25) * 48))
 
@@ -835,6 +945,159 @@ class FingerprintEngine:
             }
 
         return {"action": "next"}
+
+    # --- CORE: ProblemManager for uPoW ---
+class ProblemManager:
+    _instance = None
+
+    @classmethod
+    def get_instance(cls, config_path: Optional[str] = None, store: Optional[Any] = None) -> "ProblemManager":
+        if cls._instance is None:
+            if config_path is None:
+                default_path = os.path.join(os.getcwd(), "problems.config.json")
+                config_path = default_path if os.path.exists(default_path) else None
+            if config_path is None or store is None:
+                raise RuntimeError("ProblemManager must be initialized with config_path and store.")
+            cls._instance = cls(config_path, store)
+        return cls._instance
+
+    def __init__(self, config_path: str, store: Any):
+        self.config_path = config_path
+        self.store = store
+        self.problems: List[Dict[str, Any]] = []
+        self.current_problem_index = 0
+        self.initialized = False
+
+    async def load_problems(self):
+        if not os.path.exists(self.config_path):
+            print(f"[ProblemManager] Problem config file not found: {self.config_path}")
+            return
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                problems_from_file = json.load(f)
+        except Exception as e:
+            print(f"[ProblemManager] Failed to read/parse problem config file: {e}")
+            return
+
+        for problem in problems_from_file:
+            store_key = f"problem-state:{problem['id']}"
+            stored_state = await self.store.get(store_key)
+
+            if stored_state is None:
+                stored_state = problem.get("state", {})
+                await self.store.set(store_key, stored_state)
+            problem["state"] = stored_state
+
+            # Resolve dynamic initializers
+            payload = problem.get("payload", {})
+            if isinstance(payload, dict):
+                for key, value in payload.items():
+                    if isinstance(value, dict) and "$init" in value:
+                        init_type = value["$init"]
+                        params = value.get("params", {})
+                        if init_type == "generate:randomPoints":
+                            count = params.get("count", 0)
+                            bounds = params.get("bounds", {"x": 1000, "y": 1000})
+                            points = []
+                            for _ in range(count):
+                                points.append({
+                                    "x": random.random() * bounds.get("x", 1000),
+                                    "y": random.random() * bounds.get("y", 1000)
+                                })
+                            payload[key] = points
+                        elif init_type == "generate:randomAssets":
+                            count = params.get("count", 0)
+                            assets = []
+                            for i in range(count):
+                                assets.append({
+                                    "name": f"Asset {i + 1}",
+                                    "expectedReturn": random.random() * 0.2,
+                                    "volatility": 0.1 + random.random() * 0.3
+                                })
+                            payload[key] = assets
+            self.problems.append(problem)
+        self.initialized = True
+
+    async def dispatch_work(self, suspicion_factor: float) -> Optional[Dict[str, Any]]:
+        if not self.problems:
+            return None
+        problem = self.problems[self.current_problem_index]
+        self.current_problem_index = (self.current_problem_index + 1) % len(self.problems)
+
+        work_unit = problem.get("workUnit", {})
+        task_type = work_unit.get("type")
+        task = {"type": task_type}
+        scaling_factor = work_unit.get("scalingFactor")
+
+        if task_type == "simulated_annealing_iterations":
+            base_iterations = work_unit.get("baseIterations", 15000)
+            if scaling_factor:
+                task["iterations"] = int(math.floor(base_iterations * math.pow(scaling_factor, suspicion_factor)))
+            else:
+                task["iterations"] = int(math.floor(base_iterations * (0.5 + suspicion_factor)))
+            task["payload"] = problem.get("payload", {})
+            task["initialSolution"] = problem.get("state", {}).get("bestSolution")
+        elif task_type == "multi_objective_genetic_algorithm":
+            base_generations_multi = max(30, work_unit.get("baseGenerations", 0))
+            if scaling_factor:
+                task["generations"] = int(math.floor(base_generations_multi * math.pow(scaling_factor, suspicion_factor)))
+            else:
+                task["generations"] = int(math.floor(base_generations_multi * (0.5 + suspicion_factor)))
+            task["payload"] = problem.get("payload", {})
+            task["initialFront"] = problem.get("state", {}).get("paretoFront")
+            task["solverName"] = work_unit.get("solverName")
+        else:
+            print(f"[ProblemManager] Unknown useful work type: {task_type}")
+            return None
+
+        return {"problemId": problem["id"], "task": task}
+
+    async def integrate_solution(self, problem_id: str, solution_data: Dict[str, Any]) -> None:
+        problem = None
+        for p in self.problems:
+            if p["id"] == problem_id:
+                problem = p
+                break
+        if not problem:
+            return
+
+        state_changed = False
+        store_key = f"problem-state:{problem['id']}"
+        work_unit_type = problem.get("workUnit", {}).get("type")
+
+        if work_unit_type == "simulated_annealing_iterations":
+            if "solution" in solution_data and "energy" in solution_data:
+                score_function_name = problem.get("workUnit", {}).get("scoreFunction")
+                recalculated_energy = float("inf")
+                if score_function_name == "facility.calculateEnergy":
+                    recalculated_energy = OptimizationOperators.evaluate_facility_location(
+                        solution_data["solution"], problem.get("payload", {})
+                    )
+                else:
+                    recalculated_energy = float(solution_data["energy"])
+
+                current_best = float(problem.get("state", {}).get("bestEnergy", float("inf")))
+                if recalculated_energy < current_best:
+                    problem["state"]["bestSolution"] = solution_data["solution"]
+                    problem["state"]["bestEnergy"] = recalculated_energy
+                    problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    state_changed = True
+                    print(f"[ProblemManager] New best solution for {problem_id}: {recalculated_energy}")
+        elif work_unit_type == "multi_objective_genetic_algorithm":
+            if "paretoFront" in solution_data and isinstance(solution_data["paretoFront"], list):
+                state_changed = await self._integrate_pareto_front(problem, solution_data["paretoFront"])
+
+        if state_changed:
+            await self.store.set(store_key, problem["state"])
+
+    async def _integrate_pareto_front(self, problem: Dict[str, Any], new_front: List[Dict[str, Any]]) -> bool:
+        current_front = problem.get("state", {}).get("paretoFront", [])
+        if new_front and json.dumps(new_front, sort_keys=True) != json.dumps(current_front, sort_keys=True):
+            problem["state"]["paretoFront"] = new_front
+            problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            print(f"[ProblemManager] New Pareto front for {problem['id']} with {len(new_front)} solutions.")
+            return True
+        return False
 
 # --- CORE: Optimization & AutoTuning ---
 class Optimization:
@@ -1111,6 +1374,102 @@ class OptimizationOperators:
         return Optimization.genetic_algorithm_multi_objective(
             create_individual, fitness_fn, crossover, mutate, options
         )
+
+
+    @staticmethod
+    def evaluate_facility_location(facilities: List[Dict[str, float]], payload: Dict[str, Any]) -> float:
+        """
+        Evaluates the connection cost + fixed cost for a given set of facilities.
+        Used by the server to safely verify uPoW results.
+        """
+        customers = payload.get("customers", [])
+        fixed_cost = payload.get("options", {}).get("fixedCostPerFacility", 0.0)
+        total_connection_cost = 0.0
+
+        for customer in customers:
+            min_dist_sq = float("inf")
+            for facility in facilities:
+                dx = customer["x"] - facility["x"]
+                dy = customer["y"] - facility["y"]
+                d_sq = dx * dx + dy * dy
+                if d_sq < min_dist_sq:
+                    min_dist_sq = d_sq
+            total_connection_cost += math.sqrt(min_dist_sq)
+
+        return total_connection_cost + len(facilities) * fixed_cost
+
+    @staticmethod
+    def solve_facility_location(
+            customers: List[Dict[str, float]],
+            num_facilities: int,
+            bounds: Dict[str, float],
+            options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Complete Simulated Annealing solver for the Facility Location Problem.
+        Matches client-side JS implementation.
+        """
+        options = options or {}
+        fixed_cost = options.get("fixedCostPerFacility", 0.0)
+        initial_temp = options.get("initialTemperature", 100000.0)
+        cooling_rate = options.get("coolingRate", 0.999)
+        max_iterations = options.get("maxIterations", 5000) # Seuil raisonnable de rapidité
+
+        def evaluator(facilities: List[Dict[str, float]]) -> float:
+            total_connection_cost = 0.0
+            for customer in customers:
+                min_dist_sq = float("inf")
+                for facility in facilities:
+                    dx = customer["x"] - facility["x"]
+                    dy = customer["y"] - facility["y"]
+                    d_sq = dx * dx + dy * dy
+                    if d_sq < min_dist_sq:
+                        min_dist_sq = d_sq
+                total_connection_cost += math.sqrt(min_dist_sq)
+            return total_connection_cost + len(facilities) * fixed_cost
+
+        def neighbor(facilities: List[Dict[str, float]]) -> List[Dict[str, float]]:
+            new_facilities = copy.deepcopy(facilities)
+            i = random.randint(0, num_facilities - 1)
+            move_x = (random.random() - 0.5) * (bounds["maxX"] - bounds["minX"]) * 0.1
+            move_y = (random.random() - 0.5) * (bounds["maxY"] - bounds["minY"]) * 0.1
+            new_facilities[i]["x"] = max(bounds["minX"], min(bounds["maxX"], new_facilities[i]["x"] + move_x))
+            new_facilities[i]["y"] = max(bounds["minY"], min(bounds["maxY"], new_facilities[i]["y"] + move_y))
+            return new_facilities
+
+        current_solution = [
+            {
+                "x": bounds["minX"] + random.random() * (bounds["maxX"] - bounds["minX"]),
+                "y": bounds["minY"] + random.random() * (bounds["maxY"] - bounds["minY"])
+            }
+            for _ in range(num_facilities)
+        ]
+
+        current_energy = evaluator(current_solution)
+        best_solution = current_solution
+        best_energy = current_energy
+        temperature = initial_temp
+
+        for _ in range(max_iterations):
+            new_sol = neighbor(current_solution)
+            new_energy = evaluator(new_sol)
+
+            try:
+                acceptance = math.exp((current_energy - new_energy) / temperature)
+            except OverflowError:
+                acceptance = 0.0 if new_energy > current_energy else 1.0
+
+            if new_energy < current_energy or random.random() < acceptance:
+                current_solution = new_sol
+                current_energy = new_energy
+
+            if current_energy < best_energy:
+                best_solution = current_solution
+                best_energy = current_energy
+
+            temperature *= cooling_rate
+
+        return {"solution": best_solution, "energy": best_energy}
 
 class AutoTuner:
     _last_best_solution: Optional[Dict[str, Any]] = None

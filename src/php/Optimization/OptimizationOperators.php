@@ -299,7 +299,104 @@ class OptimizationOperators
 
     public static function solveFacilityLocation(array $customers, int $numFacilities, array $bounds, array $options = []): array
     {
-        // Implémentation factice pour la complétude
-        return ['solution' => [], 'energy' => 0];
+        $fixedCostPerFacility = $options['fixedCostPerFacility'] ?? 0;
+        $initialTemperature = $options['initialTemperature'] ?? 100000.0;
+        $coolingRate = $options['coolingRate'] ?? 0.999;
+        $maxIterations = $options['maxIterations'] ?? 15000; // Borne raisonnable pour PHP
+
+        $evaluator = function (array $facilities) use ($customers, $fixedCostPerFacility): float {
+            $totalConnectionCost = 0.0;
+            foreach ($customers as $customer) {
+                $minDistanceSq = INF;
+                foreach ($facilities as $facility) {
+                    $dx = $customer['x'] - $facility['x'];
+                    $dy = $customer['y'] - $facility['y'];
+                    $dSq = $dx * $dx + $dy * $dy;
+                    if ($dSq < $minDistanceSq) {
+                        $minDistanceSq = $dSq;
+                    }
+                }
+                $totalConnectionCost += sqrt($minDistanceSq);
+            }
+            return $totalConnectionCost + count($facilities) * $fixedCostPerFacility;
+        };
+
+        $neighbor = function (array $facilities) use ($bounds, $numFacilities): array {
+            $newFacilities = $facilities;
+            $i = random_int(0, $numFacilities - 1);
+            
+            $moveX = (self::secureRandom() - 0.5) * ($bounds['maxX'] - $bounds['minX']) * 0.1;
+            $moveY = (self::secureRandom() - 0.5) * ($bounds['maxY'] - $bounds['minY']) * 0.1;
+
+            $newFacilities[$i]['x'] = max($bounds['minX'], min($bounds['maxX'], $newFacilities[$i]['x'] + $moveX));
+            $newFacilities[$i]['y'] = max($bounds['minY'], min($bounds['maxY'], $newFacilities[$i]['y'] + $moveY));
+
+            return $newFacilities;
+        };
+
+        // Génération d'une solution initiale aléatoire
+        $currentSolution = [];
+        for ($i = 0; $i < $numFacilities; $i++) {
+            $currentSolution[] = [
+                'x' => $bounds['minX'] + self::secureRandom() * ($bounds['maxX'] - $bounds['minX']),
+                'y' => $bounds['minY'] + self::secureRandom() * ($bounds['maxY'] - $bounds['minY']),
+            ];
+        }
+
+        $currentEnergy = $evaluator($currentSolution);
+        $bestSolution = $currentSolution;
+        $bestEnergy = $currentEnergy;
+        $temperature = $initialTemperature;
+
+        for ($step = 0; $step < $maxIterations; $step++) {
+            $newSolution = $neighbor($currentSolution);
+            $newEnergy = $evaluator($newSolution);
+
+            $acceptanceProbability = exp(($currentEnergy - $newEnergy) / $temperature);
+
+            if ($newEnergy < $currentEnergy || self::secureRandom() < $acceptanceProbability) {
+                $currentSolution = $newSolution;
+                $currentEnergy = $newEnergy;
+            }
+
+            if ($currentEnergy < $bestEnergy) {
+                $bestSolution = $currentSolution;
+                $bestEnergy = $currentEnergy;
+            }
+
+            $temperature *= $coolingRate;
+        }
+
+        return ['solution' => $bestSolution, 'energy' => $bestEnergy];
+    }
+
+    /**
+     * Évalue de manière indépendante l'énergie d'une solution de placement d'infrastructures.
+     * Appelée par le serveur pour valider les calculs soumis par le client.
+     * 
+     * @param array $facilities Liste des positions proposées par le client.
+     * @param array $payload Configuration initiale contenant les clients et les coûts fixes.
+     * @return float Le coût total vérifié.
+     */
+    public static function evaluateFacilityLocation(array $facilities, array $payload): float
+    {
+        $customers = $payload['customers'] ?? [];
+        $fixedCostPerFacility = $payload['options']['fixedCostPerFacility'] ?? 0;
+        $totalConnectionCost = 0.0;
+
+        foreach ($customers as $customer) {
+            $minDistanceSq = INF;
+            foreach ($facilities as $facility) {
+                $dx = $customer['x'] - $facility['x'];
+                $dy = $customer['y'] - $facility['y'];
+                $dSq = $dx * $dx + $dy * $dy;
+                if ($dSq < $minDistanceSq) {
+                    $minDistanceSq = $dSq;
+                }
+            }
+            $totalConnectionCost += sqrt($minDistanceSq);
+        }
+
+        return $totalConnectionCost + count($facilities) * $fixedCostPerFacility;
     }
 }

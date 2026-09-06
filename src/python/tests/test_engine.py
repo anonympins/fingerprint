@@ -15,6 +15,7 @@ from engine import (
     ChallengeUtils,
     RequestUtils,
     FingerprintEngine,
+    ProblemManager,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
 )
@@ -593,3 +594,50 @@ def test_wsgi_middleware_flow():
     assert app_called is False
     assert response_status == "403 Forbidden"
     assert b"Forbidden" in body_malicious[0]
+
+@pytest.mark.asyncio
+async def test_problem_manager_dispatch_and_integrate():
+    import os
+    import json
+    store = InMemoryStore()
+    config_path = "test_problems.json"
+    problems_config = [
+        {
+            "id": "facility_location_challenge",
+            "workUnit": {
+                "type": "simulated_annealing_iterations",
+                "scoreFunction": "facility.calculateEnergy",
+                "baseIterations": 10
+            },
+            "payload": {
+                "customers": [{"x": 100, "y": 100}, {"x": 200, "y": 200}],
+                "options": {"fixedCostPerFacility": 1500}
+            },
+            "state": {"bestSolution": None, "bestEnergy": "Infinity"}
+        }
+    ]
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(problems_config, f)
+    
+    try:
+        ProblemManager._instance = None
+        pm = ProblemManager.get_instance(config_path, store)
+        await pm.load_problems()
+        
+        assert pm.initialized is True
+        work = await pm.dispatch_work(0.5)
+        assert work["problemId"] == "facility_location_challenge"
+        assert "iterations" in work["task"]
+        
+        client_solution = {
+            "solution": [{"x": 100, "y": 100}, {"x": 200, "y": 200}],
+            "energy": 1500.0
+        }
+        await pm.integrate_solution("facility_location_challenge", client_solution)
+        
+        stored_state = await store.get("problem-state:facility_location_challenge")
+        assert stored_state is not None
+        assert stored_state["bestEnergy"] < float("inf")
+    finally:
+        if os.path.exists(config_path):
+            os.remove(config_path)
