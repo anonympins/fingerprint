@@ -915,7 +915,16 @@ class MetricsManager:
             name = "fingerprint_" + name
         labels = labels or {}
         sorted_labels = sorted(labels.items())
-        labels_str = f"{{{','.join(f'{k}=\"{v}\"' for k, v in sorted_labels)}}}" if labels else ""
+        if labels:
+            pairs = [f'{k}="{v}"' for k, v in sorted_labels]
+            labels_str = f"{{{','.join(pairs)}}}"
+        else:
+            labels_str = ""
+        if labels:
+            pairs = [f'{k}="{v}"' for k, v in sorted_labels]
+            labels_str = f"{{{','.join(pairs)}}}"
+        else:
+            labels_str = ""
         key = f"{name}{labels_str}"
         if key not in cls._counters:
             cls._counters[key] = {"name": name, "labelsStr": labels_str, "value": 0}
