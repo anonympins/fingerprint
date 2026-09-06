@@ -685,3 +685,83 @@ async def test_problem_manager_dispatch_and_integrate():
     finally:
         if os.path.exists(config_path):
             os.remove(config_path)
+
+@pytest.mark.asyncio
+async def test_engine_re_challenge_with_valid_ticket_high_suspicion():
+    """Vérifie que même avec un ticket valide, un score de suspicion élevé déclenche un re-challenge."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"inconsistencyScore": 0.8},
+        "similarityThreshold": 0.5
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    # 1. Résoudre l'identité pour avoir un historique de terminal
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+        },
+        query_params={},
+        cookies={}
+    )
+    decision = await engine.process_request(context)
+    device_id = decision.get("newCookieForResponse", {}).get("value")
+
+    # Créer un ticket de clearance simulé valide
+    ticket = "valid-ticket-123"
+    await store.set(f"ticket:{ticket}", {"ip": "127.0.0.1", "device_id": device_id}, 3600)
+
+    # Requête avec ticket valide, mais avec un UA totalement différent pour provoquer une forte incohérence (score >= 75)
+    context_suspicious = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+        },
+        query_params={},
+        cookies={"device_id": device_id, "pow_clearance": ticket}
+    )
+
+    decision_suspicious = await engine.process_request(context_suspicious)
+    # L'action doit être un challenge (re-challenge) malgré le ticket valide
+    assert decision_suspicious["action"] == "challenge"
+
+@pytest.mark.asyncio
+async def test_engine_honeypot_persistence_with_valid_ticket():
+    """Vérifie qu'un bot soumettant un honeypot avec un ticket valide est bloqué."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"honeypotScore": 1.0},
+        "honeypot": {"fields": ["email_confirm"]}
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"user-agent": "Mozilla/5.0"},
+        query_params={},
+        cookies={}
+    )
+    decision = await engine.process_request(context)
+    device_id = decision.get("newCookieForResponse", {}).get("value")
+
+    ticket = "valid-ticket-456"
+    await store.set(f"ticket:{ticket}", {"ip": "127.0.0.1", "device_id": device_id}, 3600)
+
+    # Requête avec un ticket valide, mais qui remplit le champ honeypot
+    context_bot = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"user-agent": "Mozilla/5.0"},
+        query_params={},
+        cookies={"device_id": device_id, "pow_clearance": ticket},
+        body={"email_confirm": "spam-bot"}
+    )
+
+    decision_bot = await engine.process_request(context_bot)
+    assert decision_bot["action"] == "block"

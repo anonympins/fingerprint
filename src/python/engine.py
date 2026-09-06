@@ -564,6 +564,11 @@ class FingerprintEngine:
             except Exception as e:
                 print(f"[FingerprintEngine] Background initialization of ProblemManager failed: {e}")
 
+    def _get_weight(self, key: str, default: float) -> float:
+        if not self.weights:
+            return default
+        return self.weights.get(key, 0.0)
+
     def get_composite_device_hash(self, context: RequestContext) -> str:
         """
         Generates a composite device fingerprint hash from the request context.
@@ -624,6 +629,7 @@ class FingerprintEngine:
                     "path": "/",
                 }
             }
+            context.cookies["device_id"] = device_id
             device_data = {
                 "initialDeviceHash": current_hash,
                 "ips": {context.client_ip},
@@ -700,12 +706,12 @@ class FingerprintEngine:
         bot_score = RequestUtils.get_bot_score(context)
         honeypot_score = RequestUtils.get_honeypot_score(context, self.config.get("honeypot"))
         score = (
-            inconsistency_score * self.weights.get("inconsistencyScore", 0.3) +
-            header_anomaly * self.weights.get("headerAnomalyScore", 0.2) +
-            client_hints_score * self.weights.get("clientHintsInconsistencyScore", 0.2) +
-            tls_spoofing_score * self.weights.get("tlsSpoofingScore", 0.3) +
-            bot_score * self.weights.get("botScore", 0.1) +
-            honeypot_score * self.weights.get("honeypotScore", 1.0)
+            inconsistency_score * self._get_weight("inconsistencyScore", 0.3) +
+            header_anomaly * self._get_weight("headerAnomalyScore", 0.2) +
+            client_hints_score * self._get_weight("clientHintsInconsistencyScore", 0.2) +
+            tls_spoofing_score * self._get_weight("tlsSpoofingScore", 0.3) +
+            bot_score * self._get_weight("botScore", 0.1) +
+            honeypot_score * self._get_weight("honeypotScore", 1.0)
         )
         return min(100.0, score)
 
@@ -721,6 +727,15 @@ class FingerprintEngine:
             Dict[str, Any]: A dictionary describing the action to be taken and any associated data.
         """
         identity = await self.resolve_identity(context)
+        decision = await self._process_request_internal(context, identity)
+        if identity.get("new_cookie"):
+            decision["newCookieForResponse"] = identity["new_cookie"]
+        return decision
+
+    async def _process_request_internal(self, context: RequestContext, identity: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Internal request processing logic.
+        """
         current_time = time.time()
 
         # 1. Nettoyage périodique du bouclier thermique local
@@ -853,11 +868,15 @@ class FingerprintEngine:
                 self._fast_path_cache[subnet] = (current_time + 5.0, "block") # Calme le sous-réseau complet 5s
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
-        if score >= self.thresholds.get("low", 20) and not has_valid_ticket:
+        high_threshold = self.thresholds.get("high", 75)
+        must_rechallenge = score >= high_threshold and has_valid_ticket
+        low_threshold = self.thresholds.get("low", 20)
+
+        if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
             # Issue a new challenge
             nonce = str(uuid.uuid4()).replace("-", "")[:16]
             client_secret = str(uuid.uuid4()).replace("-", "")[:16]
-            suspicion_factor = (score - self.thresholds["low"]) / (self.thresholds["high"] - self.thresholds["low"]) if "high" in self.thresholds else 0.5
+            suspicion_factor = (score - low_threshold) / (high_threshold - low_threshold) if high_threshold > low_threshold else 0.5
             suspicion_factor = max(0.0, min(1.0, suspicion_factor))
 
             # --- NOUVELLE LOGIQUE uPoW ---
@@ -1732,8 +1751,7 @@ class ASGIFingerprintMiddleware:
             return
 
         # Inject new tracking cookies if resolved
-        identity_resolution = await self.engine.resolve_identity(context)
-        new_cookie = identity_resolution["new_cookie"]
+        new_cookie = decision.get("newCookieForResponse")
 
         if new_cookie:
             async def custom_send(event):
@@ -1869,8 +1887,7 @@ class WSGIFingerprintMiddleware:
             return [b""]
 
         # Inject new tracking cookies on legacy synchronous start_response
-        identity_resolution = loop.run_until_complete(self.engine.resolve_identity(context))
-        new_cookie = identity_resolution["new_cookie"]
+        new_cookie = decision.get("newCookieForResponse")
 
         if new_cookie:
             def custom_start_response(status, response_headers, exc_info=None):

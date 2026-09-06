@@ -651,6 +651,38 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(next, 'next() should have been called for a request with a valid ticket').toHaveBeenCalled();
         });
 
+        test('should issue a new challenge (re-challenge) if suspicion score is high even with a valid ticket', async () => {
+            vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+                historyScore: 80,
+                rotationScore: 80,
+                headerAnomalyScore: 80,
+                inconsistencyScore: 80,
+                requestPatternScore: 80,
+                honeypotScore: 0
+            });
+
+            const ip = '127.0.0.1';
+            const expiry = Date.now() + 3600000;
+            const signature = createHmac("sha256", process.env.POW_SECRET || "fallback-dev-secret-32-chars-minimum").update(`${ip}:${expiry}`).digest("hex");
+            const validTicket = `${expiry}:${signature}`;
+
+            const req = { path: '/', ip, cookies: { pow_clearance: validTicket }, query: {}, headers: { 'user-agent': 'test-ua' } };
+            let sentStatus, sentBody;
+            const res = {
+                status: (s) => { sentStatus = s; return res; },
+                send: (b) => { sentBody = b; },
+                cookie: vi.fn()
+            };
+            const next = vi.fn();
+
+            req.fingerprint = {};
+            await powMiddleware(securityConfig)(req, res, next);
+
+            expect(next).not.toHaveBeenCalled();
+            expect(sentStatus).toBe(404);
+            expect(sentBody).toContain('Enhanced Verification');
+        });
+
         test('should redirect after a valid PoW solution is provided', async () => {
             // --- 1. Setup: Define context and mock a suspicious score ---
             const ip = '127.0.0.1';

@@ -199,6 +199,37 @@ class FingerprintEngineTest extends TestCase
         $this->assertEquals('next', $decision['action']);
         $this->assertEquals(0, $decision['score']);
     }
+
+    public function testReChallengeWhenScoreIsHighEvenWithValidTicket(): void
+    {
+        // 1. Établir l'identité d'origine du terminal
+        $context = $this->createRequestContext();
+        $decision = $this->engine->processRequest($context);
+        $deviceIdCookie = $decision['newCookieForResponse'];
+
+        // Générer un ticket de clearance cryptographiquement valide
+        $expiry = (time() + 3600) * 1000;
+        $secret = getenv('POW_SECRET') ?: "fallback-dev-secret-32-chars-minimum";
+        $signature = hash_hmac('sha256', "{$context->clientIp}:{$expiry}", $secret);
+        $validTicket = "{$expiry}:{$signature}";
+
+        // Créer une requête avec un ticket valide, mais avec un UA et des attributs incohérents provoquant un score >= 75
+        $suspiciousContext = $this->createRequestContext([
+            'cookies' => [
+                $deviceIdCookie['name'] => $deviceIdCookie['value'],
+                'pow_clearance' => $validTicket
+            ],
+            'headers' => [
+                'user-agent' => 'DefinitelyNotTheSameBrowser/1.0', // Incohérence matérielle forte
+                'accept-language' => 'fr-FR',
+            ]
+        ]);
+
+        $redecision = $this->engine->processRequest($suspiciousContext);
+
+        // Malgré le ticket valide, le score est élevé, une nouvelle vérification PoW doit être imposée
+        $this->assertEquals('challenge', $redecision['action']);
+    }
     public function testFingerprintBuilderCompareLogic(): void
     {
         $fp1 = (new FingerprintBuilder())->add('hw', '8_16')->add('gpu', 'nvidia')->__toString(); // hw:1039882088834313|gpu:14339535343484648
