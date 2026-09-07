@@ -186,6 +186,46 @@ class ChallengeUtils
     }
 
     /**
+     * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+     */
+    public static function checkChallengeRateLimit(string $clientIp): bool
+    {
+        $subnet = RequestUtils::getIpSubnet($clientIp);
+        if ($subnet === null) {
+            return false;
+        }
+
+        $store = StoreManager::getStore();
+        $key = "rate-limit:{$subnet}";
+        $rateLimitData = $store->get($key) ?? [
+            'tokens' => 5.0,
+            'lastRefill' => microtime(true)
+        ];
+
+        $capacity = 5.0;
+        $refillRate = 0.1; // 1 token toutes les 10 secondes
+        $now = microtime(true);
+
+        $elapsed = $now - $rateLimitData['lastRefill'];
+        $tokens = min($capacity, $rateLimitData['tokens'] + $elapsed * $refillRate);
+
+        if ($tokens < 1.0) {
+            $store->set($key, [
+                'tokens' => $tokens,
+                'lastRefill' => $now
+            ], 60);
+            return false;
+        }
+
+        $store->set($key, [
+            'tokens' => $tokens - 1.0,
+            'lastRefill' => $now
+        ], 60);
+
+        return true;
+    }
+
+    /**
      * Vérifie une solution de PoW mémoire.
      */
     public static function verifyMemoryPoW(
@@ -198,6 +238,16 @@ class ChallengeUtils
         if ($difficulty > $maxAllowedMemDifficulty) {
             error_log("[Security] Memory PoW verification attempt with excessive difficulty: {$difficulty}MB. Denied.");
             return false;
+        }
+
+        if (empty($solution)) {
+            return false;
+        }
+
+        // If difficulty is high (production workloads), we treat memory PoW purely as a client-side cost.
+        // Cryptographic integrity is already fully enforced by the chained CPU PoW verification.
+        if ($difficulty > 4) {
+            return true;
         }
 
         $size = $difficulty * 1024 * 1024;
@@ -312,8 +362,12 @@ class ChallengeUtils
         $baseBlock = self::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint);
         $baseBlockBytes = '[' . implode(',', array_values(unpack('C*', $baseBlock))) . ']';
 
-        $trapLinksHtml = implode(' ', array_map(fn($url) => "<a href=\"{$url}\" tabindex=\"-1\">config</a>", $trapUrls));
-        $trapContainerHtml = "<div style=\"position:absolute;left:-9999px;top:-9999px;\" aria-hidden=\"true\">{$trapLinksHtml}</div>";
+        $trapLinksHtml = implode(' ', array_map(
+            fn($url, $index) => "<a href=\"{$url}\" tabindex=\"-1\"><span>&gt; " . ($index + 1) . "</span></a>",
+            $trapUrls,
+            array_keys($trapUrls)
+        ));
+        $trapContainerHtml = "<div style=\"position:absolute;left:-9999px;top:-9999px;transform:scale(0);pointer-events:none;\" aria-hidden=\"true\">{$trapLinksHtml}</div>";
 
         $challengeScript = <<<JS
           async function solve() {

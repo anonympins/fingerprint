@@ -417,6 +417,11 @@
          // Score d'incohérence des Client-Hints
          $clientHintsInconsistency = RequestUtils::getClientHintsInconsistencyScore($context);
 
+         // Score de similarité globale de l'empreinte (Clustering Botnet)
+         $stableFp = RequestUtils::extractStablePart($currentDeviceHash);
+         $stableFpHash = FingerprintBuilder::cyrb53($stableFp);
+         $botnetCluster = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
+
          // NOUVEAU: Score de réputation du sous-réseau IP
          $subnetScore = RequestUtils::getSubnetScore($context, $deviceId);
 
@@ -437,6 +442,7 @@
              'threatIntelScore' => $threatIntel['threatIntelScore'],
              'clientHintsInconsistencyScore' => $clientHintsInconsistency['clientHintsInconsistencyScore'],
              'subnetScore' => $subnetScore['subnetScore'],
+             'botnetClusterScore' => $botnetCluster['botnetClusterScore'],
          ]);
  
          // Sauvegarder l'état mis à jour de l'appareil dans le store
@@ -743,6 +749,26 @@
              if (($finalScore >= $lowThreshold && !$hasValidTicket) || $mustReChallenge) {
                  if ($mustReChallenge) {
                      $this->log('High suspicion score detected - overriding valid ticket to re-issue challenge', ['finalScore' => $finalScore, 'deviceId' => $deviceId]);
+                 }
+ 
+                 // --- AJOUT: Limiteur de débit (Token Bucket) ---
+                 $rateLimitPassed = ChallengeUtils::checkChallengeRateLimit($context->clientIp);
+                 if (!$rateLimitPassed) {
+                     $this->log('Challenge rate limit exceeded - blocking with 429', ['clientIp' => $context->clientIp]);
+                     $decision = [
+                         'action' => 'block',
+                         'status' => 429,
+                         'body' => 'Too Many Requests',
+                         'score' => $finalScore,
+                         'vector' => $suspicionVector
+                     ];
+                     if ($this->dryRun) {
+                         $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
+                         $decision['intendedAction'] = $decision['action'];
+                         $decision['action'] = 'next';
+                         unset($decision['status'], $decision['body']);
+                     }
+                     return $decision;
                  }
  
                  $decision = ['action' => 'challenge', 'score' => $finalScore, 'vector' => $suspicionVector, 'status' => 403];

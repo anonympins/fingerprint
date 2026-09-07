@@ -5,6 +5,62 @@ import {solveChallenge} from './pow.solver.js';
 // Par défaut, c'est l'implémentation JavaScript.
 let activeCyrb53 = jsCyrb53;
 
+const DB_NAME = 'wasm-cache-db';
+const DB_VERSION = 1;
+const STORE_NAME = 'wasm-modules';
+
+function getCachedWasm(url) {
+    return new Promise((resolve) => {
+        if (typeof indexedDB === 'undefined') return resolve(null);
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME);
+            }
+        };
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            try {
+                const transaction = db.transaction(STORE_NAME, 'readonly');
+                const store = transaction.objectStore(STORE_NAME);
+                const getReq = store.get(url);
+                getReq.onsuccess = () => resolve(getReq.result);
+                getReq.onerror = () => resolve(null);
+            } catch (err) {
+                resolve(null);
+            }
+        };
+        request.onerror = () => resolve(null);
+    });
+}
+
+function cacheWasm(url, data) {
+    return new Promise((resolve) => {
+        if (typeof indexedDB === 'undefined') return resolve(false);
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME);
+            }
+        };
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            try {
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                store.put(data, url);
+                transaction.oncomplete = () => resolve(true);
+                transaction.onerror = () => resolve(false);
+            } catch (err) {
+                resolve(false);
+            }
+        };
+        request.onerror = () => resolve(false);
+    });
+}
+
 const ClientLibrary = {
     // Cache pour éviter de recalculer les constantes (Hardware, etc.)
     _cachedBuilder: null,
@@ -166,6 +222,75 @@ const ClientLibrary = {
     },
 
     /**
+     * Injecte des éléments interactifs fantômes invisibles pour piéger les bots (focus/hover).
+     */
+    injectPhantomTraps() {
+        if (typeof document === 'undefined') return;
+
+        // Création d'un élément interactif fantôme
+        const phantom = document.createElement('a');
+        phantom.href = '#';
+        // Nom trompeur pour attirer les analyseurs automatiques de liens / formulaires
+        phantom.id = 'sys-session-recovery';
+        phantom.tabIndex = 0; // Dans le flux naturel de tabulation
+        phantom.setAttribute('aria-hidden', 'true'); // Masqué pour les screen readers légitimes
+
+        // Style invisible mais interactif (1px x 1px, presque transparent)
+        phantom.style.position = 'fixed';
+        phantom.style.top = '1px';
+        phantom.style.left = '1px';
+        phantom.style.width = '1px';
+        phantom.style.height = '1px';
+        phantom.style.opacity = '0.001';
+        phantom.style.zIndex = '99999';
+        phantom.style.overflow = 'hidden';
+        phantom.style.pointerEvents = 'auto';
+
+        const triggerTrap = () => {
+            this.onHoneypotTrigger();
+        };
+
+        phantom.addEventListener('focus', triggerTrap, { passive: true });
+        phantom.addEventListener('mouseover', triggerTrap, { passive: true });
+
+        document.body.appendChild(phantom);
+    },
+
+    /**
+     * Démarre le suivi des événements tactiles sur mobile/tablette.
+     */
+    startTouchEventTracker() {
+        if (this._touchTrackerAttached) return;
+        this._touchTrackerAttached = true;
+
+        const handleTouch = (e) => {
+            if (touchMovementsHistory.length >= TOUCH_HISTORY_MAX) {
+                touchMovementsHistory.shift();
+            }
+            const touch = e.touches[0] || e.changedTouches[0];
+            if (!touch) return;
+
+            const radiusX = touch.radiusX || 0;
+            const radiusY = touch.radiusY || 0;
+            const radius = (radiusX + radiusY) / 2;
+            const force = touch.force || touch.webkitForce || 0;
+
+            touchMovementsHistory.push({
+                x: touch.clientX,
+                y: touch.clientY,
+                t: performance.now(),
+                p: force,
+                r: radius,
+                num: e.touches.length
+            });
+        };
+
+        document.addEventListener('touchstart', handleTouch, { passive: true });
+        document.addEventListener('touchmove', handleTouch, { passive: true });
+        document.addEventListener('touchend', handleTouch, { passive: true });
+    },
+
+    /**
      * Démarre le suivi des mouvements de la souris pour calculer l'entropie.
      * À appeler une fois sur la page.
      */
@@ -280,6 +405,7 @@ const ClientLibrary = {
         metrics.clicksHistory = clicksHistory;
         metrics.clientTimestamp = Date.now();
 
+        metrics.touchMovementsHistory = touchMovementsHistory;
         // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
         metrics.mouseMovementsHistory = mouseMovementsHistory;
 
@@ -416,12 +542,15 @@ const ClientLibrary = {
     trapContainer.style.position = 'absolute';
     trapContainer.style.left = '-9999px';
     trapContainer.style.top = '-9999px';
+      trapContainer.style.transform = 'scale(0)';
+      trapContainer.style.pointerEvents = 'none';
 
-    urls.forEach(url => {
+    urls.forEach((url,i) => {
       const link = document.createElement('a');
       link.href = url;
+      link.rel = 'nofollow';
       link.tabIndex = -1; // Make it unfocusable
-      link.textContent = 'config'; // Some plausible text
+      link.innerHTML = `<span>&gt; ${i+1}</span>`; // SEO-insignificant content
       trapContainer.appendChild(link);
     });
 
@@ -484,6 +613,8 @@ const ClientLibrary = {
         mouse = true,
         keystrokes = true,
         clicks = true, // Add new option
+        touches = true, // Nouveau paramètre tactiles
+            phantomTraps = true, // NOUVEAU
         honeypots = [],
         trapUrls = [], // Nouveau paramètre pour les URL pièges
         wasmPath, // Nouveau paramètre
@@ -504,6 +635,12 @@ const ClientLibrary = {
     if (clicks) {
         this.startClickTracker();
     }
+    if (touches) {
+        this.startTouchEventTracker();
+    }
+        if (phantomTraps) {
+            this.injectPhantomTraps();
+        }
     if (honeypots.length > 0) {
         this.initializeHoneypots(honeypots);
     }
@@ -549,7 +686,60 @@ const ClientLibrary = {
             }
 
             // 3. Initialiser le module
-            const wasmModule = await window.createFingerprintModule();
+            const wasmUrl = wasmPath.replace(/\.js$/, '.wasm');
+            const wasmModule = await window.createFingerprintModule({
+                instantiateWasm: (imports, successCallback) => {
+                    (async () => {
+                        try {
+                            const cached = await getCachedWasm(wasmUrl);
+                            if (cached) {
+                                let instance;
+                                if (cached instanceof WebAssembly.Module) {
+                                    instance = await WebAssembly.instantiate(cached, imports);
+                                } else {
+                                    const result = await WebAssembly.instantiate(cached, imports);
+                                    instance = result.instance;
+                                }
+                                successCallback(instance, cached);
+                                return;
+                            }
+
+                            const response = await fetch(wasmUrl);
+                            const arrayBuffer = await response.arrayBuffer();
+
+                            let cachedData = arrayBuffer;
+                            let isModuleCached = false;
+                            try {
+                                const compiledModule = await WebAssembly.compile(arrayBuffer);
+                                const success = await cacheWasm(wasmUrl, compiledModule);
+                                if (success) {
+                                    cachedData = compiledModule;
+                                    isModuleCached = true;
+                                }
+                            } catch (e) {
+                                // Fallback if browser doesn't allow structured cloning of Compiled Modules
+                            }
+
+                            if (!isModuleCached) {
+                                await cacheWasm(wasmUrl, arrayBuffer);
+                            }
+
+                            let instance;
+                            if (cachedData instanceof WebAssembly.Module) {
+                                instance = await WebAssembly.instantiate(cachedData, imports);
+                            } else {
+                                const result = await WebAssembly.instantiate(arrayBuffer, imports);
+                                instance = result.instance;
+                            }
+                            successCallback(instance, cachedData);
+                        } catch (err) {
+                            console.warn('[Fingerprint] Custom WASM instantiation failed, falling back to default Emscripten loader:', err);
+                            successCallback(null);
+                        }
+                    })();
+                    return {}; // Async instantiation indicator for Emscripten
+                }
+            });
             if (typeof wasmModule._hash_string !== 'function') {
                 throw new Error('WASM module did not export _hash_string.');
             }
@@ -580,6 +770,7 @@ const ClientLibrary = {
  * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
  * @property {Array<{x: number, y: number, t: number, targetId: string}>} clicksHistory - Historique des clics.
+ * @property {Array<{x: number, y: number, t: number, p: number, r: number, num: number}>} touchMovementsHistory - Historique des glissements tactiles.
  * @property {number} historyLength - La longueur de l'historique de session du navigateur (`window.history.length`).
  * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
  * @property {string[]} [trapUrls] - URLs pièges à injecter dynamiquement.
@@ -588,6 +779,7 @@ const ClientLibrary = {
 const metrics = {
     mouseEntropy: 0, // Conservé pour la compatibilité, mais l'analyse se fait maintenant sur l'historique
     mouseMovementsHistory: [],
+    touchMovementsHistory: [],
     clicksHistory: [],
     keystrokeLatency: 0,
     honeypotInteraction: false,
@@ -597,6 +789,8 @@ const metrics = {
 
 let lastMousePos = { x: 0, y: 0 };
 let mouseMovementsHistory = []; // NOUVEAU: Historique des points de la souris
+let touchMovementsHistory = []; // NOUVEAU: Historique des gestes tactiles
+const TOUCH_HISTORY_MAX = 100;
 const MOUSE_HISTORY_MAX = 100; // Limite le nombre de points stockés
 let clicksHistory = [];
 const CLICKS_HISTORY_MAX = 50;
@@ -615,6 +809,7 @@ export const _resetCache = ClientLibrary._resetCache.bind(ClientLibrary);
 export const startMouseEntropyTracker = ClientLibrary.startMouseEntropyTracker.bind(ClientLibrary);
 export const startKeystrokeDynamicsTracker = ClientLibrary.startKeystrokeDynamicsTracker.bind(ClientLibrary);
 export const startClickTracker = ClientLibrary.startClickTracker.bind(ClientLibrary);
+export const startTouchEventTracker = ClientLibrary.startTouchEventTracker.bind(ClientLibrary);
 export const initializeHoneypots = ClientLibrary.initializeHoneypots.bind(ClientLibrary);
 export const getClientBehaviorMetrics = ClientLibrary.getClientBehaviorMetrics.bind(ClientLibrary);
 export const protectedFetch = ClientLibrary.protectedFetch.bind(ClientLibrary);
@@ -624,6 +819,7 @@ export const initializeFetch = ClientLibrary.initializeFetch.bind(ClientLibrary)
 export const initializeClient = ClientLibrary.initializeClient.bind(ClientLibrary);
 export const initializeWasm = ClientLibrary.initializeWasm.bind(ClientLibrary);
 export const injectTrapLinks = ClientLibrary.injectTrapLinks.bind(ClientLibrary);
+export const injectPhantomTraps = ClientLibrary.injectPhantomTraps.bind(ClientLibrary);
 export const solveChallengeAndRetry = ClientLibrary.solveChallengeAndRetry.bind(ClientLibrary);
 
 // Export the internal object for testing purposes

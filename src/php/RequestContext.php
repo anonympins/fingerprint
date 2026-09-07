@@ -12,18 +12,18 @@ namespace Anonympins\Fingerprint;
  */
 class RequestContext
 {
-    public string $clientIp;
-    public string $path;
+    public string $clientIp = '';
+    public string $path = '';
     /** @var array<string, string> */
-    public array $headers;
+    public array $headers = [];
     /** @var array<string, mixed> */
-    public array $query;
+    public array $query = [];
     /** @var array<string, mixed>|object|null */
-    public $body;
+    public $body = null;
     /** @var array<string, string> */
-    public array $cookies;
-    public ?string $httpVersion;
-    public int $requestTimestamp;
+    public array $cookies = [];
+    public ?string $httpVersion = null;
+    public int $requestTimestamp = 0;
 
     /** @var ?array{type: string, name: string} */
     public ?array $graphqlOperation = null;
@@ -32,12 +32,12 @@ class RequestContext
     public ?array $newCookieForResponse = null;
 
     // Propriétés spécifiques qui peuvent être fournies par un proxy inverse
-    public ?string $ja3;
-    public ?string $ja4;
-    public ?string $ja4s;
-    public ?string $ja4h;
-    public ?string $http2Fingerprint;
-    public ?string $tcpFingerprint;
+    public ?string $ja3 = null;
+    public ?string $ja4 = null;
+    public ?string $ja4s = null;
+    public ?string $ja4h = null;
+    public ?string $http2Fingerprint = null;
+    public ?string $tcpFingerprint = null;
 
     /**
      * @param string $clientIp

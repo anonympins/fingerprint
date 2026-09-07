@@ -1747,7 +1747,9 @@ describe('getRequestPatternScore', () => {
         dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10000);
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(requestPatternScore).toBe(patternConfig.patternWeight); // 80
+        // regularityScore = 1.0 (stdDev = 0). regularityRatio = 0.4.
+        // instantScore = 1.0 * 0.4 * 80 = 32.
+        expect(requestPatternScore).toBe(32);
     });
 
     test('should assign a high pattern score for non-natural (Benford-violating) timings', () => {
@@ -1760,7 +1762,11 @@ describe('getRequestPatternScore', () => {
         dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(10000);
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, patternConfig);
-        expect(requestPatternScore).toBe(patternConfig.patternWeight); // 80
+        // stdDev ~ 31.29. regularityScore = 1 - (31.29 / 50) = ~0.374.
+        // benfordDeviation ~ 2.07. benfordScore = 1.0 (capped).
+        // weightedScore = (0.374 * 0.4) + (1.0 * 0.3) = ~0.4496.
+        // instantScore = 0.4496 * 80 = ~35.97.
+        expect(requestPatternScore).toBeCloseTo(35.97, 1);
     });
 
     test('should apply decay factor to the score over time', () => {
@@ -1963,8 +1969,9 @@ describe('Regularity Detection (Standard Deviation)', () => {
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, regularityConfig);
 
-        // stdDev is 0, which is < regularityThreshold, so the full patternWeight is applied.
-        expect(requestPatternScore).toBe(regularityConfig.patternWeight);
+                // stdDev is 0 (regularityScore = 1.0). regularityRatio = 0.4.
+                // Expected score: 1.0 * 0.4 * 60 = 24.
+                expect(requestPatternScore).toBe(24);
     });
 
     it('should apply a low penalty for slightly irregular requests', () => {
@@ -1975,7 +1982,9 @@ describe('Regularity Detection (Standard Deviation)', () => {
 
         const { requestPatternScore } = getRequestPatternScore(context, deviceData, localConfig);
 
-        expect(requestPatternScore).toBe(localConfig.patternWeight);
+                // stdDev is ~7.07 (regularityScore = 1 - 7.07/10 = 0.293).
+                // Expected score: 0.293 * 0.4 * 60 = 7.03.
+                expect(requestPatternScore).toBeCloseTo(7.03, 1);
     });
 
     it('should apply no penalty for highly irregular (human-like) requests', () => {
@@ -2125,19 +2134,27 @@ describe('Subnet Scoring (Node.js)', () => {
     });
 
     it('updateSubnetMetrics should create and update subnet data in the store', async () => {
-        const context = { clientIp: '10.0.0.25' };
-        await __internal.updateSubnetMetrics(context, 'device-1', 50);
+        const context1 = { clientIp: '10.0.0.25', headers: { 'user-agent': 'device-1' } };
+        await __internal.updateSubnetMetrics(context1, 'device-1', 50);
+
+        const fp1 = new FingerprintBuilder().add('ua', 'device-1').toString();
+        const expectedId1 = cyrb53(fp1).toString();
 
         const subnetData = await inMemoryStore.get('subnet:10.0.0.0/24');
         expect(subnetData).toBeDefined();
         expect(subnetData.highScoreCount).toBe(1);
-        expect(subnetData.deviceIds).toEqual(['device-1']);
+        expect(subnetData.deviceIds).toEqual([expectedId1]);
 
         // Second update
-        await __internal.updateSubnetMetrics(context, 'device-2', 60);
+        const context2 = { clientIp: '10.0.0.25', headers: { 'user-agent': 'device-2' } };
+        await __internal.updateSubnetMetrics(context2, 'device-2', 60);
+
+        const fp2 = new FingerprintBuilder().add('ua', 'device-2').toString();
+        const expectedId2 = cyrb53(fp2).toString();
+
         const updatedSubnetData = await inMemoryStore.get('subnet:10.0.0.0/24');
         expect(updatedSubnetData.highScoreCount).toBe(2);
-        expect(updatedSubnetData.deviceIds).toEqual(['device-1', 'device-2']);
+        expect(updatedSubnetData.deviceIds).toEqual([expectedId1, expectedId2]);
     });
 
     it('getSubnetScore should calculate score based on stored metrics', async () => {
@@ -2348,4 +2365,87 @@ describe('Additional Suspicion Vectors Coverage', () => {
         const { crossLayerInconsistencyScore } = __internal.getCrossLayerInconsistency(context);
         expect(crossLayerInconsistencyScore).toBe(50);
     });
+});
+
+describe('Botnet Cluster Scoring (Node.js)', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        clear() { this._map.clear(); }
+    };
+
+    beforeEach(async () => {
+        inMemoryStore.clear();
+        await configureStore(inMemoryStore);
+    });
+
+    it('should calculate botnetClusterScore based on unique IPs within 10 minutes', async () => {
+        const { getBotnetClusterScore } = __internal;
+        const stableFpHash = 'test-stable-hash';
+
+        // 1. Première IP
+        let scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.1' }, stableFpHash);
+        expect(scoreData.botnetClusterScore).toBe(0);
+
+        // 2. Ajout de 2 IPs uniques (total 3)
+        await getBotnetClusterScore({ clientIp: '192.168.1.2' }, stableFpHash);
+        scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.3' }, stableFpHash);
+            expect(scoreData.botnetClusterScore).toBe(50.3);
+
+        // 3. Ajout de 2 IPs uniques (total 5)
+        await getBotnetClusterScore({ clientIp: '192.168.1.4' }, stableFpHash);
+        scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.5' }, stableFpHash);
+            expect(scoreData.botnetClusterScore).toBe(75.3);
+
+        // 4. Ajout de 5 IPs uniques (total 10)
+        for (let i = 6; i <= 10; i++) {
+            scoreData = await getBotnetClusterScore({ clientIp: `192.168.1.${i}` }, stableFpHash);
+        }
+            expect(scoreData.botnetClusterScore).toBe(95.7);
+    });
+
+        it('should realistically group PS4 consoles with volatile differences (different IPs/cookies) under the same cluster score', async () => {
+            const { getSuspicionVector } = __internal;
+            
+            const ps4Headers = {
+                'user-agent': 'Mozilla/5.0 (PlayStation 4 11.50) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.50 Safari/605.1.15',
+                'x-ja3-hash': '76993ef93bf89104037599723ab9f201',
+                'x-ja4-hash': 't13d1516h2_8daaf6152771_390237aa04be',
+                'x-http2-fingerprint': '1:65536;3:1000;4:6291456;6:65536',
+                'x-tcp-fingerprint': '64240:128:1:mss,nop,ws,nop,nop,sok:df:0'
+            };
+
+            // Simule des requêtes provenant de 10 consoles PlayStation 4 infectées différentes (IPs différentes, pas de cookies communs)
+            for (let i = 1; i <= 10; i++) {
+                const context = {
+                    clientIp: `185.15.20.${i}`,
+                    path: '/api/login',
+                    headers: {
+                        ...ps4Headers,
+                        'cookie_keys': `session_id=fake_sess_${i}` // Élément volatil
+                    },
+                    cookies: {}, // Pas de cookie device_id partagé pour simuler des terminaux distincts
+                    query: {},
+                    httpVersion: '2.0',
+                    requestTimestamp: Date.now()
+                };
+
+                const vector = await getSuspicionVector(context, { honeypot: {}, patterns: {} });
+                
+                if (i === 1) {
+                    expect(vector.botnetClusterScore).toBe(0);
+                } else if (i === 2) {
+                    expect(vector.botnetClusterScore).toBe(29.5);
+                } else if (i === 3) {
+                    expect(vector.botnetClusterScore).toBe(50.3);
+                } else if (i === 4) {
+                    expect(vector.botnetClusterScore).toBe(65);
+                } else if (i === 5) {
+                    expect(vector.botnetClusterScore).toBe(75.3);
+                } else if (i === 10) {
+                    expect(vector.botnetClusterScore).toBe(95.7);
+                }
+            }
+        });
 });

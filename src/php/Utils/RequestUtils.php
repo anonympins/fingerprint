@@ -289,7 +289,105 @@ class RequestUtils
 
         return ['avgSpeed' => $avgSpeed, 'avgAcceleration' => $avgAcceleration, 'straightness' => $straightness, 'pauses' => $pauses, 'segments' => array_column($segments, 'distance')];
     }
+    /**
+     * Analyse une série d'événements tactiles mobiles pour en extraire des indicateurs comportementaux.
+     * @param array|null $history
+     * @return array
+     */
+    private static function analyzeTouchMovements(?array $history): array
+    {
+        if (empty($history) || count($history) < 3) {
+            return [
+                'avgSpeed' => 0.0, 'avgAcceleration' => 0.0, 'straightness' => 1.0, 'pauses' => 0, 'segments' => [],
+                'avgPressure' => 0.0, 'avgRadius' => 0.0, 'pressureVariance' => 0.0, 'radiusVariance' => 0.0, 'maxTouches' => 1
+            ];
+        }
 
+        $segments = [];
+        $totalDistance = 0.0;
+        $pauses = 0;
+        $totalPressure = 0.0;
+        $totalRadius = 0.0;
+        $maxTouches = 1;
+
+        for ($i = 1; $i < count($history); $i++) {
+            $p1 = $history[$i - 1];
+            $p2 = $history[$i];
+            $dx = $p2['x'] - $p1['x'];
+            $dy = $p2['y'] - $p1['y'];
+            $dt = $p2['t'] - $p1['t'];
+            $distance = sqrt($dx * $dx + $dy * $dy);
+
+            $totalPressure += (float)($p2['p'] ?? 0.0);
+            $totalRadius += (float)($p2['r'] ?? 0.0);
+            if (($p2['num'] ?? 1) > $maxTouches) {
+                $maxTouches = (int)$p2['num'];
+            }
+
+            if ($dt > 0) {
+                $speed = $distance / $dt;
+                $segments[] = ['distance' => $distance, 'dt' => $dt, 'speed' => $speed];
+                $totalDistance += $distance;
+            }
+            if ($dt > 100 && $distance < 5) {
+                $pauses++;
+            }
+        }
+
+        $totalPressure += (float)($history[0]['p'] ?? 0.0);
+        $totalRadius += (float)($history[0]['r'] ?? 0.0);
+
+        $avgPressure = $totalPressure / count($history);
+        $avgRadius = $totalRadius / count($history);
+
+        $sqDiffPressureSum = 0.0;
+        $sqDiffRadiusSum = 0.0;
+        foreach ($history as $pt) {
+            $sqDiffPressureSum += pow((float)($pt['p'] ?? 0.0) - $avgPressure, 2);
+            $sqDiffRadiusSum += pow((float)($pt['r'] ?? 0.0) - $avgRadius, 2);
+        }
+        $pressureVariance = $sqDiffPressureSum / count($history);
+        $radiusVariance = $sqDiffRadiusSum / count($history);
+
+        if (count($segments) < 2) {
+            return [
+                'avgSpeed' => 0.0, 'avgAcceleration' => 0.0, 'straightness' => 1.0, 'pauses' => $pauses, 'segments' => [],
+                'avgPressure' => $avgPressure, 'avgRadius' => $avgRadius, 'pressureVariance' => $pressureVariance, 'radiusVariance' => $radiusVariance, 'maxTouches' => $maxTouches
+            ];
+        }
+
+        $totalTime = $history[count($history) - 1]['t'] - $history[0]['t'];
+        $avgSpeed = $totalTime > 0 ? array_sum(array_column($segments, 'speed')) / count($segments) : 0.0;
+
+        $totalAbsAcceleration = 0.0;
+        for ($i = 1; $i < count($segments); $i++) {
+            $s1 = $segments[$i - 1];
+            $s2 = $segments[$i];
+            if ($s2['dt'] > 0) {
+                $acceleration = ($s2['speed'] - $s1['speed']) / $s2['dt'];
+                $totalAbsAcceleration += abs($acceleration);
+            }
+        }
+        $avgAcceleration = $totalAbsAcceleration / (count($segments) - 1);
+
+        $startPoint = $history[0];
+        $endPoint = $history[count($history) - 1];
+        $straightDistance = sqrt(pow($endPoint['x'] - $startPoint['x'], 2) + pow($endPoint['y'] - $startPoint['y'], 2));
+        $straightness = $totalDistance > 0 ? $straightDistance / $totalDistance : 1.0;
+
+        return [
+            'avgSpeed' => $avgSpeed,
+            'avgAcceleration' => $avgAcceleration,
+            'straightness' => $straightness,
+            'pauses' => $pauses,
+            'segments' => array_column($segments, 'distance'),
+            'avgPressure' => $avgPressure,
+            'avgRadius' => $avgRadius,
+            'pressureVariance' => $pressureVariance,
+            'radiusVariance' => $radiusVariance,
+            'maxTouches' => $maxTouches
+        ];
+    }
 
     /**
      * Calcule un score basé sur les métriques comportementales envoyées par le client.
@@ -314,6 +412,7 @@ class RequestUtils
         $score = 0.0;
 
         $mouseAnalysis = self::analyzeMouseMovements($metrics['mouseMovementsHistory'] ?? null);
+        $touch = self::analyzeTouchMovements($metrics['touchMovementsHistory'] ?? null);
 
         if (isset($metrics['historyLength'])) {
             if ($metrics['historyLength'] === 1) $score += 15;
@@ -321,7 +420,7 @@ class RequestUtils
             elseif ($metrics['historyLength'] >= 2) $score -= 10;
         } else {
             // Pénalité pour absence totale d'interaction si l'historique n'est pas dispo
-            if ($mouseAnalysis['avgSpeed'] == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
+            if ($mouseAnalysis['avgSpeed'] == 0 && $touch['avgSpeed'] == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
                 $score += 40;
             }
         }
@@ -341,6 +440,30 @@ class RequestUtils
             $benfordDeviation = Optimization::benfordTest($mouseAnalysis['segments']);
             if ($benfordDeviation > 0.18) {
                 $score += 35;
+            }
+        }
+        // Analyse comportementale des événements tactiles (Touch Move)
+        $touchHistory = $metrics['touchMovementsHistory'] ?? null;
+        if (!empty($touchHistory)) {
+            if ($touch['avgSpeed'] > 0) {
+                if ($touch['avgSpeed'] > 5) $score += 30;
+                if ($touch['avgAcceleration'] > 0.8) $score += 20;
+                if ($touch['straightness'] > 0.98) $score += 35;
+                if ($touch['pauses'] === 0 && count($touch['segments']) > 25) $score += 15;
+
+                // Détection de l'émulation (pression et rayon de contact constants)
+                if ($touch['avgPressure'] > 0 && $touch['pressureVariance'] == 0) {
+                    $score += 30;
+                }
+                if ($touch['avgRadius'] > 0 && $touch['radiusVariance'] == 0) {
+                    $score += 30;
+                }
+            }
+            if (count($touch['segments']) > 10) {
+                $benfordDev = Optimization::benfordTest($touch['segments']);
+                if ($benfordDev > 0.18) {
+                    $score += 35;
+                }
             }
         }
 
@@ -553,7 +676,7 @@ class RequestUtils
      * @param string $fpString La chaîne d'empreinte complète.
      * @return string La sous-chaîne de l'empreinte contenant uniquement les parties stables.
      */
-    private static function extractStablePart(string $fpString): string
+    public static function extractStablePart(string $fpString): string
     {
         $stableKeys = ['ua', 'ja3', 'ja4', 'h2', 'tcp'];
         $parts = explode('|', $fpString);
@@ -584,6 +707,9 @@ class RequestUtils
         $patternWeight = $patternConfig['patternWeight'] ?? 80;
         $decayFactor = $patternConfig['decayFactor'] ?? 0.95;
         $inactivityReset = $patternConfig['inactivityReset'] ?? 180000;
+        $regularityRatio = $patternConfig['regularityRatio'] ?? 0.4;
+        $benfordRatio = $patternConfig['benfordRatio'] ?? 0.3;
+        $enumerationRatio = $patternConfig['enumerationRatio'] ?? 0.3;
 
         $now = time() * 1000;
         $history = $deviceData['requestHistory'] ?? [];
@@ -606,7 +732,8 @@ class RequestUtils
         }
         $deviceData['requestHistory'] = $history;
 
-        $instantScore = 0;
+        $regularityScore = 0.0;
+        $benfordScore = 0.0;
         $timings = $deviceData['timingHistory'];
 
         // Analyse statistique si nous avons assez de données
@@ -621,18 +748,16 @@ class RequestUtils
             $stdDev = sqrt($variance);
             $benfordDeviation = Optimization::benfordTest($timings);
 
-            // Détection de régularité (bots de type "cron")
             if ($stdDev < $regularityThreshold) {
-                $instantScore = $patternWeight;
+                $regularityScore = 1.0 - ($stdDev / $regularityThreshold);
             }
-            // Détection de distribution non-naturelle (bots "faussement aléatoires")
-            elseif ($benfordDeviation > $benfordThreshold) {
-                $instantScore = $patternWeight;
+            if ($benfordDeviation > $benfordThreshold) {
+                $benfordScore = min(1.0, ($benfordDeviation - $benfordThreshold) / (0.5 - $benfordThreshold));
             }
         }
 
-        // Détection d'énumération de chemins (crawling/scraping de ressources séquentielles)
-        $enumerationScore = 0;
+        // Path enumeration progressif
+        $enumerationScore = 0.0;
         if (count($history) >= 3) {
             $templates = array_map(function($h) {
                 return preg_replace('/\d+/', '{num}', $h['path']);
@@ -646,9 +771,14 @@ class RequestUtils
             $maxTemplateRepetition = !empty($templateCounts) ? max($templateCounts) : 0;
 
             if ($maxTemplateRepetition >= 3 && count($uniquePaths) === count($history)) {
-                $enumerationScore = $patternWeight * 0.8;
+                $enumerationScore = min(1.0, ($maxTemplateRepetition - 2) / 5.0);
             }
         }
+
+        $weightedScore = ($regularityScore * $regularityRatio) +
+                         ($benfordScore * $benfordRatio) +
+                         ($enumerationScore * $enumerationRatio);
+        $instantScore = $weightedScore * $patternWeight;
 
         // Logique de décroissance et de score final
         $newPatternScore = $deviceData['lastPatternScore'] ?? 0;
@@ -660,7 +790,7 @@ class RequestUtils
         }
         $newPatternScore = max(0, $newPatternScore);
 
-        $deviceData['lastPatternScore'] = $newPatternScore + $instantScore + $enumerationScore;
+        $deviceData['lastPatternScore'] = max((float)$instantScore, (float)$newPatternScore);
 
         return ['requestPatternScore' => min(100.0, $deviceData['lastPatternScore'])];
     }
@@ -914,14 +1044,18 @@ class RequestUtils
             $subnetData['highScoreDevices'] = [];
         }
 
-        $currentDeviceContributions = $subnetData['highScoreDevices'][$deviceId] ?? 0;
+        // Utilisation de la partie stable du fingerprint matériel plutôt que l'ID de cookie volatil
+        $currentDeviceHash = self::getCompositeDeviceHash($context);
+        $stableFpId = FingerprintBuilder::cyrb53(self::extractStablePart($currentDeviceHash));
+
+        $currentDeviceContributions = $subnetData['highScoreDevices'][$stableFpId] ?? 0;
         if ($currentDeviceContributions < 5 && $finalScore < 95) {
-            $subnetData['highScoreDevices'][$deviceId] = $currentDeviceContributions + 1;
+            $subnetData['highScoreDevices'][$stableFpId] = $currentDeviceContributions + 1;
             $subnetData['highScoreCount']++;
         }
 
-        if (!in_array($deviceId, $subnetData['deviceIds'])) {
-            $subnetData['deviceIds'][] = $deviceId;
+        if (!in_array($stableFpId, $subnetData['deviceIds'], true)) {
+            $subnetData['deviceIds'][] = $stableFpId;
         }
         $subnetData['lastActivity'] = time();
 
@@ -984,6 +1118,56 @@ class RequestUtils
         $score += min(40.0, $highScoreCount * 2);
 
         return ['subnetScore' => min(100.0, $score)];
+    }
+
+    /**
+     * Calcule le score d'anomalie de similarité réseau (Botnet Clustering).
+     * @param RequestContext $context
+     * @param string $stableFpHash
+     * @return array{'botnetClusterScore': float}
+     */
+    public static function getBotnetClusterScore(RequestContext $context, string $stableFpHash): array
+    {
+        if (empty($stableFpHash)) {
+            return ['botnetClusterScore' => 0.0];
+        }
+
+        $store = StoreManager::getStore();
+        $key = "botnet-cluster:{$stableFpHash}";
+        $now = time();
+        $tenMinutesAgo = $now - 600;
+
+        $clusterData = $store->get($key) ?? [];
+        if (!is_array($clusterData)) {
+            $clusterData = [];
+        }
+
+        $clusterData = array_filter($clusterData, function ($entry) use ($tenMinutesAgo) {
+            return isset($entry['timestamp']) && $entry['timestamp'] > $tenMinutesAgo;
+        });
+        $clusterData = array_values($clusterData);
+
+        $found = false;
+        foreach ($clusterData as &$entry) {
+            if (isset($entry['ip']) && $entry['ip'] === $context->clientIp) {
+                $entry['timestamp'] = $now;
+                $found = true;
+                break;
+            }
+        }
+        unset($entry);
+
+        if (!$found) {
+            $clusterData[] = ['ip' => $context->clientIp, 'timestamp' => $now];
+        }
+
+        $store->set($key, $clusterData, 600);
+        $uniqueIpsCount = count($clusterData);
+        $botnetClusterScore = 0.0;
+        if ($uniqueIpsCount >= 2) {
+            $botnetClusterScore = min(100.0, round(100.0 * (1.0 - exp(-0.35 * ($uniqueIpsCount - 1))), 1));
+        }
+        return ['botnetClusterScore' => $botnetClusterScore];
     }
 
     /**

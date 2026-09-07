@@ -11,6 +11,12 @@ use PHPUnit\Framework\TestCase;
 
 class RequestUtilsTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        \Anonympins\Fingerprint\Store\StoreManager::configureStore(new \Anonympins\Fingerprint\Store\InMemoryStore());
+    }
+
     private function createRequestContext(array $overrides = []): RequestContext
     {
         $defaults = [
@@ -166,6 +172,42 @@ class RequestUtilsTest extends TestCase
         $this->assertEquals(40.0, $scoreNoActivity['behaviorScore']);
     }
 
+    public function testGetBehaviorScoreWithBotLikeTouchMovements(): void
+    {
+        $metrics = [
+            'honeypotInteraction' => false,
+            'touchMovementsHistory' => [
+                ['x' => 50, 'y' => 50, 't' => 1, 'p' => 0.5, 'r' => 10, 'num' => 1],
+                ['x' => 55, 'y' => 55, 't' => 100, 'p' => 0.5, 'r' => 10, 'num' => 1],
+                ['x' => 60, 'y' => 60, 't' => 200, 'p' => 0.5, 'r' => 10, 'num' => 1],
+                ['x' => 65, 'y' => 65, 't' => 300, 'p' => 0.5, 'r' => 10, 'num' => 1]
+            ]
+        ];
+        $context = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metrics)]
+        ]);
+        $score = RequestUtils::getBehaviorScore($context);
+        $this->assertGreaterThan(60.0, $score['behaviorScore']);
+    }
+
+    public function testGetBehaviorScoreWithHumanLikeTouchMovements(): void
+    {
+        $metrics = [
+            'honeypotInteraction' => false,
+            'touchMovementsHistory' => [
+                ['x' => 50, 'y' => 50, 't' => 1, 'p' => 0.45, 'r' => 8.5, 'num' => 1],
+                ['x' => 60, 'y' => 52, 't' => 100, 'p' => 0.52, 'r' => 9.1, 'num' => 1],
+                ['x' => 72, 'y' => 60, 't' => 200, 'p' => 0.49, 'r' => 8.8, 'num' => 1],
+                ['x' => 80, 'y' => 80, 't' => 300, 'p' => 0.41, 'r' => 8.2, 'num' => 1]
+            ]
+        ];
+        $context = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metrics)]
+        ]);
+        $score = RequestUtils::getBehaviorScore($context);
+        $this->assertLessThan(30.0, $score['behaviorScore']);
+    }
+
     public function testGetTimeInconsistencyScore(): void
     {
         $requestTimestamp = time() * 1000;
@@ -253,5 +295,93 @@ class RequestUtilsTest extends TestCase
         $indicators = RequestUtils::getBehavioralIndicators($context, $deviceData);
         $this->assertEquals(2, $deviceData['rapidChangeCount']);
         $this->assertGreaterThan(0, $indicators['rotationScore']);
+    }
+
+    public function testGetRequestPatternScoreWeightedSubscores(): void
+    {
+        $context = $this->createRequestContext(['path' => '/search']);
+        $deviceData = [
+            'requestHistory' => [],
+            'timingHistory' => [100, 100, 100, 100, 100, 100], // stdDev = 0
+            'lastPatternScore' => 0.0
+        ];
+        $patternConfig = [
+            'minSamples' => 5,
+            'regularityThreshold' => 50,
+            'benfordThreshold' => 0.15,
+            'patternWeight' => 80,
+            'decayFactor' => 0.9,
+            'inactivityReset' => 5000,
+            'regularityRatio' => 0.4,
+            'benfordRatio' => 0.3,
+            'enumerationRatio' => 0.3
+        ];
+
+        $result = RequestUtils::getRequestPatternScore($context, $deviceData, $patternConfig);
+        // regularityScore = 1.0. regularityRatio = 0.4.
+        // instantScore = 1.0 * 0.4 * 80 = 32.
+        $this->assertEquals(32.0, $result['requestPatternScore']);
+    }
+
+    public function testGetBotnetClusterScoreCalculations(): void
+    {
+        $stableFpHash = 'test-stable-hash';
+
+        $context1 = $this->createRequestContext(['clientIp' => '192.168.1.1']);
+        $score = RequestUtils::getBotnetClusterScore($context1, $stableFpHash);
+        $this->assertEquals(0.0, $score['botnetClusterScore']);
+
+        RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.2']), $stableFpHash);
+        $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.3']), $stableFpHash);
+        $this->assertEquals(50.3, $score['botnetClusterScore']);
+
+        RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.4']), $stableFpHash);
+        $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.5']), $stableFpHash);
+        $this->assertEquals(75.3, $score['botnetClusterScore']);
+
+        for ($i = 6; $i <= 10; $i++) {
+            $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => "192.168.1.{$i}"]), $stableFpHash);
+        }
+        $this->assertEquals(95.7, $score['botnetClusterScore']);
+    }
+
+    public function testRealWorldConsoleBotnetClustering(): void
+    {
+        $ps4Headers = [
+            'user-agent' => 'Mozilla/5.0 (PlayStation 4 11.50) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.50 Safari/605.1.15',
+            'x-ja3-hash' => '76993ef93bf89104037599723ab9f201',
+            'x-ja4-hash' => 't13d1516h2_8daaf6152771_390237aa04be',
+            'x-http2-fingerprint' => '1:65536;3:1000;4:6291456;6:65536',
+            'x-tcp-fingerprint' => '64240:128:1:mss,nop,ws,nop,nop,sok:df:0'
+        ];
+
+        for ($i = 1; $i <= 10; $i++) {
+            $context = $this->createRequestContext([
+                'clientIp' => "185.15.20.{$i}",
+                'headers' => array_merge($ps4Headers, [
+                    'cookie_keys' => "session_id=fake_sess_{$i}"
+                ])
+            ]);
+
+            $currentHash = RequestUtils::getCompositeDeviceHash($context);
+            $stableFp = RequestUtils::extractStablePart($currentHash);
+            $stableFpHash = FingerprintBuilder::cyrb53($stableFp);
+            
+            $score = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
+
+            if ($i === 1) {
+                $this->assertEquals(0.0, $score['botnetClusterScore']);
+            } elseif ($i === 2) {
+                $this->assertEquals(29.5, $score['botnetClusterScore']);
+            } elseif ($i === 3) {
+                $this->assertEquals(50.3, $score['botnetClusterScore']);
+            } elseif ($i === 4) {
+                $this->assertEquals(65.0, $score['botnetClusterScore']);
+            } elseif ($i === 5) {
+                $this->assertEquals(75.3, $score['botnetClusterScore']);
+            } elseif ($i === 10) {
+                $this->assertEquals(95.7, $score['botnetClusterScore']);
+            }
+        }
     }
 }

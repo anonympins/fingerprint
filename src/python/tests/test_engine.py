@@ -1028,3 +1028,111 @@ def test_auto_tuner_cycle():
 
     best_sol = tuner.get_best_tuning_solution()
     assert best_sol is not None or tuner.traffic_data is not None
+
+@pytest.mark.asyncio
+async def test_challenge_rate_limiting():
+    """Vérifie le fonctionnement du limiteur de débit pour les challenges (Token Bucket)."""
+    store = InMemoryStore()
+    client_ip = "1.2.3.4"
+    
+    # Premier appel : doit passer
+    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is True
+    
+    # On vide le seau artificiellement (on consomme les jetons restants)
+    for _ in range(4):
+        assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is True
+        
+    # Le 6ème appel doit être rejeté (False)
+    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is False
+
+def test_get_behavior_score_with_bot_like_touch_movements():
+    """Vérifie la détection de l'émulation tactile (mouvements robotiques / variance de pression nulle)."""
+    import json
+    metrics = {
+        "honeypotInteraction": False,
+        "touchMovementsHistory": [
+            {"x": 50, "y": 50, "t": 1, "p": 0.5, "r": 10, "num": 1},
+            {"x": 55, "y": 55, "t": 100, "p": 0.5, "r": 10, "num": 1},
+            {"x": 60, "y": 60, "t": 200, "p": 0.5, "r": 10, "num": 1},
+            {"x": 65, "y": 65, "t": 300, "p": 0.5, "r": 10, "num": 1}
+        ]
+    }
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"x-behavior-metrics": json.dumps(metrics)},
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_behavior_score(context)
+    assert score > 60.0
+
+def test_get_behavior_score_with_human_like_touch_movements():
+    """Vérifie que les gestes tactiles complexes et naturels d'un humain n'induisent pas de pénalités."""
+    import json
+    metrics = {
+        "honeypotInteraction": False,
+        "touchMovementsHistory": [
+            {"x": 50, "y": 50, "t": 1, "p": 0.45, "r": 8.5, "num": 1},
+            {"x": 60, "y": 52, "t": 100, "p": 0.52, "r": 9.1, "num": 1},
+            {"x": 72, "y": 60, "t": 200, "p": 0.49, "r": 8.8, "num": 1},
+            {"x": 80, "y": 80, "t": 300, "p": 0.41, "r": 8.2, "num": 1}
+        ]
+    }
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"x-behavior-metrics": json.dumps(metrics)},
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_behavior_score(context)
+    assert score < 30.0
+
+
+@pytest.mark.asyncio
+async def test_real_world_console_botnet_clustering():
+    """Vérifie le regroupement d'empreintes de consoles (PS4) partageant des composants stables."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"botnetClusterScore": 1.0}
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    ps4_headers = {
+        "user-agent": "Mozilla/5.0 (PlayStation 4 11.50) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.50 Safari/605.1.15",
+        "x-ja3-hash": "76993ef93bf89104037599723ab9f201",
+        "x-ja4-hash": "t13d1516h2_8daaf6152771_390237aa04be",
+    }
+
+    for i in range(1, 11):
+        context = RequestContext(
+            client_ip=f"185.15.20.{i}",
+            path="/api/login",
+            headers={
+                **ps4_headers,
+                "cookie_keys": f"session_id=fake_sess_{i}"
+            },
+            query_params={},
+            cookies={}
+        )
+
+        current_hash = engine.get_composite_device_hash(context)
+        stable_fp = engine._extract_stable_part(current_hash)
+        stable_fp_hash = str(cyrb53(stable_fp))
+
+        score_data = RequestUtils.get_botnet_cluster_score(context, stable_fp_hash)
+
+        if i == 1:
+            assert score_data["botnetClusterScore"] == 0.0
+        elif i == 2:
+            assert score_data["botnetClusterScore"] == 29.5
+        elif i == 3:
+            assert score_data["botnetClusterScore"] == 50.3
+        elif i == 4:
+            assert score_data["botnetClusterScore"] == 65.0
+        elif i == 5:
+            assert score_data["botnetClusterScore"] == 75.3
+        elif i == 10:
+            assert score_data["botnetClusterScore"] == 95.7

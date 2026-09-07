@@ -28,7 +28,7 @@ global.TextEncoder = dom.window.TextEncoder;
 describe('ClientLibrary.initializeClient', () => {
 
     // On utilise des espions (spies) pour vérifier si les méthodes internes sont appelées.
-    let startMouseSpy, startKeystrokeSpy, initHoneypotsSpy, injectTrapsSpy, initFetchSpy;
+    let startMouseSpy, startKeystrokeSpy, startClickSpy, startTouchSpy, initWasmSpy, initHoneypotsSpy, injectTrapsSpy, initFetchSpy, injectPhantomTrapsSpy;
 
     beforeEach(() => {
         // Réinitialiser l'état du client avant chaque test
@@ -37,9 +37,13 @@ describe('ClientLibrary.initializeClient', () => {
         // Créer les espions sur les méthodes internes
         startMouseSpy = vi.spyOn(ClientLibrary, 'startMouseEntropyTracker');
         startKeystrokeSpy = vi.spyOn(ClientLibrary, 'startKeystrokeDynamicsTracker');
+        startClickSpy = vi.spyOn(ClientLibrary, 'startClickTracker');
+        startTouchSpy = vi.spyOn(ClientLibrary, 'startTouchEventTracker');
+        initWasmSpy = vi.spyOn(ClientLibrary, 'initializeWasm').mockResolvedValue(undefined);
         initHoneypotsSpy = vi.spyOn(ClientLibrary, 'initializeHoneypots');
         injectTrapsSpy = vi.spyOn(ClientLibrary, 'injectTrapLinks');
         initFetchSpy = vi.spyOn(ClientLibrary, 'initializeFetch');
+        injectPhantomTrapsSpy = vi.spyOn(ClientLibrary, 'injectPhantomTraps');
     });
 
     afterEach(() => {
@@ -52,13 +56,30 @@ describe('ClientLibrary.initializeClient', () => {
 
         expect(startMouseSpy).toHaveBeenCalled();
         expect(startKeystrokeSpy).toHaveBeenCalled();
+        expect(startClickSpy).toHaveBeenCalled();
+        expect(startTouchSpy).toHaveBeenCalled();
+        expect(injectPhantomTrapsSpy).toHaveBeenCalled();
     });
 
-    it('should disable mouse and keystroke trackers when configured', () => {
-        ClientLibrary.initializeClient({ mouse: false, keystrokes: false });
+    it('should disable trackers when configured', () => {
+        ClientLibrary.initializeClient({ mouse: false, keystrokes: false, clicks: false, touches: false });
 
         expect(startMouseSpy).not.toHaveBeenCalled();
         expect(startKeystrokeSpy).not.toHaveBeenCalled();
+        expect(startClickSpy).not.toHaveBeenCalled();
+        expect(startTouchSpy).not.toHaveBeenCalled();
+    });
+
+    it('should initialize WASM if wasmPath is configured', () => {
+        ClientLibrary.initializeClient({ wasmPath: '/fp.js' });
+
+        expect(initWasmSpy).toHaveBeenCalledWith('/fp.js');
+    });
+
+    it('should disable phantom traps when configured', () => {
+        ClientLibrary.initializeClient({ phantomTraps: false });
+
+        expect(injectPhantomTrapsSpy).not.toHaveBeenCalled();
     });
 
     it('should initialize honeypots with the provided field names', () => {

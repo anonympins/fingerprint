@@ -16,6 +16,37 @@ export { createMongoDbStore } from "./mongodb-store.js";
 
 
 /**
+ * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+ * @param {string} clientIp - L'adresse IP du client.
+ * @returns {Promise<boolean>} True si la requête est autorisée, false si elle est limitée.
+ */
+async function checkChallengeRateLimit(clientIp) {
+  const subnet = getIpSubnet(clientIp);
+  if (!subnet) return false;
+
+  const key = `rate-limit:${subnet}`;
+  const rateLimitData = (await store.get(key)) || {
+    tokens: 5.0,
+    lastRefill: Date.now() / 1000
+  };
+
+  const capacity = 5.0;
+  const refillRate = 0.1; // 1 token toutes les 10 secondes
+  const now = Date.now() / 1000;
+
+  const elapsed = now - rateLimitData.lastRefill;
+  const tokens = Math.min(capacity, rateLimitData.tokens + elapsed * refillRate);
+
+  if (tokens < 1.0) {
+    await store.set(key, { tokens, lastRefill: now }, 60);
+    return false;
+  }
+
+  await store.set(key, { tokens: tokens - 1.0, lastRefill: now }, 60);
+  return true;
+}
+
+/**
  * @private
  * Deep merges two objects. The `source` object's properties overwrite the `target`'s.
  * @param {object} target - The target object.
@@ -54,7 +85,8 @@ const securityProfiles = {
             timeInconsistencyScore: 0.9,
             tlsSpoofingScore: 0.8, // NOUVEAU: Poids pour la détection de spoofing TLS
             subnetScore: 0.4, // NOUVEAU: Poids pour la réputation du sous-réseau
-            ipReputationScore: 0.5 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.6 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -89,7 +121,8 @@ const securityProfiles = {
             timeInconsistencyScore: 1.0,
             tlsSpoofingScore: 1.0, // Plus agressif pour le spoofing TLS
             subnetScore: 0.5,
-            ipReputationScore: 0.6 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.8 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -125,7 +158,8 @@ const securityProfiles = {
             timeInconsistencyScore: 0.8,
             tlsSpoofingScore: 0.7, // Important pour les API
             subnetScore: 0.4,
-            ipReputationScore: 0.5 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.7 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -162,7 +196,8 @@ const securityProfiles = {
             timeInconsistencyScore: 0.8,
             tlsSpoofingScore: 0.6, // Moins critique pour les blogs
             subnetScore: 0.2,
-            ipReputationScore: 0.3 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.3, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.5 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -198,7 +233,8 @@ const securityProfiles = {
             timeInconsistencyScore: 0.9,
             tlsSpoofingScore: 0.9, // Très important pour l'e-commerce
             subnetScore: 0.5,
-            ipReputationScore: 0.6 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.9 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -319,12 +355,12 @@ function getTlsFingerprint(context) {
     let ja4 = null;
 
     // 1. Prefer JA4 hash from a trusted reverse proxy header.
-    const ja4FromHeader = context.headers['x-ja4-hash'];
+    const ja4FromHeader = context.headers ? context.headers['x-ja4-hash'] : null;
     if (ja4FromHeader) {
         ja4 = ja4FromHeader;
     }
     // 2. Prefer JA3 hash from a trusted reverse proxy header.
-    const ja3FromHeader = context.headers['x-ja3-hash']; // Assuming a proxy might provide JA3 too
+    const ja3FromHeader = context.headers ? context.headers['x-ja3-hash'] : null; // Assuming a proxy might provide JA3 too
     if (ja3FromHeader) {
         ja3 = ja3FromHeader;
     }
@@ -425,7 +461,7 @@ function getCompositeDeviceHash(context) {
     // notre propre fingerprint serveur pour le comparer.
     // Un attaquant qui forge un `clientFp` mais oublie de forger les en-têtes
     // correspondants sera détecté par l'incohérence.
-    const clientFp = context.headers['x-device-fingerprint'];
+    const clientFp = context.headers ? context.headers['x-device-fingerprint'] : null;
     if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
         // On ajoute le hash du fingerprint client comme un composant du fingerprint serveur.
         // Si le clientFp change, le hash serveur changera aussi.
@@ -433,7 +469,7 @@ function getCompositeDeviceHash(context) {
     }
 
     // 1. SIGNAL FORT: User Agent (poids élevé)
-    const ua = context.headers["user-agent"];
+    const ua = context.headers ? context.headers["user-agent"] : null;
     if (ua) {
         srv.add("ua", ua); // User-Agent
     }
@@ -443,10 +479,10 @@ function getCompositeDeviceHash(context) {
     if (ja3) srv.add("ja3", ja3);
     if (ja4) srv.add("ja4", ja4);
 
-    const h2Fingerprint = context.headers['x-http2-fingerprint'];
+    const h2Fingerprint = context.headers ? context.headers['x-http2-fingerprint'] : null;
     if (h2Fingerprint) srv.add("h2", h2Fingerprint);
 
-    const tcpFingerprint = context.headers['x-tcp-fingerprint'];
+    const tcpFingerprint = context.headers ? context.headers['x-tcp-fingerprint'] : null;
     if (tcpFingerprint) srv.add("tcp", tcpFingerprint);
 
     // 3. SIGNAUX DE HAUT NIVEAU (Applicatif) Moins fiables, mais utiles pour la corroboration
@@ -464,7 +500,7 @@ function getCompositeDeviceHash(context) {
     };
 
     for (const [key, headerName] of Object.entries(headersToCapture)) {
-        const headerValue = context.headers[headerName];
+        const headerValue = context.headers ? context.headers[headerName] : null;
         if (headerValue) {
             srv.add(key, headerValue);
         }
@@ -1150,6 +1186,79 @@ function analyzeMouseMovements(history) {
 }
 
 /**
+ * @private
+ * Analyse une série d'événements tactiles mobiles pour en extraire des indicateurs comportementaux robustes.
+ * @param {Array<{x: number, y: number, t: number, p: number, r: number, num: number}>} history
+ * @returns {{avgSpeed: number, avgAcceleration: number, straightness: number, pauses: number, segments: Array<number>, avgPressure: number, avgRadius: number, pressureVariance: number, radiusVariance: number, maxTouches: number}}
+ */
+function analyzeTouchMovements(history) {
+    if (!history || history.length < 3) {
+        return { avgSpeed: 0, avgAcceleration: 0, straightness: 1, pauses: 0, segments: [], avgPressure: 0, avgRadius: 0, pressureVariance: 0, radiusVariance: 0, maxTouches: 1 };
+    }
+
+    const segments = [];
+    let totalDistance = 0;
+    let pauses = 0;
+    let totalPressure = 0;
+    let totalRadius = 0;
+    let maxTouches = 1;
+
+    for (let i = 1; i < history.length; i++) {
+        const p1 = history[i - 1];
+        const p2 = history[i];
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const dt = p2.t - p1.t;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        totalPressure += p2.p || 0;
+        totalRadius += p2.r || 0;
+        if (p2.num > maxTouches) {
+            maxTouches = p2.num;
+        }
+
+        if (dt > 0) {
+            const speed = distance / dt;
+            segments.push({ distance, dt, speed });
+            totalDistance += distance;
+        }
+        if (dt > 100 && distance < 5) {
+            pauses++;
+        }
+    }
+
+    totalPressure += history[0].p || 0;
+    totalRadius += history[0].r || 0;
+
+    const avgPressure = totalPressure / history.length;
+    const avgRadius = totalRadius / history.length;
+
+    let sqDiffPressureSum = 0;
+    let sqDiffRadiusSum = 0;
+    for (const pt of history) {
+        sqDiffPressureSum += Math.pow((pt.p || 0) - avgPressure, 2);
+        sqDiffRadiusSum += Math.pow((pt.r || 0) - avgRadius, 2);
+    }
+    const pressureVariance = sqDiffPressureSum / history.length;
+    const radiusVariance = sqDiffRadiusSum / history.length;
+
+    if (segments.length < 2) {
+        return { avgSpeed: 0, avgAcceleration: 0, straightness: 1, pauses, segments: [], avgPressure, avgRadius, pressureVariance, radiusVariance, maxTouches };
+    }
+
+    const totalTime = history[history.length - 1].t - history[0].t;
+    const avgSpeed = totalTime > 0 ? segments.reduce((sum, s) => sum + s.speed, 0) / segments.length : 0;
+    const avgAcceleration = segments.reduce((sum, s) => sum + (s.speed / s.dt), 0) / segments.length;
+
+    const startPoint = history[0];
+    const endPoint = history[history.length - 1];
+    const straightDistance = Math.sqrt(Math.pow(endPoint.x - startPoint.x, 2) + Math.pow(endPoint.y - startPoint.y, 2));
+    const straightness = totalDistance > 0 ? straightDistance / totalDistance : 1;
+
+    return { avgSpeed, avgAcceleration, straightness, pauses, segments: segments.map(s => s.distance), avgPressure, avgRadius, pressureVariance, radiusVariance, maxTouches };
+}
+
+/**
  * Calcule un score basé sur les métriques comportementales envoyées par le client.
  * @param {object} context - Le contexte de la requête, contenant les en-têtes.
  * @returns {{behaviorScore: number}}
@@ -1171,9 +1280,10 @@ function getBehaviorScore(context) {
 
     // 2. Analyse des mouvements de la souris
     const { avgSpeed, avgAcceleration, straightness, pauses, segments } = analyzeMouseMovements(metrics.mouseMovementsHistory);
+    const touchAnalysis = analyzeTouchMovements(metrics.touchMovementsHistory);
 
     // Pénalité pour absence totale d'interaction (pas de mouvements, pas de frappes).
-    if (avgSpeed === 0 && metrics.keystrokeLatency === 0) {
+    if (avgSpeed === 0 && touchAnalysis.avgSpeed === 0 && metrics.keystrokeLatency === 0) {
       score += 40;
     }
 
@@ -1195,6 +1305,30 @@ function getBehaviorScore(context) {
         if (avgAcceleration > 0.5) score += 20; // Accélération trop brutale
         if (straightness > 0.95) score += 30; // Mouvement trop droit
         if (pauses === 0 && segments.length > 20) score += 15; // Mouvement continu sans micro-pauses
+    }
+
+    // 4. Analyse comportementale des événements tactiles (Touch Move)
+    const touchHistory = metrics.touchMovementsHistory;
+    if (touchHistory && touchHistory.length > 0) {
+        const touch = analyzeTouchMovements(touchHistory);
+        if (touch.avgSpeed > 0) {
+            if (touch.avgSpeed > 5) score += 30; // Touch d'une vitesse anormale/robotique
+            if (touch.avgAcceleration > 0.8) score += 20;
+            if (touch.straightness > 0.98) score += 35; // Un tracé de doigt humain n'est jamais parfaitement rectiligne
+            if (touch.pauses === 0 && touch.segments.length > 25) score += 15;
+
+            // Détection de l'émulation (pression et rayon de contact constants)
+            if (touch.avgPressure > 0 && touch.pressureVariance === 0) {
+                score += 30; // Spoofed force/pressure
+            }
+            if (touch.avgRadius > 0 && touch.radiusVariance === 0) {
+                score += 30; // Spoofed pointer area size
+            }
+        }
+        if (touch.segments.length > 10) {
+            const benfordDev = Optimization.Operators.benfordTest(touch.segments);
+            if (benfordDev > 0.18) score += 35;
+        }
     }
 
     // Plausibilité de la latence de frappe
@@ -1738,14 +1872,18 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
         subnetData.highScoreDevices = {};
     }
 
-    const currentDeviceContributions = subnetData.highScoreDevices[deviceId] || 0;
+    // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
+    const currentDeviceHash = getCompositeDeviceHash(context);
+    const stableFpId = cyrb53(extractStablePart(currentDeviceHash)).toString();
+
+    const currentDeviceContributions = subnetData.highScoreDevices[stableFpId] || 0;
     if (currentDeviceContributions < 5) {
-        subnetData.highScoreDevices[deviceId] = currentDeviceContributions + 1;
+        subnetData.highScoreDevices[stableFpId] = currentDeviceContributions + 1;
         subnetData.highScoreCount++;
     }
 
-    if (!subnetData.deviceIds.includes(deviceId)) {
-        subnetData.deviceIds.push(deviceId);
+    if (!subnetData.deviceIds.includes(stableFpId)) {
+        subnetData.deviceIds.push(stableFpId);
     }
     subnetData.lastActivity = Date.now();
 
@@ -1790,6 +1928,40 @@ async function getSubnetScore(context) {
     const highScorePenalty = Math.min(40, highScoreCount * 2);
 
     return { subnetScore: Math.min(100, deviceCountPenalty + highScorePenalty) };
+}
+
+/**
+ * Calcule le score d'anomalie de similarité réseau (Botnet Clustering).
+ * @param {object} context - Le contexte de la requête.
+ * @param {string} stableFpHash - Le hash de la partie stable de l'empreinte.
+ * @returns {Promise<{botnetClusterScore: number}>}
+ */
+async function getBotnetClusterScore(context, stableFpHash) {
+  if (!stableFpHash) return { botnetClusterScore: 0 };
+  const key = `botnet-cluster:${stableFpHash}`;
+  const now = Date.now();
+  const tenMinutesAgo = now - 600 * 1000;
+
+  let clusterData = (await store.get(key)) || [];
+  if (!Array.isArray(clusterData)) {
+    clusterData = [];
+  }
+
+  clusterData = clusterData.filter(entry => entry.timestamp > tenMinutesAgo);
+  const existingIndex = clusterData.findIndex(entry => entry.ip === context.clientIp);
+  if (existingIndex !== -1) {
+    clusterData[existingIndex].timestamp = now;
+  } else {
+    clusterData.push({ ip: context.clientIp, timestamp: now });
+  }
+
+  await store.set(key, clusterData, 600);
+  const uniqueIpsCount = clusterData.length;
+  let botnetClusterScore = 0;
+  if (uniqueIpsCount >= 2) {
+    botnetClusterScore = Math.min(100, Math.round(1000 * (1 - Math.exp(-0.35 * (uniqueIpsCount - 1)))) / 10);
+  }
+  return { botnetClusterScore };
 }
 
 /**
@@ -1858,7 +2030,10 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         benfordThreshold = 0.15,    // Seuil de déviation de Benford au-dessus duquel la distribution est "non naturelle".
         patternWeight = 80,         // Pénalité FORTE et unique si un pattern est détecté.
         decayFactor = 0.95,         // Décroissance du score dans le temps.
-        inactivityReset = 180000    // Réinitialisation du score après 3 minutes d'inactivité.
+        inactivityReset = 180000,   // Réinitialisation du score après 3 minutes d'inactivité.
+        regularityRatio = 0.4,      // (NOUVEAU) Poids relatif de l'écart-type
+        benfordRatio = 0.3,         // (NOUVEAU) Poids relatif de Benford
+        enumerationRatio = 0.3      // (NOUVEAU) Poids relatif de l'énumération de chemins
     } = patternConfig;
 
     const now = Date.now();
@@ -1888,24 +2063,24 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         deviceData.timingHistory.push(timeSinceLast);
     }
 
-    let instantScore = 0;
+    let regularityScore = 0;
+    let benfordScore = 0;
     const timings = deviceData.timingHistory;
 
     // Analyse statistique unifiée si nous avons assez de données
     if (timings.length >= minSamples) {
-        const timings = deviceData.timingHistory;
         const mean = timings.reduce((a, b) => a + b, 0) / timings.length;
         const variance = timings.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / timings.length;
         const stdDev = Math.sqrt(variance);
         const benfordDeviation = Optimization.Operators.benfordTest(timings);
 
-        // Détection de régularité (bots de type "cron")
+        // Calcul progressif de la régularité (stdDev proche de 0 = score max)
         if (stdDev < regularityThreshold) {
-            instantScore = patternWeight;
+            regularityScore = 1 - (stdDev / regularityThreshold);
         }
-        // Détection de distribution non-naturelle (bots "faussement aléatoires")
-        else if (benfordDeviation > benfordThreshold) {
-            instantScore = patternWeight;
+        // Calcul progressif de Benford (excès par rapport au seuil)
+        if (benfordDeviation > benfordThreshold) {
+            benfordScore = Math.min(1, (benfordDeviation - benfordThreshold) / (0.5 - benfordThreshold));
         }
     }
 
@@ -1919,11 +2094,17 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
         templates.forEach(t => templateCounts[t] = (templateCounts[t] || 0) + 1);
 
         const maxTemplateRepetition = Math.max(...Object.values(templateCounts), 0);
-        // Si une même structure de route est répétée mais sur des URLs réelles différentes
         if (maxTemplateRepetition >= 3 && uniquePaths.size === history.length) {
-            enumerationScore = patternWeight * 0.8; // Appliquer une forte pénalité
+            enumerationScore = Math.min(1, (maxTemplateRepetition - 2) / 5);
         }
     }
+
+    // Score instantané combiné linéaire pondéré
+    const weightedScore = (regularityScore * regularityRatio) +
+        (benfordScore * benfordRatio) +
+        (enumerationScore * enumerationRatio);
+
+    const instantScore = weightedScore * patternWeight;
 
     // Garder l'historique à une taille raisonnable
     if (history.length > historySize) {
@@ -1943,7 +2124,7 @@ function getRequestPatternScore(context, deviceData, patternConfig = {}) {
     }
     newPatternScore = Math.max(0, newPatternScore);
 
-    deviceData.lastPatternScore = newPatternScore + instantScore + enumerationScore;
+    deviceData.lastPatternScore = Math.max(instantScore, newPatternScore);
 
     return { requestPatternScore: Math.min(100, deviceData.lastPatternScore) };
 }
@@ -2175,6 +2356,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
     const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context, securityConfig);
 
   const clientIp = context.clientIp;
+  const currentDeviceHash = getCompositeDeviceHash(context);
 
   // If a new cookie needs to be set, attach it to the request object
   // so the middleware can handle it. This is a temporary state holder.
@@ -2230,6 +2412,10 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
   const ipReputationScore = await getIpReputationScore(clientIp);
 
+  const stableFp = extractStablePart(currentDeviceHash);
+  const stableFpHash = cyrb53(stableFp).toString();
+  const { botnetClusterScore } = await getBotnetClusterScore(context, stableFpHash);
+
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
   await store.set(`device:${deviceId}`, deviceData);
@@ -2240,7 +2426,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -2644,6 +2830,7 @@ export class FingerprintEngine {
             (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
             (suspicionVector.botScore || 0) * (weights.botScore || 0) + // Ajout du nouveau score
             (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
+            (suspicionVector.botnetClusterScore || 0) * (weights.botnetClusterScore || 0) +
             (suspicionVector.tlsSpoofingScore || 0) * (weights.tlsSpoofingScore || 0) + // NOUVEAU: TLS Spoofing
             (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0) +
             (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
@@ -3374,6 +3561,28 @@ export class FingerprintEngine {
         if (mustReChallenge) {
             this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
         }
+
+        // --- AJOUT : Limiteur de débit (Token Bucket) ---
+        const rateLimitPassed = await checkChallengeRateLimit(clientIp);
+        if (!rateLimitPassed) {
+            this._log('Challenge rate limit exceeded - blocking with 429', { clientIp });
+            const decision = {
+                action: 'block',
+                status: 429,
+                body: 'Too Many Requests',
+                score: finalScore,
+                vector: suspicionVector
+            };
+            if (this.dryRun) {
+                this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+                decision.intendedAction = decision.action;
+                decision.action = 'next';
+                delete decision.status;
+                delete decision.body;
+            }
+            return decision;
+        }
+
         this._log('Suspicious request without valid ticket - issuing challenge', { finalScore, hasPowCookie: !!powCookie });
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
@@ -4144,6 +4353,7 @@ export const __internal = {
     sanitizeTrafficData, // NOUVEAU: Expose pour l'auto-tuner/tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     parseJa3,
+    getBotnetClusterScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
     getClientHintsInconsistencyScore, // Expose for testing
     generateCombinedPoWChallengePage,

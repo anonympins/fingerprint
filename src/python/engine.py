@@ -325,9 +325,42 @@ class ChallengeUtils:
         except Exception:
             return False
 
+    @staticmethod
+    async def check_challenge_rate_limit(store, client_ip: str) -> bool:
+        """
+        Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+        """
+        subnet = get_ip_subnet(client_ip)
+        if not subnet:
+            return False
+
+        key = f"rate-limit:{subnet}"
+        rate_limit_data = await store.get(key)
+        if not rate_limit_data:
+            rate_limit_data = {
+                "tokens": 5.0,
+                "lastRefill": time.time()
+            }
+
+        capacity = 5.0
+        refill_rate = 0.1  # 1 token toutes les 10 secondes
+        now = time.time()
+
+        elapsed = now - rate_limit_data["lastRefill"]
+        tokens = min(capacity, rate_limit_data["tokens"] + elapsed * refill_rate)
+
+        if tokens < 1.0:
+            await store.set(key, {"tokens": tokens, "lastRefill": now}, 60)
+            return False
+
+        await store.set(key, {"tokens": tokens - 1.0, "lastRefill": now}, 60)
+        return True
+
 
 # --- CORE: Request Analysis Utilities ---
 class RequestUtils:
+    _botnet_clusters: Dict[str, List[Dict[str, Any]]] = {}
+
     @staticmethod
     def parse_user_agent(ua: str) -> Dict[str, Optional[str]]:
         """
@@ -564,6 +597,55 @@ class RequestUtils:
         return {"avgSpeed": avg_speed, "avgAcceleration": avg_acceleration, "straightness": straight_dist / total_distance if total_distance > 0 else 1.0, "pauses": pauses, "segments": [s["distance"] for s in segments]}
 
     @staticmethod
+    def analyze_touch_movements(history: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        if not history or len(history) < 3:
+            return {
+                "avgSpeed": 0.0, "avgAcceleration": 0.0, "straightness": 1.0, "pauses": 0, "segments": [],
+                "avgPressure": 0.0, "avgRadius": 0.0, "pressureVariance": 0.0, "radiusVariance": 0.0, "maxTouches": 1
+            }
+        segments, total_distance, pauses = [], 0.0, 0
+        total_pressure, total_radius, max_touches = 0.0, 0.0, 1
+        for i in range(1, len(history)):
+            p1, p2 = history[i-1], history[i]
+            dx, dy, dt = p2["x"] - p1["x"], p2["y"] - p1["y"], p2["t"] - p1["t"]
+            distance = math.sqrt(dx*dx + dy*dy)
+            total_pressure += p2.get("p", 0.0)
+            total_radius += p2.get("r", 0.0)
+            if p2.get("num", 1) > max_touches:
+                max_touches = p2.get("num", 1)
+            if dt > 0:
+                segments.append({"distance": distance, "dt": dt, "speed": distance / dt})
+                total_distance += distance
+            if dt > 100 and distance < 5:
+                pauses += 1
+
+        total_pressure += history[0].get("p", 0.0)
+        total_radius += history[0].get("r", 0.0)
+
+        avg_pressure = total_pressure / len(history)
+        avg_radius = total_radius / len(history)
+
+        pressure_variance = sum((pt.get("p", 0.0) - avg_pressure) ** 2 for pt in history) / len(history)
+        radius_variance = sum((pt.get("r", 0.0) - avg_radius) ** 2 for pt in history) / len(history)
+
+        if len(segments) < 2:
+            return {
+                "avgSpeed": 0.0, "avgAcceleration": 0.0, "straightness": 1.0, "pauses": pauses, "segments": [],
+                "avgPressure": avg_pressure, "avgRadius": avg_radius, "pressureVariance": pressure_variance, "radiusVariance": radius_variance, "maxTouches": max_touches
+            }
+        total_time = history[-1]["t"] - history[0]["t"]
+        avg_speed = sum(s["speed"] for s in segments) / len(segments) if total_time > 0 else 0.0
+        total_abs_acc = sum(abs((segments[i]["speed"] - segments[i-1]["speed"]) / segments[i]["dt"]) for i in range(1, len(segments)) if segments[i]["dt"] > 0)
+        avg_acceleration = total_abs_acc / (len(segments) - 1)
+        straight_dist = math.sqrt((history[-1]["x"] - history[0]["x"])**2 + (history[-1]["y"] - history[0]["y"])**2)
+        return {
+            "avgSpeed": avg_speed, "avgAcceleration": avg_acceleration,
+            "straightness": straight_dist / total_distance if total_distance > 0 else 1.0, "pauses": pauses,
+            "segments": [s["distance"] for s in segments], "avgPressure": avg_pressure, "avgRadius": avg_radius,
+            "pressureVariance": pressure_variance, "radiusVariance": radius_variance, "maxTouches": max_touches
+        }
+
+    @staticmethod
     def get_behavior_score(context: RequestContext) -> float:
         header = context.headers.get("x-behavior-metrics")
         if not header:
@@ -576,19 +658,32 @@ class RequestUtils:
             return 100.0
         score = 0.0
         mouse_analysis = RequestUtils.analyze_mouse_movements(metrics.get("mouseMovementsHistory"))
+        touch_analysis = RequestUtils.analyze_touch_movements(metrics.get("touchMovementsHistory"))
         if "historyLength" in metrics:
             hl = metrics["historyLength"]
             if hl == 1: score += 15.0
             elif hl >= 5: score -= 20.0
             elif hl >= 2: score -= 10.0
         else:
-            if mouse_analysis["avgSpeed"] == 0.0 and metrics.get("keystrokeLatency", 0.0) == 0.0:
+            if mouse_analysis["avgSpeed"] == 0.0 and touch_analysis["avgSpeed"] == 0.0 and metrics.get("keystrokeLatency", 0.0) == 0.0:
                 score += 40.0
         if mouse_analysis["avgSpeed"] > 0.0:
             if mouse_analysis["avgSpeed"] > 3.0: score += 25.0
             if mouse_analysis["avgAcceleration"] > 0.5: score += 20.0
             if mouse_analysis["straightness"] > 0.95: score += 30.0
             if mouse_analysis["pauses"] == 0 and len(mouse_analysis["segments"]) > 20: score += 15.0
+
+        if touch_analysis["avgSpeed"] > 0.0:
+            if touch_analysis["avgSpeed"] > 5.0: score += 30.0
+            if touch_analysis["avgAcceleration"] > 0.8: score += 20.0
+            if touch_analysis["straightness"] > 0.98: score += 35.0
+            if touch_analysis["pauses"] == 0 and len(touch_analysis["segments"]) > 25: score += 15.0
+            if touch_analysis["avgPressure"] > 0.0 and touch_analysis["pressureVariance"] == 0.0: score += 30.0
+            if touch_analysis["avgRadius"] > 0.0 and touch_analysis["radiusVariance"] == 0.0: score += 30.0
+        if len(touch_analysis["segments"]) > 10:
+            benford_deviation = Optimization.benford_test(touch_analysis["segments"])
+            if benford_deviation > 0.18: score += 35.0
+
         ks_latency = metrics.get("keystrokeLatency", 0.0)
         if 0.0 < ks_latency < 40.0: score += 25.0
         if ks_latency > 1000.0: score += 15.0
@@ -606,6 +701,9 @@ class RequestUtils:
         pattern_weight = pattern_config.get("patternWeight", 80)
         decay_factor = pattern_config.get("decayFactor", 0.95)
         inactivity_reset = pattern_config.get("inactivityReset", 180000)
+        regularity_ratio = pattern_config.get("regularityRatio", 0.4)
+        benford_ratio = pattern_config.get("benfordRatio", 0.3)
+        enumeration_ratio = pattern_config.get("enumerationRatio", 0.3)
         now = int(time.time() * 1000)
         history = device_data.get("requestHistory", [])
         device_data["timingHistory"] = device_data.get("timingHistory", [])
@@ -617,15 +715,20 @@ class RequestUtils:
         if len(history) > history_size: history.pop(0)
         if len(device_data["timingHistory"]) > history_size: device_data["timingHistory"].pop(0)
         device_data["requestHistory"] = history
-        instant_score = 0.0
+        regularity_score = 0.0
+        benford_score = 0.0
         timings = device_data["timingHistory"]
         if len(timings) >= min_samples:
             mean = sum(timings) / len(timings)
             variance = sum((t - mean) ** 2 for t in timings) / len(timings)
             std_dev = math.sqrt(variance)
             benford_deviation = Optimization.benford_test(timings)
-            if std_dev < regularity_threshold: instant_score = pattern_weight
-            elif benford_deviation > benford_threshold: instant_score = pattern_weight
+            if std_dev < regularity_threshold:
+                regularity_score = 1.0 - (std_dev / regularity_threshold)
+            if benford_deviation > benford_threshold:
+                benford_score = min(1.0, (benford_deviation - benford_threshold) / (0.5 - benford_threshold))
+
+        # Path enumeration progressif
         enumeration_score = 0.0
         if len(history) >= 3:
             templates = [re.sub(r"\d+", "{num}", h["path"]) for h in history]
@@ -634,11 +737,17 @@ class RequestUtils:
             template_counts = Counter(templates)
             max_template_repetition = max(template_counts.values()) if template_counts else 0
             if max_template_repetition >= 3 and len(unique_paths) == len(history):
-                enumeration_score = pattern_weight * 0.8
+                enumeration_score = min(1.0, (max_template_repetition - 2) / 5.0)
+
+        weighted_score = (regularity_score * regularity_ratio) + \
+                         (benford_score * benford_ratio) + \
+                         (enumeration_score * enumeration_ratio)
+        instant_score = weighted_score * pattern_weight
+
         new_pattern_score = device_data.get("lastPatternScore", 0.0)
         if time_since_last > inactivity_reset: new_pattern_score = 0.0
         else: new_pattern_score *= decay_factor
-        device_data["lastPatternScore"] = max(0.0, new_pattern_score) + instant_score + enumeration_score
+        device_data["lastPatternScore"] = max(0.0, max(instant_score, new_pattern_score))
         return {"requestPatternScore": min(100.0, device_data["lastPatternScore"])}
 
     @staticmethod
@@ -695,7 +804,8 @@ class RequestUtils:
             high_score_count = max(0, int(math.floor(high_score_count / (2 ** half_lives))))
             device_count = max(0, int(math.floor(device_count / (2 ** half_lives))))
         score = 0.0
-        if device_count > 10: score += min(80.0, (device_count - 10) * 5)
+        if device_count > 10:
+            score += min(80.0, (device_count - 10) * 5)
         score += min(40.0, high_score_count * 2)
         return {"subnetScore": min(100.0, score)}
 
@@ -775,6 +885,43 @@ class RequestUtils:
                 return 100.0
                 
         return 0.0
+
+    @staticmethod
+    def get_botnet_cluster_score(context: RequestContext, stable_fp_hash: str) -> Dict[str, float]:
+        if not stable_fp_hash:
+            return {"botnetClusterScore": 0.0}
+
+        now = int(time.time())
+        ten_minutes_ago = now - 600
+
+        cluster_data = RequestUtils._botnet_clusters.get(stable_fp_hash, [])
+        if not isinstance(cluster_data, list):
+            cluster_data = []
+
+        # Filter out entries older than 10 minutes
+        cluster_data = [entry for entry in cluster_data if entry.get("timestamp", 0) > ten_minutes_ago]
+
+        # Check if the client IP already exists in the cluster
+        found = False
+        for entry in cluster_data:
+            if entry.get("ip") == context.client_ip:
+                entry["timestamp"] = now
+                found = True
+                break
+
+        if not found:
+            cluster_data.append({"ip": context.client_ip, "timestamp": now})
+
+        # Save back to class-level cache
+        RequestUtils._botnet_clusters[stable_fp_hash] = cluster_data
+
+        unique_ips_count = len(cluster_data)
+        botnet_cluster_score = 0.0
+        if unique_ips_count >= 2:
+            raw_score = 100.0 * (1.0 - math.exp(-0.35 * (unique_ips_count - 1)))
+            botnet_cluster_score = min(100.0, round(raw_score, 1))
+
+        return {"botnetClusterScore": botnet_cluster_score}
 
 class RedisStore:
     """
@@ -1083,10 +1230,10 @@ class FingerprintClient:
     def generate_honeypot_field(self, field_name: str) -> str:
         if field_name not in self.client_config["honeypots"]:
             self.client_config["honeypots"].append(field_name)
-        styles = "position:absolute; left:-9999px; top:-9999px; opacity:0;"
+        styles = "position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;"
         from html import escape
         f_name = escape(field_name)
-        return f'<div style="{styles}" aria-hidden="true"><label for="{f_name}">Do not fill</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></div>'
+        return f'<div style="{styles}" aria-hidden="true"><label for="{f_name}">&gt;</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></div>'
 
     def get_script_tag(self) -> str:
         config_json = json.dumps(self.client_config)
@@ -1553,7 +1700,10 @@ class FingerprintEngine:
         block_threshold = self.thresholds.get("block", 95)
 
         if score > low_threshold and score < block_threshold:
-            await RequestUtils.update_subnet_metrics(self.store, client_ip, device_id, score)
+            # Utilise l'identifiant matériel stable pour éviter les faux positifs lors du cookie dropping
+            current_hash = self.get_composite_device_hash(context)
+            stable_fp_id = str(cyrb53(self._extract_stable_part(current_hash)))
+            await RequestUtils.update_subnet_metrics(self.store, client_ip, stable_fp_id, score)
             MetricsManager.observe_value("suspicion_score", score, {"action": "high_score_subnet_update"})
 
 
@@ -1573,6 +1723,23 @@ class FingerprintEngine:
         low_threshold = self.thresholds.get("low", 20)
 
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
+            # --- AJOUT: Limiteur de débit (Token Bucket) ---
+            rate_limit_passed = await ChallengeUtils.check_challenge_rate_limit(self.store, client_ip)
+            if not rate_limit_passed:
+                decision = {
+                    "action": "block",
+                    "status": 429,
+                    "body": "Too Many Requests",
+                    "score": score,
+                    "vector": suspicion_vector
+                }
+                if self.dry_run:
+                    decision["intendedAction"] = decision["action"]
+                    decision["action"] = "next"
+                    decision.pop("status", None)
+                    decision.pop("body", None)
+                return decision
+
             nonce = str(uuid.uuid4()).replace("-", "")[:16]
             client_secret = str(uuid.uuid4()).replace("-", "")[:16]
             suspicion_factor = (score - low_threshold) / (high_threshold - low_threshold) if high_threshold > low_threshold else 0.5
