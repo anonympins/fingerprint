@@ -1,3 +1,24 @@
+## Version 0.4.4
+
+### 🧮 Pattern Score Ratios & Weighted Subscores
+- **Linear Weighted Pattern Scores**: Introduced configurable ratios (`regularityRatio`, `benfordRatio`, `enumerationRatio`) to dynamically adjust the influence of timing regularity, Benford's law deviation, and sequential path enumeration on the final `requestPatternScore`.
+
+### 🕸️ Advanced Client Tracking & Touch Analysis
+- **Mobile Client Touch Analysis**: Implemented detailed analysis of mobile touch events, extracting advanced behavioral metrics such as average pressure, touch radius size, coordinate variance, and multi-touch count to effectively detect automated touch emulation.
+- **WASM Client Caching with IndexedDB**: Added client-side persistent storage of compiled WebAssembly modules in IndexedDB (`wasm-cache-db`) to drastically reduce initialization times, skipping compilation overhead on subsequent visits.
+- **Phantom Interactive Traps**: Added invisible phantom interactive link traps to hook headlessly automated clients via hover/focus events.
+
+### 🛡️ Enhanced Honeypot Protections & Extensibility
+- **External Analyzers Support**: Extended the honeypot subsystem to allow plugging in external analyzers (e.g., custom regex matching or WAF frameworks like ModSecurity) to evaluate request payloads.
+- **Optimized Injection Filters**: Refined input inspection to recursively search deeply nested NoSQL/SQL structures using centralized security algorithms.
+
+### 📶 Stable Subnet Reputation & Rate Limiting
+- **Hardware-Anchored Subnet Metrics**: Refactored subnet score aggregations to anchor suspicious activities to hardware-based device hashes (`deviceHash`) rather than easily cleared tracking cookies, preventing proxy rotation masking.
+- **Subnet Challenge Rate Limiting**: Integrated a Token Bucket rate limiter (`checkChallengeRateLimit`) that throttles challenge requests per IPv4/IPv6 subnet to prevent denial of service (DoS) attacks on verification systems.
+
+### 🤖 Botnet Clustering & Similarity Scores
+- **Botnet Cluster Score**: Implemented network-wide botnet detection (`botnetClusterScore`) using exponential mathematical decay. It groups volatile client requests that share identical stable hardware profiles across distinct IP addresses within a rolling 10-minute window.
+
 ## Version 0.4.3
 
 ### 🔒 Rotation Score Hardening (Anti-Spoofing & No-JS Parity)
