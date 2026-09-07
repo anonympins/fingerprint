@@ -709,7 +709,8 @@ class RequestUtils:
             high_score_count = max(0, int(math.floor(high_score_count / (2 ** half_lives))))
             device_count = max(0, int(math.floor(device_count / (2 ** half_lives))))
         score = 0.0
-        if device_count > 10: score += min(80.0, (device_count - 10) * 5)
+        if device_count > 10:
+            score += min(80.0, (device_count - 10) * 5)
         score += min(40.0, high_score_count * 2)
         return {"subnetScore": min(100.0, score)}
 
@@ -1567,7 +1568,10 @@ class FingerprintEngine:
         block_threshold = self.thresholds.get("block", 95)
 
         if score > low_threshold and score < block_threshold:
-            await RequestUtils.update_subnet_metrics(self.store, client_ip, device_id, score)
+            # Utilise l'identifiant matériel stable pour éviter les faux positifs lors du cookie dropping
+            current_hash = self.get_composite_device_hash(context)
+            stable_fp_id = str(cyrb53(self._extract_stable_part(current_hash)))
+            await RequestUtils.update_subnet_metrics(self.store, client_ip, stable_fp_id, score)
             MetricsManager.observe_value("suspicion_score", score, {"action": "high_score_subnet_update"})
 
 

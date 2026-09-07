@@ -921,14 +921,18 @@ class RequestUtils
             $subnetData['highScoreDevices'] = [];
         }
 
-        $currentDeviceContributions = $subnetData['highScoreDevices'][$deviceId] ?? 0;
+        // Utilisation de la partie stable du fingerprint matériel plutôt que l'ID de cookie volatil
+        $currentDeviceHash = self::getCompositeDeviceHash($context);
+        $stableFpId = FingerprintBuilder::cyrb53(self::extractStablePart($currentDeviceHash));
+
+        $currentDeviceContributions = $subnetData['highScoreDevices'][$stableFpId] ?? 0;
         if ($currentDeviceContributions < 5 && $finalScore < 95) {
-            $subnetData['highScoreDevices'][$deviceId] = $currentDeviceContributions + 1;
+            $subnetData['highScoreDevices'][$stableFpId] = $currentDeviceContributions + 1;
             $subnetData['highScoreCount']++;
         }
 
-        if (!in_array($deviceId, $subnetData['deviceIds'])) {
-            $subnetData['deviceIds'][] = $deviceId;
+        if (!in_array($stableFpId, $subnetData['deviceIds'], true)) {
+            $subnetData['deviceIds'][] = $stableFpId;
         }
         $subnetData['lastActivity'] = time();
 

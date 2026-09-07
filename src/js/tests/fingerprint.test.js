@@ -2134,19 +2134,27 @@ describe('Subnet Scoring (Node.js)', () => {
     });
 
     it('updateSubnetMetrics should create and update subnet data in the store', async () => {
-        const context = { clientIp: '10.0.0.25' };
-        await __internal.updateSubnetMetrics(context, 'device-1', 50);
+        const context1 = { clientIp: '10.0.0.25', headers: { 'user-agent': 'device-1' } };
+        await __internal.updateSubnetMetrics(context1, 'device-1', 50);
+
+        const fp1 = new FingerprintBuilder().add('ua', 'device-1').toString();
+        const expectedId1 = cyrb53(fp1).toString();
 
         const subnetData = await inMemoryStore.get('subnet:10.0.0.0/24');
         expect(subnetData).toBeDefined();
         expect(subnetData.highScoreCount).toBe(1);
-        expect(subnetData.deviceIds).toEqual(['device-1']);
+        expect(subnetData.deviceIds).toEqual([expectedId1]);
 
         // Second update
-        await __internal.updateSubnetMetrics(context, 'device-2', 60);
+        const context2 = { clientIp: '10.0.0.25', headers: { 'user-agent': 'device-2' } };
+        await __internal.updateSubnetMetrics(context2, 'device-2', 60);
+
+        const fp2 = new FingerprintBuilder().add('ua', 'device-2').toString();
+        const expectedId2 = cyrb53(fp2).toString();
+
         const updatedSubnetData = await inMemoryStore.get('subnet:10.0.0.0/24');
         expect(updatedSubnetData.highScoreCount).toBe(2);
-        expect(updatedSubnetData.deviceIds).toEqual(['device-1', 'device-2']);
+        expect(updatedSubnetData.deviceIds).toEqual([expectedId1, expectedId2]);
     });
 
     it('getSubnetScore should calculate score based on stored metrics', async () => {

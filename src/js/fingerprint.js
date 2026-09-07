@@ -319,12 +319,12 @@ function getTlsFingerprint(context) {
     let ja4 = null;
 
     // 1. Prefer JA4 hash from a trusted reverse proxy header.
-    const ja4FromHeader = context.headers['x-ja4-hash'];
+    const ja4FromHeader = context.headers ? context.headers['x-ja4-hash'] : null;
     if (ja4FromHeader) {
         ja4 = ja4FromHeader;
     }
     // 2. Prefer JA3 hash from a trusted reverse proxy header.
-    const ja3FromHeader = context.headers['x-ja3-hash']; // Assuming a proxy might provide JA3 too
+    const ja3FromHeader = context.headers ? context.headers['x-ja3-hash'] : null; // Assuming a proxy might provide JA3 too
     if (ja3FromHeader) {
         ja3 = ja3FromHeader;
     }
@@ -425,7 +425,7 @@ function getCompositeDeviceHash(context) {
     // notre propre fingerprint serveur pour le comparer.
     // Un attaquant qui forge un `clientFp` mais oublie de forger les en-têtes
     // correspondants sera détecté par l'incohérence.
-    const clientFp = context.headers['x-device-fingerprint'];
+    const clientFp = context.headers ? context.headers['x-device-fingerprint'] : null;
     if (clientFp && typeof clientFp === 'string' && clientFp.includes('cvs:')) {
         // On ajoute le hash du fingerprint client comme un composant du fingerprint serveur.
         // Si le clientFp change, le hash serveur changera aussi.
@@ -433,7 +433,7 @@ function getCompositeDeviceHash(context) {
     }
 
     // 1. SIGNAL FORT: User Agent (poids élevé)
-    const ua = context.headers["user-agent"];
+    const ua = context.headers ? context.headers["user-agent"] : null;
     if (ua) {
         srv.add("ua", ua); // User-Agent
     }
@@ -443,10 +443,10 @@ function getCompositeDeviceHash(context) {
     if (ja3) srv.add("ja3", ja3);
     if (ja4) srv.add("ja4", ja4);
 
-    const h2Fingerprint = context.headers['x-http2-fingerprint'];
+    const h2Fingerprint = context.headers ? context.headers['x-http2-fingerprint'] : null;
     if (h2Fingerprint) srv.add("h2", h2Fingerprint);
 
-    const tcpFingerprint = context.headers['x-tcp-fingerprint'];
+    const tcpFingerprint = context.headers ? context.headers['x-tcp-fingerprint'] : null;
     if (tcpFingerprint) srv.add("tcp", tcpFingerprint);
 
     // 3. SIGNAUX DE HAUT NIVEAU (Applicatif) Moins fiables, mais utiles pour la corroboration
@@ -464,7 +464,7 @@ function getCompositeDeviceHash(context) {
     };
 
     for (const [key, headerName] of Object.entries(headersToCapture)) {
-        const headerValue = context.headers[headerName];
+        const headerValue = context.headers ? context.headers[headerName] : null;
         if (headerValue) {
             srv.add(key, headerValue);
         }
@@ -1738,14 +1738,18 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
         subnetData.highScoreDevices = {};
     }
 
-    const currentDeviceContributions = subnetData.highScoreDevices[deviceId] || 0;
+    // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
+    const currentDeviceHash = getCompositeDeviceHash(context);
+    const stableFpId = cyrb53(extractStablePart(currentDeviceHash)).toString();
+
+    const currentDeviceContributions = subnetData.highScoreDevices[stableFpId] || 0;
     if (currentDeviceContributions < 5) {
-        subnetData.highScoreDevices[deviceId] = currentDeviceContributions + 1;
+        subnetData.highScoreDevices[stableFpId] = currentDeviceContributions + 1;
         subnetData.highScoreCount++;
     }
 
-    if (!subnetData.deviceIds.includes(deviceId)) {
-        subnetData.deviceIds.push(deviceId);
+    if (!subnetData.deviceIds.includes(stableFpId)) {
+        subnetData.deviceIds.push(stableFpId);
     }
     subnetData.lastActivity = Date.now();
 
