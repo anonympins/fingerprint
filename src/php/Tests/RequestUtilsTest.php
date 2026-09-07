@@ -11,6 +11,12 @@ use PHPUnit\Framework\TestCase;
 
 class RequestUtilsTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        \Anonympins\Fingerprint\Store\StoreManager::configureStore(new \Anonympins\Fingerprint\Store\InMemoryStore());
+    }
+
     private function createRequestContext(array $overrides = []): RequestContext
     {
         $defaults = [
@@ -315,5 +321,27 @@ class RequestUtilsTest extends TestCase
         // regularityScore = 1.0. regularityRatio = 0.4.
         // instantScore = 1.0 * 0.4 * 80 = 32.
         $this->assertEquals(32.0, $result['requestPatternScore']);
+    }
+
+    public function testGetBotnetClusterScoreCalculations(): void
+    {
+        $stableFpHash = 'test-stable-hash';
+
+        $context1 = $this->createRequestContext(['clientIp' => '192.168.1.1']);
+        $score = RequestUtils::getBotnetClusterScore($context1, $stableFpHash);
+        $this->assertEquals(0.0, $score['botnetClusterScore']);
+
+        RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.2']), $stableFpHash);
+        $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.3']), $stableFpHash);
+        $this->assertEquals(50.0, $score['botnetClusterScore']);
+
+        RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.4']), $stableFpHash);
+        $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.5']), $stableFpHash);
+        $this->assertEquals(80.0, $score['botnetClusterScore']);
+
+        for ($i = 6; $i <= 10; $i++) {
+            $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => "192.168.1.{$i}"]), $stableFpHash);
+        }
+        $this->assertEquals(100.0, $score['botnetClusterScore']);
     }
 }

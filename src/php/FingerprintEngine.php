@@ -417,6 +417,11 @@
          // Score d'incohérence des Client-Hints
          $clientHintsInconsistency = RequestUtils::getClientHintsInconsistencyScore($context);
 
+         // Score de similarité globale de l'empreinte (Clustering Botnet)
+         $stableFp = RequestUtils::extractStablePart($currentDeviceHash);
+         $stableFpHash = FingerprintBuilder::cyrb53($stableFp);
+         $botnetCluster = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
+
          // NOUVEAU: Score de réputation du sous-réseau IP
          $subnetScore = RequestUtils::getSubnetScore($context, $deviceId);
 
@@ -437,6 +442,7 @@
              'threatIntelScore' => $threatIntel['threatIntelScore'],
              'clientHintsInconsistencyScore' => $clientHintsInconsistency['clientHintsInconsistencyScore'],
              'subnetScore' => $subnetScore['subnetScore'],
+             'botnetClusterScore' => $botnetCluster['botnetClusterScore'],
          ]);
  
          // Sauvegarder l'état mis à jour de l'appareil dans le store

@@ -85,7 +85,8 @@ const securityProfiles = {
             timeInconsistencyScore: 0.9,
             tlsSpoofingScore: 0.8, // NOUVEAU: Poids pour la détection de spoofing TLS
             subnetScore: 0.4, // NOUVEAU: Poids pour la réputation du sous-réseau
-            ipReputationScore: 0.5 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.6 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -120,7 +121,8 @@ const securityProfiles = {
             timeInconsistencyScore: 1.0,
             tlsSpoofingScore: 1.0, // Plus agressif pour le spoofing TLS
             subnetScore: 0.5,
-            ipReputationScore: 0.6 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.8 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -156,7 +158,8 @@ const securityProfiles = {
             timeInconsistencyScore: 0.8,
             tlsSpoofingScore: 0.7, // Important pour les API
             subnetScore: 0.4,
-            ipReputationScore: 0.5 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.7 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -193,7 +196,8 @@ const securityProfiles = {
             timeInconsistencyScore: 0.8,
             tlsSpoofingScore: 0.6, // Moins critique pour les blogs
             subnetScore: 0.2,
-            ipReputationScore: 0.3 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.3, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.5 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -229,7 +233,8 @@ const securityProfiles = {
             timeInconsistencyScore: 0.9,
             tlsSpoofingScore: 0.9, // Très important pour l'e-commerce
             subnetScore: 0.5,
-            ipReputationScore: 0.6 // NOUVEAU: Poids pour la réputation IP
+            ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
+            botnetClusterScore: 0.9 // NOUVEAU: Poids pour le clustering botnet
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -1926,6 +1931,40 @@ async function getSubnetScore(context) {
 }
 
 /**
+ * Calcule le score d'anomalie de similarité réseau (Botnet Clustering).
+ * @param {object} context - Le contexte de la requête.
+ * @param {string} stableFpHash - Le hash de la partie stable de l'empreinte.
+ * @returns {Promise<{botnetClusterScore: number}>}
+ */
+async function getBotnetClusterScore(context, stableFpHash) {
+  if (!stableFpHash) return { botnetClusterScore: 0 };
+  const key = `botnet-cluster:${stableFpHash}`;
+  const now = Date.now();
+  const tenMinutesAgo = now - 600 * 1000;
+
+  let clusterData = (await store.get(key)) || [];
+  if (!Array.isArray(clusterData)) {
+    clusterData = [];
+  }
+
+  clusterData = clusterData.filter(entry => entry.timestamp > tenMinutesAgo);
+  const existingIndex = clusterData.findIndex(entry => entry.ip === context.clientIp);
+  if (existingIndex !== -1) {
+    clusterData[existingIndex].timestamp = now;
+  } else {
+    clusterData.push({ ip: context.clientIp, timestamp: now });
+  }
+
+  await store.set(key, clusterData, 600);
+  const uniqueIpsCount = clusterData.length;
+  let botnetClusterScore = 0;
+  if (uniqueIpsCount >= 10) botnetClusterScore = 100;
+  else if (uniqueIpsCount >= 5) botnetClusterScore = 80;
+  else if (uniqueIpsCount >= 3) botnetClusterScore = 50;
+  return { botnetClusterScore };
+}
+
+/**
  * Retrieves the current local IP reputation score, applying time-based decay.
  * @param {string} ip - The client's IP address.
  * @returns {Promise<number>} The reputation score (0 to 100).
@@ -2317,6 +2356,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
     const { deviceId, deviceData, consistencyScore, newCookie } = await resolveRequestIdentity(context, securityConfig);
 
   const clientIp = context.clientIp;
+  const currentDeviceHash = getCompositeDeviceHash(context);
 
   // If a new cookie needs to be set, attach it to the request object
   // so the middleware can handle it. This is a temporary state holder.
@@ -2372,6 +2412,10 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
   const ipReputationScore = await getIpReputationScore(clientIp);
 
+  const stableFp = extractStablePart(currentDeviceHash);
+  const stableFpHash = cyrb53(stableFp).toString();
+  const { botnetClusterScore } = await getBotnetClusterScore(context, stableFpHash);
+
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
   await store.set(`device:${deviceId}`, deviceData);
@@ -2382,7 +2426,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -2786,6 +2830,7 @@ export class FingerprintEngine {
             (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
             (suspicionVector.botScore || 0) * (weights.botScore || 0) + // Ajout du nouveau score
             (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
+            (suspicionVector.botnetClusterScore || 0) * (weights.botnetClusterScore || 0) +
             (suspicionVector.tlsSpoofingScore || 0) * (weights.tlsSpoofingScore || 0) + // NOUVEAU: TLS Spoofing
             (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0) +
             (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
@@ -4308,6 +4353,7 @@ export const __internal = {
     sanitizeTrafficData, // NOUVEAU: Expose pour l'auto-tuner/tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
     parseJa3,
+    getBotnetClusterScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
     getClientHintsInconsistencyScore, // Expose for testing
     generateCombinedPoWChallengePage,

@@ -676,7 +676,7 @@ class RequestUtils
      * @param string $fpString La chaîne d'empreinte complète.
      * @return string La sous-chaîne de l'empreinte contenant uniquement les parties stables.
      */
-    private static function extractStablePart(string $fpString): string
+    public static function extractStablePart(string $fpString): string
     {
         $stableKeys = ['ua', 'ja3', 'ja4', 'h2', 'tcp'];
         $parts = explode('|', $fpString);
@@ -1118,6 +1118,56 @@ class RequestUtils
         $score += min(40.0, $highScoreCount * 2);
 
         return ['subnetScore' => min(100.0, $score)];
+    }
+
+    /**
+     * Calcule le score d'anomalie de similarité réseau (Botnet Clustering).
+     * @param RequestContext $context
+     * @param string $stableFpHash
+     * @return array{'botnetClusterScore': float}
+     */
+    public static function getBotnetClusterScore(RequestContext $context, string $stableFpHash): array
+    {
+        if (empty($stableFpHash)) {
+            return ['botnetClusterScore' => 0.0];
+        }
+
+        $store = StoreManager::getStore();
+        $key = "botnet-cluster:{$stableFpHash}";
+        $now = time();
+        $tenMinutesAgo = $now - 600;
+
+        $clusterData = $store->get($key) ?? [];
+        if (!is_array($clusterData)) {
+            $clusterData = [];
+        }
+
+        $clusterData = array_filter($clusterData, function ($entry) use ($tenMinutesAgo) {
+            return isset($entry['timestamp']) && $entry['timestamp'] > $tenMinutesAgo;
+        });
+        $clusterData = array_values($clusterData);
+
+        $found = false;
+        foreach ($clusterData as &$entry) {
+            if (isset($entry['ip']) && $entry['ip'] === $context->clientIp) {
+                $entry['timestamp'] = $now;
+                $found = true;
+                break;
+            }
+        }
+        unset($entry);
+
+        if (!$found) {
+            $clusterData[] = ['ip' => $context->clientIp, 'timestamp' => $now];
+        }
+
+        $store->set($key, $clusterData, 600);
+        $uniqueIpsCount = count($clusterData);
+        $botnetClusterScore = 0.0;
+        if ($uniqueIpsCount >= 10) $botnetClusterScore = 100.0;
+        elseif ($uniqueIpsCount >= 5) $botnetClusterScore = 80.0;
+        elseif ($uniqueIpsCount >= 3) $botnetClusterScore = 50.0;
+        return ['botnetClusterScore' => $botnetClusterScore];
     }
 
     /**

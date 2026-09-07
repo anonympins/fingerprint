@@ -2366,3 +2366,42 @@ describe('Additional Suspicion Vectors Coverage', () => {
         expect(crossLayerInconsistencyScore).toBe(50);
     });
 });
+
+describe('Botnet Cluster Scoring (Node.js)', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        clear() { this._map.clear(); }
+    };
+
+    beforeEach(async () => {
+        inMemoryStore.clear();
+        await configureStore(inMemoryStore);
+    });
+
+    it('should calculate botnetClusterScore based on unique IPs within 10 minutes', async () => {
+        const { getBotnetClusterScore } = __internal;
+        const stableFpHash = 'test-stable-hash';
+
+        // 1. Première IP
+        let scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.1' }, stableFpHash);
+        expect(scoreData.botnetClusterScore).toBe(0);
+
+        // 2. Ajout de 2 IPs uniques (total 3)
+        await getBotnetClusterScore({ clientIp: '192.168.1.2' }, stableFpHash);
+        scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.3' }, stableFpHash);
+        expect(scoreData.botnetClusterScore).toBe(50);
+
+        // 3. Ajout de 2 IPs uniques (total 5)
+        await getBotnetClusterScore({ clientIp: '192.168.1.4' }, stableFpHash);
+        scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.5' }, stableFpHash);
+        expect(scoreData.botnetClusterScore).toBe(80);
+
+        // 4. Ajout de 5 IPs uniques (total 10)
+        for (let i = 6; i <= 10; i++) {
+            scoreData = await getBotnetClusterScore({ clientIp: `192.168.1.${i}` }, stableFpHash);
+        }
+        expect(scoreData.botnetClusterScore).toBe(100);
+    });
+});
