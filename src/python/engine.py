@@ -325,6 +325,37 @@ class ChallengeUtils:
         except Exception:
             return False
 
+    @staticmethod
+    async def check_challenge_rate_limit(store, client_ip: str) -> bool:
+        """
+        Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+        """
+        subnet = get_ip_subnet(client_ip)
+        if not subnet:
+            return False
+
+        key = f"rate-limit:{subnet}"
+        rate_limit_data = await store.get(key)
+        if not rate_limit_data:
+            rate_limit_data = {
+                "tokens": 5.0,
+                "lastRefill": time.time()
+            }
+
+        capacity = 5.0
+        refill_rate = 0.1  # 1 token toutes les 10 secondes
+        now = time.time()
+
+        elapsed = now - rate_limit_data["lastRefill"]
+        tokens = min(capacity, rate_limit_data["tokens"] + elapsed * refill_rate)
+
+        if tokens < 1.0:
+            await store.set(key, {"tokens": tokens, "lastRefill": now}, 60)
+            return False
+
+        await store.set(key, {"tokens": tokens - 1.0, "lastRefill": now}, 60)
+        return True
+
 
 # --- CORE: Request Analysis Utilities ---
 class RequestUtils:
@@ -1591,6 +1622,23 @@ class FingerprintEngine:
         low_threshold = self.thresholds.get("low", 20)
 
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
+            # --- AJOUT: Limiteur de débit (Token Bucket) ---
+            rate_limit_passed = await ChallengeUtils.check_challenge_rate_limit(self.store, client_ip)
+            if not rate_limit_passed:
+                decision = {
+                    "action": "block",
+                    "status": 429,
+                    "body": "Too Many Requests",
+                    "score": score,
+                    "vector": suspicion_vector
+                }
+                if self.dry_run:
+                    decision["intendedAction"] = decision["action"]
+                    decision["action"] = "next"
+                    decision.pop("status", None)
+                    decision.pop("body", None)
+                return decision
+
             nonce = str(uuid.uuid4()).replace("-", "")[:16]
             client_secret = str(uuid.uuid4()).replace("-", "")[:16]
             suspicion_factor = (score - low_threshold) / (high_threshold - low_threshold) if high_threshold > low_threshold else 0.5

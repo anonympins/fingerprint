@@ -1028,3 +1028,19 @@ def test_auto_tuner_cycle():
 
     best_sol = tuner.get_best_tuning_solution()
     assert best_sol is not None or tuner.traffic_data is not None
+
+@pytest.mark.asyncio
+async def test_challenge_rate_limiting():
+    """Vérifie le fonctionnement du limiteur de débit pour les challenges (Token Bucket)."""
+    store = InMemoryStore()
+    client_ip = "1.2.3.4"
+    
+    # Premier appel : doit passer
+    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is True
+    
+    # On vide le seau artificiellement (on consomme les jetons restants)
+    for _ in range(4):
+        assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is True
+        
+    # Le 6ème appel doit être rejeté (False)
+    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is False

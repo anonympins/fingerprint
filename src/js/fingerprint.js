@@ -16,6 +16,37 @@ export { createMongoDbStore } from "./mongodb-store.js";
 
 
 /**
+ * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+ * @param {string} clientIp - L'adresse IP du client.
+ * @returns {Promise<boolean>} True si la requête est autorisée, false si elle est limitée.
+ */
+async function checkChallengeRateLimit(clientIp) {
+  const subnet = getIpSubnet(clientIp);
+  if (!subnet) return false;
+
+  const key = `rate-limit:${subnet}`;
+  const rateLimitData = (await store.get(key)) || {
+    tokens: 5.0,
+    lastRefill: Date.now() / 1000
+  };
+
+  const capacity = 5.0;
+  const refillRate = 0.1; // 1 token toutes les 10 secondes
+  const now = Date.now() / 1000;
+
+  const elapsed = now - rateLimitData.lastRefill;
+  const tokens = Math.min(capacity, rateLimitData.tokens + elapsed * refillRate);
+
+  if (tokens < 1.0) {
+    await store.set(key, { tokens, lastRefill: now }, 60);
+    return false;
+  }
+
+  await store.set(key, { tokens: tokens - 1.0, lastRefill: now }, 60);
+  return true;
+}
+
+/**
  * @private
  * Deep merges two objects. The `source` object's properties overwrite the `target`'s.
  * @param {object} target - The target object.
@@ -3387,6 +3418,28 @@ export class FingerprintEngine {
         if (mustReChallenge) {
             this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
         }
+
+        // --- AJOUT : Limiteur de débit (Token Bucket) ---
+        const rateLimitPassed = await checkChallengeRateLimit(clientIp);
+        if (!rateLimitPassed) {
+            this._log('Challenge rate limit exceeded - blocking with 429', { clientIp });
+            const decision = {
+                action: 'block',
+                status: 429,
+                body: 'Too Many Requests',
+                score: finalScore,
+                vector: suspicionVector
+            };
+            if (this.dryRun) {
+                this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+                decision.intendedAction = decision.action;
+                decision.action = 'next';
+                delete decision.status;
+                delete decision.body;
+            }
+            return decision;
+        }
+
         this._log('Suspicious request without valid ticket - issuing challenge', { finalScore, hasPowCookie: !!powCookie });
 
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
