@@ -5,6 +5,62 @@ import {solveChallenge} from './pow.solver.js';
 // Par défaut, c'est l'implémentation JavaScript.
 let activeCyrb53 = jsCyrb53;
 
+const DB_NAME = 'wasm-cache-db';
+const DB_VERSION = 1;
+const STORE_NAME = 'wasm-modules';
+
+function getCachedWasm(url) {
+    return new Promise((resolve) => {
+        if (typeof indexedDB === 'undefined') return resolve(null);
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME);
+            }
+        };
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            try {
+                const transaction = db.transaction(STORE_NAME, 'readonly');
+                const store = transaction.objectStore(STORE_NAME);
+                const getReq = store.get(url);
+                getReq.onsuccess = () => resolve(getReq.result);
+                getReq.onerror = () => resolve(null);
+            } catch (err) {
+                resolve(null);
+            }
+        };
+        request.onerror = () => resolve(null);
+    });
+}
+
+function cacheWasm(url, data) {
+    return new Promise((resolve) => {
+        if (typeof indexedDB === 'undefined') return resolve(false);
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                db.createObjectStore(STORE_NAME);
+            }
+        };
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            try {
+                const transaction = db.transaction(STORE_NAME, 'readwrite');
+                const store = transaction.objectStore(STORE_NAME);
+                store.put(data, url);
+                transaction.oncomplete = () => resolve(true);
+                transaction.onerror = () => resolve(false);
+            } catch (err) {
+                resolve(false);
+            }
+        };
+        request.onerror = () => resolve(false);
+    });
+}
+
 const ClientLibrary = {
     // Cache pour éviter de recalculer les constantes (Hardware, etc.)
     _cachedBuilder: null,
@@ -552,7 +608,60 @@ const ClientLibrary = {
             }
 
             // 3. Initialiser le module
-            const wasmModule = await window.createFingerprintModule();
+            const wasmUrl = wasmPath.replace(/\.js$/, '.wasm');
+            const wasmModule = await window.createFingerprintModule({
+                instantiateWasm: (imports, successCallback) => {
+                    (async () => {
+                        try {
+                            const cached = await getCachedWasm(wasmUrl);
+                            if (cached) {
+                                let instance;
+                                if (cached instanceof WebAssembly.Module) {
+                                    instance = await WebAssembly.instantiate(cached, imports);
+                                } else {
+                                    const result = await WebAssembly.instantiate(cached, imports);
+                                    instance = result.instance;
+                                }
+                                successCallback(instance, cached);
+                                return;
+                            }
+
+                            const response = await fetch(wasmUrl);
+                            const arrayBuffer = await response.arrayBuffer();
+
+                            let cachedData = arrayBuffer;
+                            let isModuleCached = false;
+                            try {
+                                const compiledModule = await WebAssembly.compile(arrayBuffer);
+                                const success = await cacheWasm(wasmUrl, compiledModule);
+                                if (success) {
+                                    cachedData = compiledModule;
+                                    isModuleCached = true;
+                                }
+                            } catch (e) {
+                                // Fallback if browser doesn't allow structured cloning of Compiled Modules
+                            }
+
+                            if (!isModuleCached) {
+                                await cacheWasm(wasmUrl, arrayBuffer);
+                            }
+
+                            let instance;
+                            if (cachedData instanceof WebAssembly.Module) {
+                                instance = await WebAssembly.instantiate(cachedData, imports);
+                            } else {
+                                const result = await WebAssembly.instantiate(arrayBuffer, imports);
+                                instance = result.instance;
+                            }
+                            successCallback(instance, cachedData);
+                        } catch (err) {
+                            console.warn('[Fingerprint] Custom WASM instantiation failed, falling back to default Emscripten loader:', err);
+                            successCallback(null);
+                        }
+                    })();
+                    return {}; // Async instantiation indicator for Emscripten
+                }
+            });
             if (typeof wasmModule._hash_string !== 'function') {
                 throw new Error('WASM module did not export _hash_string.');
             }
