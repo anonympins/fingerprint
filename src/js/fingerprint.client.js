@@ -222,6 +222,41 @@ const ClientLibrary = {
     },
 
     /**
+     * Injecte des éléments interactifs fantômes invisibles pour piéger les bots (focus/hover).
+     */
+    injectPhantomTraps() {
+        if (typeof document === 'undefined') return;
+
+        // Création d'un élément interactif fantôme
+        const phantom = document.createElement('a');
+        phantom.href = '#';
+        // Nom trompeur pour attirer les analyseurs automatiques de liens / formulaires
+        phantom.id = 'sys-session-recovery';
+        phantom.tabIndex = 0; // Dans le flux naturel de tabulation
+        phantom.setAttribute('aria-hidden', 'true'); // Masqué pour les screen readers légitimes
+
+        // Style invisible mais interactif (1px x 1px, presque transparent)
+        phantom.style.position = 'fixed';
+        phantom.style.top = '1px';
+        phantom.style.left = '1px';
+        phantom.style.width = '1px';
+        phantom.style.height = '1px';
+        phantom.style.opacity = '0.001';
+        phantom.style.zIndex = '99999';
+        phantom.style.overflow = 'hidden';
+        phantom.style.pointerEvents = 'auto';
+
+        const triggerTrap = () => {
+            this.onHoneypotTrigger();
+        };
+
+        phantom.addEventListener('focus', triggerTrap, { passive: true });
+        phantom.addEventListener('mouseover', triggerTrap, { passive: true });
+
+        document.body.appendChild(phantom);
+    },
+
+    /**
      * Démarre le suivi des événements tactiles sur mobile/tablette.
      */
     startTouchEventTracker() {
@@ -579,6 +614,7 @@ const ClientLibrary = {
         keystrokes = true,
         clicks = true, // Add new option
         touches = true, // Nouveau paramètre tactiles
+            phantomTraps = true, // NOUVEAU
         honeypots = [],
         trapUrls = [], // Nouveau paramètre pour les URL pièges
         wasmPath, // Nouveau paramètre
@@ -602,6 +638,9 @@ const ClientLibrary = {
     if (touches) {
         this.startTouchEventTracker();
     }
+        if (phantomTraps) {
+            this.injectPhantomTraps();
+        }
     if (honeypots.length > 0) {
         this.initializeHoneypots(honeypots);
     }
@@ -780,6 +819,7 @@ export const initializeFetch = ClientLibrary.initializeFetch.bind(ClientLibrary)
 export const initializeClient = ClientLibrary.initializeClient.bind(ClientLibrary);
 export const initializeWasm = ClientLibrary.initializeWasm.bind(ClientLibrary);
 export const injectTrapLinks = ClientLibrary.injectTrapLinks.bind(ClientLibrary);
+export const injectPhantomTraps = ClientLibrary.injectPhantomTraps.bind(ClientLibrary);
 export const solveChallengeAndRetry = ClientLibrary.solveChallengeAndRetry.bind(ClientLibrary);
 
 // Export the internal object for testing purposes
