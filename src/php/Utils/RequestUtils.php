@@ -1164,9 +1164,9 @@ class RequestUtils
         $store->set($key, $clusterData, 600);
         $uniqueIpsCount = count($clusterData);
         $botnetClusterScore = 0.0;
-        if ($uniqueIpsCount >= 10) $botnetClusterScore = 100.0;
-        elseif ($uniqueIpsCount >= 5) $botnetClusterScore = 80.0;
-        elseif ($uniqueIpsCount >= 3) $botnetClusterScore = 50.0;
+        if ($uniqueIpsCount >= 2) {
+            $botnetClusterScore = min(100.0, round(100.0 * (1.0 - exp(-0.35 * ($uniqueIpsCount - 1))), 1));
+        }
         return ['botnetClusterScore' => $botnetClusterScore];
     }
 

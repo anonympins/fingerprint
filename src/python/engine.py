@@ -917,12 +917,9 @@ class RequestUtils:
 
         unique_ips_count = len(cluster_data)
         botnet_cluster_score = 0.0
-        if unique_ips_count >= 10:
-            botnet_cluster_score = 100.0
-        elif unique_ips_count >= 5:
-            botnet_cluster_score = 80.0
-        elif unique_ips_count >= 3:
-            botnet_cluster_score = 50.0
+        if unique_ips_count >= 2:
+            raw_score = 100.0 * (1.0 - math.exp(-0.35 * (unique_ips_count - 1)))
+            botnet_cluster_score = min(100.0, round(raw_score, 1))
 
         return {"botnetClusterScore": botnet_cluster_score}
 

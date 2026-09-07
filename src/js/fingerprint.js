@@ -1958,9 +1958,9 @@ async function getBotnetClusterScore(context, stableFpHash) {
   await store.set(key, clusterData, 600);
   const uniqueIpsCount = clusterData.length;
   let botnetClusterScore = 0;
-  if (uniqueIpsCount >= 10) botnetClusterScore = 100;
-  else if (uniqueIpsCount >= 5) botnetClusterScore = 80;
-  else if (uniqueIpsCount >= 3) botnetClusterScore = 50;
+  if (uniqueIpsCount >= 2) {
+    botnetClusterScore = Math.min(100, Math.round(1000 * (1 - Math.exp(-0.35 * (uniqueIpsCount - 1)))) / 10);
+  }
   return { botnetClusterScore };
 }
 

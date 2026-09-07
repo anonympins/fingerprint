@@ -1124,11 +1124,15 @@ async def test_real_world_console_botnet_clustering():
 
         score_data = RequestUtils.get_botnet_cluster_score(context, stable_fp_hash)
 
-        if i < 3:
+        if i == 1:
             assert score_data["botnetClusterScore"] == 0.0
-        elif i < 5:
-            assert score_data["botnetClusterScore"] == 50.0
-        elif i < 10:
-            assert score_data["botnetClusterScore"] == 80.0
-        else:
-            assert score_data["botnetClusterScore"] == 100.0
+        elif i == 2:
+            assert score_data["botnetClusterScore"] == 29.5
+        elif i == 3:
+            assert score_data["botnetClusterScore"] == 50.3
+        elif i == 4:
+            assert score_data["botnetClusterScore"] == 65.0
+        elif i == 5:
+            assert score_data["botnetClusterScore"] == 75.3
+        elif i == 10:
+            assert score_data["botnetClusterScore"] == 95.7

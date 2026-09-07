@@ -333,16 +333,16 @@ class RequestUtilsTest extends TestCase
 
         RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.2']), $stableFpHash);
         $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.3']), $stableFpHash);
-        $this->assertEquals(50.0, $score['botnetClusterScore']);
+        $this->assertEquals(50.3, $score['botnetClusterScore']);
 
         RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.4']), $stableFpHash);
         $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => '192.168.1.5']), $stableFpHash);
-        $this->assertEquals(80.0, $score['botnetClusterScore']);
+        $this->assertEquals(75.3, $score['botnetClusterScore']);
 
         for ($i = 6; $i <= 10; $i++) {
             $score = RequestUtils::getBotnetClusterScore($this->createRequestContext(['clientIp' => "192.168.1.{$i}"]), $stableFpHash);
         }
-        $this->assertEquals(100.0, $score['botnetClusterScore']);
+        $this->assertEquals(95.7, $score['botnetClusterScore']);
     }
 
     public function testRealWorldConsoleBotnetClustering(): void
@@ -369,14 +369,18 @@ class RequestUtilsTest extends TestCase
             
             $score = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
 
-            if ($i < 3) {
+            if ($i === 1) {
                 $this->assertEquals(0.0, $score['botnetClusterScore']);
-            } elseif ($i < 5) {
-                $this->assertEquals(50.0, $score['botnetClusterScore']);
-            } elseif ($i < 10) {
-                $this->assertEquals(80.0, $score['botnetClusterScore']);
-            } else {
-                $this->assertEquals(100.0, $score['botnetClusterScore']);
+            } elseif ($i === 2) {
+                $this->assertEquals(29.5, $score['botnetClusterScore']);
+            } elseif ($i === 3) {
+                $this->assertEquals(50.3, $score['botnetClusterScore']);
+            } elseif ($i === 4) {
+                $this->assertEquals(65.0, $score['botnetClusterScore']);
+            } elseif ($i === 5) {
+                $this->assertEquals(75.3, $score['botnetClusterScore']);
+            } elseif ($i === 10) {
+                $this->assertEquals(95.7, $score['botnetClusterScore']);
             }
         }
     }
