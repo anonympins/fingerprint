@@ -222,6 +222,40 @@ const ClientLibrary = {
     },
 
     /**
+     * Démarre le suivi des événements tactiles sur mobile/tablette.
+     */
+    startTouchEventTracker() {
+        if (this._touchTrackerAttached) return;
+        this._touchTrackerAttached = true;
+
+        const handleTouch = (e) => {
+            if (touchMovementsHistory.length >= TOUCH_HISTORY_MAX) {
+                touchMovementsHistory.shift();
+            }
+            const touch = e.touches[0] || e.changedTouches[0];
+            if (!touch) return;
+
+            const radiusX = touch.radiusX || 0;
+            const radiusY = touch.radiusY || 0;
+            const radius = (radiusX + radiusY) / 2;
+            const force = touch.force || touch.webkitForce || 0;
+
+            touchMovementsHistory.push({
+                x: touch.clientX,
+                y: touch.clientY,
+                t: performance.now(),
+                p: force,
+                r: radius,
+                num: e.touches.length
+            });
+        };
+
+        document.addEventListener('touchstart', handleTouch, { passive: true });
+        document.addEventListener('touchmove', handleTouch, { passive: true });
+        document.addEventListener('touchend', handleTouch, { passive: true });
+    },
+
+    /**
      * Démarre le suivi des mouvements de la souris pour calculer l'entropie.
      * À appeler une fois sur la page.
      */
@@ -336,6 +370,7 @@ const ClientLibrary = {
         metrics.clicksHistory = clicksHistory;
         metrics.clientTimestamp = Date.now();
 
+        metrics.touchMovementsHistory = touchMovementsHistory;
         // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
         metrics.mouseMovementsHistory = mouseMovementsHistory;
 
@@ -543,6 +578,7 @@ const ClientLibrary = {
         mouse = true,
         keystrokes = true,
         clicks = true, // Add new option
+        touches = true, // Nouveau paramètre tactiles
         honeypots = [],
         trapUrls = [], // Nouveau paramètre pour les URL pièges
         wasmPath, // Nouveau paramètre
@@ -562,6 +598,9 @@ const ClientLibrary = {
     }
     if (clicks) {
         this.startClickTracker();
+    }
+    if (touches) {
+        this.startTouchEventTracker();
     }
     if (honeypots.length > 0) {
         this.initializeHoneypots(honeypots);
@@ -692,6 +731,7 @@ const ClientLibrary = {
  * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
  * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
  * @property {Array<{x: number, y: number, t: number, targetId: string}>} clicksHistory - Historique des clics.
+ * @property {Array<{x: number, y: number, t: number, p: number, r: number, num: number}>} touchMovementsHistory - Historique des glissements tactiles.
  * @property {number} historyLength - La longueur de l'historique de session du navigateur (`window.history.length`).
  * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
  * @property {string[]} [trapUrls] - URLs pièges à injecter dynamiquement.
@@ -700,6 +740,7 @@ const ClientLibrary = {
 const metrics = {
     mouseEntropy: 0, // Conservé pour la compatibilité, mais l'analyse se fait maintenant sur l'historique
     mouseMovementsHistory: [],
+    touchMovementsHistory: [],
     clicksHistory: [],
     keystrokeLatency: 0,
     honeypotInteraction: false,
@@ -709,6 +750,8 @@ const metrics = {
 
 let lastMousePos = { x: 0, y: 0 };
 let mouseMovementsHistory = []; // NOUVEAU: Historique des points de la souris
+let touchMovementsHistory = []; // NOUVEAU: Historique des gestes tactiles
+const TOUCH_HISTORY_MAX = 100;
 const MOUSE_HISTORY_MAX = 100; // Limite le nombre de points stockés
 let clicksHistory = [];
 const CLICKS_HISTORY_MAX = 50;
@@ -727,6 +770,7 @@ export const _resetCache = ClientLibrary._resetCache.bind(ClientLibrary);
 export const startMouseEntropyTracker = ClientLibrary.startMouseEntropyTracker.bind(ClientLibrary);
 export const startKeystrokeDynamicsTracker = ClientLibrary.startKeystrokeDynamicsTracker.bind(ClientLibrary);
 export const startClickTracker = ClientLibrary.startClickTracker.bind(ClientLibrary);
+export const startTouchEventTracker = ClientLibrary.startTouchEventTracker.bind(ClientLibrary);
 export const initializeHoneypots = ClientLibrary.initializeHoneypots.bind(ClientLibrary);
 export const getClientBehaviorMetrics = ClientLibrary.getClientBehaviorMetrics.bind(ClientLibrary);
 export const protectedFetch = ClientLibrary.protectedFetch.bind(ClientLibrary);

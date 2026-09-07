@@ -166,6 +166,42 @@ class RequestUtilsTest extends TestCase
         $this->assertEquals(40.0, $scoreNoActivity['behaviorScore']);
     }
 
+    public function testGetBehaviorScoreWithBotLikeTouchMovements(): void
+    {
+        $metrics = [
+            'honeypotInteraction' => false,
+            'touchMovementsHistory' => [
+                ['x' => 50, 'y' => 50, 't' => 1, 'p' => 0.5, 'r' => 10, 'num' => 1],
+                ['x' => 55, 'y' => 55, 't' => 100, 'p' => 0.5, 'r' => 10, 'num' => 1],
+                ['x' => 60, 'y' => 60, 't' => 200, 'p' => 0.5, 'r' => 10, 'num' => 1],
+                ['x' => 65, 'y' => 65, 't' => 300, 'p' => 0.5, 'r' => 10, 'num' => 1]
+            ]
+        ];
+        $context = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metrics)]
+        ]);
+        $score = RequestUtils::getBehaviorScore($context);
+        $this->assertGreaterThan(60.0, $score['behaviorScore']);
+    }
+
+    public function testGetBehaviorScoreWithHumanLikeTouchMovements(): void
+    {
+        $metrics = [
+            'honeypotInteraction' => false,
+            'touchMovementsHistory' => [
+                ['x' => 50, 'y' => 50, 't' => 1, 'p' => 0.45, 'r' => 8.5, 'num' => 1],
+                ['x' => 60, 'y' => 52, 't' => 100, 'p' => 0.52, 'r' => 9.1, 'num' => 1],
+                ['x' => 72, 'y' => 60, 't' => 200, 'p' => 0.49, 'r' => 8.8, 'num' => 1],
+                ['x' => 80, 'y' => 80, 't' => 300, 'p' => 0.41, 'r' => 8.2, 'num' => 1]
+            ]
+        ];
+        $context = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metrics)]
+        ]);
+        $score = RequestUtils::getBehaviorScore($context);
+        $this->assertLessThan(30.0, $score['behaviorScore']);
+    }
+
     public function testGetTimeInconsistencyScore(): void
     {
         $requestTimestamp = time() * 1000;

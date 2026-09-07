@@ -1044,3 +1044,47 @@ async def test_challenge_rate_limiting():
         
     # Le 6ème appel doit être rejeté (False)
     assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is False
+
+def test_get_behavior_score_with_bot_like_touch_movements():
+    """Vérifie la détection de l'émulation tactile (mouvements robotiques / variance de pression nulle)."""
+    import json
+    metrics = {
+        "honeypotInteraction": False,
+        "touchMovementsHistory": [
+            {"x": 50, "y": 50, "t": 1, "p": 0.5, "r": 10, "num": 1},
+            {"x": 55, "y": 55, "t": 100, "p": 0.5, "r": 10, "num": 1},
+            {"x": 60, "y": 60, "t": 200, "p": 0.5, "r": 10, "num": 1},
+            {"x": 65, "y": 65, "t": 300, "p": 0.5, "r": 10, "num": 1}
+        ]
+    }
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"x-behavior-metrics": json.dumps(metrics)},
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_behavior_score(context)
+    assert score > 60.0
+
+def test_get_behavior_score_with_human_like_touch_movements():
+    """Vérifie que les gestes tactiles complexes et naturels d'un humain n'induisent pas de pénalités."""
+    import json
+    metrics = {
+        "honeypotInteraction": False,
+        "touchMovementsHistory": [
+            {"x": 50, "y": 50, "t": 1, "p": 0.45, "r": 8.5, "num": 1},
+            {"x": 60, "y": 52, "t": 100, "p": 0.52, "r": 9.1, "num": 1},
+            {"x": 72, "y": 60, "t": 200, "p": 0.49, "r": 8.8, "num": 1},
+            {"x": 80, "y": 80, "t": 300, "p": 0.41, "r": 8.2, "num": 1}
+        ]
+    }
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"x-behavior-metrics": json.dumps(metrics)},
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_behavior_score(context)
+    assert score < 30.0

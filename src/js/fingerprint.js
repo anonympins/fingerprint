@@ -1181,6 +1181,79 @@ function analyzeMouseMovements(history) {
 }
 
 /**
+ * @private
+ * Analyse une série d'événements tactiles mobiles pour en extraire des indicateurs comportementaux robustes.
+ * @param {Array<{x: number, y: number, t: number, p: number, r: number, num: number}>} history
+ * @returns {{avgSpeed: number, avgAcceleration: number, straightness: number, pauses: number, segments: Array<number>, avgPressure: number, avgRadius: number, pressureVariance: number, radiusVariance: number, maxTouches: number}}
+ */
+function analyzeTouchMovements(history) {
+    if (!history || history.length < 3) {
+        return { avgSpeed: 0, avgAcceleration: 0, straightness: 1, pauses: 0, segments: [], avgPressure: 0, avgRadius: 0, pressureVariance: 0, radiusVariance: 0, maxTouches: 1 };
+    }
+
+    const segments = [];
+    let totalDistance = 0;
+    let pauses = 0;
+    let totalPressure = 0;
+    let totalRadius = 0;
+    let maxTouches = 1;
+
+    for (let i = 1; i < history.length; i++) {
+        const p1 = history[i - 1];
+        const p2 = history[i];
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const dt = p2.t - p1.t;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        totalPressure += p2.p || 0;
+        totalRadius += p2.r || 0;
+        if (p2.num > maxTouches) {
+            maxTouches = p2.num;
+        }
+
+        if (dt > 0) {
+            const speed = distance / dt;
+            segments.push({ distance, dt, speed });
+            totalDistance += distance;
+        }
+        if (dt > 100 && distance < 5) {
+            pauses++;
+        }
+    }
+
+    totalPressure += history[0].p || 0;
+    totalRadius += history[0].r || 0;
+
+    const avgPressure = totalPressure / history.length;
+    const avgRadius = totalRadius / history.length;
+
+    let sqDiffPressureSum = 0;
+    let sqDiffRadiusSum = 0;
+    for (const pt of history) {
+        sqDiffPressureSum += Math.pow((pt.p || 0) - avgPressure, 2);
+        sqDiffRadiusSum += Math.pow((pt.r || 0) - avgRadius, 2);
+    }
+    const pressureVariance = sqDiffPressureSum / history.length;
+    const radiusVariance = sqDiffRadiusSum / history.length;
+
+    if (segments.length < 2) {
+        return { avgSpeed: 0, avgAcceleration: 0, straightness: 1, pauses, segments: [], avgPressure, avgRadius, pressureVariance, radiusVariance, maxTouches };
+    }
+
+    const totalTime = history[history.length - 1].t - history[0].t;
+    const avgSpeed = totalTime > 0 ? segments.reduce((sum, s) => sum + s.speed, 0) / segments.length : 0;
+    const avgAcceleration = segments.reduce((sum, s) => sum + (s.speed / s.dt), 0) / segments.length;
+
+    const startPoint = history[0];
+    const endPoint = history[history.length - 1];
+    const straightDistance = Math.sqrt(Math.pow(endPoint.x - startPoint.x, 2) + Math.pow(endPoint.y - startPoint.y, 2));
+    const straightness = totalDistance > 0 ? straightDistance / totalDistance : 1;
+
+    return { avgSpeed, avgAcceleration, straightness, pauses, segments: segments.map(s => s.distance), avgPressure, avgRadius, pressureVariance, radiusVariance, maxTouches };
+}
+
+/**
  * Calcule un score basé sur les métriques comportementales envoyées par le client.
  * @param {object} context - Le contexte de la requête, contenant les en-têtes.
  * @returns {{behaviorScore: number}}
@@ -1202,9 +1275,10 @@ function getBehaviorScore(context) {
 
     // 2. Analyse des mouvements de la souris
     const { avgSpeed, avgAcceleration, straightness, pauses, segments } = analyzeMouseMovements(metrics.mouseMovementsHistory);
+    const touchAnalysis = analyzeTouchMovements(metrics.touchMovementsHistory);
 
     // Pénalité pour absence totale d'interaction (pas de mouvements, pas de frappes).
-    if (avgSpeed === 0 && metrics.keystrokeLatency === 0) {
+    if (avgSpeed === 0 && touchAnalysis.avgSpeed === 0 && metrics.keystrokeLatency === 0) {
       score += 40;
     }
 
@@ -1226,6 +1300,30 @@ function getBehaviorScore(context) {
         if (avgAcceleration > 0.5) score += 20; // Accélération trop brutale
         if (straightness > 0.95) score += 30; // Mouvement trop droit
         if (pauses === 0 && segments.length > 20) score += 15; // Mouvement continu sans micro-pauses
+    }
+
+    // 4. Analyse comportementale des événements tactiles (Touch Move)
+    const touchHistory = metrics.touchMovementsHistory;
+    if (touchHistory && touchHistory.length > 0) {
+        const touch = analyzeTouchMovements(touchHistory);
+        if (touch.avgSpeed > 0) {
+            if (touch.avgSpeed > 5) score += 30; // Touch d'une vitesse anormale/robotique
+            if (touch.avgAcceleration > 0.8) score += 20;
+            if (touch.straightness > 0.98) score += 35; // Un tracé de doigt humain n'est jamais parfaitement rectiligne
+            if (touch.pauses === 0 && touch.segments.length > 25) score += 15;
+
+            // Détection de l'émulation (pression et rayon de contact constants)
+            if (touch.avgPressure > 0 && touch.pressureVariance === 0) {
+                score += 30; // Spoofed force/pressure
+            }
+            if (touch.avgRadius > 0 && touch.radiusVariance === 0) {
+                score += 30; // Spoofed pointer area size
+            }
+        }
+        if (touch.segments.length > 10) {
+            const benfordDev = Optimization.Operators.benfordTest(touch.segments);
+            if (benfordDev > 0.18) score += 35;
+        }
     }
 
     // Plausibilité de la latence de frappe

@@ -595,6 +595,55 @@ class RequestUtils:
         return {"avgSpeed": avg_speed, "avgAcceleration": avg_acceleration, "straightness": straight_dist / total_distance if total_distance > 0 else 1.0, "pauses": pauses, "segments": [s["distance"] for s in segments]}
 
     @staticmethod
+    def analyze_touch_movements(history: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+        if not history or len(history) < 3:
+            return {
+                "avgSpeed": 0.0, "avgAcceleration": 0.0, "straightness": 1.0, "pauses": 0, "segments": [],
+                "avgPressure": 0.0, "avgRadius": 0.0, "pressureVariance": 0.0, "radiusVariance": 0.0, "maxTouches": 1
+            }
+        segments, total_distance, pauses = [], 0.0, 0
+        total_pressure, total_radius, max_touches = 0.0, 0.0, 1
+        for i in range(1, len(history)):
+            p1, p2 = history[i-1], history[i]
+            dx, dy, dt = p2["x"] - p1["x"], p2["y"] - p1["y"], p2["t"] - p1["t"]
+            distance = math.sqrt(dx*dx + dy*dy)
+            total_pressure += p2.get("p", 0.0)
+            total_radius += p2.get("r", 0.0)
+            if p2.get("num", 1) > max_touches:
+                max_touches = p2.get("num", 1)
+            if dt > 0:
+                segments.append({"distance": distance, "dt": dt, "speed": distance / dt})
+                total_distance += distance
+            if dt > 100 and distance < 5:
+                pauses += 1
+
+        total_pressure += history[0].get("p", 0.0)
+        total_radius += history[0].get("r", 0.0)
+
+        avg_pressure = total_pressure / len(history)
+        avg_radius = total_radius / len(history)
+
+        pressure_variance = sum((pt.get("p", 0.0) - avg_pressure) ** 2 for pt in history) / len(history)
+        radius_variance = sum((pt.get("r", 0.0) - avg_radius) ** 2 for pt in history) / len(history)
+
+        if len(segments) < 2:
+            return {
+                "avgSpeed": 0.0, "avgAcceleration": 0.0, "straightness": 1.0, "pauses": pauses, "segments": [],
+                "avgPressure": avg_pressure, "avgRadius": avg_radius, "pressureVariance": pressure_variance, "radiusVariance": radius_variance, "maxTouches": max_touches
+            }
+        total_time = history[-1]["t"] - history[0]["t"]
+        avg_speed = sum(s["speed"] for s in segments) / len(segments) if total_time > 0 else 0.0
+        total_abs_acc = sum(abs((segments[i]["speed"] - segments[i-1]["speed"]) / segments[i]["dt"]) for i in range(1, len(segments)) if segments[i]["dt"] > 0)
+        avg_acceleration = total_abs_acc / (len(segments) - 1)
+        straight_dist = math.sqrt((history[-1]["x"] - history[0]["x"])**2 + (history[-1]["y"] - history[0]["y"])**2)
+        return {
+            "avgSpeed": avg_speed, "avgAcceleration": avg_acceleration,
+            "straightness": straight_dist / total_distance if total_distance > 0 else 1.0, "pauses": pauses,
+            "segments": [s["distance"] for s in segments], "avgPressure": avg_pressure, "avgRadius": avg_radius,
+            "pressureVariance": pressure_variance, "radiusVariance": radius_variance, "maxTouches": max_touches
+        }
+
+    @staticmethod
     def get_behavior_score(context: RequestContext) -> float:
         header = context.headers.get("x-behavior-metrics")
         if not header:
@@ -607,19 +656,32 @@ class RequestUtils:
             return 100.0
         score = 0.0
         mouse_analysis = RequestUtils.analyze_mouse_movements(metrics.get("mouseMovementsHistory"))
+        touch_analysis = RequestUtils.analyze_touch_movements(metrics.get("touchMovementsHistory"))
         if "historyLength" in metrics:
             hl = metrics["historyLength"]
             if hl == 1: score += 15.0
             elif hl >= 5: score -= 20.0
             elif hl >= 2: score -= 10.0
         else:
-            if mouse_analysis["avgSpeed"] == 0.0 and metrics.get("keystrokeLatency", 0.0) == 0.0:
+            if mouse_analysis["avgSpeed"] == 0.0 and touch_analysis["avgSpeed"] == 0.0 and metrics.get("keystrokeLatency", 0.0) == 0.0:
                 score += 40.0
         if mouse_analysis["avgSpeed"] > 0.0:
             if mouse_analysis["avgSpeed"] > 3.0: score += 25.0
             if mouse_analysis["avgAcceleration"] > 0.5: score += 20.0
             if mouse_analysis["straightness"] > 0.95: score += 30.0
             if mouse_analysis["pauses"] == 0 and len(mouse_analysis["segments"]) > 20: score += 15.0
+
+        if touch_analysis["avgSpeed"] > 0.0:
+            if touch_analysis["avgSpeed"] > 5.0: score += 30.0
+            if touch_analysis["avgAcceleration"] > 0.8: score += 20.0
+            if touch_analysis["straightness"] > 0.98: score += 35.0
+            if touch_analysis["pauses"] == 0 and len(touch_analysis["segments"]) > 25: score += 15.0
+            if touch_analysis["avgPressure"] > 0.0 and touch_analysis["pressureVariance"] == 0.0: score += 30.0
+            if touch_analysis["avgRadius"] > 0.0 and touch_analysis["radiusVariance"] == 0.0: score += 30.0
+        if len(touch_analysis["segments"]) > 10:
+            benford_deviation = Optimization.benford_test(touch_analysis["segments"])
+            if benford_deviation > 0.18: score += 35.0
+
         ks_latency = metrics.get("keystrokeLatency", 0.0)
         if 0.0 < ks_latency < 40.0: score += 25.0
         if ks_latency > 1000.0: score += 15.0
