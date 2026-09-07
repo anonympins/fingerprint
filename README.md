@@ -12,8 +12,7 @@ A multi-layered behavioral, cryptographic, and network analysis engine designed 
 
 ### Presentation video
 
-https://www.youtube.com/watch?v=Ujeznl0JAl4
-[![Presentation](https://img.youtube.com/vi/Ujeznl0JAl4/maxresdefault.jpg)](https://www.youtube.com/watch?v=Ujeznl0JAl4)
+[![Presentation](https://i.ibb.co/1tkPS01C/Capture-d-cran-2026-09-07-194728.png)](https://www.youtube.com/watch?v=Ujeznl0JAl4)
 
 ## Key Features
 
