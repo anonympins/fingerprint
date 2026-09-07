@@ -1088,3 +1088,47 @@ def test_get_behavior_score_with_human_like_touch_movements():
     )
     score = RequestUtils.get_behavior_score(context)
     assert score < 30.0
+
+
+@pytest.mark.asyncio
+async def test_real_world_console_botnet_clustering():
+    """Vérifie le regroupement d'empreintes de consoles (PS4) partageant des composants stables."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"botnetClusterScore": 1.0}
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    ps4_headers = {
+        "user-agent": "Mozilla/5.0 (PlayStation 4 11.50) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.50 Safari/605.1.15",
+        "x-ja3-hash": "76993ef93bf89104037599723ab9f201",
+        "x-ja4-hash": "t13d1516h2_8daaf6152771_390237aa04be",
+    }
+
+    for i in range(1, 11):
+        context = RequestContext(
+            client_ip=f"185.15.20.{i}",
+            path="/api/login",
+            headers={
+                **ps4_headers,
+                "cookie_keys": f"session_id=fake_sess_{i}"
+            },
+            query_params={},
+            cookies={}
+        )
+
+        current_hash = engine.get_composite_device_hash(context)
+        stable_fp = engine._extract_stable_part(current_hash)
+        stable_fp_hash = str(cyrb53(stable_fp))
+
+        score_data = RequestUtils.get_botnet_cluster_score(context, stable_fp_hash)
+
+        if i < 3:
+            assert score_data["botnetClusterScore"] == 0.0
+        elif i < 5:
+            assert score_data["botnetClusterScore"] == 50.0
+        elif i < 10:
+            assert score_data["botnetClusterScore"] == 80.0
+        else:
+            assert score_data["botnetClusterScore"] == 100.0

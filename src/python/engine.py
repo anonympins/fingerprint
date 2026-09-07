@@ -359,6 +359,8 @@ class ChallengeUtils:
 
 # --- CORE: Request Analysis Utilities ---
 class RequestUtils:
+    _botnet_clusters: Dict[str, List[Dict[str, Any]]] = {}
+
     @staticmethod
     def parse_user_agent(ua: str) -> Dict[str, Optional[str]]:
         """
@@ -883,6 +885,46 @@ class RequestUtils:
                 return 100.0
                 
         return 0.0
+
+    @staticmethod
+    def get_botnet_cluster_score(context: RequestContext, stable_fp_hash: str) -> Dict[str, float]:
+        if not stable_fp_hash:
+            return {"botnetClusterScore": 0.0}
+
+        now = int(time.time())
+        ten_minutes_ago = now - 600
+
+        cluster_data = RequestUtils._botnet_clusters.get(stable_fp_hash, [])
+        if not isinstance(cluster_data, list):
+            cluster_data = []
+
+        # Filter out entries older than 10 minutes
+        cluster_data = [entry for entry in cluster_data if entry.get("timestamp", 0) > ten_minutes_ago]
+
+        # Check if the client IP already exists in the cluster
+        found = False
+        for entry in cluster_data:
+            if entry.get("ip") == context.client_ip:
+                entry["timestamp"] = now
+                found = True
+                break
+
+        if not found:
+            cluster_data.append({"ip": context.client_ip, "timestamp": now})
+
+        # Save back to class-level cache
+        RequestUtils._botnet_clusters[stable_fp_hash] = cluster_data
+
+        unique_ips_count = len(cluster_data)
+        botnet_cluster_score = 0.0
+        if unique_ips_count >= 10:
+            botnet_cluster_score = 100.0
+        elif unique_ips_count >= 5:
+            botnet_cluster_score = 80.0
+        elif unique_ips_count >= 3:
+            botnet_cluster_score = 50.0
+
+        return {"botnetClusterScore": botnet_cluster_score}
 
 class RedisStore:
     """

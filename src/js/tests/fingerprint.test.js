@@ -2404,4 +2404,44 @@ describe('Botnet Cluster Scoring (Node.js)', () => {
         }
         expect(scoreData.botnetClusterScore).toBe(100);
     });
+
+        it('should realistically group PS4 consoles with volatile differences (different IPs/cookies) under the same cluster score', async () => {
+            const { getSuspicionVector } = __internal;
+            
+            const ps4Headers = {
+                'user-agent': 'Mozilla/5.0 (PlayStation 4 11.50) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.50 Safari/605.1.15',
+                'x-ja3-hash': '76993ef93bf89104037599723ab9f201',
+                'x-ja4-hash': 't13d1516h2_8daaf6152771_390237aa04be',
+                'x-http2-fingerprint': '1:65536;3:1000;4:6291456;6:65536',
+                'x-tcp-fingerprint': '64240:128:1:mss,nop,ws,nop,nop,sok:df:0'
+            };
+
+            // Simule des requêtes provenant de 10 consoles PlayStation 4 infectées différentes (IPs différentes, pas de cookies communs)
+            for (let i = 1; i <= 10; i++) {
+                const context = {
+                    clientIp: `185.15.20.${i}`,
+                    path: '/api/login',
+                    headers: {
+                        ...ps4Headers,
+                        'cookie_keys': `session_id=fake_sess_${i}` // Élément volatil
+                    },
+                    cookies: {}, // Pas de cookie device_id partagé pour simuler des terminaux distincts
+                    query: {},
+                    httpVersion: '2.0',
+                    requestTimestamp: Date.now()
+                };
+
+                const vector = await getSuspicionVector(context, { honeypot: {}, patterns: {} });
+                
+                if (i < 3) {
+                    expect(vector.botnetClusterScore).toBe(0);
+                } else if (i < 5) {
+                    expect(vector.botnetClusterScore).toBe(50);
+                } else if (i < 10) {
+                    expect(vector.botnetClusterScore).toBe(80);
+                } else {
+                    expect(vector.botnetClusterScore).toBe(100);
+                }
+            }
+        });
 });

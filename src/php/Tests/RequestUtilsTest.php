@@ -344,4 +344,40 @@ class RequestUtilsTest extends TestCase
         }
         $this->assertEquals(100.0, $score['botnetClusterScore']);
     }
+
+    public function testRealWorldConsoleBotnetClustering(): void
+    {
+        $ps4Headers = [
+            'user-agent' => 'Mozilla/5.0 (PlayStation 4 11.50) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.50 Safari/605.1.15',
+            'x-ja3-hash' => '76993ef93bf89104037599723ab9f201',
+            'x-ja4-hash' => 't13d1516h2_8daaf6152771_390237aa04be',
+            'x-http2-fingerprint' => '1:65536;3:1000;4:6291456;6:65536',
+            'x-tcp-fingerprint' => '64240:128:1:mss,nop,ws,nop,nop,sok:df:0'
+        ];
+
+        for ($i = 1; $i <= 10; $i++) {
+            $context = $this->createRequestContext([
+                'clientIp' => "185.15.20.{$i}",
+                'headers' => array_merge($ps4Headers, [
+                    'cookie_keys' => "session_id=fake_sess_{$i}"
+                ])
+            ]);
+
+            $currentHash = RequestUtils::getCompositeDeviceHash($context);
+            $stableFp = RequestUtils::extractStablePart($currentHash);
+            $stableFpHash = FingerprintBuilder::cyrb53($stableFp);
+            
+            $score = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
+
+            if ($i < 3) {
+                $this->assertEquals(0.0, $score['botnetClusterScore']);
+            } elseif ($i < 5) {
+                $this->assertEquals(50.0, $score['botnetClusterScore']);
+            } elseif ($i < 10) {
+                $this->assertEquals(80.0, $score['botnetClusterScore']);
+            } else {
+                $this->assertEquals(100.0, $score['botnetClusterScore']);
+            }
+        }
+    }
 }
