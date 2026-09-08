@@ -2069,7 +2069,7 @@ describe('getClientHintsInconsistencyScore', () => {
             }
         };
         const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
-        expect(clientHintsInconsistencyScore).toBe(80);
+        expect(clientHintsInconsistencyScore).toBe(97);
     });
 
     it('should return 40 for a small version mismatch', () => {
@@ -2449,3 +2449,22 @@ describe('Botnet Cluster Scoring (Node.js)', () => {
             }
         });
 });
+
+    test('Stateless Ticket Generation and Validation', async () => {
+        const payload = {
+            expiry: Date.now() + 3600000,
+            originalIp: '127.0.0.1',
+            deviceId: 'device-123',
+            deviceHash: 'hash-abc'
+        };
+        
+        const ticket = fingerprint.generateStatelessTicket(payload);
+        expect(ticket).toBeTruthy();
+        expect(ticket.split('.').length).toBe(3);
+        
+        const isValid = await fingerprint.isTicketValid('127.0.0.1', ticket, 'device-123', 'hash-abc');
+        expect(isValid).toBe(true);
+
+        const isDiffIpValid = await fingerprint.isTicketValid('192.168.1.1', ticket, 'device-123', 'hash-abc', false);
+        expect(isDiffIpValid).toBe(false);
+    });

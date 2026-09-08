@@ -9,6 +9,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from engine import (
     imul,
+    parse_tcp_syn,
+    classify_tcp_os,
     cyrb53,
     get_ip_subnet,
     RequestContext,
@@ -28,6 +30,63 @@ from engine import (
     WSGIFingerprintMiddleware,
 )
 
+def test_parse_tcp_syn_binary():
+    """Vérifie le parsing de trames TCP SYN brutes en Python."""
+    # Linux SYN Hex
+    linux_syn = bytes.fromhex('4500003c1a2b400040063c1a7f0000017f0000011f9000500000000100000000a00272103c1a0000020405b4040201030307')
+    fp = parse_tcp_syn(linux_syn)
+    assert fp is not None
+    assert fp["ttl"] == 64
+    assert fp["windowSize"] == 29200
+    assert fp["mss"] == 1460
+    assert fp["ws"] == 7
+    assert fp["sack"] is True
+
+    # Windows SYN Hex
+    windows_syn = bytes.fromhex('4500003c1a2b400080063c1a7f0000017f0000011f9000500000000100000000a002faf03c1a0000020405b4040201030308')
+    fp_win = parse_tcp_syn(windows_syn)
+    assert fp_win["ttl"] == 128
+    assert fp_win["windowSize"] == 64240
+
+def test_classify_tcp_os():
+    """Vérifie la classification passive de l'OS."""
+    linux_syn = bytes.fromhex('4500003c1a2b400040063c1a7f0000017f0000011f9000500000000100000000a00272103c1a0000020405b4040201030307')
+    assert classify_tcp_os(parse_tcp_syn(linux_syn)) == "Linux"
+
+    windows_syn = bytes.fromhex('4500003c1a2b400080063c1a7f0000017f0000011f9000500000000100000000a002faf03c1a0000020405b4040201030308')
+    assert classify_tcp_os(parse_tcp_syn(windows_syn)) == "Windows"
+
+def test_tcp_anomaly_cross_layer():
+    """Vérifie le croisement de l'OS applicatif avec la couche transport."""
+    linux_syn_hex = '4500003c1a2b400040063c1a7f0000017f0000011f9000500000000100000000a00272103c1a0000020405b4040201030307'
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
+            "x-raw-tcp-binary": linux_syn_hex
+        },
+        query_params={},
+        cookies={}
+    )
+    score_data = RequestUtils.get_tcp_anomaly_score(context)
+    assert score_data["tcpAnomalyScore"] == pytest.approx(80.1)
+
+def test_client_hints_inconsistency_full_version_mismatch():
+    """Vérifie le score d'incohérence en cas de différence de version complète."""
+    context = RequestContext(
+        client_ip="1.2.3.4",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.1.2 Safari/537.36",
+            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "sec-ch-ua-full-version-list": '"Not_A Brand";v="8.0.0.0", "Chromium";v="120.0.1.3", "Google Chrome";v="120.0.1.3"'
+        },
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_client_hints_inconsistency(context)
+    assert score == 85.0
 # --- TESTS: UTILS & HASHING ---
 
 def test_imul_precision():
@@ -1136,3 +1195,41 @@ async def test_real_world_console_botnet_clustering():
             assert score_data["botnetClusterScore"] == 75.3
         elif i == 10:
             assert score_data["botnetClusterScore"] == 95.7
+
+@pytest.mark.asyncio
+async def test_stateless_ticket_generation_and_validation():
+    """Vérifie la génération de tickets stateless chiffrés et signés et leur validation."""
+    payload = {
+        "expiry": int(time.time() * 1000) + 3600000,
+        "originalIp": "127.0.0.1",
+        "deviceId": "device-123",
+        "deviceHash": "hash-abc"
+    }
+    secret = "my-test-pow-secret-with-long-length-32-chars"
+    
+    # Génération du ticket stateless
+    ticket = ChallengeUtils.generate_stateless_ticket(payload, secret)
+    assert ticket is not None
+    assert "." in ticket
+    assert len(ticket.split(".")) == 3
+    
+    # Validation du ticket stateless
+    valid = await ChallengeUtils.is_ticket_valid(
+        ip="127.0.0.1",
+        ticket=ticket,
+        device_id="device-123",
+        device_hash="hash-abc",
+        secret=secret
+    )
+    assert valid is True
+
+    # Doit échouer avec une IP différente sans itinérance autorisée
+    valid_diff_ip = await ChallengeUtils.is_ticket_valid(
+        ip="192.168.1.1",
+        ticket=ticket,
+        device_id="device-123",
+        device_hash="hash-abc",
+        secret=secret,
+        allow_cross_network_roaming=False
+    )
+    assert valid_diff_ip is False

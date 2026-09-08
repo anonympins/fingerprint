@@ -36,6 +36,52 @@ class ChallengeUtils
     }
 
     /**
+     * Génère un ticket stateless chiffré et signé contenant le contexte d'autorisation.
+     * @param array $payload
+     * @return string
+     */
+    public static function generateStatelessTicket(array $payload): string
+    {
+        $key = hash('sha256', self::getPowSecret(), true);
+        $iv = random_bytes(16);
+        $encrypted = openssl_encrypt(json_encode($payload), 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+        $signature = hash_hmac('sha256', $iv . $encrypted, $key, true);
+        
+        return rtrim(strtr(base64_encode($iv), '+/', '-_'), '=') . '.' .
+               rtrim(strtr(base64_encode($encrypted), '+/', '-_'), '=') . '.' .
+               rtrim(strtr(base64_encode($signature), '+/', '-_'), '=');
+    }
+
+    /**
+     * Décode et valide un ticket stateless chiffré et signé.
+     * @param string $ticket
+     * @return array|null
+     */
+    public static function parseStatelessTicket(string $ticket): ?array
+    {
+        $parts = explode('.', $ticket);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        $base64UrlDecode = function ($input) {
+            return base64_decode(strtr($input, '-_', '+/'));
+        };
+        $iv = $base64UrlDecode($parts[0]);
+        $encrypted = $base64UrlDecode($parts[1]);
+        $signature = $base64UrlDecode($parts[2]);
+        if (!$iv || !$encrypted || !$signature || strlen($iv) !== 16) {
+            return null;
+        }
+        $key = hash('sha256', self::getPowSecret(), true);
+        $expectedSignature = hash_hmac('sha256', $iv . $encrypted, $key, true);
+        if (!hash_equals($expectedSignature, $signature)) {
+            return null;
+        }
+        $decrypted = openssl_decrypt($encrypted, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+        return $decrypted !== false ? json_decode($decrypted, true) : null;
+    }
+
+    /**
      * Vérifie si un ticket de passage est valide (supporte les tickets opaques via store et le fallback legacy).
      */
     public static function isTicketValid(
@@ -47,6 +93,31 @@ class ChallengeUtils
     ): bool {
         if (empty($ip) || empty($ticket)) {
             return false;
+        }
+
+        // Tentative de validation stateless d'abord
+        $ticketData = self::parseStatelessTicket($ticket);
+        if ($ticketData !== null) {
+            $expiry = $ticketData['expiry'] ?? null;
+            $originalIp = $ticketData['originalIp'] ?? null;
+            $storedDeviceId = $ticketData['deviceId'] ?? '';
+            $storedDeviceHash = $ticketData['deviceHash'] ?? '';
+
+            if (!$expiry || (int)floor(microtime(true) * 1000) > (int)$expiry) {
+                return false;
+            }
+            if ($ip === $originalIp) {
+                return true;
+            }
+            $currentSubnet = RequestUtils::getIpSubnet($ip);
+            $originalSubnet = RequestUtils::getIpSubnet($originalIp);
+            if ($currentSubnet !== null && $originalSubnet !== null && $currentSubnet === $originalSubnet) {
+                return true;
+            }
+            if (!$allowCrossNetworkRoaming) {
+                return false;
+            }
+            return !empty($deviceId) && $deviceId === $storedDeviceId && !empty($deviceHash) && $deviceHash === $storedDeviceHash;
         }
 
         $store = StoreManager::getStore();
@@ -152,27 +223,21 @@ class ChallengeUtils
         $finalBlock = $baseBlock . $solution;
         $hash = hash('sha256', $finalBlock);
 
-        $hashAsInt = BigInt::fromHex($hash);
-        $targetAsInt = BigInt::fromHex($cpuTargetHex);
-
-        $isValid = $hashAsInt->compareTo($targetAsInt) < 0;
+        // Pad target to 64 hex characters to allow direct O(1) lexicographical comparison
+        $paddedTarget = str_pad($cpuTargetHex, 64, '0', STR_PAD_LEFT);
+        $isValid = strcmp($hash, $paddedTarget) < 0;
 
         if ($isValid) {
             error_log('[FP Server Verify] CPU PoW verification PASSED.');
             
-            // Génération d'un jeton opaque et unique
-            $ticketId = bin2hex(random_bytes(16));
             $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
-            
-            $store = StoreManager::getStore();
-            $store->set("ticket:{$ticketId}", [
+            $payload = [
                 'expiry' => $expiry,
                 'originalIp' => $clientIp,
                 'deviceId' => $deviceId,
                 'deviceHash' => $deviceHash
-            ], (int)ceil($ticketTtl / 1000));
-            
-            return $ticketId;
+            ];
+            return self::generateStatelessTicket($payload);
         }
 
         // Log details on failure

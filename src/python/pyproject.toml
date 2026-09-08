@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fingerprint-engine"
-version = "0.4.0"
+version = "0.4.5"
 description = "Multi-layered behavioral, cryptographic, and network analysis fingerprinting protection engine"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -16,7 +16,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+    "cryptography>=3.0.0"
+]
 
 [project.optional-dependencies]
 test = [

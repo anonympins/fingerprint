@@ -425,6 +425,9 @@
          // NOUVEAU: Score de réputation du sous-réseau IP
          $subnetScore = RequestUtils::getSubnetScore($context, $deviceId);
 
+         // Score d'anomalie de pile TCP/IP
+         $tcpAnomaly = RequestUtils::getTcpAnomalyScore($context);
+
          // Assemblage du vecteur de suspicion final
          $suspicionVector = array_merge($suspicionVector, [
              'inconsistencyScore' => $inconsistencyScore,
@@ -443,6 +446,7 @@
              'clientHintsInconsistencyScore' => $clientHintsInconsistency['clientHintsInconsistencyScore'],
              'subnetScore' => $subnetScore['subnetScore'],
              'botnetClusterScore' => $botnetCluster['botnetClusterScore'],
+             'tcpAnomalyScore' => $tcpAnomaly['tcpAnomalyScore'],
          ]);
  
          // Sauvegarder l'état mis à jour de l'appareil dans le store

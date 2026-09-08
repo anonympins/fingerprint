@@ -1,3 +1,25 @@
+## Version 0.4.5
+
+### ✨ New Features
+
+- **Stateless PoW Ticket Validation**: Introduced cryptographically secure stateless Proof-of-Work (PoW) tickets. These tickets are encrypted and signed, allowing for tamper-proof validation without requiring server-side storage, improving scalability and resilience.
+- **TCP Anomaly Score**: Implemented a new `tcpAnomalyScore` based on passive TCP/IP fingerprinting (p0f-like analysis). This score detects inconsistencies between the client's TCP stack (TTL, window size, options) and its User-Agent, indicating potential spoofing or bot activity.
+- **Dynamic WebAssembly (WASM) Modules**: Introduced polymorphic WASM module generation. The client-side WASM solver now generates unique, randomized code for each request or session, significantly increasing the cost and difficulty for bots to fingerprint, reverse-engineer, and bypass.
+
+### 🚀 Improvements
+
+- **Enhanced Client Hints Inconsistency Detection**: Improved the `clientHintsInconsistencyScore` calculation for more precise detection of discrepancies between User-Agent and Client Hints headers, leading to more accurate bot identification.
+
+### 🛡️ Security Enhancements
+
+- **PHP DoS Prevention**: Implemented specific measures in the PHP engine to prevent Denial-of-Service (DoS) attacks, ensuring stability and resource protection under high load or malicious activity.
+
+### 📚 Documentation
+
+- **README Update**: Updated `README.md` to reflect the latest features and changes in the library.
+
+---
+
 ## Version 0.4.4
 
 ### 🧮 Pattern Score Ratios & Weighted Subscores

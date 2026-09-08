@@ -10,6 +10,10 @@ import copy
 import json
 import os
 import asyncio
+import base64
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.backends import default_backend
 from typing import Dict, Any, List, Optional, Callable, Set
 from dataclasses import dataclass, field
 
@@ -22,7 +26,83 @@ def imul(a: int, b: int) -> int:
     """
     return ctypes.c_int32((a * b) & 0xffffffff).value
 
+def parse_tcp_syn(binary: bytes) -> Optional[Dict[str, Any]]:
+    """Parses raw TCP SYN binary packets to extract TTL, window size, MSS, WS, and SACK."""
+    if not binary or len(binary) < 40:
+        return None
+    ttl = 64
+    tcp_offset = 20
+    version = binary[0] >> 4
 
+    if version == 4:
+        ttl = binary[8]
+        ihl = binary[0] & 0x0f
+        tcp_offset = ihl * 4
+    elif version == 6:
+        ttl = binary[7]  # Hop Limit
+        tcp_offset = 40
+    else:
+        tcp_offset = 0
+        ttl = 64
+
+    if len(binary) < tcp_offset + 20:
+        return None
+
+    import struct
+    window_size = struct.unpack("!H", binary[tcp_offset + 14 : tcp_offset + 16])[0]
+    data_offset = (binary[tcp_offset + 12] >> 4) * 4
+    options_end = tcp_offset + data_offset
+
+    mss = None
+    ws = None
+    sack = False
+
+    i = tcp_offset + 20
+    while i < options_end and i < len(binary):
+        opt_type = binary[i]
+        if opt_type == 0:
+            break
+        if opt_type == 1:
+            i += 1
+            continue
+        if i + 1 >= len(binary):
+            break
+        opt_len = binary[i + 1]
+        if opt_len < 2 or i + opt_len > len(binary):
+            break
+
+        if opt_type == 2 and opt_len == 4:
+            mss = struct.unpack("!H", binary[i + 2 : i + 4])[0]
+        elif opt_type == 3 and opt_len == 3:
+            ws = binary[i + 2]
+        elif opt_type == 4 and opt_len == 2:
+            sack = True
+        i += opt_len
+
+    return {"ttl": ttl, "windowSize": window_size, "mss": mss, "ws": ws, "sack": sack}
+
+def classify_tcp_os(fingerprint: Optional[Dict[str, Any]]) -> str:
+    """Classifies OS based on passive TCP fingerprinted values."""
+    if not fingerprint:
+        return "unknown"
+    ttl = fingerprint.get("ttl", 64)
+    window_size = fingerprint.get("windowSize", 0)
+    ws = fingerprint.get("ws")
+
+    if 64 < ttl <= 128:
+        return "Windows"
+    if 32 < ttl <= 64:
+        if window_size in (29200, 14600, 5840):
+            return "Linux"
+        return "Linux"
+    if ttl <= 64:
+        if window_size == 65535 and ws in (6, 8, 5):
+            return "macOS/iOS"
+    if ttl > 64:
+        return "Windows"
+    if ttl > 0:
+        return "Linux"
+    return "unknown"
 # --- UTILS: Cyrb53 Hash Emulation ---
 
 # Note: This cyrb53 implementation is a direct port from the JavaScript version
@@ -250,6 +330,136 @@ class FingerprintBuilder:
 # --- CORE: Challenge Utilities ---
 class ChallengeUtils:
     @staticmethod
+    def _base64url_encode(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).decode('utf-8').rstrip('=')
+
+    @staticmethod
+    def _base64url_decode(string: str) -> bytes:
+        rem = len(string) % 4
+        if rem > 0:
+            string += '=' * (4 - rem)
+        return base64.urlsafe_b64decode(string.encode('utf-8'))
+
+    @staticmethod
+    def generate_stateless_ticket(payload: Dict[str, Any], secret: str) -> str:
+        key = hashlib.sha256(secret.encode('utf-8')).digest()
+        iv = os.urandom(16)
+        plaintext = json.dumps(payload).encode('utf-8')
+        
+        padder = padding.PKCS7(128).padder()
+        padded_data = padder.update(plaintext) + padder.finalize()
+        
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+        encrypter = cipher.encryptor()
+        encrypted = encrypter.update(padded_data) + encrypter.finalize()
+        
+        signature = hmac.new(key, iv + encrypted, hashlib.sha256).digest()
+        
+        return f"{ChallengeUtils._base64url_encode(iv)}.{ChallengeUtils._base64url_encode(encrypted)}.{ChallengeUtils._base64url_encode(signature)}"
+
+    @staticmethod
+    def parse_stateless_ticket(ticket: str, secret: str) -> Optional[Dict[str, Any]]:
+        if not ticket or "." not in ticket:
+            return None
+        parts = ticket.split(".")
+        if len(parts) != 3:
+            return None
+        
+        try:
+            iv = ChallengeUtils._base64url_decode(parts[0])
+            encrypted = ChallengeUtils._base64url_decode(parts[1])
+            signature = ChallengeUtils._base64url_decode(parts[2])
+            
+            if len(iv) != 16:
+                return None
+                
+            key = hashlib.sha256(secret.encode('utf-8')).digest()
+            expected_signature = hmac.new(key, iv + encrypted, hashlib.sha256).digest()
+            if not hmac.compare_digest(expected_signature, signature):
+                return None
+                
+            cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+            decrypter = cipher.decryptor()
+            decrypted_padded = decrypter.update(encrypted) + decrypter.finalize()
+            
+            unpadder = padding.PKCS7(128).unpadder()
+            decrypted = unpadder.update(decrypted_padded) + unpadder.finalize()
+            
+            return json.loads(decrypted.decode('utf-8'))
+        except Exception:
+            return None
+
+    @staticmethod
+    async def is_ticket_valid(
+        ip: str,
+        ticket: Optional[str],
+        device_id: str = '',
+        device_hash: str = '',
+        secret: str = '',
+        allow_cross_network_roaming: bool = False,
+        store: Optional[Any] = None
+    ) -> bool:
+        if not ip or not ticket:
+            return False
+            
+        ticket_data = ChallengeUtils.parse_stateless_ticket(ticket, secret)
+        if ticket_data is not None:
+            expiry = ticket_data.get("expiry")
+            original_ip = ticket_data.get("originalIp")
+            stored_device_id = ticket_data.get("deviceId", "")
+            stored_device_hash = ticket_data.get("deviceHash", "")
+            
+            if not expiry or int(time.time() * 1000) > int(expiry):
+                return False
+            if ip == original_ip:
+                return True
+            current_subnet = get_ip_subnet(ip)
+            original_subnet = get_ip_subnet(original_ip) if original_ip else None
+            if current_subnet is not None and original_subnet is not None and current_subnet == original_subnet:
+                return True
+            if not allow_cross_network_roaming:
+                return False
+            return bool(device_id and device_id == stored_device_id and device_hash and device_hash == stored_device_hash)
+            
+        if store is not None:
+            db_data = await store.get(f"ticket:{ticket}")
+            if db_data is not None:
+                original_ip = db_data.get("ip") or db_data.get("originalIp")
+                stored_device_id = db_data.get("device_id") or db_data.get("deviceId", "")
+                stored_device_hash = db_data.get("deviceHash", "")
+                expiry = db_data.get("expiry")
+                
+                if expiry and int(time.time() * 1000) > int(expiry):
+                    await store.delete(f"ticket:{ticket}")
+                    return False
+                    
+                if ip == original_ip:
+                    return True
+                current_subnet = get_ip_subnet(ip)
+                original_subnet = get_ip_subnet(original_ip) if original_ip else None
+                if current_subnet is not None and original_subnet is not None and current_subnet == original_subnet:
+                    return True
+                if not allow_cross_network_roaming:
+                    return False
+                return bool(device_id and device_id == stored_device_id and device_hash and device_hash == stored_device_hash)
+
+        if ":" in ticket:
+            try:
+                parts = ticket.split(":")
+                if len(parts) < 2:
+                    return False
+                expiry, sig = parts[0], parts[1]
+                if not expiry or not sig or int(time.time() * 1000) > int(expiry):
+                    return False
+                
+                expected_sig = hmac.new(secret.encode('utf-8'), f"{ip}:{expiry}".encode('utf-8'), hashlib.sha256).hexdigest()
+                return hmac.compare_digest(expected_sig, sig)
+            except Exception:
+                return False
+                
+        return False
+
+    @staticmethod
     def calculate_cpu_target(suspicion_factor: float, security_config: Optional[Dict[str, Any]] = None) -> str:
         """
         Calculates the CPU Proof-of-Work target based on the suspicion factor.
@@ -466,6 +676,38 @@ class RequestUtils:
         if not ua or not client_hints:
             return 0.0
 
+        full_version_list = context.headers.get("sec-ch-ua-full-version-list", "")
+        if full_version_list:
+            ch_full_version = None
+            ch_full_browser = None
+            matches = re.findall(r'"([^"]+)";v="([^"]+)"', full_version_list)
+            for brand, version in matches:
+                if brand in ("Google Chrome", "Chromium", "Microsoft Edge"):
+                    ch_full_version = version
+                    ch_full_browser = "Edge" if brand == "Microsoft Edge" else "Chrome"
+                    if brand in ("Google Chrome", "Microsoft Edge"):
+                        break
+            if ch_full_version and ch_full_browser:
+                ua_full_match = re.search(r"(Chrome|Edg)/([\d.]+)", ua)
+                if ua_full_match:
+                    ua_browser_mapped = "Edge" if ua_full_match.group(1) == "Edg" else "Chrome"
+                    ua_full_version = ua_full_match.group(2)
+                    if ua_browser_mapped == ch_full_browser and ua_full_version != ch_full_version:
+                            parts1 = [int(x) for x in ua_full_version.split(".")]
+                            parts2 = [int(x) for x in ch_full_version.split(".")]
+                            diff_index = -1
+                            for i in range(max(len(parts1), len(parts2))):
+                                p1 = parts1[i] if i < len(parts1) else 0
+                                p2 = parts2[i] if i < len(parts2) else 0
+                                if p1 != p2:
+                                    diff_index = i
+                                    break
+                            base_scores = [95.0, 90.0, 85.0, 80.0]
+                            base_score = base_scores[diff_index] if diff_index < len(base_scores) else 80.0
+                            delta = abs((parts1[diff_index] if diff_index < len(parts1) else 0) - (parts2[diff_index] if diff_index < len(parts2) else 0))
+                            final_full_score = min(100.0, base_score + min(5.0, delta * 5.0))
+                            return final_full_score
+
         ua_browser = None
         ua_version = None
         ua_match = re.search(r"(Chrome|Firefox|Edg|Safari)/([\d.]+)", ua)
@@ -488,10 +730,15 @@ class RequestUtils:
 
         try:
             version_diff = abs(int(ua_version) - int(ch_version))
-            if version_diff > 5:
-                return 80.0
-            elif version_diff > 1:
-                return 40.0
+            client_hints_inconsistency_score = 0.0
+            if version_diff > 0:
+                if version_diff <= 2:
+                    client_hints_inconsistency_score = version_diff * 20.0
+                elif version_diff <= 7:
+                    client_hints_inconsistency_score = 40.0 + (version_diff - 2) * 8.0
+                else:
+                    client_hints_inconsistency_score = min(100.0, 80.0 + (version_diff - 7) * 3.33)
+                return round(client_hints_inconsistency_score, 1)
         except ValueError:
             pass
 
@@ -808,6 +1055,89 @@ class RequestUtils:
             score += min(80.0, (device_count - 10) * 5)
         score += min(40.0, high_score_count * 2)
         return {"subnetScore": min(100.0, score)}
+
+    @staticmethod
+    def get_tcp_anomaly_score(context: RequestContext) -> Dict[str, float]:
+        fp = None
+        raw_tcp_binary = context.headers.get("x-raw-tcp-binary")
+        if raw_tcp_binary:
+            if isinstance(raw_tcp_binary, str):
+                try:
+                    binary = bytes.fromhex(raw_tcp_binary)
+                except ValueError:
+                    binary = raw_tcp_binary.encode("utf-8")
+            else:
+                binary = raw_tcp_binary
+            fp = parse_tcp_syn(binary)
+
+        if not fp:
+            tcp_header = context.headers.get("x-tcp-fingerprint") or getattr(context, "tcp_fingerprint", None)
+            if tcp_header and isinstance(tcp_header, str):
+                parts = tcp_header.split(":")
+                if len(parts) >= 2:
+                    try:
+                        fp = {
+                            "ttl": int(parts[0]),
+                            "windowSize": int(parts[1]),
+                            "mss": int(parts[2]) if len(parts) > 2 and parts[2] else None,
+                            "ws": int(parts[3]) if len(parts) > 3 and parts[3] else None,
+                            "sack": len(parts) > 4 and parts[4] in ("1", "true")
+                        }
+                    except ValueError:
+                        pass
+        if not fp:
+            return {"tcpAnomalyScore": 0.0}
+        tcp_os = classify_tcp_os(fp)
+        ua = context.headers.get("user-agent", "")
+        ua_parts = RequestUtils.parse_user_agent(ua)
+        ua_os = ua_parts.get("os")
+        if not ua_os or tcp_os == "unknown":
+            return {"tcpAnomalyScore": 0.0}
+
+        mapped_os = None
+        if ua_os.startswith("Windows"):
+            mapped_os = "Windows"
+        elif ua_os.startswith("Mac") or ua_os.startswith("macOS"):
+            mapped_os = "macOS"
+        elif ua_os.startswith("iOS"):
+            mapped_os = "iOS"
+        elif ua_os.startswith("Linux"):
+            mapped_os = "Linux"
+
+        if mapped_os is None:
+            return {"tcpAnomalyScore": 0.0}
+
+        os_expected_tcp = {
+            "Windows": {"ttl": 128, "windowSize": 64240, "ws": 8, "mss": 1460, "sack": True},
+            "Linux": {"ttl": 64, "windowSize": 29200, "ws": 7, "mss": 1460, "sack": True},
+            "macOS": {"ttl": 64, "windowSize": 65535, "ws": 6, "mss": 1460, "sack": True},
+            "iOS": {"ttl": 64, "windowSize": 65535, "ws": 6, "mss": 1460, "sack": True}
+        }
+
+        expected = os_expected_tcp[mapped_os]
+        ttl_diff = abs(fp["ttl"] - expected["ttl"]) / expected["ttl"]
+        win_diff = abs(fp["windowSize"] - expected["windowSize"]) / expected["windowSize"]
+        ws_diff = abs(fp["ws"] - expected["ws"]) / expected["ws"] if expected["ws"] is not None and fp.get("ws") is not None else 0.0
+        mss_diff = abs(fp["mss"] - expected["mss"]) / expected["mss"] if expected["mss"] is not None and fp.get("mss") is not None else 0.0
+        sack_diff = 0.0 if (fp.get("sack") if fp.get("sack") is not None else True) == expected["sack"] else 1.0
+
+        deviation = (
+                min(1.0, ttl_diff) * 0.50 +
+                min(1.0, win_diff) * 0.25 +
+                min(1.0, ws_diff) * 0.15 +
+                min(1.0, mss_diff) * 0.05 +
+                sack_diff * 0.05
+        )
+
+        tcp_anomaly_score = 0.0
+        if tcp_os != mapped_os and tcp_os != "unknown":
+            base_anomaly = 80.0 if mapped_os == "Windows" else (85.0 if mapped_os in ("macOS", "iOS") else 75.0)
+            tcp_anomaly_score = base_anomaly + (deviation - 0.4) * 10.0
+        else:
+            tcp_anomaly_score = deviation * 40.0
+
+        tcp_anomaly_score = max(0.0, min(100.0, round(tcp_anomaly_score, 1)))
+        return {"tcpAnomalyScore": tcp_anomaly_score}
 
     @staticmethod
     def get_honeypot_score(context: RequestContext, honeypot_config: Optional[Dict[str, Any]] = None) -> float:
@@ -1494,6 +1824,9 @@ class FingerprintEngine:
         ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
         subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id))["subnetScore"]
 
+        tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
+        tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
+
 
         await self.store.set(f"device:{device_id}", device_data)
 
@@ -1515,6 +1848,7 @@ class FingerprintEngine:
             "ipReputationScore": ip_reputation_score,
             "cookieDroppingScore": cookie_dropping_score,
             "subnetScore": subnet_score,
+            "tcpAnomalyScore": tcp_anomaly_score,
         })
         return suspicion_vector
 
@@ -1687,9 +2021,19 @@ class FingerprintEngine:
         pow_cookie = context.cookies.get("pow_clearance")
         has_valid_ticket = False
         if pow_cookie:
-            ticket_data = await self.store.get(f"ticket:{pow_cookie}")
-            if ticket_data and ticket_data.get("ip") == context.client_ip:
-                has_valid_ticket = True
+            pow_secret = self.config.get("powSecret") or os.environ.get("POW_SECRET") or "fallback-dev-secret-32-chars-minimum"
+            allow_roaming = self.config.get("allowCrossNetworkRoaming", False)
+            current_hash = self.get_composite_device_hash(context)
+            has_valid_ticket = await ChallengeUtils.is_ticket_valid(
+                ip=context.client_ip,
+                ticket=pow_cookie,
+                device_id=device_id,
+                device_hash=current_hash,
+                secret=pow_secret,
+                allow_cross_network_roaming=allow_roaming,
+                store=self.store
+            )
+            if has_valid_ticket:
                 MetricsManager.increment_counter("tickets_valid_total")
 
         suspicion_vector = await self.get_suspicion_vector(context)
@@ -2847,9 +3191,11 @@ try:
                 response.set_cookie(cookie["name"], cookie["value"], **cookie["options"])
                 
             return response
+
 except ImportError:
     pass
 
+get_tcp_anomaly_score = RequestUtils.get_tcp_anomaly_score
 
 if __name__ == "__main__":
     import asyncio

@@ -90,6 +90,7 @@ class RequestUtils
             "ch_model" => "sec-ch-ua-model",
             "ch_arch" => "sec-ch-ua-arch",
             "ch_bitness" => "sec-ch-ua-bitness",
+            "ch_full_version_list" => "sec-ch-ua-full-version-list",
             "upgrade_req" => "upgrade-insecure-requests",
             "accept_lang" => "accept-language",
             "accept_enc" => "accept-encoding",
@@ -567,6 +568,50 @@ class RequestUtils
             return ['clientHintsInconsistencyScore' => 0.0];
         }
 
+        $fullVersionList = $context->getHeader('sec-ch-ua-full-version-list');
+        if (!empty($fullVersionList)) {
+            $chFullVersion = null;
+            $chFullBrowser = null;
+            if (preg_match_all('/"([^"]+)";v="([^"]+)"/', $fullVersionList, $matches, PREG_SET_ORDER)) {
+                foreach ($matches as $match) {
+                    $brand = $match[1];
+                    $version = $match[2];
+                    if ($brand === 'Google Chrome' || $brand === 'Chromium' || $brand === 'Microsoft Edge') {
+                        $chFullVersion = $version;
+                        $chFullBrowser = $brand === 'Microsoft Edge' ? 'Edge' : 'Chrome';
+                        if ($brand === 'Google Chrome' || $brand === 'Microsoft Edge') {
+                            break;
+                        }
+                    }
+                }
+            }
+            if ($chFullVersion && $chFullBrowser) {
+                if (preg_match('/(Chrome|Edg)\/([\d\.]+)/', $ua, $uaFullMatches)) {
+                    $uaBrowserMapped = $uaFullMatches[1] === 'Edg' ? 'Edge' : 'Chrome';
+                    $uaFullVersion = $uaFullMatches[2];
+                    if ($uaBrowserMapped === $chFullBrowser && $uaFullVersion !== $chFullVersion) {
+                        $parts1 = array_map('intval', explode('.', $uaFullVersion));
+                        $parts2 = array_map('intval', explode('.', $chFullVersion));
+                        $diffIndex = -1;
+                        $maxLen = max(count($parts1), count($parts2));
+                        for ($i = 0; $i < $maxLen; $i++) {
+                            $p1 = $parts1[$i] ?? 0;
+                            $p2 = $parts2[$i] ?? 0;
+                            if ($p1 !== $p2) {
+                                $diffIndex = $i;
+                                break;
+                            }
+                        }
+                        $baseScores = [95.0, 90.0, 85.0, 80.0];
+                        $baseScore = $baseScores[$diffIndex] ?? 80.0;
+                        $delta = abs(($parts1[$diffIndex] ?? 0) - ($parts2[$diffIndex] ?? 0));
+                        $finalFullScore = min(100.0, $baseScore + min(5.0, $delta * 5.0));
+                        return ['clientHintsInconsistencyScore' => $finalFullScore];
+                    }
+                }
+            }
+        }
+
         // 1. Extraire la version du navigateur depuis le User-Agent
         $uaVersion = null;
         if (preg_match('/(Chrome|Firefox|Edg|Safari)\/([\d\.]+)/', $ua, $uaMatches)) {
@@ -602,13 +647,19 @@ class RequestUtils
              return ['clientHintsInconsistencyScore' => 90.0];
         }
 
-        if ($versionDifference > 5) { // Un écart de plus de 5 versions majeures est très suspect
-            return ['clientHintsInconsistencyScore' => 80.0];
-        } elseif ($versionDifference > 1) { // Un petit écart est légèrement suspect
-            return ['clientHintsInconsistencyScore' => 40.0];
+        $clientHintsInconsistencyScore = 0.0;
+        if ($versionDifference > 0) {
+            if ($versionDifference <= 2) {
+                $clientHintsInconsistencyScore = $versionDifference * 20.0;
+            } elseif ($versionDifference <= 7) {
+                $clientHintsInconsistencyScore = 40.0 + ($versionDifference - 2) * 8.0;
+            } else {
+                $clientHintsInconsistencyScore = min(100.0, 80.0 + ($versionDifference - 7) * 3.33);
+            }
+            $clientHintsInconsistencyScore = round($clientHintsInconsistencyScore, 1);
         }
 
-        return ['clientHintsInconsistencyScore' => 0.0];
+        return ['clientHintsInconsistencyScore' => $clientHintsInconsistencyScore];
     }
     /**
      * Calcule les indicateurs comportementaux liés à l'historique de l'appareil.
@@ -1315,6 +1366,183 @@ class RequestUtils
     }
 
     /**
+     * Parse une trame TCP SYN brute (IPv4 ou IPv6).
+     */
+    public static function parseTcpSyn(?string $binary): ?array
+    {
+        if (!$binary || strlen($binary) < 40) return null;
+        $ttl = 64;
+        $tcpOffset = 20;
+        $version = ord($binary[0]) >> 4;
+
+        if ($version === 4) {
+            $ttl = ord($binary[8]);
+            $ihl = ord($binary[0]) & 0x0f;
+            $tcpOffset = $ihl * 4;
+        } elseif ($version === 6) {
+            $ttl = ord($binary[7]); // Hop Limit
+            $tcpOffset = 40;
+        } else {
+            $tcpOffset = 0;
+            $ttl = 64;
+        }
+
+        if (strlen($binary) < $tcpOffset + 20) return null;
+
+        $windowSize = (ord($binary[$tcpOffset + 14]) << 8) | ord($binary[$tcpOffset + 15]);
+        $dataOffset = (ord($binary[$tcpOffset + 12]) >> 4) * 4;
+        $optionsEnd = $tcpOffset + $dataOffset;
+
+        $mss = null;
+        $ws = null;
+        $sack = false;
+
+        $i = $tcpOffset + 20;
+        while ($i < $optionsEnd && $i < strlen($binary)) {
+            $optType = ord($binary[$i]);
+            if ($optType === 0) break;
+            if ($optType === 1) {
+                $i++;
+                continue;
+            }
+            if ($i + 1 >= strlen($binary)) break;
+            $optLen = ord($binary[$i + 1]);
+            if ($optLen < 2 || $i + $optLen > strlen($binary)) break;
+
+            if ($optType === 2 && $optLen === 4) {
+                $mss = (ord($binary[$i + 2]) << 8) | ord($binary[$i + 3]);
+            } elseif ($optType === 3 && $optLen === 3) {
+                $ws = ord($binary[$i + 2]);
+            } elseif ($optType === 4 && $optLen === 2) {
+                $sack = true;
+            }
+            $i += $optLen;
+        }
+
+        return ['ttl' => $ttl, 'windowSize' => $windowSize, 'mss' => $mss, 'ws' => $ws, 'sack' => $sack];
+    }
+
+    /**
+     * Classifie l'OS à partir du fingerprint de la pile TCP/IP.
+     */
+    public static function classifyTcpOs(?array $fingerprint): string
+    {
+        if (!$fingerprint) return 'unknown';
+        $ttl = $fingerprint['ttl'] ?? 64;
+        $windowSize = $fingerprint['windowSize'] ?? 0;
+        $ws = $fingerprint['ws'] ?? null;
+
+        if ($ttl > 64 && $ttl <= 128) {
+            return 'Windows';
+        }
+        if ($ttl > 32 && $ttl <= 64) {
+            if ($windowSize === 29200 || $windowSize === 14600 || $windowSize === 5840) {
+                return 'Linux';
+            }
+            return 'Linux';
+        }
+        if ($ttl <= 64) {
+            if ($windowSize === 65535 && ($ws === 6 || $ws === 8 || $ws === 5)) {
+                return 'macOS/iOS';
+            }
+        }
+        if ($ttl > 64) return 'Windows';
+        if ($ttl > 0) return 'Linux';
+        return 'unknown';
+    }
+
+    /**
+     * Détecte les anomalies de pile réseau par rapport au User-Agent.
+     */
+    public static function getTcpAnomalyScore(RequestContext $context): array
+    {
+        $fp = null;
+        $rawTcpBinary = $context->getHeader('x-raw-tcp-binary') ?? $context->headers['x-raw-tcp-binary'] ?? null;
+        if ($rawTcpBinary) {
+            $binary = @hex2bin($rawTcpBinary) ?: $rawTcpBinary;
+            $fp = self::parseTcpSyn($binary);
+        }
+
+        if (!$fp) {
+            $tcpHeader = $context->getHeader('x-tcp-fingerprint') ?? $context->tcpFingerprint ?? null;
+            if ($tcpHeader && is_string($tcpHeader)) {
+                $parts = explode(':', $tcpHeader);
+                if (count($parts) >= 2) {
+                    $fp = [
+                        'ttl' => (int)$parts[0],
+                        'windowSize' => (int)$parts[1],
+                        'mss' => isset($parts[2]) ? (int)$parts[2] : null,
+                        'ws' => isset($parts[3]) ? (int)$parts[3] : null,
+                        'sack' => isset($parts[4]) && ($parts[4] === '1' || $parts[4] === 'true')
+                    ];
+                }
+            }
+        }
+
+        if (!$fp) {
+            return ['tcpAnomalyScore' => 0.0];
+        }
+
+        $tcpOs = self::classifyTcpOs($fp);
+        $ua = $context->getHeader('user-agent') ?? '';
+        $uaParts = self::parseUserAgent($ua);
+        $uaOs = $uaParts['os'] ?? null;
+
+        if (!$uaOs || $tcpOs === 'unknown') {
+            return ['tcpAnomalyScore' => 0.0];
+        }
+
+        $mappedOs = null;
+        if (str_starts_with($uaOs, 'Windows')) {
+            $mappedOs = 'Windows';
+        } elseif (str_starts_with($uaOs, 'Mac') || str_starts_with($uaOs, 'macOS')) {
+            $mappedOs = 'macOS';
+        } elseif (str_starts_with($uaOs, 'iOS')) {
+            $mappedOs = 'iOS';
+        } elseif (str_starts_with($uaOs, 'Linux')) {
+            $mappedOs = 'Linux';
+        }
+
+        if ($mappedOs === null) {
+            return ['tcpAnomalyScore' => 0.0];
+        }
+
+        $osExpectedTcp = [
+            'Windows' => ['ttl' => 128, 'windowSize' => 64240, 'ws' => 8, 'mss' => 1460, 'sack' => true],
+            'Linux' => ['ttl' => 64, 'windowSize' => 29200, 'ws' => 7, 'mss' => 1460, 'sack' => true],
+            'macOS' => ['ttl' => 64, 'windowSize' => 65535, 'ws' => 6, 'mss' => 1460, 'sack' => true],
+            'iOS' => ['ttl' => 64, 'windowSize' => 65535, 'ws' => 6, 'mss' => 1460, 'sack' => true]
+        ];
+
+        $expected = $osExpectedTcp[$mappedOs];
+        $ttlDiff = abs($fp['ttl'] - $expected['ttl']) / $expected['ttl'];
+        $winDiff = abs($fp['windowSize'] - $expected['windowSize']) / $expected['windowSize'];
+        $wsDiff = $expected['ws'] !== null && ($fp['ws'] ?? null) !== null ? abs($fp['ws'] - $expected['ws']) / $expected['ws'] : 0.0;
+        $mssDiff = $expected['mss'] !== null && ($fp['mss'] ?? null) !== null ? abs($fp['mss'] - $expected['mss']) / $expected['mss'] : 0.0;
+        $sackDiff = ($fp['sack'] ?? true) === ($expected['sack'] ?? true) ? 0.0 : 1.0;
+
+        $deviation = (
+            min(1.0, $ttlDiff) * 0.50 +
+            min(1.0, $winDiff) * 0.25 +
+            min(1.0, $wsDiff) * 0.15 +
+            min(1.0, $mssDiff) * 0.05 +
+            $sackDiff * 0.05
+        );
+
+        $tcpAnomalyScore = 0.0;
+        if ($tcpOs !== $mappedOs && $tcpOs !== 'unknown') {
+            $baseAnomaly = $mappedOs === 'Windows' ? 80.0 :
+                (($mappedOs === 'macOS' || $mappedOs === 'iOS') ? 85.0 : 75.0);
+            $tcpAnomalyScore = $baseAnomaly + ($deviation - 0.4) * 10.0;
+        } else {
+            $tcpAnomalyScore = $deviation * 40.0;
+        }
+
+        $tcpAnomalyScore = max(0.0, min(100.0, round($tcpAnomalyScore, 1)));
+        return ['tcpAnomalyScore' => $tcpAnomalyScore];
+    }
+
+    /**
      * Vérifie si un ticket de clearance (PoW) est valide, en supportant la tolérance au roaming.
      *
      * @param string $ip L'adresse IP de la requête courante.
@@ -1327,6 +1555,47 @@ class RequestUtils
     public static function isTicketValid(string $ip, ?string $ticket, string $deviceId = '', string $deviceHash = '', string $secret = ''): bool
     {
         if (empty($ticket)) {
+            return false;
+        }
+
+        if (str_contains($ticket, '.')) {
+            $parts = explode('.', $ticket);
+            if (count($parts) === 3) {
+                $base64UrlDecode = function ($input) {
+                    return base64_decode(strtr($input, '-_', '+/'));
+                };
+                $iv = $base64UrlDecode($parts[0]);
+                $encrypted = $base64UrlDecode($parts[1]);
+                $signature = $base64UrlDecode($parts[2]);
+                if ($iv && $encrypted && $signature && strlen($iv) === 16) {
+                    $key = hash('sha256', $secret ?: "fallback-dev-secret-32-chars-minimum", true);
+                    $expectedSignature = hash_hmac('sha256', $iv . $encrypted, $key, true);
+                    if (hash_equals($expectedSignature, $signature)) {
+                        $decrypted = openssl_decrypt($encrypted, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+                        if ($decrypted !== false) {
+                            $ticketData = json_decode($decrypted, true);
+                            if ($ticketData) {
+                                $expiry = $ticketData['expiry'] ?? null;
+                                $originalIp = $ticketData['originalIp'] ?? null;
+                                $storedDeviceId = $ticketData['deviceId'] ?? '';
+                                $storedDeviceHash = $ticketData['deviceHash'] ?? '';
+                                if (!$expiry || (time() * 1000) > (int)$expiry) {
+                                    return false;
+                                }
+                                if ($ip === $originalIp) {
+                                    return true;
+                                }
+                                $currentSubnet = self::getIpSubnet($ip);
+                                $originalSubnet = self::getIpSubnet($originalIp);
+                                if ($currentSubnet !== null && $originalSubnet !== null && $currentSubnet === $originalSubnet) {
+                                    return true;
+                                }
+                                return !empty($deviceId) && $deviceId === $storedDeviceId && !empty($deviceHash) && $deviceHash === $storedDeviceHash;
+                            }
+                        }
+                    }
+                }
+            }
             return false;
         }
 

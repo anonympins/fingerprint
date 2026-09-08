@@ -4,6 +4,7 @@ import * as dns from "node:dns/promises";
 import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
+import {DynamicWasmGenerator} from "./dynamic-wasm.js";
 import {readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
@@ -14,6 +15,56 @@ const __dirname = dirname(__filename);
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
+
+const base64UrlEncode = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+const base64UrlDecode = (str) => {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  return Buffer.from(base64, 'base64');
+};
+
+export function generateStatelessTicket(payload) {
+  const secret = getPowSecret();
+  const key = crypto.createHash('sha256').update(secret).digest();
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+  let encrypted = cipher.update(JSON.stringify(payload));
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  
+  const signature = crypto.createHmac('sha256', key).update(Buffer.concat([iv, encrypted])).digest();
+  return `${base64UrlEncode(iv)}.${base64UrlEncode(encrypted)}.${base64UrlEncode(signature)}`;
+}
+
+export function parseStatelessTicket(ticket) {
+  try {
+    const parts = ticket.split('.');
+    if (parts.length !== 3) return null;
+    
+    const iv = base64UrlDecode(parts[0]);
+    const encrypted = base64UrlDecode(parts[1]);
+    const signature = base64UrlDecode(parts[2]);
+    
+    if (iv.length !== 16) return null;
+    
+    const secret = getPowSecret();
+    const key = crypto.createHash('sha256').update(secret).digest();
+    
+    const expectedSignature = crypto.createHmac('sha256', key).update(Buffer.concat([iv, encrypted])).digest();
+    if (signature.length !== expectedSignature.length || !crypto.timingSafeEqual(signature, expectedSignature)) {
+      return null;
+    }
+    
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    let decrypted = decipher.update(encrypted);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    
+    return JSON.parse(decrypted.toString('utf8'));
+  } catch (e) {
+    return null;
+  }
+}
 
 /**
  * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
@@ -493,6 +544,7 @@ function getCompositeDeviceHash(context) {
         "ch_model": "sec-ch-ua-model",
         "ch_arch": "sec-ch-ua-arch",
         "ch_bitness": "sec-ch-ua-bitness",
+        "ch_full_version_list": "sec-ch-ua-full-version-list",
         "upgrade_req": "upgrade-insecure-requests",
         "accept_lang": "accept-language",
         "accept_enc": "accept-encoding",
@@ -835,18 +887,16 @@ export const verifyPoWAndGenerateTicket = async (
     return null;
   }
 
-  // 2. Generate an opaque ticket ID and store session metadata securely on the server
-  const ticketId = crypto.randomUUID();
+  // 2. Generate a signed and encrypted stateless ticket
   const expiry = Date.now() + 3600000; // 1 hour
-
-  await store.set(`ticket:${ticketId}`, {
+  const payload = {
     expiry,
     originalIp: ip,
     deviceId,
     deviceHash
-  }, 3600); // 1 hour TTL
+  };
 
-  return ticketId;
+  return generateStatelessTicket(payload);
 };
 
 
@@ -902,7 +952,26 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
   // Input validation: ensure the ticket is a non-empty string with the correct format.
   if (typeof ticket !== 'string' || ticket.length === 0) return false;
 
-  // 1. Resolve opaque ticket session from server-side store
+  // 1. Resolve stateless ticket first (zero database I/O cost)
+  const statelessData = parseStatelessTicket(ticket);
+  if (statelessData) {
+    const { expiry, originalIp, deviceId: storedDeviceId, deviceHash: storedDeviceHash } = statelessData;
+
+    if (!expiry || Date.now() > expiry) {
+      return false;
+    }
+
+    if (ip === originalIp) return true;
+    const currentSubnet = getIpSubnet(ip);
+    const originalSubnet = getIpSubnet(originalIp);
+    if (currentSubnet && originalSubnet && currentSubnet === originalSubnet) return true;
+
+    if (!allowCrossNetworkRoaming) return false;
+
+    return !!(deviceId && deviceId === storedDeviceId && deviceHash && deviceHash === storedDeviceHash);
+  }
+
+  // 2. Resolve opaque ticket session from server-side store
   const ticketData = await store.get(`ticket:${ticket}`);
   if (ticketData) {
     const { expiry, originalIp, deviceId: storedDeviceId, deviceHash: storedDeviceHash } = ticketData;
@@ -922,7 +991,7 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     return !!(deviceId && deviceId === storedDeviceId && deviceHash && deviceHash === storedDeviceHash);
   }
 
-  // 2. Legacy fallback verification (backward compatibility for old client tokens)
+  // 3. Legacy fallback verification (backward compatibility for old client tokens)
   let expiry, originalIp, sig;
   if (ticket.includes('|')) {
     const parts = ticket.split('|');
@@ -1647,6 +1716,48 @@ function getClientHintsInconsistencyScore(context) {
         return { clientHintsInconsistencyScore: 0 };
     }
 
+    const fullVersionList = context.headers['sec-ch-ua-full-version-list'];
+    if (fullVersionList) {
+        let chFullVersion = null;
+        let chFullBrowser = null;
+        const matches = [...fullVersionList.matchAll(/"([^"]+)";v="([^"]+)"/g)];
+        for (const match of matches) {
+            const brand = match[1];
+            const version = match[2];
+            if (brand === 'Google Chrome' || brand === 'Chromium' || brand === 'Microsoft Edge') {
+                chFullVersion = version;
+                chFullBrowser = brand === 'Microsoft Edge' ? 'Edge' : 'Chrome';
+                if (brand === 'Google Chrome' || brand === 'Microsoft Edge') {
+                    break;
+                }
+            }
+        }
+        if (chFullVersion && chFullBrowser) {
+            let uaFullVersion = null;
+            const uaFullMatch = ua.match(/(Chrome|Edg)\/([\d\.]+)/);
+            if (uaFullMatch) {
+                const uaBrowserMapped = uaFullMatch[1] === 'Edg' ? 'Edge' : 'Chrome';
+                uaFullVersion = uaFullMatch[2];
+                if (uaBrowserMapped === chFullBrowser && uaFullVersion !== chFullVersion) {
+                    const parts1 = uaFullVersion.split('.').map(Number);
+                    const parts2 = chFullVersion.split('.').map(Number);
+                    let diffIndex = -1;
+                    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+                        if ((parts1[i] || 0) !== (parts2[i] || 0)) {
+                            diffIndex = i;
+                            break;
+                        }
+                    }
+                    const baseScores = [95, 90, 85, 80];
+                    const baseScore = baseScores[diffIndex] || 80;
+                    const delta = Math.abs((parts1[diffIndex] || 0) - (parts2[diffIndex] || 0));
+                    const finalFullScore = Math.min(100, baseScore + Math.min(5, delta * 5));
+                    return { clientHintsInconsistencyScore: finalFullScore };
+                }
+            }
+        }
+    }
+
     // 1. Extract browser and version from User-Agent
     let uaVersion = null;
     let uaBrowser = null;
@@ -1681,10 +1792,19 @@ function getClientHintsInconsistencyScore(context) {
 
     const versionDifference = Math.abs(parseInt(uaVersion, 10) - parseInt(chVersion, 10));
 
-    if (versionDifference > 5) return { clientHintsInconsistencyScore: 80 };
-    if (versionDifference > 1) return { clientHintsInconsistencyScore: 40 };
+        let clientHintsInconsistencyScore = 0;
+        if (versionDifference > 0) {
+            if (versionDifference <= 2) {
+                clientHintsInconsistencyScore = versionDifference * 20;
+            } else if (versionDifference <= 7) {
+                clientHintsInconsistencyScore = 40 + (versionDifference - 2) * 8;
+            } else {
+                clientHintsInconsistencyScore = Math.min(100, 80 + (versionDifference - 7) * 3.33);
+            }
+            clientHintsInconsistencyScore = Math.round(clientHintsInconsistencyScore);
+        }
 
-    return { clientHintsInconsistencyScore: 0 };
+        return { clientHintsInconsistencyScore };
 }
 
 /**
@@ -2416,6 +2536,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const stableFpHash = cyrb53(stableFp).toString();
   const { botnetClusterScore } = await getBotnetClusterScore(context, stableFpHash);
 
+    const { tcpAnomalyScore } = getTcpAnomalyScore(context);
+
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
   await store.set(`device:${deviceId}`, deviceData);
@@ -2426,7 +2548,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -2722,19 +2844,15 @@ export async function verifyCpuTargetPoWAndGenerateTicket(
   if (isValid) {
       console.log('[FP Server Verify] CPU PoW verification PASSED. Details:', {
       });
-    // Generate an opaque ticket ID and store session metadata securely on the server
-    const ticketId = crypto.randomUUID();
     const ttl = ticketTtl || 3600000; // Calculates expiration from TTL
     const expiry = Date.now() + ttl;
 
-    await store.set(`ticket:${ticketId}`, {
+    return generateStatelessTicket({
       expiry,
       originalIp: clientIp,
       deviceId,
       deviceHash
     }, Math.ceil(ttl / 1000));
-
-    return ticketId;
   }
 
   return null;
@@ -2836,7 +2954,8 @@ export class FingerprintEngine {
             (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
             (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0) +
             (suspicionVector.subnetScore || 0) * (weights.subnetScore || 0) +
-            (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0);
+            (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
+            (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0);
 
         return Math.min(100, score);
     }
@@ -3982,6 +4101,185 @@ function determineOptimalTicketTtl(suspicionScore) {
     return ttl;
 }
 
+
+/**
+ * Parse une trame TCP SYN brute (IPv4 ou IPv6).
+ * @private
+ * @param {Buffer|Uint8Array} binary - Le paquet binaire.
+ * @returns {object|null}
+ */
+function parseTcpSyn(binary) {
+    if (!binary || binary.length < 40) return null;
+    let ttl = 64;
+    let tcpOffset = 20;
+    const version = binary[0] >> 4;
+
+    if (version === 4) {
+        ttl = binary[8];
+        const ihl = binary[0] & 0x0f;
+        tcpOffset = ihl * 4;
+    } else if (version === 6) {
+        ttl = binary[7]; // Hop Limit
+        tcpOffset = 40;
+    } else {
+        tcpOffset = 0;
+        ttl = 64;
+    }
+
+    if (binary.length < tcpOffset + 20) return null;
+
+    const windowSize = (binary[tcpOffset + 14] << 8) | binary[tcpOffset + 15];
+    const dataOffset = (binary[tcpOffset + 12] >> 4) * 4;
+    const optionsEnd = tcpOffset + dataOffset;
+
+    let mss = null;
+    let ws = null;
+    let sack = false;
+
+    let i = tcpOffset + 20;
+    while (i < optionsEnd && i < binary.length) {
+        const optType = binary[i];
+        if (optType === 0) break;
+        if (optType === 1) {
+            i++;
+            continue;
+        }
+        if (i + 1 >= binary.length) break;
+        const optLen = binary[i + 1];
+        if (optLen < 2 || i + optLen > binary.length) break;
+
+        if (optType === 2 && optLen === 4) {
+            mss = (binary[i + 2] << 8) | binary[i + 3];
+        } else if (optType === 3 && optLen === 3) {
+            ws = binary[i + 2];
+        } else if (optType === 4 && optLen === 2) {
+            sack = true;
+        }
+        i += optLen;
+    }
+
+    return { ttl, windowSize, mss, ws, sack };
+}
+
+/**
+ * Classifie l'OS à partir du fingerprint de la pile TCP/IP.
+ * @private
+ * @param {object|null} fingerprint
+ * @returns {string}
+ */
+function classifyTcpOs(fingerprint) {
+    if (!fingerprint) return 'unknown';
+    const ttl = fingerprint.ttl ?? 64;
+    const windowSize = fingerprint.windowSize ?? 0;
+    const ws = fingerprint.ws ?? null;
+
+    if (ttl > 64 && ttl <= 128) {
+        return 'Windows';
+    }
+    if (ttl > 32 && ttl <= 64) {
+        if (windowSize === 29200 || windowSize === 14600 || windowSize === 5840) {
+            return 'Linux';
+        }
+        return 'Linux';
+    }
+    if (ttl <= 64) {
+        if (windowSize === 65535 && (ws === 6 || ws === 8 || ws === 5)) {
+            return 'macOS/iOS';
+        }
+    }
+    if (ttl > 64) return 'Windows';
+    if (ttl > 0) return 'Linux';
+    return 'unknown';
+}
+
+/**
+ * Détecte les anomalies de pile réseau par rapport au User-Agent.
+ * @private
+ * @param {object} context - Le contexte de la requête.
+ * @returns {{tcpAnomalyScore: number}}
+ */
+function getTcpAnomalyScore(context) {
+    let fp = null;
+    const rawTcpBinary = context.headers?.['x-raw-tcp-binary'] || context.rawTcpBinary || null;
+    if (rawTcpBinary) {
+        const binary = Buffer.isBuffer(rawTcpBinary) ? rawTcpBinary : (typeof rawTcpBinary === 'string' ? Buffer.from(rawTcpBinary, 'hex') : rawTcpBinary);
+        fp = parseTcpSyn(binary);
+    }
+
+    if (!fp) {
+        const tcpHeader = context.headers?.['x-tcp-fingerprint'] || context.tcpFingerprint || null;
+        if (tcpHeader && typeof tcpHeader === 'string') {
+            const parts = tcpHeader.split(':');
+            if (parts.length >= 2) {
+                fp = {
+                    ttl: parseInt(parts[0], 10),
+                    windowSize: parseInt(parts[1], 10),
+                    mss: parts[2] ? parseInt(parts[2], 10) : null,
+                    ws: parts[3] ? parseInt(parts[3], 10) : null,
+                    sack: parts[4] === '1' || parts[4] === 'true'
+                };
+            }
+        }
+    }
+
+    if (!fp) {
+        return { tcpAnomalyScore: 0.0 };
+    }
+
+    const tcpOs = classifyTcpOs(fp);
+    const ua = context.headers?.['user-agent'] || '';
+    const uaParts = parseUserAgent(ua);
+    const uaOs = uaParts.os;
+
+    if (!uaOs || tcpOs === 'unknown') {
+        return { tcpAnomalyScore: 0.0 };
+    }
+
+        let mappedOs = null;
+        if (uaOs.startsWith('Windows')) mappedOs = 'Windows';
+        else if (uaOs.startsWith('Mac') || uaOs.startsWith('macOS')) mappedOs = 'macOS';
+        else if (uaOs.startsWith('iOS')) mappedOs = 'iOS';
+        else if (uaOs.startsWith('Linux')) mappedOs = 'Linux';
+
+        if (!mappedOs) {
+            return { tcpAnomalyScore: 0.0 };
+        }
+
+        const OS_EXPECTED_TCP = {
+            'Windows': { ttl: 128, windowSize: 64240, ws: 8, mss: 1460, sack: true },
+            'Linux': { ttl: 64, windowSize: 29200, ws: 7, mss: 1460, sack: true },
+            'macOS': { ttl: 64, windowSize: 65535, ws: 6, mss: 1460, sack: true },
+            'iOS': { ttl: 64, windowSize: 65535, ws: 6, mss: 1460, sack: true }
+        };
+
+        const expected = OS_EXPECTED_TCP[mappedOs];
+        const ttlDiff = Math.abs(fp.ttl - expected.ttl) / expected.ttl;
+        const winDiff = Math.abs(fp.windowSize - expected.windowSize) / expected.windowSize;
+        const wsDiff = expected.ws !== null && fp.ws !== null ? Math.abs(fp.ws - expected.ws) / expected.ws : 0.0;
+        const mssDiff = expected.mss !== null && fp.mss !== null ? Math.abs(fp.mss - expected.mss) / expected.mss : 0.0;
+        const sackDiff = (fp.sack ?? true) === (expected.sack ?? true) ? 0.0 : 1.0;
+
+        const deviation = (
+            Math.min(1.0, ttlDiff) * 0.50 +
+            Math.min(1.0, winDiff) * 0.25 +
+            Math.min(1.0, wsDiff) * 0.15 +
+            Math.min(1.0, mssDiff) * 0.05 +
+            sackDiff * 0.05
+        );
+
+        let tcpAnomalyScore = 0.0;
+        if (tcpOs !== mappedOs && tcpOs !== 'unknown') {
+            const baseAnomaly = mappedOs === 'Windows' ? 80.0 :
+                                (mappedOs === 'macOS' || mappedOs === 'iOS' ? 85.0 : 75.0);
+            tcpAnomalyScore = baseAnomaly + (deviation - 0.4) * 10.0;
+        } else {
+            tcpAnomalyScore = deviation * 40.0;
+        }
+
+        tcpAnomalyScore = Math.max(0.0, Math.min(100.0, Math.round(tcpAnomalyScore * 10) / 10));
+        return { tcpAnomalyScore };
+}
+
 /**
  * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
  * @private
@@ -4246,8 +4544,19 @@ export const powMiddleware = (securityConfig) => {
 
       if (jsFile && req.path === jsPath) {
         try {
-          const fileContent = readFileSync(jsFile);
-          res.setHeader('Content-Type', 'application/javascript');
+          if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
+            console.log('[Fingerprint] Generating dynamic polymorphic WASM module...');
+            // Génère des constantes aléatoires uniques pour cette session / requête
+            const seed = crypto.randomBytes(4).readInt32LE(0);
+            const multiplier = crypto.randomBytes(4).readInt32LE(0) | 1; // Doit être impair pour un LCG optimal
+            const adder = crypto.randomBytes(4).readInt32LE(0);
+            
+            const wasmBuffer = DynamicWasmGenerator.generate({ seed, multiplier, adder });
+            res.setHeader('Content-Type', 'application/wasm');
+            return res.send(wasmBuffer);
+          }
+          const fileContent = readFileSync(wasmFile);
+          res.setHeader('Content-Type', 'application/wasm');
           return res.send(fileContent);
         } catch (e) {
           // Fallback
@@ -4255,6 +4564,16 @@ export const powMiddleware = (securityConfig) => {
       }
       if (wasmFile && req.path === wasmPath) {
         try {
+          if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
+            // Génère des constantes aléatoires uniques pour cette session / requête
+            const seed = crypto.randomBytes(4).readInt32LE(0);
+            const multiplier = crypto.randomBytes(4).readInt32LE(0) | 1; // Doit être impair pour un LCG optimal
+            const adder = crypto.randomBytes(4).readInt32LE(0);
+            
+            const wasmBuffer = DynamicWasmGenerator.generate({ seed, multiplier, adder });
+            res.setHeader('Content-Type', 'application/wasm');
+            return res.send(wasmBuffer);
+          }
           const fileContent = readFileSync(wasmFile);
           res.setHeader('Content-Type', 'application/wasm');
           return res.send(fileContent);
@@ -4352,6 +4671,8 @@ export const __internal = {
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
     sanitizeTrafficData, // NOUVEAU: Expose pour l'auto-tuner/tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
+    generateStatelessTicket,
+    parseStatelessTicket,
     parseJa3,
     getBotnetClusterScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
@@ -4364,6 +4685,9 @@ export const __internal = {
     getIpReputationScore, // Expose for testing
     updateIpReputationScore, // Expose for testing
     setLastBestSolution: (val) => { lastBestSolution = val; }, // Expose to test auto-tuning metrics
+    parseTcpSyn, // Expose for testing
+    classifyTcpOs, // Expose for testing
+    getTcpAnomalyScore // Expose for testing
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
