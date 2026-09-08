@@ -126,6 +126,25 @@ class IpReputationTest extends TestCase
         $this->assertEquals(90.0, $score['clientHintsInconsistencyScore']);
     }
 
+    public function testGetClientHintsInconsistencyFullVersionMismatch(): void
+    {
+        $context = $this->createMock(RequestContext::class);
+        $context->method('getHeader')->willReturnCallback(function($name) {
+            if ($name === 'user-agent') {
+                return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.1.2 Safari/537.36';
+            }
+            if ($name === 'sec-ch-ua') {
+                return '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
+            }
+            if ($name === 'sec-ch-ua-full-version-list') {
+                return '"Not_A Brand";v="8.0.0.0", "Chromium";v="120.0.1.3", "Google Chrome";v="120.0.1.3"';
+            }
+            return null;
+        });
+        $score = RequestUtils::getClientHintsInconsistencyScore($context);
+        $this->assertEquals(85.0, $score['clientHintsInconsistencyScore']);
+    }
+
     public function testGetSubnetScoreCalculations(): void
     {
         $context = $this->createMock(RequestContext::class);

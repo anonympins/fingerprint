@@ -90,6 +90,7 @@ class RequestUtils
             "ch_model" => "sec-ch-ua-model",
             "ch_arch" => "sec-ch-ua-arch",
             "ch_bitness" => "sec-ch-ua-bitness",
+            "ch_full_version_list" => "sec-ch-ua-full-version-list",
             "upgrade_req" => "upgrade-insecure-requests",
             "accept_lang" => "accept-language",
             "accept_enc" => "accept-encoding",
@@ -567,6 +568,50 @@ class RequestUtils
             return ['clientHintsInconsistencyScore' => 0.0];
         }
 
+        $fullVersionList = $context->getHeader('sec-ch-ua-full-version-list');
+        if (!empty($fullVersionList)) {
+            $chFullVersion = null;
+            $chFullBrowser = null;
+            if (preg_match_all('/"([^"]+)";v="([^"]+)"/', $fullVersionList, $matches, PREG_SET_ORDER)) {
+                foreach ($matches as $match) {
+                    $brand = $match[1];
+                    $version = $match[2];
+                    if ($brand === 'Google Chrome' || $brand === 'Chromium' || $brand === 'Microsoft Edge') {
+                        $chFullVersion = $version;
+                        $chFullBrowser = $brand === 'Microsoft Edge' ? 'Edge' : 'Chrome';
+                        if ($brand === 'Google Chrome' || $brand === 'Microsoft Edge') {
+                            break;
+                        }
+                    }
+                }
+            }
+            if ($chFullVersion && $chFullBrowser) {
+                if (preg_match('/(Chrome|Edg)\/([\d\.]+)/', $ua, $uaFullMatches)) {
+                    $uaBrowserMapped = $uaFullMatches[1] === 'Edg' ? 'Edge' : 'Chrome';
+                    $uaFullVersion = $uaFullMatches[2];
+                    if ($uaBrowserMapped === $chFullBrowser && $uaFullVersion !== $chFullVersion) {
+                        $parts1 = array_map('intval', explode('.', $uaFullVersion));
+                        $parts2 = array_map('intval', explode('.', $chFullVersion));
+                        $diffIndex = -1;
+                        $maxLen = max(count($parts1), count($parts2));
+                        for ($i = 0; $i < $maxLen; $i++) {
+                            $p1 = $parts1[$i] ?? 0;
+                            $p2 = $parts2[$i] ?? 0;
+                            if ($p1 !== $p2) {
+                                $diffIndex = $i;
+                                break;
+                            }
+                        }
+                        $baseScores = [95.0, 90.0, 85.0, 80.0];
+                        $baseScore = $baseScores[$diffIndex] ?? 80.0;
+                        $delta = abs(($parts1[$diffIndex] ?? 0) - ($parts2[$diffIndex] ?? 0));
+                        $finalFullScore = min(100.0, $baseScore + min(5.0, $delta * 5.0));
+                        return ['clientHintsInconsistencyScore' => $finalFullScore];
+                    }
+                }
+            }
+        }
+
         // 1. Extraire la version du navigateur depuis le User-Agent
         $uaVersion = null;
         if (preg_match('/(Chrome|Firefox|Edg|Safari)\/([\d\.]+)/', $ua, $uaMatches)) {
@@ -602,13 +647,19 @@ class RequestUtils
              return ['clientHintsInconsistencyScore' => 90.0];
         }
 
-        if ($versionDifference > 5) { // Un écart de plus de 5 versions majeures est très suspect
-            return ['clientHintsInconsistencyScore' => 80.0];
-        } elseif ($versionDifference > 1) { // Un petit écart est légèrement suspect
-            return ['clientHintsInconsistencyScore' => 40.0];
+        $clientHintsInconsistencyScore = 0.0;
+        if ($versionDifference > 0) {
+            if ($versionDifference <= 2) {
+                $clientHintsInconsistencyScore = $versionDifference * 20.0;
+            } elseif ($versionDifference <= 7) {
+                $clientHintsInconsistencyScore = 40.0 + ($versionDifference - 2) * 8.0;
+            } else {
+                $clientHintsInconsistencyScore = min(100.0, 80.0 + ($versionDifference - 7) * 3.33);
+            }
+            $clientHintsInconsistencyScore = round($clientHintsInconsistencyScore, 1);
         }
 
-        return ['clientHintsInconsistencyScore' => 0.0];
+        return ['clientHintsInconsistencyScore' => $clientHintsInconsistencyScore];
     }
     /**
      * Calcule les indicateurs comportementaux liés à l'historique de l'appareil.

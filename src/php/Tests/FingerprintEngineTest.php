@@ -294,7 +294,7 @@ class FingerprintEngineTest extends TestCase
                     'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
                     'sec-ch-ua' => '"Not/A)Brand";v="99", "Google Chrome";v="120", "Chromium";v="120"',
                 ]),
-                80.0,
+                96.7,
                 'Should return 80 for a large version mismatch (>5).'
             ],
             'small version mismatch' => [

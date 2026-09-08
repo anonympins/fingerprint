@@ -544,6 +544,7 @@ function getCompositeDeviceHash(context) {
         "ch_model": "sec-ch-ua-model",
         "ch_arch": "sec-ch-ua-arch",
         "ch_bitness": "sec-ch-ua-bitness",
+        "ch_full_version_list": "sec-ch-ua-full-version-list",
         "upgrade_req": "upgrade-insecure-requests",
         "accept_lang": "accept-language",
         "accept_enc": "accept-encoding",
@@ -1715,6 +1716,48 @@ function getClientHintsInconsistencyScore(context) {
         return { clientHintsInconsistencyScore: 0 };
     }
 
+    const fullVersionList = context.headers['sec-ch-ua-full-version-list'];
+    if (fullVersionList) {
+        let chFullVersion = null;
+        let chFullBrowser = null;
+        const matches = [...fullVersionList.matchAll(/"([^"]+)";v="([^"]+)"/g)];
+        for (const match of matches) {
+            const brand = match[1];
+            const version = match[2];
+            if (brand === 'Google Chrome' || brand === 'Chromium' || brand === 'Microsoft Edge') {
+                chFullVersion = version;
+                chFullBrowser = brand === 'Microsoft Edge' ? 'Edge' : 'Chrome';
+                if (brand === 'Google Chrome' || brand === 'Microsoft Edge') {
+                    break;
+                }
+            }
+        }
+        if (chFullVersion && chFullBrowser) {
+            let uaFullVersion = null;
+            const uaFullMatch = ua.match(/(Chrome|Edg)\/([\d\.]+)/);
+            if (uaFullMatch) {
+                const uaBrowserMapped = uaFullMatch[1] === 'Edg' ? 'Edge' : 'Chrome';
+                uaFullVersion = uaFullMatch[2];
+                if (uaBrowserMapped === chFullBrowser && uaFullVersion !== chFullVersion) {
+                    const parts1 = uaFullVersion.split('.').map(Number);
+                    const parts2 = chFullVersion.split('.').map(Number);
+                    let diffIndex = -1;
+                    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+                        if ((parts1[i] || 0) !== (parts2[i] || 0)) {
+                            diffIndex = i;
+                            break;
+                        }
+                    }
+                    const baseScores = [95, 90, 85, 80];
+                    const baseScore = baseScores[diffIndex] || 80;
+                    const delta = Math.abs((parts1[diffIndex] || 0) - (parts2[diffIndex] || 0));
+                    const finalFullScore = Math.min(100, baseScore + Math.min(5, delta * 5));
+                    return { clientHintsInconsistencyScore: finalFullScore };
+                }
+            }
+        }
+    }
+
     // 1. Extract browser and version from User-Agent
     let uaVersion = null;
     let uaBrowser = null;
@@ -1749,10 +1792,19 @@ function getClientHintsInconsistencyScore(context) {
 
     const versionDifference = Math.abs(parseInt(uaVersion, 10) - parseInt(chVersion, 10));
 
-    if (versionDifference > 5) return { clientHintsInconsistencyScore: 80 };
-    if (versionDifference > 1) return { clientHintsInconsistencyScore: 40 };
+        let clientHintsInconsistencyScore = 0;
+        if (versionDifference > 0) {
+            if (versionDifference <= 2) {
+                clientHintsInconsistencyScore = versionDifference * 20;
+            } else if (versionDifference <= 7) {
+                clientHintsInconsistencyScore = 40 + (versionDifference - 2) * 8;
+            } else {
+                clientHintsInconsistencyScore = Math.min(100, 80 + (versionDifference - 7) * 3.33);
+            }
+            clientHintsInconsistencyScore = Math.round(clientHintsInconsistencyScore);
+        }
 
-    return { clientHintsInconsistencyScore: 0 };
+        return { clientHintsInconsistencyScore };
 }
 
 /**

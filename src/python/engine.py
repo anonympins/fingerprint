@@ -676,6 +676,38 @@ class RequestUtils:
         if not ua or not client_hints:
             return 0.0
 
+        full_version_list = context.headers.get("sec-ch-ua-full-version-list", "")
+        if full_version_list:
+            ch_full_version = None
+            ch_full_browser = None
+            matches = re.findall(r'"([^"]+)";v="([^"]+)"', full_version_list)
+            for brand, version in matches:
+                if brand in ("Google Chrome", "Chromium", "Microsoft Edge"):
+                    ch_full_version = version
+                    ch_full_browser = "Edge" if brand == "Microsoft Edge" else "Chrome"
+                    if brand in ("Google Chrome", "Microsoft Edge"):
+                        break
+            if ch_full_version and ch_full_browser:
+                ua_full_match = re.search(r"(Chrome|Edg)/([\d.]+)", ua)
+                if ua_full_match:
+                    ua_browser_mapped = "Edge" if ua_full_match.group(1) == "Edg" else "Chrome"
+                    ua_full_version = ua_full_match.group(2)
+                    if ua_browser_mapped == ch_full_browser and ua_full_version != ch_full_version:
+                            parts1 = [int(x) for x in ua_full_version.split(".")]
+                            parts2 = [int(x) for x in ch_full_version.split(".")]
+                            diff_index = -1
+                            for i in range(max(len(parts1), len(parts2))):
+                                p1 = parts1[i] if i < len(parts1) else 0
+                                p2 = parts2[i] if i < len(parts2) else 0
+                                if p1 != p2:
+                                    diff_index = i
+                                    break
+                            base_scores = [95.0, 90.0, 85.0, 80.0]
+                            base_score = base_scores[diff_index] if diff_index < len(base_scores) else 80.0
+                            delta = abs((parts1[diff_index] if diff_index < len(parts1) else 0) - (parts2[diff_index] if diff_index < len(parts2) else 0))
+                            final_full_score = min(100.0, base_score + min(5.0, delta * 5.0))
+                            return final_full_score
+
         ua_browser = None
         ua_version = None
         ua_match = re.search(r"(Chrome|Firefox|Edg|Safari)/([\d.]+)", ua)
@@ -698,10 +730,15 @@ class RequestUtils:
 
         try:
             version_diff = abs(int(ua_version) - int(ch_version))
-            if version_diff > 5:
-                return 80.0
-            elif version_diff > 1:
-                return 40.0
+            client_hints_inconsistency_score = 0.0
+            if version_diff > 0:
+                if version_diff <= 2:
+                    client_hints_inconsistency_score = version_diff * 20.0
+                elif version_diff <= 7:
+                    client_hints_inconsistency_score = 40.0 + (version_diff - 2) * 8.0
+                else:
+                    client_hints_inconsistency_score = min(100.0, 80.0 + (version_diff - 7) * 3.33)
+                return round(client_hints_inconsistency_score, 1)
         except ValueError:
             pass
 

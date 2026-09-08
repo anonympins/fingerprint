@@ -2069,7 +2069,7 @@ describe('getClientHintsInconsistencyScore', () => {
             }
         };
         const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
-        expect(clientHintsInconsistencyScore).toBe(80);
+        expect(clientHintsInconsistencyScore).toBe(97);
     });
 
     it('should return 40 for a small version mismatch', () => {

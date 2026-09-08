@@ -117,6 +117,16 @@ describe('IP Reputation Local System (Node.js)', () => {
         };
         const scoreVersionDrift = __internal.getClientHintsInconsistencyScore(mockContextVersionDrift);
         expect(scoreVersionDrift.clientHintsInconsistencyScore).toBe(80);
+
+        const mockContextFullVersionMismatch = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.1.2 Safari/537.36',
+                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'sec-ch-ua-full-version-list': '"Not_A Brand";v="8.0.0.0", "Chromium";v="120.0.1.3", "Google Chrome";v="120.0.1.3"'
+            }
+        };
+        const scoreFullVersionMismatch = __internal.getClientHintsInconsistencyScore(mockContextFullVersionMismatch);
+        expect(scoreFullVersionMismatch.clientHintsInconsistencyScore).toBe(85);
     });
 
     it('should integrate subnet history into subnet score', async () => {

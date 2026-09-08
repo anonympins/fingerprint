@@ -71,6 +71,22 @@ def test_tcp_anomaly_cross_layer():
     )
     score_data = RequestUtils.get_tcp_anomaly_score(context)
     assert score_data["tcpAnomalyScore"] == pytest.approx(80.1)
+
+def test_client_hints_inconsistency_full_version_mismatch():
+    """Vérifie le score d'incohérence en cas de différence de version complète."""
+    context = RequestContext(
+        client_ip="1.2.3.4",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.1.2 Safari/537.36",
+            "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "sec-ch-ua-full-version-list": '"Not_A Brand";v="8.0.0.0", "Chromium";v="120.0.1.3", "Google Chrome";v="120.0.1.3"'
+        },
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_client_hints_inconsistency(context)
+    assert score == 85.0
 # --- TESTS: UTILS & HASHING ---
 
 def test_imul_precision():
