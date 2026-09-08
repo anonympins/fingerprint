@@ -70,7 +70,7 @@ def test_tcp_anomaly_cross_layer():
         cookies={}
     )
     score_data = RequestUtils.get_tcp_anomaly_score(context)
-    assert score_data["tcpAnomalyScore"] == 80.0
+    assert score_data["tcpAnomalyScore"] == pytest.approx(80.1)
 # --- TESTS: UTILS & HASHING ---
 
 def test_imul_precision():

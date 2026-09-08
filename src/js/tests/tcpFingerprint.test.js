@@ -64,7 +64,7 @@ describe('Passive TCP/IP Fingerprinting (Type p0f)', () => {
             },
             rawTcpBinary: mockLinuxSynPacket
         };
-        expect(getTcpAnomalyScore(contextAnomaly).tcpAnomalyScore).toBe(80);
+        expect(getTcpAnomalyScore(contextAnomaly).tcpAnomalyScore).toBe(80.1);
 
         // Cas 2 : Cohérence complète (UA Windows et pile TCP/IP Windows)
         const contextCoherent = {

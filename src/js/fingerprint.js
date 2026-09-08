@@ -4182,17 +4182,49 @@ function getTcpAnomalyScore(context) {
         return { tcpAnomalyScore: 0.0 };
     }
 
-    if (uaOs.startsWith('Windows') && tcpOs !== 'Windows') {
-        return { tcpAnomalyScore: 80.0 };
-    }
-    if ((uaOs === 'macOS' || uaOs === 'iOS') && tcpOs === 'Windows') {
-        return { tcpAnomalyScore: 85.0 };
-    }
-    if (uaOs === 'Linux' && tcpOs === 'Windows') {
-        return { tcpAnomalyScore: 75.0 };
-    }
+        let mappedOs = null;
+        if (uaOs.startsWith('Windows')) mappedOs = 'Windows';
+        else if (uaOs.startsWith('Mac') || uaOs.startsWith('macOS')) mappedOs = 'macOS';
+        else if (uaOs.startsWith('iOS')) mappedOs = 'iOS';
+        else if (uaOs.startsWith('Linux')) mappedOs = 'Linux';
 
-    return { tcpAnomalyScore: 0.0 };
+        if (!mappedOs) {
+            return { tcpAnomalyScore: 0.0 };
+        }
+
+        const OS_EXPECTED_TCP = {
+            'Windows': { ttl: 128, windowSize: 64240, ws: 8, mss: 1460, sack: true },
+            'Linux': { ttl: 64, windowSize: 29200, ws: 7, mss: 1460, sack: true },
+            'macOS': { ttl: 64, windowSize: 65535, ws: 6, mss: 1460, sack: true },
+            'iOS': { ttl: 64, windowSize: 65535, ws: 6, mss: 1460, sack: true }
+        };
+
+        const expected = OS_EXPECTED_TCP[mappedOs];
+        const ttlDiff = Math.abs(fp.ttl - expected.ttl) / expected.ttl;
+        const winDiff = Math.abs(fp.windowSize - expected.windowSize) / expected.windowSize;
+        const wsDiff = expected.ws !== null && fp.ws !== null ? Math.abs(fp.ws - expected.ws) / expected.ws : 0.0;
+        const mssDiff = expected.mss !== null && fp.mss !== null ? Math.abs(fp.mss - expected.mss) / expected.mss : 0.0;
+        const sackDiff = (fp.sack ?? true) === (expected.sack ?? true) ? 0.0 : 1.0;
+
+        const deviation = (
+            Math.min(1.0, ttlDiff) * 0.50 +
+            Math.min(1.0, winDiff) * 0.25 +
+            Math.min(1.0, wsDiff) * 0.15 +
+            Math.min(1.0, mssDiff) * 0.05 +
+            sackDiff * 0.05
+        );
+
+        let tcpAnomalyScore = 0.0;
+        if (tcpOs !== mappedOs && tcpOs !== 'unknown') {
+            const baseAnomaly = mappedOs === 'Windows' ? 80.0 :
+                                (mappedOs === 'macOS' || mappedOs === 'iOS' ? 85.0 : 75.0);
+            tcpAnomalyScore = baseAnomaly + (deviation - 0.4) * 10.0;
+        } else {
+            tcpAnomalyScore = deviation * 40.0;
+        }
+
+        tcpAnomalyScore = Math.max(0.0, Math.min(100.0, Math.round(tcpAnomalyScore * 10) / 10));
+        return { tcpAnomalyScore };
 }
 
 /**

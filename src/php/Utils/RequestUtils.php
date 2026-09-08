@@ -1441,17 +1441,54 @@ class RequestUtils
             return ['tcpAnomalyScore' => 0.0];
         }
 
-        if (str_starts_with($uaOs, 'Windows') && $tcpOs !== 'Windows') {
-            return ['tcpAnomalyScore' => 80.0];
-        }
-        if (($uaOs === 'macOS' || $uaOs === 'iOS') && $tcpOs === 'Windows') {
-            return ['tcpAnomalyScore' => 85.0];
-        }
-        if ($uaOs === 'Linux' && $tcpOs === 'Windows') {
-            return ['tcpAnomalyScore' => 75.0];
+        $mappedOs = null;
+        if (str_starts_with($uaOs, 'Windows')) {
+            $mappedOs = 'Windows';
+        } elseif (str_starts_with($uaOs, 'Mac') || str_starts_with($uaOs, 'macOS')) {
+            $mappedOs = 'macOS';
+        } elseif (str_starts_with($uaOs, 'iOS')) {
+            $mappedOs = 'iOS';
+        } elseif (str_starts_with($uaOs, 'Linux')) {
+            $mappedOs = 'Linux';
         }
 
-        return ['tcpAnomalyScore' => 0.0];
+        if ($mappedOs === null) {
+            return ['tcpAnomalyScore' => 0.0];
+        }
+
+        $osExpectedTcp = [
+            'Windows' => ['ttl' => 128, 'windowSize' => 64240, 'ws' => 8, 'mss' => 1460, 'sack' => true],
+            'Linux' => ['ttl' => 64, 'windowSize' => 29200, 'ws' => 7, 'mss' => 1460, 'sack' => true],
+            'macOS' => ['ttl' => 64, 'windowSize' => 65535, 'ws' => 6, 'mss' => 1460, 'sack' => true],
+            'iOS' => ['ttl' => 64, 'windowSize' => 65535, 'ws' => 6, 'mss' => 1460, 'sack' => true]
+        ];
+
+        $expected = $osExpectedTcp[$mappedOs];
+        $ttlDiff = abs($fp['ttl'] - $expected['ttl']) / $expected['ttl'];
+        $winDiff = abs($fp['windowSize'] - $expected['windowSize']) / $expected['windowSize'];
+        $wsDiff = $expected['ws'] !== null && ($fp['ws'] ?? null) !== null ? abs($fp['ws'] - $expected['ws']) / $expected['ws'] : 0.0;
+        $mssDiff = $expected['mss'] !== null && ($fp['mss'] ?? null) !== null ? abs($fp['mss'] - $expected['mss']) / $expected['mss'] : 0.0;
+        $sackDiff = ($fp['sack'] ?? true) === ($expected['sack'] ?? true) ? 0.0 : 1.0;
+
+        $deviation = (
+            min(1.0, $ttlDiff) * 0.50 +
+            min(1.0, $winDiff) * 0.25 +
+            min(1.0, $wsDiff) * 0.15 +
+            min(1.0, $mssDiff) * 0.05 +
+            $sackDiff * 0.05
+        );
+
+        $tcpAnomalyScore = 0.0;
+        if ($tcpOs !== $mappedOs && $tcpOs !== 'unknown') {
+            $baseAnomaly = $mappedOs === 'Windows' ? 80.0 :
+                (($mappedOs === 'macOS' || $mappedOs === 'iOS') ? 85.0 : 75.0);
+            $tcpAnomalyScore = $baseAnomaly + ($deviation - 0.4) * 10.0;
+        } else {
+            $tcpAnomalyScore = $deviation * 40.0;
+        }
+
+        $tcpAnomalyScore = max(0.0, min(100.0, round($tcpAnomalyScore, 1)));
+        return ['tcpAnomalyScore' => $tcpAnomalyScore];
     }
 
     /**

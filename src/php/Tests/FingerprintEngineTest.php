@@ -350,7 +350,7 @@ class FingerprintEngineTest extends TestCase
 
         $decision = $this->engine->processRequest($context);
 
-        $this->assertEquals(80.0, $decision['vector']['tcpAnomalyScore']);
+        $this->assertEquals(80.1, $decision['vector']['tcpAnomalyScore']);
         // Le poids de tcpAnomalyScore dans le profil balanced est de 0.8 (80 * 0.8 = 64)
         $this->assertGreaterThanOrEqual(64.0, $decision['score']);
     }

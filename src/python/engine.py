@@ -1056,13 +1056,51 @@ class RequestUtils:
         ua_os = ua_parts.get("os")
         if not ua_os or tcp_os == "unknown":
             return {"tcpAnomalyScore": 0.0}
-        if ua_os.startswith("Windows") and tcp_os != "Windows":
-            return {"tcpAnomalyScore": 80.0}
-        if ua_os in ("macOS", "iOS") and tcp_os == "Windows":
-            return {"tcpAnomalyScore": 85.0}
-        if ua_os == "Linux" and tcp_os == "Windows":
-            return {"tcpAnomalyScore": 75.0}
-        return {"tcpAnomalyScore": 0.0}
+
+        mapped_os = None
+        if ua_os.startswith("Windows"):
+            mapped_os = "Windows"
+        elif ua_os.startswith("Mac") or ua_os.startswith("macOS"):
+            mapped_os = "macOS"
+        elif ua_os.startswith("iOS"):
+            mapped_os = "iOS"
+        elif ua_os.startswith("Linux"):
+            mapped_os = "Linux"
+
+        if mapped_os is None:
+            return {"tcpAnomalyScore": 0.0}
+
+        os_expected_tcp = {
+            "Windows": {"ttl": 128, "windowSize": 64240, "ws": 8, "mss": 1460, "sack": True},
+            "Linux": {"ttl": 64, "windowSize": 29200, "ws": 7, "mss": 1460, "sack": True},
+            "macOS": {"ttl": 64, "windowSize": 65535, "ws": 6, "mss": 1460, "sack": True},
+            "iOS": {"ttl": 64, "windowSize": 65535, "ws": 6, "mss": 1460, "sack": True}
+        }
+
+        expected = os_expected_tcp[mapped_os]
+        ttl_diff = abs(fp["ttl"] - expected["ttl"]) / expected["ttl"]
+        win_diff = abs(fp["windowSize"] - expected["windowSize"]) / expected["windowSize"]
+        ws_diff = abs(fp["ws"] - expected["ws"]) / expected["ws"] if expected["ws"] is not None and fp.get("ws") is not None else 0.0
+        mss_diff = abs(fp["mss"] - expected["mss"]) / expected["mss"] if expected["mss"] is not None and fp.get("mss") is not None else 0.0
+        sack_diff = 0.0 if (fp.get("sack") if fp.get("sack") is not None else True) == expected["sack"] else 1.0
+
+        deviation = (
+                min(1.0, ttl_diff) * 0.50 +
+                min(1.0, win_diff) * 0.25 +
+                min(1.0, ws_diff) * 0.15 +
+                min(1.0, mss_diff) * 0.05 +
+                sack_diff * 0.05
+        )
+
+        tcp_anomaly_score = 0.0
+        if tcp_os != mapped_os and tcp_os != "unknown":
+            base_anomaly = 80.0 if mapped_os == "Windows" else (85.0 if mapped_os in ("macOS", "iOS") else 75.0)
+            tcp_anomaly_score = base_anomaly + (deviation - 0.4) * 10.0
+        else:
+            tcp_anomaly_score = deviation * 40.0
+
+        tcp_anomaly_score = max(0.0, min(100.0, round(tcp_anomaly_score, 1)))
+        return {"tcpAnomalyScore": tcp_anomaly_score}
 
     @staticmethod
     def get_honeypot_score(context: RequestContext, honeypot_config: Optional[Dict[str, Any]] = None) -> float:
