@@ -1315,6 +1315,146 @@ class RequestUtils
     }
 
     /**
+     * Parse une trame TCP SYN brute (IPv4 ou IPv6).
+     */
+    public static function parseTcpSyn(?string $binary): ?array
+    {
+        if (!$binary || strlen($binary) < 40) return null;
+        $ttl = 64;
+        $tcpOffset = 20;
+        $version = ord($binary[0]) >> 4;
+
+        if ($version === 4) {
+            $ttl = ord($binary[8]);
+            $ihl = ord($binary[0]) & 0x0f;
+            $tcpOffset = $ihl * 4;
+        } elseif ($version === 6) {
+            $ttl = ord($binary[7]); // Hop Limit
+            $tcpOffset = 40;
+        } else {
+            $tcpOffset = 0;
+            $ttl = 64;
+        }
+
+        if (strlen($binary) < $tcpOffset + 20) return null;
+
+        $windowSize = (ord($binary[$tcpOffset + 14]) << 8) | ord($binary[$tcpOffset + 15]);
+        $dataOffset = (ord($binary[$tcpOffset + 12]) >> 4) * 4;
+        $optionsEnd = $tcpOffset + $dataOffset;
+
+        $mss = null;
+        $ws = null;
+        $sack = false;
+
+        $i = $tcpOffset + 20;
+        while ($i < $optionsEnd && $i < strlen($binary)) {
+            $optType = ord($binary[$i]);
+            if ($optType === 0) break;
+            if ($optType === 1) {
+                $i++;
+                continue;
+            }
+            if ($i + 1 >= strlen($binary)) break;
+            $optLen = ord($binary[$i + 1]);
+            if ($optLen < 2 || $i + $optLen > strlen($binary)) break;
+
+            if ($optType === 2 && $optLen === 4) {
+                $mss = (ord($binary[$i + 2]) << 8) | ord($binary[$i + 3]);
+            } elseif ($optType === 3 && $optLen === 3) {
+                $ws = ord($binary[$i + 2]);
+            } elseif ($optType === 4 && $optLen === 2) {
+                $sack = true;
+            }
+            $i += $optLen;
+        }
+
+        return ['ttl' => $ttl, 'windowSize' => $windowSize, 'mss' => $mss, 'ws' => $ws, 'sack' => $sack];
+    }
+
+    /**
+     * Classifie l'OS à partir du fingerprint de la pile TCP/IP.
+     */
+    public static function classifyTcpOs(?array $fingerprint): string
+    {
+        if (!$fingerprint) return 'unknown';
+        $ttl = $fingerprint['ttl'] ?? 64;
+        $windowSize = $fingerprint['windowSize'] ?? 0;
+        $ws = $fingerprint['ws'] ?? null;
+
+        if ($ttl > 64 && $ttl <= 128) {
+            return 'Windows';
+        }
+        if ($ttl > 32 && $ttl <= 64) {
+            if ($windowSize === 29200 || $windowSize === 14600 || $windowSize === 5840) {
+                return 'Linux';
+            }
+            return 'Linux';
+        }
+        if ($ttl <= 64) {
+            if ($windowSize === 65535 && ($ws === 6 || $ws === 8 || $ws === 5)) {
+                return 'macOS/iOS';
+            }
+        }
+        if ($ttl > 64) return 'Windows';
+        if ($ttl > 0) return 'Linux';
+        return 'unknown';
+    }
+
+    /**
+     * Détecte les anomalies de pile réseau par rapport au User-Agent.
+     */
+    public static function getTcpAnomalyScore(RequestContext $context): array
+    {
+        $fp = null;
+        $rawTcpBinary = $context->getHeader('x-raw-tcp-binary') ?? $context->headers['x-raw-tcp-binary'] ?? null;
+        if ($rawTcpBinary) {
+            $binary = @hex2bin($rawTcpBinary) ?: $rawTcpBinary;
+            $fp = self::parseTcpSyn($binary);
+        }
+
+        if (!$fp) {
+            $tcpHeader = $context->getHeader('x-tcp-fingerprint') ?? $context->tcpFingerprint ?? null;
+            if ($tcpHeader && is_string($tcpHeader)) {
+                $parts = explode(':', $tcpHeader);
+                if (count($parts) >= 2) {
+                    $fp = [
+                        'ttl' => (int)$parts[0],
+                        'windowSize' => (int)$parts[1],
+                        'mss' => isset($parts[2]) ? (int)$parts[2] : null,
+                        'ws' => isset($parts[3]) ? (int)$parts[3] : null,
+                        'sack' => isset($parts[4]) && ($parts[4] === '1' || $parts[4] === 'true')
+                    ];
+                }
+            }
+        }
+
+        if (!$fp) {
+            return ['tcpAnomalyScore' => 0.0];
+        }
+
+        $tcpOs = self::classifyTcpOs($fp);
+        $ua = $context->getHeader('user-agent') ?? '';
+        $uaParts = self::parseUserAgent($ua);
+        $uaOs = $uaParts['os'] ?? null;
+
+        if (!$uaOs || $tcpOs === 'unknown') {
+            return ['tcpAnomalyScore' => 0.0];
+        }
+
+        if (str_starts_with($uaOs, 'Windows') && $tcpOs !== 'Windows') {
+            return ['tcpAnomalyScore' => 80.0];
+        }
+        if (($uaOs === 'macOS' || $uaOs === 'iOS') && $tcpOs === 'Windows') {
+            return ['tcpAnomalyScore' => 85.0];
+        }
+        if ($uaOs === 'Linux' && $tcpOs === 'Windows') {
+            return ['tcpAnomalyScore' => 75.0];
+        }
+
+        return ['tcpAnomalyScore' => 0.0];
+    }
+
+    /**
      * Vérifie si un ticket de clearance (PoW) est valide, en supportant la tolérance au roaming.
      *
      * @param string $ip L'adresse IP de la requête courante.

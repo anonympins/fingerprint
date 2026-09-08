@@ -40,6 +40,8 @@ class SecurityProfiles
                 'clickVarianceScore' => 0.6, // Poids pour la variance des clics
                 'subnetScore' => 0.5, // Pénalise les sous-réseaux IP avec une activité suspecte agrégée
                 'botnetClusterScore' => 0.6, // NOUVEAU: Poids pour le clustering botnet
+                'tcpAnomalyScore' => 0.8, // NEW: Anomalie de pile TCP/IP
+
             ],
             'thresholds' => ['low' => 20, 'medium' => 45, 'high' => 75, 'block' => 95],
             'patterns' => [
@@ -84,6 +86,8 @@ class SecurityProfiles
                 'clickVarianceScore' => 0.7, // High weight for click variance
                 'subnetScore' => 0.7, // Poids plus élevé en mode strict
                 'botnetClusterScore' => 0.8, // NOUVEAU: Poids pour le clustering botnet
+                'tcpAnomalyScore' => 1.0, // NEW: Anomalie de pile TCP/IP
+
             ],
             'thresholds' => ['low' => 10, 'medium' => 35, 'high' => 65, 'block' => 90],
             'patterns' => [
@@ -128,6 +132,8 @@ class SecurityProfiles
                 'clickVarianceScore' => 0.3, // Low weight as not applicable to APIs
                 'subnetScore' => 0.8, // Très important pour les API pour détecter les botnets
                 'botnetClusterScore' => 0.7, // NOUVEAU: Poids pour le clustering botnet
+                'tcpAnomalyScore' => 0.8, // NEW: Anomalie de pile TCP/IP
+
             ],
             'thresholds' => ['low' => 25, 'medium' => 50, 'high' => 80, 'block' => 95],
             'patterns' => [
@@ -174,6 +180,8 @@ class SecurityProfiles
                 'clickVarianceScore' => 0.5, // Moderate weight for click variance
                 'subnetScore' => 0.4, // Utile contre le spam de commentaires coordonné
                 'botnetClusterScore' => 0.5, // NOUVEAU: Poids pour le clustering botnet
+                'tcpAnomalyScore' => 0.5, // NEW: Anomalie de pile TCP/IP
+
             ],
             'thresholds' => ['low' => 25, 'medium' => 55, 'high' => 80, 'block' => 95],
             'patterns' => [
@@ -219,6 +227,8 @@ class SecurityProfiles
                 'clickVarianceScore' => 0.8, // Very high weight for click variance
                 'subnetScore' => 0.9, // Crucial contre les attaques de scalping distribuées
                 'botnetClusterScore' => 0.9, // NOUVEAU: Poids pour le clustering botnet
+                'tcpAnomalyScore' => 0.9, // NEW: Anomalie de pile TCP/IP
+
             ],
             'thresholds' => ['low' => 15, 'medium' => 40, 'high' => 70, 'block' => 90],
             'patterns' => [

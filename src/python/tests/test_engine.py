@@ -9,6 +9,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from engine import (
     imul,
+    parse_tcp_syn,
+    classify_tcp_os,
     cyrb53,
     get_ip_subnet,
     RequestContext,
@@ -28,6 +30,47 @@ from engine import (
     WSGIFingerprintMiddleware,
 )
 
+def test_parse_tcp_syn_binary():
+    """Vérifie le parsing de trames TCP SYN brutes en Python."""
+    # Linux SYN Hex
+    linux_syn = bytes.fromhex('4500003c1a2b400040063c1a7f0000017f0000011f9000500000000100000000a00272103c1a0000020405b4040201030307')
+    fp = parse_tcp_syn(linux_syn)
+    assert fp is not None
+    assert fp["ttl"] == 64
+    assert fp["windowSize"] == 29200
+    assert fp["mss"] == 1460
+    assert fp["ws"] == 7
+    assert fp["sack"] is True
+
+    # Windows SYN Hex
+    windows_syn = bytes.fromhex('4500003c1a2b400080063c1a7f0000017f0000011f9000500000000100000000a002faf03c1a0000020405b4040201030308')
+    fp_win = parse_tcp_syn(windows_syn)
+    assert fp_win["ttl"] == 128
+    assert fp_win["windowSize"] == 64240
+
+def test_classify_tcp_os():
+    """Vérifie la classification passive de l'OS."""
+    linux_syn = bytes.fromhex('4500003c1a2b400040063c1a7f0000017f0000011f9000500000000100000000a00272103c1a0000020405b4040201030307')
+    assert classify_tcp_os(parse_tcp_syn(linux_syn)) == "Linux"
+
+    windows_syn = bytes.fromhex('4500003c1a2b400080063c1a7f0000017f0000011f9000500000000100000000a002faf03c1a0000020405b4040201030308')
+    assert classify_tcp_os(parse_tcp_syn(windows_syn)) == "Windows"
+
+def test_tcp_anomaly_cross_layer():
+    """Vérifie le croisement de l'OS applicatif avec la couche transport."""
+    linux_syn_hex = '4500003c1a2b400040063c1a7f0000017f0000011f9000500000000100000000a00272103c1a0000020405b4040201030307'
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0",
+            "x-raw-tcp-binary": linux_syn_hex
+        },
+        query_params={},
+        cookies={}
+    )
+    score_data = RequestUtils.get_tcp_anomaly_score(context)
+    assert score_data["tcpAnomalyScore"] == 80.0
 # --- TESTS: UTILS & HASHING ---
 
 def test_imul_precision():

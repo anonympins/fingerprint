@@ -2483,6 +2483,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const stableFpHash = cyrb53(stableFp).toString();
   const { botnetClusterScore } = await getBotnetClusterScore(context, stableFpHash);
 
+    const { tcpAnomalyScore } = getTcpAnomalyScore(context);
+
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
   await store.set(`device:${deviceId}`, deviceData);
@@ -2493,7 +2495,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -2899,7 +2901,8 @@ export class FingerprintEngine {
             (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
             (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0) +
             (suspicionVector.subnetScore || 0) * (weights.subnetScore || 0) +
-            (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0);
+            (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
+            (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0);
 
         return Math.min(100, score);
     }
@@ -4045,6 +4048,153 @@ function determineOptimalTicketTtl(suspicionScore) {
     return ttl;
 }
 
+
+/**
+ * Parse une trame TCP SYN brute (IPv4 ou IPv6).
+ * @private
+ * @param {Buffer|Uint8Array} binary - Le paquet binaire.
+ * @returns {object|null}
+ */
+function parseTcpSyn(binary) {
+    if (!binary || binary.length < 40) return null;
+    let ttl = 64;
+    let tcpOffset = 20;
+    const version = binary[0] >> 4;
+
+    if (version === 4) {
+        ttl = binary[8];
+        const ihl = binary[0] & 0x0f;
+        tcpOffset = ihl * 4;
+    } else if (version === 6) {
+        ttl = binary[7]; // Hop Limit
+        tcpOffset = 40;
+    } else {
+        tcpOffset = 0;
+        ttl = 64;
+    }
+
+    if (binary.length < tcpOffset + 20) return null;
+
+    const windowSize = (binary[tcpOffset + 14] << 8) | binary[tcpOffset + 15];
+    const dataOffset = (binary[tcpOffset + 12] >> 4) * 4;
+    const optionsEnd = tcpOffset + dataOffset;
+
+    let mss = null;
+    let ws = null;
+    let sack = false;
+
+    let i = tcpOffset + 20;
+    while (i < optionsEnd && i < binary.length) {
+        const optType = binary[i];
+        if (optType === 0) break;
+        if (optType === 1) {
+            i++;
+            continue;
+        }
+        if (i + 1 >= binary.length) break;
+        const optLen = binary[i + 1];
+        if (optLen < 2 || i + optLen > binary.length) break;
+
+        if (optType === 2 && optLen === 4) {
+            mss = (binary[i + 2] << 8) | binary[i + 3];
+        } else if (optType === 3 && optLen === 3) {
+            ws = binary[i + 2];
+        } else if (optType === 4 && optLen === 2) {
+            sack = true;
+        }
+        i += optLen;
+    }
+
+    return { ttl, windowSize, mss, ws, sack };
+}
+
+/**
+ * Classifie l'OS à partir du fingerprint de la pile TCP/IP.
+ * @private
+ * @param {object|null} fingerprint
+ * @returns {string}
+ */
+function classifyTcpOs(fingerprint) {
+    if (!fingerprint) return 'unknown';
+    const ttl = fingerprint.ttl ?? 64;
+    const windowSize = fingerprint.windowSize ?? 0;
+    const ws = fingerprint.ws ?? null;
+
+    if (ttl > 64 && ttl <= 128) {
+        return 'Windows';
+    }
+    if (ttl > 32 && ttl <= 64) {
+        if (windowSize === 29200 || windowSize === 14600 || windowSize === 5840) {
+            return 'Linux';
+        }
+        return 'Linux';
+    }
+    if (ttl <= 64) {
+        if (windowSize === 65535 && (ws === 6 || ws === 8 || ws === 5)) {
+            return 'macOS/iOS';
+        }
+    }
+    if (ttl > 64) return 'Windows';
+    if (ttl > 0) return 'Linux';
+    return 'unknown';
+}
+
+/**
+ * Détecte les anomalies de pile réseau par rapport au User-Agent.
+ * @private
+ * @param {object} context - Le contexte de la requête.
+ * @returns {{tcpAnomalyScore: number}}
+ */
+function getTcpAnomalyScore(context) {
+    let fp = null;
+    const rawTcpBinary = context.headers?.['x-raw-tcp-binary'] || context.rawTcpBinary || null;
+    if (rawTcpBinary) {
+        const binary = Buffer.isBuffer(rawTcpBinary) ? rawTcpBinary : (typeof rawTcpBinary === 'string' ? Buffer.from(rawTcpBinary, 'hex') : rawTcpBinary);
+        fp = parseTcpSyn(binary);
+    }
+
+    if (!fp) {
+        const tcpHeader = context.headers?.['x-tcp-fingerprint'] || context.tcpFingerprint || null;
+        if (tcpHeader && typeof tcpHeader === 'string') {
+            const parts = tcpHeader.split(':');
+            if (parts.length >= 2) {
+                fp = {
+                    ttl: parseInt(parts[0], 10),
+                    windowSize: parseInt(parts[1], 10),
+                    mss: parts[2] ? parseInt(parts[2], 10) : null,
+                    ws: parts[3] ? parseInt(parts[3], 10) : null,
+                    sack: parts[4] === '1' || parts[4] === 'true'
+                };
+            }
+        }
+    }
+
+    if (!fp) {
+        return { tcpAnomalyScore: 0.0 };
+    }
+
+    const tcpOs = classifyTcpOs(fp);
+    const ua = context.headers?.['user-agent'] || '';
+    const uaParts = parseUserAgent(ua);
+    const uaOs = uaParts.os;
+
+    if (!uaOs || tcpOs === 'unknown') {
+        return { tcpAnomalyScore: 0.0 };
+    }
+
+    if (uaOs.startsWith('Windows') && tcpOs !== 'Windows') {
+        return { tcpAnomalyScore: 80.0 };
+    }
+    if ((uaOs === 'macOS' || uaOs === 'iOS') && tcpOs === 'Windows') {
+        return { tcpAnomalyScore: 85.0 };
+    }
+    if (uaOs === 'Linux' && tcpOs === 'Windows') {
+        return { tcpAnomalyScore: 75.0 };
+    }
+
+    return { tcpAnomalyScore: 0.0 };
+}
+
 /**
  * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
  * @private
@@ -4429,6 +4579,9 @@ export const __internal = {
     getIpReputationScore, // Expose for testing
     updateIpReputationScore, // Expose for testing
     setLastBestSolution: (val) => { lastBestSolution = val; }, // Expose to test auto-tuning metrics
+    parseTcpSyn, // Expose for testing
+    classifyTcpOs, // Expose for testing
+    getTcpAnomalyScore // Expose for testing
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---

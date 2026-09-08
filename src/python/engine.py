@@ -26,7 +26,83 @@ def imul(a: int, b: int) -> int:
     """
     return ctypes.c_int32((a * b) & 0xffffffff).value
 
+def parse_tcp_syn(binary: bytes) -> Optional[Dict[str, Any]]:
+    """Parses raw TCP SYN binary packets to extract TTL, window size, MSS, WS, and SACK."""
+    if not binary or len(binary) < 40:
+        return None
+    ttl = 64
+    tcp_offset = 20
+    version = binary[0] >> 4
 
+    if version == 4:
+        ttl = binary[8]
+        ihl = binary[0] & 0x0f
+        tcp_offset = ihl * 4
+    elif version == 6:
+        ttl = binary[7]  # Hop Limit
+        tcp_offset = 40
+    else:
+        tcp_offset = 0
+        ttl = 64
+
+    if len(binary) < tcp_offset + 20:
+        return None
+
+    import struct
+    window_size = struct.unpack("!H", binary[tcp_offset + 14 : tcp_offset + 16])[0]
+    data_offset = (binary[tcp_offset + 12] >> 4) * 4
+    options_end = tcp_offset + data_offset
+
+    mss = None
+    ws = None
+    sack = False
+
+    i = tcp_offset + 20
+    while i < options_end and i < len(binary):
+        opt_type = binary[i]
+        if opt_type == 0:
+            break
+        if opt_type == 1:
+            i += 1
+            continue
+        if i + 1 >= len(binary):
+            break
+        opt_len = binary[i + 1]
+        if opt_len < 2 or i + opt_len > len(binary):
+            break
+
+        if opt_type == 2 and opt_len == 4:
+            mss = struct.unpack("!H", binary[i + 2 : i + 4])[0]
+        elif opt_type == 3 and opt_len == 3:
+            ws = binary[i + 2]
+        elif opt_type == 4 and opt_len == 2:
+            sack = True
+        i += opt_len
+
+    return {"ttl": ttl, "windowSize": window_size, "mss": mss, "ws": ws, "sack": sack}
+
+def classify_tcp_os(fingerprint: Optional[Dict[str, Any]]) -> str:
+    """Classifies OS based on passive TCP fingerprinted values."""
+    if not fingerprint:
+        return "unknown"
+    ttl = fingerprint.get("ttl", 64)
+    window_size = fingerprint.get("windowSize", 0)
+    ws = fingerprint.get("ws")
+
+    if 64 < ttl <= 128:
+        return "Windows"
+    if 32 < ttl <= 64:
+        if window_size in (29200, 14600, 5840):
+            return "Linux"
+        return "Linux"
+    if ttl <= 64:
+        if window_size == 65535 and ws in (6, 8, 5):
+            return "macOS/iOS"
+    if ttl > 64:
+        return "Windows"
+    if ttl > 0:
+        return "Linux"
+    return "unknown"
 # --- UTILS: Cyrb53 Hash Emulation ---
 
 # Note: This cyrb53 implementation is a direct port from the JavaScript version
@@ -944,6 +1020,51 @@ class RequestUtils:
         return {"subnetScore": min(100.0, score)}
 
     @staticmethod
+    def get_tcp_anomaly_score(context: RequestContext) -> Dict[str, float]:
+        fp = None
+        raw_tcp_binary = context.headers.get("x-raw-tcp-binary")
+        if raw_tcp_binary:
+            if isinstance(raw_tcp_binary, str):
+                try:
+                    binary = bytes.fromhex(raw_tcp_binary)
+                except ValueError:
+                    binary = raw_tcp_binary.encode("utf-8")
+            else:
+                binary = raw_tcp_binary
+            fp = parse_tcp_syn(binary)
+
+        if not fp:
+            tcp_header = context.headers.get("x-tcp-fingerprint") or getattr(context, "tcp_fingerprint", None)
+            if tcp_header and isinstance(tcp_header, str):
+                parts = tcp_header.split(":")
+                if len(parts) >= 2:
+                    try:
+                        fp = {
+                            "ttl": int(parts[0]),
+                            "windowSize": int(parts[1]),
+                            "mss": int(parts[2]) if len(parts) > 2 and parts[2] else None,
+                            "ws": int(parts[3]) if len(parts) > 3 and parts[3] else None,
+                            "sack": len(parts) > 4 and parts[4] in ("1", "true")
+                        }
+                    except ValueError:
+                        pass
+        if not fp:
+            return {"tcpAnomalyScore": 0.0}
+        tcp_os = classify_tcp_os(fp)
+        ua = context.headers.get("user-agent", "")
+        ua_parts = RequestUtils.parse_user_agent(ua)
+        ua_os = ua_parts.get("os")
+        if not ua_os or tcp_os == "unknown":
+            return {"tcpAnomalyScore": 0.0}
+        if ua_os.startswith("Windows") and tcp_os != "Windows":
+            return {"tcpAnomalyScore": 80.0}
+        if ua_os in ("macOS", "iOS") and tcp_os == "Windows":
+            return {"tcpAnomalyScore": 85.0}
+        if ua_os == "Linux" and tcp_os == "Windows":
+            return {"tcpAnomalyScore": 75.0}
+        return {"tcpAnomalyScore": 0.0}
+
+    @staticmethod
     def get_honeypot_score(context: RequestContext, honeypot_config: Optional[Dict[str, Any]] = None) -> float:
         if not honeypot_config: return 0.0
         fields = honeypot_config.get("fields", [])
@@ -1628,6 +1749,9 @@ class FingerprintEngine:
         ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
         subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id))["subnetScore"]
 
+        tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
+        tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
+
 
         await self.store.set(f"device:{device_id}", device_data)
 
@@ -1649,6 +1773,7 @@ class FingerprintEngine:
             "ipReputationScore": ip_reputation_score,
             "cookieDroppingScore": cookie_dropping_score,
             "subnetScore": subnet_score,
+            "tcpAnomalyScore": tcp_anomaly_score,
         })
         return suspicion_vector
 
@@ -2991,9 +3116,11 @@ try:
                 response.set_cookie(cookie["name"], cookie["value"], **cookie["options"])
                 
             return response
+
 except ImportError:
     pass
 
+get_tcp_anomaly_score = RequestUtils.get_tcp_anomaly_score
 
 if __name__ == "__main__":
     import asyncio

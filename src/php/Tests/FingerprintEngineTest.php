@@ -328,4 +328,30 @@ class FingerprintEngineTest extends TestCase
             ],
         ];
     }
+
+    public function testDetectsTcpAnomalyScore(): void
+    {
+        $firstContext = $this->createRequestContext();
+        $firstDecision = $this->engine->processRequest($firstContext);
+        $this->assertArrayHasKey('newCookieForResponse', $firstDecision);
+        $deviceIdCookie = $firstDecision['newCookieForResponse'];
+
+        // Trame binaire TCP SYN Linux simulée (TTL=64, WS=7)
+        $linuxSynHex = '4500003c1a2b400040063c1a7f0000017f0000011f9000500000000100000000a00272103c1a0000020405b4040201030307';
+        
+        $context = $this->createRequestContext([
+            'cookies' => [$deviceIdCookie['name'] => $deviceIdCookie['value']],
+            'headers' => [
+                'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                'accept-language' => 'en-US,en;q=0.9',
+                'x-raw-tcp-binary' => $linuxSynHex
+            ]
+        ]);
+
+        $decision = $this->engine->processRequest($context);
+
+        $this->assertEquals(80.0, $decision['vector']['tcpAnomalyScore']);
+        // Le poids de tcpAnomalyScore dans le profil balanced est de 0.8 (80 * 0.8 = 64)
+        $this->assertGreaterThanOrEqual(64.0, $decision['score']);
+    }
 }
