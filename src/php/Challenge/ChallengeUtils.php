@@ -223,10 +223,9 @@ class ChallengeUtils
         $finalBlock = $baseBlock . $solution;
         $hash = hash('sha256', $finalBlock);
 
-        $hashAsInt = BigInt::fromHex($hash);
-        $targetAsInt = BigInt::fromHex($cpuTargetHex);
-
-        $isValid = $hashAsInt->compareTo($targetAsInt) < 0;
+        // Pad target to 64 hex characters to allow direct O(1) lexicographical comparison
+        $paddedTarget = str_pad($cpuTargetHex, 64, '0', STR_PAD_LEFT);
+        $isValid = strcmp($hash, $paddedTarget) < 0;
 
         if ($isValid) {
             error_log('[FP Server Verify] CPU PoW verification PASSED.');
