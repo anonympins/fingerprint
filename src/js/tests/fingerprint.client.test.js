@@ -89,6 +89,30 @@ describe('ClientLibrary WASM Integration', () => {
         );
     });
 
+    it('should successfully load raw WASM and use standalone polymorphic hasher', async () => {
+        const mockWasmInstance = {
+            exports: {
+                memory: { buffer: new ArrayBuffer(65536) },
+                hash: vi.fn().mockReturnValue(123456)
+            }
+        };
+        
+        global.WebAssembly = {
+            compile: vi.fn().mockResolvedValue({}),
+            instantiate: vi.fn().mockResolvedValue(mockWasmInstance)
+        };
+        
+        global.fetch = vi.fn().mockResolvedValue({
+            arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(100))
+        });
+
+        await ClientLibrary.initializeWasm('/fp.wasm');
+
+        const hash = ClientLibrary._hasher("test");
+        expect(hash).toBe(123456);
+        expect(mockWasmInstance.exports.hash).toHaveBeenCalledWith(0, 4);
+    });
+
     it('should use the default JS hasher if WASM is not configured', async () => {
         // Ensure no WASM path is provided in the config
         ClientLibrary.initializeClient({});

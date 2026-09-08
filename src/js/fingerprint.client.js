@@ -671,6 +671,27 @@ const ClientLibrary = {
      */
     async initializeWasm(wasmPath) {
         try {
+            // Direct standalone polymorphic WebAssembly loading
+            if (wasmPath.endsWith('.wasm')) {
+                const response = await fetch(wasmPath);
+                const arrayBuffer = await response.arrayBuffer();
+                const module = await WebAssembly.compile(arrayBuffer);
+                const instance = await WebAssembly.instantiate(module, {});
+                const exports = instance.exports;
+                const memory = exports.memory;
+                activeCyrb53 = (str) => {
+                    const encoder = new TextEncoder();
+                    const bytes = encoder.encode(str);
+                    const view = new Uint8Array(memory.buffer, 0, bytes.length);
+                    view.set(bytes);
+                    return exports.hash(0, bytes.length);
+                };
+                console.log('[Fingerprint] Standalone polymorphic WASM loaded successfully. Using fast dynamic hashing.');
+                if (this._cachedBuilder) {
+                    this._cachedBuilder.addRaw('wasm', 'true');
+                }
+                return;
+            }
             // 1. Injecter le script qui charge le module WASM
             const script = document.createElement('script');
             script.src = wasmPath;

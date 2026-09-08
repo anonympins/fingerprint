@@ -4,6 +4,7 @@ import * as dns from "node:dns/promises";
 import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
+import {DynamicWasmGenerator} from "./dynamic-wasm.js";
 import {readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
@@ -4491,8 +4492,19 @@ export const powMiddleware = (securityConfig) => {
 
       if (jsFile && req.path === jsPath) {
         try {
-          const fileContent = readFileSync(jsFile);
-          res.setHeader('Content-Type', 'application/javascript');
+          if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
+            console.log('[Fingerprint] Generating dynamic polymorphic WASM module...');
+            // Génère des constantes aléatoires uniques pour cette session / requête
+            const seed = crypto.randomBytes(4).readInt32LE(0);
+            const multiplier = crypto.randomBytes(4).readInt32LE(0) | 1; // Doit être impair pour un LCG optimal
+            const adder = crypto.randomBytes(4).readInt32LE(0);
+            
+            const wasmBuffer = DynamicWasmGenerator.generate({ seed, multiplier, adder });
+            res.setHeader('Content-Type', 'application/wasm');
+            return res.send(wasmBuffer);
+          }
+          const fileContent = readFileSync(wasmFile);
+          res.setHeader('Content-Type', 'application/wasm');
           return res.send(fileContent);
         } catch (e) {
           // Fallback
@@ -4500,6 +4512,16 @@ export const powMiddleware = (securityConfig) => {
       }
       if (wasmFile && req.path === wasmPath) {
         try {
+          if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
+            // Génère des constantes aléatoires uniques pour cette session / requête
+            const seed = crypto.randomBytes(4).readInt32LE(0);
+            const multiplier = crypto.randomBytes(4).readInt32LE(0) | 1; // Doit être impair pour un LCG optimal
+            const adder = crypto.randomBytes(4).readInt32LE(0);
+            
+            const wasmBuffer = DynamicWasmGenerator.generate({ seed, multiplier, adder });
+            res.setHeader('Content-Type', 'application/wasm');
+            return res.send(wasmBuffer);
+          }
           const fileContent = readFileSync(wasmFile);
           res.setHeader('Content-Type', 'application/wasm');
           return res.send(fileContent);

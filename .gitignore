@@ -7,3 +7,4 @@ composer-setup.php
 .geminiignore
 /src/python/tests/__pycache__
 /src/python/__pycache__
+report.md
