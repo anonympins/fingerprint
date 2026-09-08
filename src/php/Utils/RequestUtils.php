@@ -1330,6 +1330,47 @@ class RequestUtils
             return false;
         }
 
+        if (str_contains($ticket, '.')) {
+            $parts = explode('.', $ticket);
+            if (count($parts) === 3) {
+                $base64UrlDecode = function ($input) {
+                    return base64_decode(strtr($input, '-_', '+/'));
+                };
+                $iv = $base64UrlDecode($parts[0]);
+                $encrypted = $base64UrlDecode($parts[1]);
+                $signature = $base64UrlDecode($parts[2]);
+                if ($iv && $encrypted && $signature && strlen($iv) === 16) {
+                    $key = hash('sha256', $secret ?: "fallback-dev-secret-32-chars-minimum", true);
+                    $expectedSignature = hash_hmac('sha256', $iv . $encrypted, $key, true);
+                    if (hash_equals($expectedSignature, $signature)) {
+                        $decrypted = openssl_decrypt($encrypted, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
+                        if ($decrypted !== false) {
+                            $ticketData = json_decode($decrypted, true);
+                            if ($ticketData) {
+                                $expiry = $ticketData['expiry'] ?? null;
+                                $originalIp = $ticketData['originalIp'] ?? null;
+                                $storedDeviceId = $ticketData['deviceId'] ?? '';
+                                $storedDeviceHash = $ticketData['deviceHash'] ?? '';
+                                if (!$expiry || (time() * 1000) > (int)$expiry) {
+                                    return false;
+                                }
+                                if ($ip === $originalIp) {
+                                    return true;
+                                }
+                                $currentSubnet = self::getIpSubnet($ip);
+                                $originalSubnet = self::getIpSubnet($originalIp);
+                                if ($currentSubnet !== null && $originalSubnet !== null && $currentSubnet === $originalSubnet) {
+                                    return true;
+                                }
+                                return !empty($deviceId) && $deviceId === $storedDeviceId && !empty($deviceHash) && $deviceHash === $storedDeviceHash;
+                            }
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
         if (str_contains($ticket, '|')) {
             $parts = explode('|', $ticket);
             if (count($parts) < 3) return false;

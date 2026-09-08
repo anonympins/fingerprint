@@ -15,6 +15,56 @@ export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
 
+const base64UrlEncode = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+const base64UrlDecode = (str) => {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  return Buffer.from(base64, 'base64');
+};
+
+export function generateStatelessTicket(payload) {
+  const secret = getPowSecret();
+  const key = crypto.createHash('sha256').update(secret).digest();
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+  let encrypted = cipher.update(JSON.stringify(payload));
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  
+  const signature = crypto.createHmac('sha256', key).update(Buffer.concat([iv, encrypted])).digest();
+  return `${base64UrlEncode(iv)}.${base64UrlEncode(encrypted)}.${base64UrlEncode(signature)}`;
+}
+
+export function parseStatelessTicket(ticket) {
+  try {
+    const parts = ticket.split('.');
+    if (parts.length !== 3) return null;
+    
+    const iv = base64UrlDecode(parts[0]);
+    const encrypted = base64UrlDecode(parts[1]);
+    const signature = base64UrlDecode(parts[2]);
+    
+    if (iv.length !== 16) return null;
+    
+    const secret = getPowSecret();
+    const key = crypto.createHash('sha256').update(secret).digest();
+    
+    const expectedSignature = crypto.createHmac('sha256', key).update(Buffer.concat([iv, encrypted])).digest();
+    if (signature.length !== expectedSignature.length || !crypto.timingSafeEqual(signature, expectedSignature)) {
+      return null;
+    }
+    
+    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+    let decrypted = decipher.update(encrypted);
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+    
+    return JSON.parse(decrypted.toString('utf8'));
+  } catch (e) {
+    return null;
+  }
+}
+
 /**
  * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
  * @param {string} clientIp - L'adresse IP du client.
@@ -835,18 +885,16 @@ export const verifyPoWAndGenerateTicket = async (
     return null;
   }
 
-  // 2. Generate an opaque ticket ID and store session metadata securely on the server
-  const ticketId = crypto.randomUUID();
+  // 2. Generate a signed and encrypted stateless ticket
   const expiry = Date.now() + 3600000; // 1 hour
-
-  await store.set(`ticket:${ticketId}`, {
+  const payload = {
     expiry,
     originalIp: ip,
     deviceId,
     deviceHash
-  }, 3600); // 1 hour TTL
+  };
 
-  return ticketId;
+  return generateStatelessTicket(payload);
 };
 
 
@@ -902,7 +950,26 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
   // Input validation: ensure the ticket is a non-empty string with the correct format.
   if (typeof ticket !== 'string' || ticket.length === 0) return false;
 
-  // 1. Resolve opaque ticket session from server-side store
+  // 1. Resolve stateless ticket first (zero database I/O cost)
+  const statelessData = parseStatelessTicket(ticket);
+  if (statelessData) {
+    const { expiry, originalIp, deviceId: storedDeviceId, deviceHash: storedDeviceHash } = statelessData;
+
+    if (!expiry || Date.now() > expiry) {
+      return false;
+    }
+
+    if (ip === originalIp) return true;
+    const currentSubnet = getIpSubnet(ip);
+    const originalSubnet = getIpSubnet(originalIp);
+    if (currentSubnet && originalSubnet && currentSubnet === originalSubnet) return true;
+
+    if (!allowCrossNetworkRoaming) return false;
+
+    return !!(deviceId && deviceId === storedDeviceId && deviceHash && deviceHash === storedDeviceHash);
+  }
+
+  // 2. Resolve opaque ticket session from server-side store
   const ticketData = await store.get(`ticket:${ticket}`);
   if (ticketData) {
     const { expiry, originalIp, deviceId: storedDeviceId, deviceHash: storedDeviceHash } = ticketData;
@@ -922,7 +989,7 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     return !!(deviceId && deviceId === storedDeviceId && deviceHash && deviceHash === storedDeviceHash);
   }
 
-  // 2. Legacy fallback verification (backward compatibility for old client tokens)
+  // 3. Legacy fallback verification (backward compatibility for old client tokens)
   let expiry, originalIp, sig;
   if (ticket.includes('|')) {
     const parts = ticket.split('|');
@@ -2722,19 +2789,15 @@ export async function verifyCpuTargetPoWAndGenerateTicket(
   if (isValid) {
       console.log('[FP Server Verify] CPU PoW verification PASSED. Details:', {
       });
-    // Generate an opaque ticket ID and store session metadata securely on the server
-    const ticketId = crypto.randomUUID();
     const ttl = ticketTtl || 3600000; // Calculates expiration from TTL
     const expiry = Date.now() + ttl;
 
-    await store.set(`ticket:${ticketId}`, {
+    return generateStatelessTicket({
       expiry,
       originalIp: clientIp,
       deviceId,
       deviceHash
     }, Math.ceil(ttl / 1000));
-
-    return ticketId;
   }
 
   return null;
@@ -4352,6 +4415,8 @@ export const __internal = {
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
     sanitizeTrafficData, // NOUVEAU: Expose pour l'auto-tuner/tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
+    generateStatelessTicket,
+    parseStatelessTicket,
     parseJa3,
     getBotnetClusterScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,

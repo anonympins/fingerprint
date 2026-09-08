@@ -1136,3 +1136,41 @@ async def test_real_world_console_botnet_clustering():
             assert score_data["botnetClusterScore"] == 75.3
         elif i == 10:
             assert score_data["botnetClusterScore"] == 95.7
+
+@pytest.mark.asyncio
+async def test_stateless_ticket_generation_and_validation():
+    """Vérifie la génération de tickets stateless chiffrés et signés et leur validation."""
+    payload = {
+        "expiry": int(time.time() * 1000) + 3600000,
+        "originalIp": "127.0.0.1",
+        "deviceId": "device-123",
+        "deviceHash": "hash-abc"
+    }
+    secret = "my-test-pow-secret-with-long-length-32-chars"
+    
+    # Génération du ticket stateless
+    ticket = ChallengeUtils.generate_stateless_ticket(payload, secret)
+    assert ticket is not None
+    assert "." in ticket
+    assert len(ticket.split(".")) == 3
+    
+    # Validation du ticket stateless
+    valid = await ChallengeUtils.is_ticket_valid(
+        ip="127.0.0.1",
+        ticket=ticket,
+        device_id="device-123",
+        device_hash="hash-abc",
+        secret=secret
+    )
+    assert valid is True
+
+    # Doit échouer avec une IP différente sans itinérance autorisée
+    valid_diff_ip = await ChallengeUtils.is_ticket_valid(
+        ip="192.168.1.1",
+        ticket=ticket,
+        device_id="device-123",
+        device_hash="hash-abc",
+        secret=secret,
+        allow_cross_network_roaming=False
+    )
+    assert valid_diff_ip is False

@@ -10,6 +10,10 @@ import copy
 import json
 import os
 import asyncio
+import base64
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.backends import default_backend
 from typing import Dict, Any, List, Optional, Callable, Set
 from dataclasses import dataclass, field
 
@@ -249,6 +253,136 @@ class FingerprintBuilder:
 
 # --- CORE: Challenge Utilities ---
 class ChallengeUtils:
+    @staticmethod
+    def _base64url_encode(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).decode('utf-8').rstrip('=')
+
+    @staticmethod
+    def _base64url_decode(string: str) -> bytes:
+        rem = len(string) % 4
+        if rem > 0:
+            string += '=' * (4 - rem)
+        return base64.urlsafe_b64decode(string.encode('utf-8'))
+
+    @staticmethod
+    def generate_stateless_ticket(payload: Dict[str, Any], secret: str) -> str:
+        key = hashlib.sha256(secret.encode('utf-8')).digest()
+        iv = os.urandom(16)
+        plaintext = json.dumps(payload).encode('utf-8')
+        
+        padder = padding.PKCS7(128).padder()
+        padded_data = padder.update(plaintext) + padder.finalize()
+        
+        cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+        encrypter = cipher.encryptor()
+        encrypted = encrypter.update(padded_data) + encrypter.finalize()
+        
+        signature = hmac.new(key, iv + encrypted, hashlib.sha256).digest()
+        
+        return f"{ChallengeUtils._base64url_encode(iv)}.{ChallengeUtils._base64url_encode(encrypted)}.{ChallengeUtils._base64url_encode(signature)}"
+
+    @staticmethod
+    def parse_stateless_ticket(ticket: str, secret: str) -> Optional[Dict[str, Any]]:
+        if not ticket or "." not in ticket:
+            return None
+        parts = ticket.split(".")
+        if len(parts) != 3:
+            return None
+        
+        try:
+            iv = ChallengeUtils._base64url_decode(parts[0])
+            encrypted = ChallengeUtils._base64url_decode(parts[1])
+            signature = ChallengeUtils._base64url_decode(parts[2])
+            
+            if len(iv) != 16:
+                return None
+                
+            key = hashlib.sha256(secret.encode('utf-8')).digest()
+            expected_signature = hmac.new(key, iv + encrypted, hashlib.sha256).digest()
+            if not hmac.compare_digest(expected_signature, signature):
+                return None
+                
+            cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+            decrypter = cipher.decryptor()
+            decrypted_padded = decrypter.update(encrypted) + decrypter.finalize()
+            
+            unpadder = padding.PKCS7(128).unpadder()
+            decrypted = unpadder.update(decrypted_padded) + unpadder.finalize()
+            
+            return json.loads(decrypted.decode('utf-8'))
+        except Exception:
+            return None
+
+    @staticmethod
+    async def is_ticket_valid(
+        ip: str,
+        ticket: Optional[str],
+        device_id: str = '',
+        device_hash: str = '',
+        secret: str = '',
+        allow_cross_network_roaming: bool = False,
+        store: Optional[Any] = None
+    ) -> bool:
+        if not ip or not ticket:
+            return False
+            
+        ticket_data = ChallengeUtils.parse_stateless_ticket(ticket, secret)
+        if ticket_data is not None:
+            expiry = ticket_data.get("expiry")
+            original_ip = ticket_data.get("originalIp")
+            stored_device_id = ticket_data.get("deviceId", "")
+            stored_device_hash = ticket_data.get("deviceHash", "")
+            
+            if not expiry or int(time.time() * 1000) > int(expiry):
+                return False
+            if ip == original_ip:
+                return True
+            current_subnet = get_ip_subnet(ip)
+            original_subnet = get_ip_subnet(original_ip) if original_ip else None
+            if current_subnet is not None and original_subnet is not None and current_subnet == original_subnet:
+                return True
+            if not allow_cross_network_roaming:
+                return False
+            return bool(device_id and device_id == stored_device_id and device_hash and device_hash == stored_device_hash)
+            
+        if store is not None:
+            db_data = await store.get(f"ticket:{ticket}")
+            if db_data is not None:
+                original_ip = db_data.get("ip") or db_data.get("originalIp")
+                stored_device_id = db_data.get("device_id") or db_data.get("deviceId", "")
+                stored_device_hash = db_data.get("deviceHash", "")
+                expiry = db_data.get("expiry")
+                
+                if expiry and int(time.time() * 1000) > int(expiry):
+                    await store.delete(f"ticket:{ticket}")
+                    return False
+                    
+                if ip == original_ip:
+                    return True
+                current_subnet = get_ip_subnet(ip)
+                original_subnet = get_ip_subnet(original_ip) if original_ip else None
+                if current_subnet is not None and original_subnet is not None and current_subnet == original_subnet:
+                    return True
+                if not allow_cross_network_roaming:
+                    return False
+                return bool(device_id and device_id == stored_device_id and device_hash and device_hash == stored_device_hash)
+
+        if ":" in ticket:
+            try:
+                parts = ticket.split(":")
+                if len(parts) < 2:
+                    return False
+                expiry, sig = parts[0], parts[1]
+                if not expiry or not sig or int(time.time() * 1000) > int(expiry):
+                    return False
+                
+                expected_sig = hmac.new(secret.encode('utf-8'), f"{ip}:{expiry}".encode('utf-8'), hashlib.sha256).hexdigest()
+                return hmac.compare_digest(expected_sig, sig)
+            except Exception:
+                return False
+                
+        return False
+
     @staticmethod
     def calculate_cpu_target(suspicion_factor: float, security_config: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -1687,9 +1821,19 @@ class FingerprintEngine:
         pow_cookie = context.cookies.get("pow_clearance")
         has_valid_ticket = False
         if pow_cookie:
-            ticket_data = await self.store.get(f"ticket:{pow_cookie}")
-            if ticket_data and ticket_data.get("ip") == context.client_ip:
-                has_valid_ticket = True
+            pow_secret = self.config.get("powSecret") or os.environ.get("POW_SECRET") or "fallback-dev-secret-32-chars-minimum"
+            allow_roaming = self.config.get("allowCrossNetworkRoaming", False)
+            current_hash = self.get_composite_device_hash(context)
+            has_valid_ticket = await ChallengeUtils.is_ticket_valid(
+                ip=context.client_ip,
+                ticket=pow_cookie,
+                device_id=device_id,
+                device_hash=current_hash,
+                secret=pow_secret,
+                allow_cross_network_roaming=allow_roaming,
+                store=self.store
+            )
+            if has_valid_ticket:
                 MetricsManager.increment_counter("tickets_valid_total")
 
         suspicion_vector = await self.get_suspicion_vector(context)
