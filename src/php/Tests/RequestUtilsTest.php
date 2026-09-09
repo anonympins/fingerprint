@@ -35,6 +35,19 @@ class RequestUtilsTest extends TestCase
         );
     }
 
+    public function testGetCrossLayerInconsistencyViewportExceedsScreen(): void
+    {
+        $scrHash = FingerprintBuilder::cyrb53("1920x1080_24");
+        $context = $this->createRequestContext([
+            'headers' => [
+                'x-device-fingerprint' => "scr:{$scrHash}",
+                'sec-ch-viewport-width' => '2560'
+            ]
+        ]);
+
+        $score = RequestUtils::getCrossLayerInconsistency($context);
+        $this->assertEquals(20.0, $score['crossLayerInconsistencyScore']);
+    }
     public function testGetClickVarianceScoreReturnsZeroForNoHistory(): void
     {
         $context = $this->createRequestContext([

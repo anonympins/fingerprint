@@ -87,6 +87,22 @@ def test_client_hints_inconsistency_full_version_mismatch():
     )
     score = RequestUtils.get_client_hints_inconsistency(context)
     assert score == 85.0
+
+def test_cross_layer_inconsistency_viewport_exceeds_screen():
+    """Vérifie le score d'incohérence quand la largeur du viewport dépasse la taille d'écran physique."""
+    scr_hash = cyrb53("1920x1080_24")
+    context = RequestContext(
+        client_ip="1.2.3.4",
+        path="/",
+        headers={
+            "x-device-fingerprint": f"scr:{scr_hash}",
+            "sec-ch-viewport-width": "2560"
+        },
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_cross_layer_inconsistency(context)
+    assert score == 20.0
 # --- TESTS: UTILS & HASHING ---
 
 def test_imul_precision():

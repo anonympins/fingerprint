@@ -1611,11 +1611,27 @@ function getCrossLayerInconsistency(context) {
         const clientScreenHash = clientFpMap.get('scr');
         const viewportWidth = context.headers['sec-ch-viewport-width'];
         if (clientScreenHash && viewportWidth) {
-            const clientWidth = clientFpMap.get('scr')?.split('x')[0];
-            // Ce n'est pas une comparaison directe, mais un bot pourrait oublier de forger les CH.
-            // Si le client FP a une largeur et que le CH en a une autre, c'est suspect.
-            // Cette vérification est basique et pourrait être affinée.
-            if (clientWidth && clientWidth !== viewportWidth) {
+                  const viewportWidthInt = parseInt(viewportWidth, 10);
+                  let matchedScreenWidth = null;
+                  const commonWidths = [320, 360, 375, 390, 412, 414, 768, 1024, 1280, 1366, 1440, 1536, 1600, 1920, 2560, 3840];
+                  const commonHeights = [480, 568, 640, 667, 736, 800, 812, 844, 896, 900, 1024, 1080, 1200, 1440, 1600, 2160];
+                  const commonDepths = [24, 30, 32];
+
+                  for (const w of commonWidths) {
+                      for (const h of commonHeights) {
+                          for (const d of commonDepths) {
+                              const candidate = `${w}x${h}_${d}`;
+                              if (clientScreenHash === String(cyrb53(candidate))) {
+                                  matchedScreenWidth = w;
+                                  break;
+                              }
+                          }
+                          if (matchedScreenWidth !== null) break;
+                      }
+                      if (matchedScreenWidth !== null) break;
+                  }
+
+                  if (matchedScreenWidth !== null && viewportWidthInt > matchedScreenWidth) {
                 score += 20;
             }
         }
@@ -1626,10 +1642,17 @@ function getCrossLayerInconsistency(context) {
         const clientGpuHash = clientFpMap.get('gpu');
         const ja3 = getTlsFingerprint(context)?.ja3;
         if (clientGpuHash && ja3) {
-            // Une vraie implémentation nécessiterait une base de données mappant les GPU connus
-            // à des signatures JA3 typiques. Pour l'exemple, on simule une pénalité si les deux
-            // sont présents mais que le score de cohérence global est déjà faible.
-            // (Cette logique est déjà en partie couverte par le `consistencyScore`).
+            let expectedBrowsers = tlsFingerprintDb[ja3];
+            if (expectedBrowsers) {
+                if (!Array.isArray(expectedBrowsers)) {
+                    expectedBrowsers = [expectedBrowsers];
+                }
+                const nonBrowserLibraries = ['Python', 'Go', 'Java', 'curl'];
+                const isLibrary = expectedBrowsers.some(lib => nonBrowserLibraries.includes(lib));
+                if (isLibrary) {
+                    score += 30;
+                }
+            }
         }
 
         return { crossLayerInconsistencyScore: Math.min(100, score) };

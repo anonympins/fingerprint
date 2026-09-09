@@ -66,6 +66,18 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(FingerprintBuilder.compare(fp1, ''), "Comparison with empty string should be 0").toBe(0);
             expect(FingerprintBuilder.compare(null, fp2), "Comparison with null should be 0").toBe(0);
         });
+
+      it('should calculate a high crossLayerInconsistencyScore when viewport width exceeds screen width', () => {
+          const context = {
+              headers: {
+                  'x-device-fingerprint': `scr:${cyrb53("1920x1080_24")}`,
+                  'sec-ch-viewport-width': '2560'
+              }
+          };
+
+          const { crossLayerInconsistencyScore } = __internal.getCrossLayerInconsistency(context);
+          expect(crossLayerInconsistencyScore).toBe(20);
+      });
     });
 
     describe('JA3 Fingerprinting', () => {

@@ -809,6 +809,65 @@ class RequestUtils:
             srv_os = RequestUtils.parse_user_agent(ua).get("os")
             if srv_os and client_os_hash != str(cyrb53(srv_os)):
                 score += 50.0
+
+            # 2. Incohérence de l'écran (si les Client Hints sont disponibles)
+        client_screen_hash = fp_map.get("scr")
+        viewport_width = context.headers.get("sec-ch-viewport-width")
+        if client_screen_hash and viewport_width:
+            try:
+                viewport_width_int = int(viewport_width)
+                matched_screen_width = None
+                common_widths = [320, 360, 375, 390, 412, 414, 768, 1024, 1280, 1366, 1440, 1536, 1600, 1920, 2560, 3840]
+                common_heights = [480, 568, 640, 667, 736, 800, 812, 844, 896, 900, 1024, 1080, 1200, 1440, 1600, 2160]
+                common_depths = [24, 30, 32]
+
+                for w in common_widths:
+                    for h in common_heights:
+                        for d in common_depths:
+                            candidate = f"{w}x{h}_{d}"
+                            if client_screen_hash == str(cyrb53(candidate)):
+                                matched_screen_width = w
+                                break
+                        if matched_screen_width is not None:
+                            break
+                    if matched_screen_width is not None:
+                        break
+
+                if matched_screen_width is not None and viewport_width_int > matched_screen_width:
+                    score += 20.0
+            except Exception:
+                pass
+
+        # 3. Incohérence du GPU/Canvas et JA3
+        client_gpu_hash = fp_map.get("gpu")
+        ja3 = context.headers.get("x-ja3-hash")
+        if client_gpu_hash and ja3:
+            tls_fingerprint_db = {
+                "e188a442b87f422c5a1e80b05399435b": ["Chrome"],
+                "d8e35855049321c6042a4325c697858f": ["Chrome"],
+                "a9f90958d44533748c139a5d1895b925": ["Chrome"],
+                "3b5379916d2b3882253c42885956a350": ["Chrome"],
+                "59822058c95c33d2d06e52f410855c8c": ["Chrome"],
+                "b386946a5a586163c7c533636b45c355": ["Firefox"],
+                "66236495a523c1785f8f3a105b248b11": ["Firefox"],
+                "b73d470006575b5e35167a0b5a8540e2": ["Firefox"],
+                "8443d7562933834333943465d52363cf": ["Firefox"],
+                "b633f21d532d35967c8753c38536b4d3": ["Safari"],
+                "4d7a28d5f55b359b69100a311013f03e": ["Safari", "Chrome", "Firefox"],
+                "8dd3d7532873575314df23c447543001": ["Safari", "Chrome", "Firefox"],
+                "47344a349b75c4e82333475553b5f358": ["Python"],
+                "b29587b8a143c42546133ad7704b3310": ["Go"],
+                "d435b5223b2884c5a832b842637e245f": ["Java"],
+                "c72366b9551263d990b7fa574225332c": ["curl"]
+            }
+            expected_clients = tls_fingerprint_db.get(ja3)
+            if expected_clients:
+                if not isinstance(expected_clients, list):
+                    expected_clients = [expected_clients]
+                non_browser_libraries = ["Python", "Go", "Java", "curl"]
+                is_library = any(lib in non_browser_libraries for lib in expected_clients)
+                if is_library:
+                    score += 30.0
         return min(100.0, score)
 
     @staticmethod
