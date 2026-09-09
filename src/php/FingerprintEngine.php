@@ -515,6 +515,53 @@
          ];
      }
 
+
+     private function decodePolymorphicFingerprint(string $fpString, array $mapping): string
+     {
+         if (empty($mapping['keys'])) {
+             return $fpString;
+         }
+         $reverseKeys = array_flip($mapping['keys']);
+         $parts = explode('|', $fpString);
+         $mappedParts = [];
+         foreach ($parts as $part) {
+             $pair = explode(':', $part, 2);
+             if (count($pair) === 2) {
+                 $origKey = $reverseKeys[$pair[0]] ?? $pair[0];
+                 $mappedParts[] = "{$origKey}:{$pair[1]}";
+             } else {
+                 $mappedParts[] = $part;
+             }
+         }
+         return implode('|', $mappedParts);
+     }
+     private function translatePolymorphicHeaders(RequestContext $context): void
+     {
+         $store = StoreManager::getStore();
+         $activeMappings = $store->get('active-polymorphic-mappings') ?: [];
+         if (!is_array($activeMappings)) {
+             return;
+         }
+
+         foreach ($activeMappings as $mapping) {
+             $devFpHeader = strtolower($mapping['headers']['x-device-fingerprint'] ?? '');
+             $behaviorHeader = strtolower($mapping['headers']['x-behavior-metrics'] ?? '');
+
+             if (!empty($devFpHeader) && isset($context->headers[$devFpHeader])) {
+                 $context->headers['x-device-fingerprint'] = $context->headers[$devFpHeader];
+                 if (!empty($behaviorHeader) && isset($context->headers[$behaviorHeader])) {
+                     $context->headers['x-behavior-metrics'] = $context->headers[$behaviorHeader];
+                 }
+
+                 $clientFp = $context->headers['x-device-fingerprint'];
+                 if ($clientFp && is_string($clientFp)) {
+                     $context->headers['x-device-fingerprint'] = $this->decodePolymorphicFingerprint($clientFp, $mapping);
+                 }
+                 break;
+             }
+         }
+     }
+
      /**
       * Traite une requête entrante et retourne une décision.
       * @param RequestContext $context Le contexte de la requête.
@@ -522,8 +569,21 @@
       */
      public function processRequest(RequestContext $context): array
      {
+        $this->translatePolymorphicHeaders($context);
+
          // Initialiser le vecteur de suspicion pour éviter les erreurs de type.
          $suspicionVector = [];
+        
+        $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
+        
+        // Parse GraphQL query if applicable
+        if ($context->path === '/graphql' && !empty($context->body)) {
+            $gqlInfo = RequestUtils::parseGraphQLQuery(is_array($context->body) ? $context->body : []);
+            if ($gqlInfo) {
+                $context->graphqlOperation = $gqlInfo;
+            }
+        }
+
 
          $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
  

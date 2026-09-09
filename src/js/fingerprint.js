@@ -15,6 +15,148 @@ const __dirname = dirname(__filename);
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
+let activeMappings = [];
+let lastMappingTime = 0;
+let isCompilingMapping = false;
+const MAPPING_ROTATION_INTERVAL = 60000; // 60 seconds
+
+function generateSessionMapping() {
+    const randomStr = (len = 6) => crypto.randomBytes(len).toString('hex').replace(/[0-9]/g, 'g').substring(0, len);
+    const randomHeader = () => `X-Sess-${crypto.randomBytes(4).toString('hex')}`;
+
+    return {
+        headers: {
+            'x-device-fingerprint': randomHeader(),
+            'x-behavior-metrics': randomHeader(),
+        },
+        globals: {
+            'ClientLibrary': `ClientLib_${randomStr(6)}`,
+            'getDeviceFingerprint': `getFP_${randomStr(6)}`,
+            'getClientBehaviorMetrics': `getMetrics_${randomStr(6)}`,
+        },
+        keys: {
+            'ua': randomStr(4),
+            'hw': randomStr(4),
+            'geo': randomStr(4),
+            'scr': randomStr(4),
+            'os': randomStr(4),
+            'gpu': randomStr(4),
+            'cvs': randomStr(4),
+            'cdp': randomStr(4),
+            'bot': randomStr(4),
+            'wasm': randomStr(4),
+        },
+        wasmConstants: {
+            seed: crypto.randomBytes(4).readInt32LE(0),
+            multiplier: crypto.randomBytes(4).readInt32LE(0) | 1,
+            adder: crypto.randomBytes(4).readInt32LE(0)
+        }
+    };
+}
+
+async function compilePolymorphicJs(mapping) {
+    const clientScriptPath = join(__dirname, 'fingerprint.client.js');
+    let jsCode = '';
+    try {
+        jsCode = readFileSync(clientScriptPath, 'utf-8');
+    } catch (e) {
+        console.error('[Fingerprint] Could not read fingerprint.client.js for dynamic obfuscation. Fallback to obfuscated build.');
+        try {
+            return readFileSync(join(__dirname, 'fingerprint.client.obfuscated.js'), 'utf-8');
+        } catch (err) {
+            return '';
+        }
+    }
+
+    jsCode = jsCode.replace(/X-Device-Fingerprint/g, mapping.headers['x-device-fingerprint']);
+    jsCode = jsCode.replace(/X-Behavior-Metrics/g, mapping.headers['x-behavior-metrics']);
+    jsCode = jsCode.replace(/ClientLibrary/g, mapping.globals['ClientLibrary']);
+    jsCode = jsCode.replace(/getDeviceFingerprint/g, mapping.globals['getDeviceFingerprint']);
+    jsCode = jsCode.replace(/getClientBehaviorMetrics/g, mapping.globals['getClientBehaviorMetrics']);
+
+    for (const [origKey, randKey] of Object.entries(mapping.keys)) {
+        const regex1 = new RegExp(`add\\(["']${origKey}["']`, 'g');
+        jsCode = jsCode.replace(regex1, `add("${randKey}"`);
+
+        const regex2 = new RegExp(`addRaw\\(["']${origKey}["']`, 'g');
+        jsCode = jsCode.replace(regex2, `addRaw("${randKey}"`);
+    }
+
+    const obfuscationResult = JavaScriptObfuscator.obfuscate(jsCode, {
+        compact: true,
+        controlFlowFlattening: true,
+        deadCodeInjection: true,
+        stringArray: true,
+        stringArrayRotate: true,
+        stringArrayShuffle: true,
+        seed: Math.abs(mapping.wasmConstants.seed),
+        selfDefending: true,
+    });
+
+    return obfuscationResult.getObfuscatedCode();
+}
+
+async function ensureLatestMapping() {
+    const now = Date.now();
+    if ((now - lastMappingTime > MAPPING_ROTATION_INTERVAL || activeMappings.length === 0) && !isCompilingMapping) {
+        isCompilingMapping = true;
+        try {
+            const mapping = generateSessionMapping();
+            const polymorphicJs = await compilePolymorphicJs(mapping);
+            const polymorphicWasm = DynamicWasmGenerator.generate(mapping.wasmConstants);
+
+            mapping.jsBuffer = Buffer.from(polymorphicJs, 'utf8');
+            mapping.wasmBuffer = polymorphicWasm;
+            mapping.timestamp = now;
+
+            activeMappings.unshift(mapping);
+            if (activeMappings.length > 5) {
+                activeMappings.pop();
+            }
+            lastMappingTime = now;
+
+            try {
+                await store.set('active-polymorphic-mappings', activeMappings.map(m => ({
+                    headers: m.headers,
+                    keys: m.keys
+                })));
+            } catch (e) {
+                // Ignore
+            }
+        } finally {
+            isCompilingMapping = false;
+        }
+    }
+}
+
+function getActiveMappingForRequest(headers) {
+    if (!headers) return null;
+    for (const mapping of activeMappings) {
+        const headerName = mapping.headers['x-device-fingerprint'].toLowerCase();
+        if (headers[headerName]) {
+            return mapping;
+        }
+    }
+    return null;
+}
+
+function decodePolymorphicFingerprint(fpString, mapping) {
+    if (!fpString || !mapping || !mapping.keys) return fpString;
+    const reverseKeys = {};
+    for (const [orig, rand] of Object.entries(mapping.keys)) {
+        reverseKeys[rand] = orig;
+    }
+    const parts = fpString.split('|');
+    const mappedParts = parts.map(part => {
+        const pair = part.split(':');
+        if (pair.length === 2) {
+            const origKey = reverseKeys[pair[0]] || pair[0];
+            return `${origKey}:${pair[1]}`;
+        }
+        return part;
+    });
+    return mappedParts.join('|');
+}
 
 const base64UrlEncode = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 const base64UrlDecode = (str) => {
@@ -4521,6 +4663,24 @@ export const powMiddleware = (securityConfig) => {
   }
 
   return async (req, res, next) => {
+      if (!req.headers_translated) {
+          req.headers_translated = true;
+          const matchedMapping = getActiveMappingForRequest(req.headers);
+          if (matchedMapping) {
+              const devFpHeader = matchedMapping.headers['x-device-fingerprint'].toLowerCase();
+              const behaviorHeader = matchedMapping.headers['x-behavior-metrics'].toLowerCase();
+
+              if (req.headers[devFpHeader]) {
+                  req.headers['x-device-fingerprint'] = req.headers[devFpHeader];
+              }
+              if (req.headers[behaviorHeader]) {
+                  req.headers['x-behavior-metrics'] = req.headers[behaviorHeader];
+              }
+              if (req.headers['x-device-fingerprint']) {
+                  req.headers['x-device-fingerprint'] = decodePolymorphicFingerprint(req.headers['x-device-fingerprint'], matchedMapping);
+              }
+          }
+      }
     if (securityConfig?.wasm) {
       const wasmConfig = securityConfig.wasm;
       let jsPath = '/fp.js';
@@ -4542,45 +4702,40 @@ export const powMiddleware = (securityConfig) => {
         wasmFile = wasmConfig.wasmFile ? resolve(wasmConfig.wasmFile) : resolve(__dirname, '..', '..', 'public', 'fp.wasm');
       }
 
-      if (jsFile && req.path === jsPath) {
-        try {
-          if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
-            console.log('[Fingerprint] Generating dynamic polymorphic WASM module...');
-            // Génère des constantes aléatoires uniques pour cette session / requête
-            const seed = crypto.randomBytes(4).readInt32LE(0);
-            const multiplier = crypto.randomBytes(4).readInt32LE(0) | 1; // Doit être impair pour un LCG optimal
-            const adder = crypto.randomBytes(4).readInt32LE(0);
-            
-            const wasmBuffer = DynamicWasmGenerator.generate({ seed, multiplier, adder });
-            res.setHeader('Content-Type', 'application/wasm');
-            return res.send(wasmBuffer);
-          }
-          const fileContent = readFileSync(wasmFile);
-          res.setHeader('Content-Type', 'application/wasm');
-          return res.send(fileContent);
-        } catch (e) {
-          // Fallback
+        if (req.path === jsPath) {
+            try {
+                if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
+                    await ensureLatestMapping();
+                    const latest = activeMappings[0];
+                    if (latest && latest.jsBuffer) {
+                        res.setHeader('Content-Type', 'application/javascript');
+                        return res.send(latest.jsBuffer);
+                    }
+                }
+                if (jsFile && existsSync(jsFile)) {
+                    const fileContent = readFileSync(jsFile);
+                    res.setHeader('Content-Type', 'application/javascript');
+                    return res.send(fileContent);
+                }
+            } catch (e) {}
         }
-      }
-      if (wasmFile && req.path === wasmPath) {
-        try {
-          if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
-            // Génère des constantes aléatoires uniques pour cette session / requête
-            const seed = crypto.randomBytes(4).readInt32LE(0);
-            const multiplier = crypto.randomBytes(4).readInt32LE(0) | 1; // Doit être impair pour un LCG optimal
-            const adder = crypto.randomBytes(4).readInt32LE(0);
-            
-            const wasmBuffer = DynamicWasmGenerator.generate({ seed, multiplier, adder });
-            res.setHeader('Content-Type', 'application/wasm');
-            return res.send(wasmBuffer);
-          }
-          const fileContent = readFileSync(wasmFile);
-          res.setHeader('Content-Type', 'application/wasm');
-          return res.send(fileContent);
-        } catch (e) {
-          // Fallback
+        if (req.path === wasmPath) {
+            try {
+                if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
+                    await ensureLatestMapping();
+                    const latest = activeMappings[0];
+                    if (latest && latest.wasmBuffer) {
+                        res.setHeader('Content-Type', 'application/wasm');
+                        return res.send(latest.wasmBuffer);
+                    }
+                }
+                if (wasmFile && existsSync(wasmFile)) {
+                    const fileContent = readFileSync(wasmFile);
+                    res.setHeader('Content-Type', 'application/wasm');
+                    return res.send(fileContent);
+                }
+            } catch (e) {}
         }
-      }
     }
 
     const requestContext = {

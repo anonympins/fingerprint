@@ -1642,6 +1642,45 @@ class FingerprintEngine:
         stable_parts = [part for part in parts if part.split(":", 1)[0] in stable_keys]
         return "|".join(sorted(stable_parts))
 
+    async def translate_polymorphic_headers(self, context: RequestContext) -> None:
+        if getattr(context, "headers_translated", False):
+            return
+        context.headers_translated = True
+        active_mappings = await self.store.get("active-polymorphic-mappings") or []
+        if not isinstance(active_mappings, list):
+            return
+
+        for mapping in active_mappings:
+            headers_map = mapping.get("headers", {})
+            dev_fp_header = (headers_map.get("x-device-fingerprint") or "").lower()
+            behavior_header = (headers_map.get("x-behavior-metrics") or "").lower()
+
+            if dev_fp_header and dev_fp_header in context.headers:
+                context.headers["x-device-fingerprint"] = context.headers[dev_fp_header]
+                if behavior_header and behavior_header in context.headers:
+                    context.headers["x-behavior-metrics"] = context.headers[behavior_header]
+
+                client_fp = context.headers.get("x-device-fingerprint")
+                if client_fp and isinstance(client_fp, str):
+                    context.headers["x-device-fingerprint"] = self.decode_polymorphic_fingerprint(client_fp, mapping)
+                break
+
+    def decode_polymorphic_fingerprint(self, fp_string: str, mapping: Dict[str, Any]) -> str:
+        keys_map = mapping.get("keys", {})
+        if not keys_map:
+            return fp_string
+        reverse_keys = {v: k for k, v in keys_map.items()}
+        parts = fp_string.split("|")
+        mapped_parts = []
+        for part in parts:
+            pair = part.split(":", 1)
+            if len(pair) == 2:
+                orig_key = reverse_keys.get(pair[0], pair[0])
+                mapped_parts.append(f"{orig_key}:{pair[1]}")
+            else:
+                mapped_parts.append(part)
+        return "|".join(mapped_parts)
+
     def get_composite_device_hash(self, context: RequestContext) -> str:
         """
         Generates a composite device fingerprint hash from the request context.
@@ -1753,6 +1792,7 @@ class FingerprintEngine:
         return {"historyScore": history_score, "rotationScore": rotation_score}
 
     async def get_suspicion_vector(self, context: RequestContext, suspicion_vector: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+        await self.translate_polymorphic_headers(context)
         if suspicion_vector is None:
             suspicion_vector = {}
 
@@ -1862,6 +1902,7 @@ class FingerprintEngine:
         return min(100.0, score)
 
     async def get_suspicion_score(self, context: RequestContext) -> float:
+        await self.translate_polymorphic_headers(context)
         vector = await self.get_suspicion_vector(context)
         return self.calculate_final_score(vector)
 
@@ -1876,6 +1917,7 @@ class FingerprintEngine:
         Returns:
             Dict[str, Any]: A dictionary describing the action to be taken and any associated data.
         """
+        await self.translate_polymorphic_headers(context)
         identity = await self.resolve_identity(context)
         decision = await self._process_request_internal(context, identity)
         if identity.get("new_cookie"):
