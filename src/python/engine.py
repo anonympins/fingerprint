@@ -2648,10 +2648,29 @@ class OptimizationOperators:
         return evaluator
 
     @staticmethod
-    def solve_full_security_tuning(traffic_data: List[Dict[str, Any]], options: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def solve_full_security_tuning(traffic_data: List[Dict[str, Any]], options: Optional[Dict[str, Any]] = None, current_config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         fitness_fn = OptimizationOperators.create_full_security_config_evaluator(traffic_data)
 
         def create_individual() -> Dict[str, Any]:
+            if current_config:
+                ind = {
+                    "thresholds": {},
+                    "weights": {},
+                    "patterns": {}
+                }
+                for section in ("thresholds", "weights", "patterns"):
+                    if section in current_config:
+                        for k, v in current_config[section].items():
+                            if isinstance(v, (int, float)) and k != "honeypotScore":
+                                ind[section][k] = v * (1.0 + random.uniform(-0.25, 0.25))
+                            else:
+                                ind[section][k] = v
+                if "low" in ind["thresholds"] and "medium" in ind["thresholds"] and "high" in ind["thresholds"]:
+                    ind["thresholds"]["low"] = max(10.0, min(35.0, ind["thresholds"]["low"]))
+                    ind["thresholds"]["medium"] = max(ind["thresholds"]["low"] + 5.0, min(70.0, ind["thresholds"]["medium"]))
+                    ind["thresholds"]["high"] = max(ind["thresholds"]["medium"] + 5.0, min(90.0, ind["thresholds"]["high"]))
+                return ind
+
             return {
                 "thresholds": {
                     "low": 15 + random.random() * 20,
@@ -2716,6 +2735,14 @@ class OptimizationOperators:
 
             if section_to_mutate == "weights":
                 new_config[section_to_mutate][key_to_mutate] = max(0.0, min(1.5, new_config[section_to_mutate][key_to_mutate]))
+
+            # Drift constraint relative to current_config
+            if current_config and section_to_mutate in current_config and key_to_mutate in current_config[section_to_mutate]:
+                orig_val = current_config[section_to_mutate][key_to_mutate]
+                if isinstance(orig_val, (int, float)):
+                    min_val = orig_val * 0.70
+                    max_val = orig_val * 1.30
+                    new_config[section_to_mutate][key_to_mutate] = max(min_val, min(max_val, new_config[section_to_mutate][key_to_mutate]))
             
             return new_config
 
@@ -2855,7 +2882,7 @@ class AutoTuner:
 
         print(f"[AutoTuning] Démarrage du cycle d'optimisation complet avec {len(sanitized_data)} points de données assainis.")
 
-        pareto_front = OptimizationOperators.solve_full_security_tuning(sanitized_data)
+        pareto_front = OptimizationOperators.solve_full_security_tuning(sanitized_data, options=None, current_config=self.security_config)
 
         if not pareto_front:
             print("[AutoTuning] L'optimisation n'a retourné aucune solution.")

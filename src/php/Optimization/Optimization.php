@@ -27,6 +27,7 @@ class Optimization
      * @param callable $fitnessFunction
      * @param callable $crossover
      * @param callable $mutate
+     * @param array|null $currentConfig La configuration actuelle pour guider l'initialisation et la mutation.
      * @param array $options
      * @return array<int, array{solution: mixed, objectives: array<float>}>
      */
@@ -34,7 +35,8 @@ class Optimization
         callable $createIndividual,
         callable $fitnessFunction,
         callable $crossover,
-        callable $mutate,
+        callable $mutate, // La fonction mutate doit maintenant accepter $currentConfig
+        ?array $currentConfig = null, // NOUVEAU: La configuration actuelle
         array $options = []
     ): array {
         $generations = $options['generations'] ?? 150;
@@ -58,7 +60,7 @@ class Optimization
                 $parent2 = $population[random_int(0, count($population) - 1)];
                 $childIndividual = $crossover($parent1['individual'], $parent2['individual']);
                 if (self::secureRandom() < $mutationRate) {
-                    $childIndividual = $mutate($childIndividual);
+                    $childIndividual = $mutate($childIndividual, $currentConfig); // Passer $currentConfig à mutate
                 }
                 $offspring[] = [
                     'individual' => $childIndividual,
