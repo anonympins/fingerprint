@@ -225,6 +225,16 @@
          $deviceData = null;
          $newCookie = null;
 
+         // Cookieless Identity Tracking: Attempt to restore device ID using TLS session resume ID
+         $tlsSessionId = $context->tlsSessionId;
+         if (!$deviceId && $tlsSessionId) {
+             $resumedDeviceId = $store->get("tls-session:{$tlsSessionId}");
+             if ($resumedDeviceId) {
+                 $deviceId = $resumedDeviceId;
+                 $this->log('Identity resumed via TLS Session ID', ['deviceId' => $deviceId, 'tlsSessionId' => $tlsSessionId]);
+             }
+         }
+
          if ($deviceId) {
              $deviceData = $store->get("device:{$deviceId}");
          }
@@ -273,6 +283,11 @@
              if (!isset($deviceData['ips']) || !is_array($deviceData['ips'])) { // @phpstan-ignore-line
                  $deviceData['ips'] = [];
              }
+         }
+
+         // Bind the current TLS session ID to the device ID
+         if ($deviceId && $tlsSessionId) {
+             $store->set("tls-session:{$tlsSessionId}", $deviceId, 3600); // 1h cache duration
          }
 
          return [

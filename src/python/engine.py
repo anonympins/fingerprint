@@ -219,6 +219,13 @@ class RequestContext:
     http_version: str = "1.1"
     request_timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
     new_cookies: List[Dict[str, Any]] = field(default_factory=list)
+    tls_session_id: Optional[str] = None
+
+    def __post_init__(self):
+        # Normalize headers to lowercase for consistent lookup
+        self.headers = {k.lower(): v for k, v in self.headers.items()}
+        if not self.tls_session_id:
+            self.tls_session_id = self.headers.get("x-tls-session-id") or self.headers.get("x-ssl-session-id")
 
 class InMemoryStore:
     """
@@ -1784,9 +1791,13 @@ class FingerprintEngine:
         current_hash = self.get_composite_device_hash(context)
         new_cookie = None
         cookie_dropping_score = 0.0
-        
-        if existing_device_id:
-            device_data = await self.store.get(f"device:{existing_device_id}")
+
+        device_id = existing_device_id
+        if not device_id and context.tls_session_id:
+            device_id = await self.store.get(f"tls-session:{context.tls_session_id}")
+
+        if device_id:
+            device_data = await self.store.get(f"device:{device_id}")
         else:
             device_data = None
 
@@ -1813,12 +1824,14 @@ class FingerprintEngine:
             await self.store.set(f"device:{device_id}", device_data)
             await self.store.set(f"pending_cookie:{context.client_ip}", device_id, 120)
         else:
-            device_id = existing_device_id
             if "ips" not in device_data:
                 device_data["ips"] = set()
             elif isinstance(device_data["ips"], list):
                 device_data["ips"] = set(device_data["ips"])
             device_data["ips"].add(context.client_ip)
+
+        if device_id and context.tls_session_id:
+            await self.store.set(f"tls-session:{context.tls_session_id}", device_id, 3600)
 
         return {"device_id": device_id, "device_data": device_data, "new_cookie": new_cookie, "cookie_dropping_score": cookie_dropping_score}
 

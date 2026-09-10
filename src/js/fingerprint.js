@@ -2510,11 +2510,20 @@ export const configureStore = (externalStore) => {
 async function resolveRequestIdentity(context, securityConfig = {}) {
   const existingDeviceId = context.cookies?.device_id;
   const currentDeviceHash = getCompositeDeviceHash(context); // Use the composite hash for consistency checks
-  let deviceId = existingDeviceId;
+    const tlsSessionId = getTlsSessionId(context);
+    let deviceId = existingDeviceId;
   let consistencyScore = 1.0; // 1.0 = perfectly consistent
   let deviceData = null;
   let newCookie = null;
-  if (deviceId) {
+
+    if (!deviceId && tlsSessionId) {
+        const resumedDeviceId = await store.get(`tls-session:${tlsSessionId}`);
+        if (resumedDeviceId) {
+            deviceId = resumedDeviceId;
+        }
+    }
+
+    if (deviceId) {
     deviceData = await store.get(`device:${deviceId}`);
   }
 
@@ -2557,6 +2566,9 @@ async function resolveRequestIdentity(context, securityConfig = {}) {
     // The write will happen in getSuspicionVector after all modifications.
   }
 
+    if (deviceId && tlsSessionId) {
+        await store.set(`tls-session:${tlsSessionId}`, deviceId, 3600); // Bind TLS session for 1 hour
+    }
   return { deviceId, deviceData, consistencyScore, newCookie };
 }
 
@@ -3378,7 +3390,7 @@ export class FingerprintEngine {
   async processRequest(requestContext) {
       sanitizeProxyHeaders(requestContext, this.securityConfig);
 
-      const { clientIp = "unknown", path, cookies, query, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
+      const { clientIp = "unknown", path, cookies = {}, query = {}, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     
     this._log('Processing request', { clientIp, path, isStatic });
@@ -3458,6 +3470,13 @@ export class FingerprintEngine {
             decision.action = 'next';
             delete decision.status;
             delete decision.body;
+
+            if (requestContext._newCookies) {
+                const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                if (deviceCookie) {
+                    decision.newCookieForResponse = deviceCookie;
+                }
+            }
         }
         return decision;
     }
@@ -3666,6 +3685,12 @@ export class FingerprintEngine {
                     decision.action = 'next';
                     delete decision.status;
                     delete decision.body;
+                    if (requestContext._newCookies) {
+                        const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                        if (deviceCookie) {
+                            decision.newCookieForResponse = deviceCookie;
+                        }
+                    }
                 }
                 return decision;
             }
@@ -3758,6 +3783,12 @@ export class FingerprintEngine {
             decision.action = 'next';
             delete decision.status;
             delete decision.body;
+            if (requestContext._newCookies) {
+                const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                if (deviceCookie) {
+                    decision.newCookieForResponse = deviceCookie;
+                }
+            }
         }
         return decision;
     }
@@ -3805,6 +3836,12 @@ export class FingerprintEngine {
           decision.action = 'next';
           delete decision.status;
           delete decision.body;
+          if (requestContext._newCookies) {
+              const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+              if (deviceCookie) {
+                  decision.newCookieForResponse = deviceCookie;
+              }
+          }
       }
       return decision;
     }
@@ -3829,6 +3866,12 @@ export class FingerprintEngine {
             decision.action = 'next';
             delete decision.status;
             delete decision.body;
+            if (requestContext._newCookies) {
+                const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                if (deviceCookie) {
+                    decision.newCookieForResponse = deviceCookie;
+                }
+            }
         }
         return decision;
     }
@@ -3863,6 +3906,12 @@ export class FingerprintEngine {
                 decision.action = 'next';
                 delete decision.status;
                 delete decision.body;
+                if (requestContext._newCookies) {
+                    const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                    if (deviceCookie) {
+                        decision.newCookieForResponse = deviceCookie;
+                    }
+                }
             }
             return decision;
         }
@@ -4026,8 +4075,14 @@ export class FingerprintEngine {
     if (logger) {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
     }
-
-    return { action: 'next', score: finalScore, vector: suspicionVector, intendedAction: 'next' };
+      const response = { action: 'next', score: finalScore, vector: suspicionVector, intendedAction: 'next' };
+      if (requestContext._newCookies) {
+          const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+          if (deviceCookie) {
+              response.newCookieForResponse = deviceCookie;
+          }
+      }
+      return response;
   }
 
   /**
@@ -4654,6 +4709,32 @@ export const default_whitelist = () => [
 ];
 
 
+/**
+ * Extracts the TLS Session ID or ticket hash from the request context.
+ * Prioritizes proxy-provided headers and falls back to Node's native socket session.
+ * @private
+ * @param {object} context - The request context.
+ * @returns {string|null}
+ */
+function getTlsSessionId(context) {
+    if (!context) return null;
+    const fromHeader = context.headers ? (context.headers['x-tls-session-id'] || context.headers['x-ssl-session-id']) : null;
+    if (fromHeader) return fromHeader;
+
+    const socket = context.rawReq?.socket;
+    if (socket) {
+        if (socket.sessionId) {
+            return socket.sessionId.toString('hex');
+        }
+        if (typeof socket.getSession === 'function') {
+            const session = socket.getSession();
+            if (session) {
+                return crypto.createHash('sha256').update(session).digest('hex');
+            }
+        }
+    }
+    return null;
+}
 
 // --- Proof-of-Work Middleware (The Tollbooth) ---
 export const powMiddleware = (securityConfig) => {
@@ -4835,6 +4916,7 @@ export const __internal = {
     getDeviceHash,
     getCompositeDeviceHash,
     getSuspicionVector,
+    getTlsSessionId,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
     calculateTarget,

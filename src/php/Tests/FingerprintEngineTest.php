@@ -90,6 +90,35 @@ class FingerprintEngineTest extends TestCase
         $this->assertLessThan($this->securityConfig['thresholds']['low'], $secondDecision['score']);
     }
 
+    public function testTlsSessionResumptionCookielessTracking(): void
+    {
+        // 1. Première requête d'un client avec un ID de session TLS, sans cookie
+        $tlsSessionId = 'test-tls-1.3-session-resumption-id-12345';
+        $context1 = $this->createRequestContext([
+            'headers' => [
+                'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                'x-tls-session-id' => $tlsSessionId,
+            ]
+        ]);
+
+        $firstDecision = $this->engine->processRequest($context1);
+        $this->assertArrayHasKey('newCookieForResponse', $firstDecision, "Un cookie d'identité d'appareil doit être généré.");
+        $deviceId = $firstDecision['newCookieForResponse']['value'];
+
+        // 2. Deuxième requête : le client supprime ses cookies, mais garde la même session TLS (Session Resumption / 0-RTT)
+        $context2 = $this->createRequestContext([
+            'headers' => [
+                'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                'x-tls-session-id' => $tlsSessionId,
+            ],
+            'cookies' => [] // Cookies supprimés !
+        ]);
+
+        $secondDecision = $this->engine->processRequest($context2);
+        $this->assertEquals('next', $secondDecision['action']);
+        $this->assertArrayNotHasKey('newCookieForResponse', $secondDecision, "Aucun nouveau cookie d'identité ne doit être généré car la session TLS a permis de restaurer l'identité.");
+    }
+
     public function testIssuesChallengeForSuspiciousRequest(): void
     {
         // 1. First, establish a device identity to avoid the cookie-dropping penalty

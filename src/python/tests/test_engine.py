@@ -1249,3 +1249,53 @@ async def test_stateless_ticket_generation_and_validation():
         allow_cross_network_roaming=False
     )
     assert valid_diff_ip is False
+
+@pytest.mark.asyncio
+async def test_tls_session_resumption_cookieless_tracking():
+    """Vérifie le traçage sans cookie par reprise de session TLS (TLS Session Resumption)."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"inconsistencyScore": 0.5, "headerAnomalyScore": 0.5}
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    # 1. Première visite du client avec session TLS mais sans cookie
+    tls_session_id = "test-tls1.3-session-resumption-id-abcde"
+    context1 = RequestContext(
+        client_ip="1.2.3.4",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+            "x-tls-session-id": tls_session_id,
+            "accept-language": "fr-FR"
+        },
+        query_params={},
+        cookies={}
+    )
+
+    decision1 = await engine.process_request(context1)
+    assert "newCookieForResponse" in decision1, "Un cookie d'identité doit être généré."
+    device_cookie = decision1["newCookieForResponse"]
+    device_id = device_cookie["value"]
+
+    # 2. Deuxième visite du client : les cookies sont supprimés, mais la session TLS est reprise
+    context2 = RequestContext(
+        client_ip="1.2.3.4",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+            "x-tls-session-id": tls_session_id,
+            "accept-language": "fr-FR"
+        },
+        query_params={},
+        cookies={}  # Cookies supprimés !
+    )
+
+    decision2 = await engine.process_request(context2)
+    assert decision2["action"] == "next"
+    assert "newCookieForResponse" not in decision2, "Aucun nouveau cookie d'identité ne doit être généré."
+
+    # Résoudre l'identité pour vérifier qu'elle est bien identique à la première requête
+    resolution = await engine.resolve_identity(context2)
+    assert resolution["device_id"] == device_id, "L'identifiant d'appareil doit être restauré via la session TLS."

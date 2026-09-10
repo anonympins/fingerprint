@@ -494,12 +494,10 @@ function calculateCrowdingDistance(front) {
  * @param {function(any): number[]} fitnessFunction - Fonction qui évalue un individu et retourne un tableau d'objectifs à MINIMISER.
  * @param {function(any, any): any} crossover - Fonction de croisement.
  * @param {function(any): any} mutate - Fonction de mutation.
- * @param {object} context - Le contexte de l'algorithme, incluant les données de trafic.
  * @param {object} options - Options de l'algorithme.
  * @returns {Array<{solution: any, objectives: number[]}>} Le premier front de Pareto (l'ensemble des meilleures solutions de compromis).
  */
 Optimization.geneticAlgorithmMultiObjective = function (
-  currentConfig, // NOUVEAU: La configuration actuelle pour guider l'initialisation et la mutation
   createIndividual,
   fitnessFunction,
   crossover,
@@ -507,10 +505,10 @@ Optimization.geneticAlgorithmMultiObjective = function (
   options = {},
 ) {
   const {
-    // currentConfig, // Déjà passé comme premier argument
     generations = 150, // Augmenté pour une meilleure convergence
     populationSize = 60, // Augmenté pour plus de diversité
     mutationRate = 0.1,
+    currentConfig = null,
   } = options;
 
   let population = Array.from({ length: populationSize }, () => ({
