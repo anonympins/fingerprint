@@ -624,6 +624,7 @@
          $isChallengeSubmission = $powNonce && (
              isset($context->query['pow_solution']) || 
              isset($context->query['pow_solution_cpu']) ||
+             isset($context->query['pow_solution_space']) ||
              (isset($context->query['pow_type']) && $context->query['pow_type'] === 'useful_work_task')
          );
          if ($isChallengeSubmission) {
@@ -662,6 +663,28 @@
                                  $isValid = $isValid && $isMemValid;
                              }
                          }
+                     } elseif ($powType === 'pospace') {
+                         $powSolutionSpace = $context->query['pow_solution_space'] ?? null;
+                         if ($powSolutionSpace && isset($challengeContext['queries'])) {
+                             $isSpaceValid = ChallengeUtils::verifySpacePoW(
+                                 $powNonce,
+                                 $powSolutionSpace,
+                                 $challengeContext['queries'],
+                                 $powNonce . ":" . $challengeContext['clientSecret'],
+                                 $challengeContext['clientSecret']
+                             );
+                             $isValid = $isSpaceValid;
+                             if ($isValid) {
+                                 $ticketTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000;
+                                 $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
+                                 $ticket = ChallengeUtils::generateStatelessTicket([
+                                     'expiry' => $expiry,
+                                     'originalIp' => $context->clientIp,
+                                     'deviceId' => '',
+                                     'deviceHash' => ''
+                                 ]);
+                             }
+                         }
                      } elseif ($powType === 'useful_work_task') {
                          $problemId = $context->query['pow_problem_id'] ?? null;
                          $workResultJson = $context->query['pow_solution_work_result'] ?? null;
@@ -697,10 +720,6 @@
                      $this->log('Challenge solution valid - issuing ticket', ['ticketMaxAge' => $ticketTtl]);
  
                      return [
-                 // ... (le reste de la logique de redirection)
-                 'action' => 'redirect',
-                 'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
-                 'score' => 0.0,
                          'action' => 'redirect',
                          'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
                          'score' => 0.0,
@@ -866,7 +885,11 @@
  
                  $nonce = bin2hex(random_bytes(16));
                  $clientSecret = bin2hex(random_bytes(16));
- 
+                 $highThreshold = $thresholds['high'] ?? 75;
+
+                 $suspicionFactor = ($finalScore - $lowThreshold) / (($thresholds['high'] ?? 75) - $lowThreshold);
+                 $suspicionFactor = max(0, min(1.5, $suspicionFactor));
+
                  // --- NOUVELLE LOGIQUE uPoW ---
                  $shouldUseUsefulWork = ($this->securityConfig['enableUsefulWork'] ?? false) && (
                      ($this->securityConfig['forceUsefulWork'] ?? false) || (random_int(0, 255) / 255) > 0.5
@@ -918,9 +941,39 @@
 
                  // --- FIN DE LA LOGIQUE uPoW (le reste est le fallback) ---
 
-                 $suspicionFactor = ($finalScore - $lowThreshold) / (($thresholds['high'] ?? 75) - $lowThreshold);
-                 $suspicionFactor = max(0, min(1.5, $suspicionFactor));
- 
+                 if ($this->securityConfig['enableProofOfSpace'] ?? false) {
+                     $spaceChallenge = ChallengeUtils::generateSpaceChallenge($context->clientIp, $nonce, $suspicionFactor, $context->path, $this->securityConfig);
+                     $store->set("secret:{$nonce}", [
+                         'clientSecret' => $clientSecret,
+                         'suspicionScore' => $finalScore,
+                         'queries' => $spaceChallenge['queries'],
+                         'sizeMb' => $spaceChallenge['sizeMb'],
+                         'fingerprint' => RequestUtils::getCompositeDeviceHash($context),
+                         'originalPath' => $context->path,
+                     ], $this->securityConfig['challengeTtl'] ?? 300);
+
+                     if ($deviceData) {
+                         $deviceData['lastChallengeNonce'] = $nonce;
+                         $store->set("device:{$deviceId}", $deviceData); // @phpstan-ignore-line
+                     }
+
+                     if ($isApiRequest) {
+                         $decision['body'] = [
+                             'challenge' => [
+                                 'type' => 'pospace',
+                                 'nonce' => $nonce,
+                                 'clientSecret' => $clientSecret,
+                                 'queries' => $spaceChallenge['queries'],
+                                 'sizeMb' => $spaceChallenge['sizeMb'],
+                             ]
+                         ];
+                     } else {
+                         $page = ChallengeUtils::generateSpaceChallengePage($spaceChallenge, $clientSecret, $this->securityConfig);
+                         $decision['body'] = $page;
+                     }
+                     return $decision;
+                 }
+
                  $cpuChallengeDetails = [
                      'type' => 'cpu_target',
                      'nonce' => $nonce,

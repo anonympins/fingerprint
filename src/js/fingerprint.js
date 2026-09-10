@@ -1090,6 +1090,32 @@ export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret =
   }
   return finalHash === parseInt(solution, 10);
 };
+
+export function verifySpacePoW(nonce, solution, queries, seed, clientSecret) {
+  const combined = new Uint8Array(queries.length * 1024);
+  for (let i = 0; i < queries.length; i++) {
+    const idx = queries[i];
+    const block = generateBlock(seed, idx);
+    combined.set(block, i * 1024);
+  }
+  
+  const nonceBytes = Buffer.from(nonce + ":" + clientSecret, "utf8");
+  const finalBlock = Buffer.concat([Buffer.from(combined), nonceBytes]);
+  
+  const hash = crypto.createHash("sha256").update(finalBlock).digest("hex");
+  return hash === solution;
+}
+
+function generateBlock(seed, blockIndex, blockSize = 1024) {
+  const block = new Uint8Array(blockSize);
+  let h = cyrb53(seed + ":" + blockIndex);
+  for (let i = 0; i < blockSize; i++) {
+    h = Math.imul(h ^ i, 1597334677);
+    block[i] = h & 0xff;
+  }
+  return block;
+}
+
 export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
   if (typeof ticket !== 'string' || ticket.length === 0) return false;
@@ -1227,6 +1253,66 @@ function getHeaderAnomalies(context) {
   return {
     headerAnomalyScore: Math.min(100, anomalyScore),
   };
+}
+
+export function generateSpaceChallenge(clientIp, nonce, suspicionFactor, originalUrl, securityConfig) {
+  const sizeMb = securityConfig?.pospace?.sizeMb || 100;
+  const numQueries = securityConfig?.pospace?.numQueries || 10;
+  
+  const queries = [];
+  const maxBlocks = sizeMb * 1024;
+  while (queries.length < numQueries) {
+    const idx = Math.floor(Math.random() * maxBlocks);
+    if (!queries.includes(idx)) {
+      queries.push(idx);
+    }
+  }
+  
+  return {
+    type: "pospace",
+    nonce: nonce,
+    sizeMb,
+    queries,
+    path: originalUrl
+  };
+}
+
+function generateSpaceChallengePage(challengeDetails, clientSecret, securityConfig) {
+  const { nonce, sizeMb, queries, path } = challengeDetails;
+  const solverCode = getPowSolverCode();
+  
+  const challengeScript = `
+    async function solve() {
+      const nonce = ${JSON.stringify(nonce)};
+      const path = ${JSON.stringify(path)};
+      const clientSecret = ${JSON.stringify(clientSecret)};
+      const queries = ${JSON.stringify(queries)};
+      const sizeMb = ${sizeMb};
+      
+      document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
+      await new Promise(r => setTimeout(r, 10));
+      
+      try {
+          await window.initializeSpace(nonce + ":" + clientSecret, sizeMb);
+          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
+          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
+          
+          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+      } catch(e) {
+          document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
+      }
+    }
+    solve();
+  `;
+  
+  return `<html><head><title>Security Check</title></head>
+  <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
+    <h1>Security Check (Level 2)</h1>
+    <p>We are verifying your storage allocation. This may take a few seconds on first load.</p>
+    <div id="loader" style="margin:20px;">⚙️ Initializing storage space...</div>
+    <script>${solverCode}</script>
+    <script>${challengeScript}</script>
+  </body></html>`;
 }
 
 /**
@@ -3516,8 +3602,8 @@ export class FingerprintEngine {
     // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
     // Si une solution de challenge est soumise, on la traite en priorité absolue,
     // avant même de recalculer le score de suspicion.
-    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp, pow_solution_population, pow_solution_work_result, pow_problem_id } = query;
-    if (pow_nonce && (pow_solution || pow_solution_cpu)) { // Vérifie pow_solution pour la compatibilité ascendante
+    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp, pow_solution_population, pow_solution_work_result, pow_problem_id, pow_solution_space } = query;
+    if (pow_nonce && (pow_solution || pow_solution_cpu || pow_solution_space)) { // Vérifie pow_solution pour la compatibilité ascendante
         this._log('Challenge solution submitted', { pow_type, pow_nonce });
 
         // On doit calculer le score de suspicion *avant* de valider le ticket,
@@ -3595,13 +3681,13 @@ export class FingerprintEngine {
             } else {
                 optimalTtl = determineOptimalTicketTtl(preliminaryScore);
                 finalTtl = isProbationary ? probationaryTtl : optimalTtl;
-                this._log('Challenge context found, verifying solution', { optimalTtl, finalTtl });
+                this._log('Challenge context found, verifying solution', {optimalTtl, finalTtl});
 
                 if ((pow_type === "cpu_target" || !pow_type) && (pow_solution_cpu || pow_solution)) { // !pow_type pour compatibilité
                     const cpuSolution = pow_solution_cpu || pow_solution;
                     ticket = await verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, cpuSolution, challengeContext, deviceId, currentDeviceHash);
                     isValid = ticket !== null;
-                    this._log('CPU target challenge verification', { isValid });
+                    this._log('CPU target challenge verification', {isValid});
                 } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
                     const cpuTicket = await verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext, deviceId, currentDeviceHash);
                     const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret); // Memory PoW is independent of fingerprint
@@ -3612,6 +3698,18 @@ export class FingerprintEngine {
                         memValid: isMemValid,
                         isValid
                     });
+                } else if (pow_type === "pospace" && pow_solution_space) {
+                    const isSpaceValid = verifySpacePoW(pow_nonce, pow_solution_space, challengeContext.queries, pow_nonce + ":" + challengeContext.clientSecret, challengeContext.clientSecret);
+                    isValid = isSpaceValid;
+                    if (isValid) {
+                        const ttl = finalTtl || 3600000;
+                        ticket = generateStatelessTicket({
+                            expiry: Date.now() + ttl,
+                            originalIp: clientIp,
+                            deviceId,
+                            deviceHash
+                        });
+                    }
                 }
             }
         } else {
@@ -3648,6 +3746,7 @@ export class FingerprintEngine {
             finalSearchParams.delete('pow_solution_cpu');
             finalSearchParams.delete('pow_solution_mem');
             finalSearchParams.delete('pow_fp'); // Ne pas oublier de nettoyer le fingerprint
+            finalSearchParams.delete('pow_solution_space');
             // NOUVEAU: Nettoyer aussi les paramètres des challenges d'optimisation et de travail utile
             finalSearchParams.delete('pow_solution_population');
             finalSearchParams.delete('pow_solution_work_result');
@@ -3921,6 +4020,7 @@ export class FingerprintEngine {
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
         const clientSecret = crypto.randomBytes(16).toString("hex");
+            const isApi = requestContext.rawReq && this.securityConfig?.isApiRequest?.(requestContext.rawReq);
 
         // Pour les scores élevés, on choisit aléatoirement entre un challenge de travail utile et un PoW classique.
         // Cela rend l'automatisation plus difficile pour un attaquant.
@@ -3963,7 +4063,6 @@ export class FingerprintEngine {
         }
 
         if (isSuspicious && usefulWorkDispatched) {
-            const isApi = requestContext.rawReq && this.securityConfig?.isApiRequest?.(requestContext.rawReq);
             if (isApi) {
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
@@ -3981,6 +4080,33 @@ export class FingerprintEngine {
                     delete decision.status;
                     return decision;
                 }
+            if (this.securityConfig.enableProofOfSpace) {
+                const spaceChallenge = generateSpaceChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
+                const clientSecret = crypto.randomBytes(16).toString("hex");
+                await store.set(`secret:${nonce}`, {
+                    clientSecret,
+                    suspicionScore: finalScore,
+                    queries: spaceChallenge.queries,
+                    sizeMb: spaceChallenge.sizeMb,
+                    originalPath: path,
+                }, this.securityConfig.challengeTtl || 300);
+                
+                if (isApi) {
+                    decision.body = {
+                        challenge: {
+                            type: 'pospace',
+                            nonce: nonce,
+                            clientSecret,
+                            queries: spaceChallenge.queries,
+                            sizeMb: spaceChallenge.sizeMb,
+                        }
+                    };
+                } else {
+                    const page = generateSpaceChallengePage(spaceChallenge, clientSecret, this.securityConfig);
+                    decision.body = page;
+                }
+                return decision;
+            }
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce)); // Génère les URL
@@ -4038,9 +4164,6 @@ export class FingerprintEngine {
             if (logger) {
                 logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
             }
-
-            // Check if the request is an API request to return a JSON challenge
-            const isApi = requestContext.rawReq && this.securityConfig?.isApiRequest?.(requestContext.rawReq);
 
             if (isApi) {
                 // For API clients, send a JSON response with challenge details.

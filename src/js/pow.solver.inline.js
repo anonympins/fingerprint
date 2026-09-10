@@ -6,6 +6,98 @@
 
 'use strict';
 
+function cyrb53(str, seed = 0) {
+    let h1 = 0xdeadbeef ^ seed,
+        h2 = 0x41c6ce57 ^ seed;
+    for (let i = 0, ch; i < str.length; i++) {
+        ch = str.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+
+function openDb() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open("pospace-db", 1);
+        request.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains("blocks")) {
+                db.createObjectStore("blocks");
+            }
+        };
+        request.onsuccess = (e) => resolve(e.target.result);
+        request.onerror = (e) => reject(e.target.error);
+    });
+}
+
+function generateBlock(seed, blockIndex, blockSize = 1024) {
+    const block = new Uint8Array(blockSize);
+    let h = cyrb53(seed + ":" + blockIndex);
+    for (let i = 0; i < blockSize; i++) {
+        h = Math.imul(h ^ i, 1597334677);
+        block[i] = h & 0xff;
+    }
+    return block;
+}
+
+async function initializeSpace(seed, sizeMb) {
+    const db = await openDb();
+    const transaction = db.transaction("blocks", "readwrite");
+    const store = transaction.objectStore("blocks");
+    const numBlocks = sizeMb * 1024;
+    const metadataKey = "pospace-metadata";
+
+    const metaReq = store.get(metadataKey);
+    const meta = await new Promise((resolve) => {
+        metaReq.onsuccess = () => resolve(metaReq.result);
+    });
+    if (meta && meta.sizeMb === sizeMb && meta.seed === seed) {
+        return;
+    }
+
+    const CHUNK_SIZE = 1000;
+    for (let i = 0; i < numBlocks; i += CHUNK_SIZE) {
+        const end = Math.min(numBlocks, i + CHUNK_SIZE);
+        for (let j = i; j < end; j++) {
+            const block = generateBlock(seed, j);
+            store.put(block, j);
+        }
+        await new Promise(r => setTimeout(r, 0));
+    }
+    store.put({ sizeMb, seed }, metadataKey);
+}
+
+async function solveSpaceChallenge(seed, queries, nonce, clientSecret) {
+    const db = await openDb();
+    const transaction = db.transaction("blocks", "readonly");
+    const store = transaction.objectStore("blocks");
+    
+    let combined = new Uint8Array(queries.length * 1024);
+    for (let i = 0; i < queries.length; i++) {
+        const idx = queries[i];
+        const getReq = store.get(idx);
+        let block = await new Promise((resolve) => {
+            getReq.onsuccess = () => resolve(getReq.result);
+        });
+        if (!block) {
+            block = generateBlock(seed, idx);
+        }
+        combined.set(block, i * 1024);
+    }
+    
+    const encoder = new TextEncoder();
+    const nonceBytes = encoder.encode(nonce + ":" + clientSecret);
+    const finalBlock = new Uint8Array(combined.length + nonceBytes.length);
+    finalBlock.set(combined);
+    finalBlock.set(nonceBytes, combined.length);
+    
+    const buf = await crypto.subtle.digest("SHA-256", finalBlock);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * Résout un challenge CPU basé sur une cible en utilisant un bloc de base binaire.
  * @param {Uint8Array} baseBlock - Le bloc de données initial (nonce, secret, fp) fourni par le serveur.
@@ -222,7 +314,7 @@ async function solveTsp(cities, targetMaxDistance) {
  * @returns {Promise<object>} Un objet contenant la ou les solutions.
  */
 async function solveChallenge(challenge, fingerprint = '') { // fingerprint parameter was already here, but unused in some calls
-    const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance } = challenge;
+    const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, queries, sizeMb } = challenge;
     const solutions = {};
 
     switch (type) {
@@ -268,6 +360,10 @@ async function solveChallenge(challenge, fingerprint = '') { // fingerprint para
             const tspResult = await solveTsp(cities, targetMaxDistance);
             solutions.tsp = tspResult.path;
             solutions.distance = tspResult.distance;
+            break;
+        case 'pospace':
+            await initializeSpace(nonce + ":" + clientSecret, sizeMb || 100);
+            solutions.hash = await solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
             break;
         default:
             throw new Error(`Unknown challenge type: ${type}`);

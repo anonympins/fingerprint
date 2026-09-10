@@ -10,6 +10,7 @@ use Anonympins\Fingerprint\FingerprintEngine;
 use Anonympins\Fingerprint\RequestContext;
 use Anonympins\Fingerprint\Store\InMemoryStore;
 use Anonympins\Fingerprint\Store\StoreManager;
+use Anonympins\Fingerprint\Challenge\ChallengeUtils;
 use PHPUnit\Framework\TestCase;
 
 class FingerprintEngineTest extends TestCase
@@ -382,5 +383,80 @@ class FingerprintEngineTest extends TestCase
         $this->assertEquals(80.1, $decision['vector']['tcpAnomalyScore']);
         // Le poids de tcpAnomalyScore dans le profil balanced est de 0.8 (80 * 0.8 = 64)
         $this->assertGreaterThanOrEqual(64.0, $decision['score']);
+    }
+
+    public function testDetectsAndVerifiesSpaceChallenge(): void
+    {
+        $store = StoreManager::getStore();
+        
+        $config = SecurityProfiles::createSecurityProfile('balanced', [
+            'enableProofOfSpace' => true,
+            'pospace' => [
+                'sizeMb' => 1,
+                'numQueries' => 5
+            ],
+            'challengeNewDevices' => false,
+        ]);
+        
+        $engine = $this->getMockBuilder(FingerprintEngine::class)
+            ->setConstructorArgs([$config])
+            ->onlyMethods(['calculateFinalScore'])
+            ->getMock();
+        $engine->method('calculateFinalScore')->willReturn(30.0);
+        
+        $headers = [
+            'user-agent' => 'A normal browser',
+            'accept-language' => 'en-US,en;q=0.9',
+        ];
+        
+        // 1. Première requête provoquant un challenge
+        $context = $this->createRequestContext([
+            'headers' => $headers
+        ]);
+        
+        $decision = $engine->processRequest($context);
+        $this->assertEquals('challenge', $decision['action']);
+        
+        $html = $decision['body'];
+        $this->assertStringContainsString('initializeSpace', $html);
+        
+        preg_match('/const nonce = "(.*?)";/', $html, $matchesNonce);
+        preg_match('/const clientSecret = "(.*?)";/', $html, $matchesSecret);
+        preg_match('/const queries = (\[.*?\]);/', $html, $matchesQueries);
+        
+        $nonce = $matchesNonce[1];
+        $clientSecret = $matchesSecret[1];
+        $queries = json_decode($matchesQueries[1], true);
+        
+        // 2. Résoudre le challenge
+        $combined = '';
+        foreach ($queries as $idx) {
+            $combined .= $this->callPrivateGenerateBlock($nonce . ":" . $clientSecret, (int)$idx);
+        }
+        $finalBlock = $combined . $nonce . ":" . $clientSecret;
+        $solution = hash('sha256', $finalBlock);
+        
+        // 3. Soumettre le challenge
+        $submitContext = $this->createRequestContext([
+            'headers' => $headers,
+            'query' => [
+                'pow_type' => 'pospace',
+                'pow_nonce' => $nonce,
+                'pow_solution_space' => $solution
+            ]
+        ]);
+        
+        $engineReal = new FingerprintEngine($config);
+        $submitDecision = $engineReal->processRequest($submitContext);
+        $this->assertEquals('redirect', $submitDecision['action']);
+        $this->assertArrayHasKey('cookie', $submitDecision);
+        $this->assertEquals('pow_clearance', $submitDecision['cookie']['name']);
+    }
+
+    private function callPrivateGenerateBlock(string $seed, int $blockIndex): string
+    {
+        $ref = new \ReflectionClass(ChallengeUtils::class);
+        $method = $ref->getMethod('generateBlock');
+        return $method->invoke(null, $seed, $blockIndex);
     }
 }

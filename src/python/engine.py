@@ -155,6 +155,74 @@ def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Opti
         except socket.error:
             return None
 
+def generate_space_challenge(client_ip: str, nonce: str, suspicion_factor: float, original_url: str, security_config: dict) -> dict:
+    pospace_config = security_config.get("pospace", {})
+    size_mb = pospace_config.get("sizeMb", 100)
+    num_queries = pospace_config.get("numQueries", 10)
+    queries = []
+    max_blocks = size_mb * 1024
+    while len(queries) < num_queries:
+        idx = random.randint(0, max_blocks - 1)
+        if idx not in queries:
+            queries.append(idx)
+    return {
+        "type": "pospace",
+        "nonce": nonce,
+        "sizeMb": size_mb,
+        "queries": queries,
+        "path": original_url
+    }
+
+def generate_space_challenge_page(challenge_details: dict, client_secret: str, security_config: dict) -> str:
+    nonce = challenge_details["nonce"]
+    size_mb = challenge_details["sizeMb"]
+    queries = challenge_details["queries"]
+    path = challenge_details["path"]
+    
+    solver_code = ""
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        solver_path = os.path.join(current_dir, "..", "js", "pow.solver.inline.js")
+        if os.path.exists(solver_path):
+            with open(solver_path, "r", encoding="utf-8") as f:
+                solver_code = f.read()
+    except Exception:
+        pass
+
+    queries_json = json.dumps(queries)
+    challenge_script = f"""
+    async function solve() {{
+      const nonce = "{nonce}";
+      const path = "{path}";
+      const clientSecret = "{client_secret}";
+      const queries = {queries_json};
+      const sizeMb = {size_mb};
+      
+      document.getElementById('loader').innerText = '⚙&#xFE0F; Checking persistent local storage...';
+      await new Promise(r => setTimeout(r, 10));
+      
+      try {{
+          await window.initializeSpace(nonce + ":" + clientSecret, size_mb);
+          document.getElementById('loader').innerText = '⚙&#xFE0F; Generating Proof of Space...';
+          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
+          
+          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+      }} catch(e) {{
+          document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
+      }}
+    }}
+    solve();
+    """
+    
+    return f"""<html><head><title>Security Check</title></head>
+  <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
+    <h1>Security Check (Level 2)</h1>
+    <p>We are verifying your storage allocation. This may take a few seconds on first load.</p>
+    <div id="loader" style="margin:20px;">⚙&#xFE0F; Initializing storage space...</div>
+    <script>{solver_code}</script>
+    <script>{challenge_script}</script>
+  </body></html>"""
+
 def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sanitizes traffic data to protect the auto-tuner from poisoning attacks."""
     if not traffic_data:
@@ -346,6 +414,27 @@ class ChallengeUtils:
         if rem > 0:
             string += '=' * (4 - rem)
         return base64.urlsafe_b64decode(string.encode('utf-8'))
+
+    @staticmethod
+    def generate_block(seed: str, block_index: int, block_size: int = 1024) -> bytes:
+        block = bytearray(block_size)
+        h = cyrb53(f"{seed}:{block_index}")
+        h_int = h % 4294967296
+        if h_int >= 2147483648:
+            h_int -= 4294967296
+        for i in range(block_size):
+            h_int = imul(h_int ^ i, 1597334677)
+            block[i] = h_int & 0xff
+        return bytes(block)
+
+    @staticmethod
+    def verify_space_pow(nonce: str, solution: str, queries: list, seed: str, client_secret: str) -> bool:
+        combined = bytearray()
+        for idx in queries:
+            combined.extend(ChallengeUtils.generate_block(seed, int(idx)))
+        final_block = bytes(combined) + f"{nonce}:{client_secret}".encode("utf-8")
+        h = hashlib.sha256(final_block).hexdigest()
+        return hmac.compare_digest(h, solution)
 
     @staticmethod
     def generate_stateless_ticket(payload: Dict[str, Any], secret: str) -> str:
@@ -633,6 +722,25 @@ class RequestUtils:
             result["device"] = "tablet"
 
         return result
+
+    @staticmethod
+    def clean_url_from_pow_params(original_path: str, incoming_query: Dict[str, Any]) -> str:
+        from urllib.parse import urlparse, urlencode
+        parsed = urlparse(original_path)
+        path = parsed.path or "/"
+        
+        final_query = {k: v for k, v in incoming_query.items()}
+        pow_params = [
+            "pow_type", "pow_nonce", "pow_solution", "pow_solution_cpu",
+            "pow_solution_mem", "pow_fp", "pow_solution_population",
+            "pow_solution_work_result", "pow_problem_id", "pow_solution_space"
+        ]
+        for param in pow_params:
+            final_query.pop(param, None)
+            
+        if final_query:
+            return f"{path}?{urlencode(final_query, doseq=True)}"
+        return path
 
     @staticmethod
     def get_header_anomalies(context: RequestContext) -> float:
@@ -2062,6 +2170,7 @@ class FingerprintEngine:
         pow_sol_mem = context.query_params.get("pow_solution_mem")
         pow_fp = context.query_params.get("pow_fp") or self.get_composite_device_hash(context)
         pow_type = context.query_params.get("pow_type")
+        pow_solution_space = context.query_params.get("pow_solution_space")
         pow_solution_work_result = context.query_params.get("pow_solution_work_result")
         pow_problem_id = context.query_params.get("pow_problem_id")
 
@@ -2092,6 +2201,35 @@ class FingerprintEngine:
                     }
                 except Exception as e:
                     print(f"[FingerprintEngine] Error processing useful work solution: {e}")
+                    MetricsManager.increment_counter("challenges_failed_total")
+
+        if pow_nonce and pow_type == "pospace" and pow_solution_space:
+            challenge_context = await self.store.get(f"secret:{pow_nonce}")
+            if challenge_context:
+                is_valid = ChallengeUtils.verify_space_pow(
+                    pow_nonce,
+                    pow_solution_space,
+                    challenge_context.get("queries", []),
+                    pow_nonce + ":" + challenge_context.get("client_secret", ""),
+                    challenge_context.get("client_secret", "")
+                )
+                if is_valid:
+                    await self.store.delete(f"secret:{pow_nonce}")
+                    ticket = str(uuid.uuid4())
+                    await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
+                    MetricsManager.increment_counter("challenges_solved_total")
+                    
+                    clean_path = RequestUtils.clean_url_from_pow_params(context.path, context.query_params)
+                    return {
+                        "action": "redirect",
+                        "path": clean_path,
+                        "cookie": {
+                            "name": "pow_clearance",
+                            "value": ticket,
+                            "options": {"httponly": True, "max_age": 3600, "path": "/"}
+                        }
+                    }
+                else:
                     MetricsManager.increment_counter("challenges_failed_total")
 
         if pow_nonce and pow_sol_cpu:
@@ -2259,6 +2397,39 @@ class FingerprintEngine:
                             }
                 except Exception as e:
                     print(f"[FingerprintEngine] Failed to dispatch useful work, falling back to PoW: {e}")
+
+            if self.config.get("enableProofOfSpace"):
+                space_challenge = generate_space_challenge(client_ip, nonce, suspicion_factor, context.path, self.config)
+                await self.store.set(f"secret:{nonce}", {
+                    "client_secret": client_secret,
+                    "suspicionScore": score,
+                    "queries": space_challenge["queries"],
+                    "sizeMb": space_challenge["sizeMb"],
+                    "fingerprint": self.get_composite_device_hash(context),
+                    "original_path": context.path,
+                }, self.config.get("challengeTtl", 300))
+                
+                is_api = self.config.get("isApiRequest")
+                decision = {
+                    "action": "challenge",
+                    "score": score,
+                    "vector": suspicion_vector,
+                    "status": 403
+                }
+                if is_api and callable(is_api) and is_api(context):
+                    decision["body"] = {
+                        "challenge": {
+                            "type": "pospace",
+                            "nonce": nonce,
+                            "clientSecret": client_secret,
+                            "queries": space_challenge["queries"],
+                            "sizeMb": space_challenge["sizeMb"],
+                        }
+                    }
+                else:
+                    page = generate_space_challenge_page(space_challenge, client_secret, self.config)
+                    decision["body"] = page
+                return decision
 
             cpu_target = ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config)
             mem_difficulty = int(round(max(0.0, suspicion_factor - 0.25) * 48))

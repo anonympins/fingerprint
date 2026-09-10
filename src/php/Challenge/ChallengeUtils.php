@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Challenge;
 
 use Anonympins\Fingerprint\Store\StoreManager;
+use Anonympins\Fingerprint\FingerprintBuilder;
 use Anonympins\Fingerprint\Utils\BigInt;
 use Anonympins\Fingerprint\Utils\RequestUtils;
 
@@ -22,6 +23,65 @@ class ChallengeUtils
         '/logs/app_error_{RANDOM}.log',
         '/.git/config_{RANDOM}'
     ];
+
+    private static function imul(int $a, int $b): int
+    {
+        $ah = ($a >> 16) & 0xffff;
+        $al = $a & 0xffff;
+        $bh = ($b >> 16) & 0xffff;
+        $bl = $b & 0xffff;
+        $lo = $al * $bl;
+        $hi = (($lo >> 16) + ($al * $bh) + ($ah * $bl)) & 0xffff;
+        return (($hi << 16) | ($lo & 0xffff)) | 0;
+    }
+
+    private static function generateBlock(string $seed, int $blockIndex, int $blockSize = 1024): string
+    {
+        $block = str_repeat("\x00", $blockSize);
+        $h = FingerprintBuilder::cyrb53($seed . ":" . $blockIndex);
+        
+        $h_int = (int)bcmod($h, '4294967296');
+        for ($i = 0; $i < $blockSize; $i++) {
+            $h_int = self::imul($h_int ^ $i, 1597334677);
+            $block[$i] = chr($h_int & 0xff);
+        }
+        return $block;
+    }
+
+    public static function generateSpaceChallenge(string $clientIp, string $nonce, float $suspicionFactor, string $originalUrl, array $securityConfig): array
+    {
+        $pospaceConfig = $securityConfig['pospace'] ?? [];
+        $sizeMb = $pospaceConfig['sizeMb'] ?? 100;
+        $numQueries = $pospaceConfig['numQueries'] ?? 10;
+
+        $queries = [];
+        $maxBlocks = $sizeMb * 1024;
+        while (count($queries) < $numQueries) {
+            $idx = random_int(0, $maxBlocks - 1);
+            if (!in_array($idx, $queries, true)) {
+                $queries[] = $idx;
+            }
+        }
+
+        return [
+            'type' => 'pospace',
+            'nonce' => $nonce,
+            'sizeMb' => $sizeMb,
+            'queries' => $queries,
+            'path' => $originalUrl
+        ];
+    }
+
+    public static function verifySpacePoW(string $nonce, string $solution, array $queries, string $seed, string $clientSecret): bool
+    {
+        $combined = '';
+        foreach ($queries as $idx) {
+            $combined .= self::generateBlock($seed, (int)$idx);
+        }
+        $finalBlock = $combined . $nonce . ":" . $clientSecret;
+        $hash = hash('sha256', $finalBlock);
+        return hash_equals($hash, $solution);
+    }
 
     /**
      * Récupère la clé secrète pour les PoW depuis les variables d'environnement.
@@ -399,6 +459,43 @@ class ChallengeUtils
             return '';
         }
         return file_get_contents($solverPath) ?: '';
+    }
+
+    public static function generateSpaceChallengePage(array $challengeDetails, string $clientSecret, array $securityConfig): string
+    {
+        $nonce = $challengeDetails['nonce'];
+        $sizeMb = $challengeDetails['sizeMb'];
+        $queries = $challengeDetails['queries'];
+        $path = $challengeDetails['path'];
+
+        $solverCode = self::getPowSolverCode();
+        $queriesJson = json_encode($queries);
+
+        $challengeScript = <<<JS
+          async function solve() {
+            const nonce = "{$nonce}";
+            const path = "{$path}";
+            const clientSecret = "{$clientSecret}";
+            const queries = {$queriesJson};
+            const sizeMb = {$sizeMb};
+            
+            document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
+            await new Promise(r => setTimeout(r, 10));
+            
+            try {
+                await window.initializeSpace(nonce + ":" + clientSecret, sizeMb);
+                document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
+                const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
+                
+                window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+            } catch(e) {
+                document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
+            }
+          }
+          solve();
+JS;
+
+        return "<html><head><title>Security Check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\"><h1>Security Check (Level 2)</h1><p>We are verifying your storage allocation. This may take a few seconds on first load.</p><div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing storage space...</div><script>{$solverCode}</script><script>{$challengeScript}</script></body></html>";
     }
 
     /**

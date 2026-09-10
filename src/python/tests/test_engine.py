@@ -1,5 +1,7 @@
 import sys
 import asyncio
+import hashlib
+import json
 import time
 from pathlib import Path
 import pytest
@@ -1299,3 +1301,70 @@ async def test_tls_session_resumption_cookieless_tracking():
     # Résoudre l'identité pour vérifier qu'elle est bien identique à la première requête
     resolution = await engine.resolve_identity(context2)
     assert resolution["device_id"] == device_id, "L'identifiant d'appareil doit être restauré via la session TLS."
+
+@pytest.mark.asyncio
+async def test_pospace_challenge():
+    """Vérifie le cycle complet d'un challenge Proof of Space (PoSpace)."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"inconsistencyScore": 1.0},
+        "enableProofOfSpace": True,
+        "pospace": {
+            "sizeMb": 1,
+            "numQueries": 5
+        }
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0",
+        },
+        query_params={},
+        cookies={}
+    )
+    
+    import unittest.mock as mock
+    with mock.patch.object(engine, 'calculate_final_score', return_value=50):
+        decision = await engine.process_request(context)
+        
+    assert decision["action"] == "challenge"
+    
+    if isinstance(decision["body"], dict):
+        challenge = decision["body"]["challenge"]
+        nonce = challenge["nonce"]
+        client_secret = challenge["clientSecret"]
+        queries = challenge["queries"]
+    else:
+        import re
+        nonce = re.search(r'const nonce = "([^"]+)"', decision["body"]).group(1)
+        client_secret = re.search(r'const clientSecret = "([^"]+)"', decision["body"]).group(1)
+        queries = json.loads(re.search(r'const queries = (\[[^\]]+\])', decision["body"]).group(1))
+
+    seed = f"{nonce}:{client_secret}"
+    combined = bytearray()
+    for idx in queries:
+        combined.extend(ChallengeUtils.generate_block(seed, int(idx)))
+    final_block = bytes(combined) + f"{nonce}:{client_secret}".encode("utf-8")
+    solution = hashlib.sha256(final_block).hexdigest()
+
+    context_submit = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0",
+        },
+        query_params={
+            "pow_type": "pospace",
+            "pow_nonce": nonce,
+            "pow_solution_space": solution
+        },
+        cookies={}
+    )
+    
+    decision_submit = await engine.process_request(context_submit)
+    assert decision_submit["action"] == "redirect"
+    assert "pow_clearance" in decision_submit["cookie"]["name"]
