@@ -6,7 +6,11 @@ NodeJS tests : [![Test NodeJS](https://img.shields.io/github/actions/workflow/st
 [![License](https://img.shields.io/github/license/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/blob/main/LICENSE)
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)
 
-A multi-layered behavioral, cryptographic, and network analysis engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Python** and **PHP** environments.
+A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Python** and **PHP** environments. 
+
+It leverages multi-layer hardware fingerprinting, real-time behavioral analysis, passive network/TLS tracking, and adaptive/useful proof-of-work challenges to dynamically detect and mitigate scraping, scalping, account takeover (ATO), and sophisticated automated threats.
+
+Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, and **Python (>=3.8)**.
 
 ![illustration](https://i.ibb.co/fV1QT6Mf/image-c6e10859baae53bb595112ec08fc9e27.png)
 
@@ -14,11 +18,42 @@ A multi-layered behavioral, cryptographic, and network analysis engine designed 
 
 [![Presentation](https://i.ibb.co/1tkPS01C/Capture-d-cran-2026-09-07-194728.png)](https://www.youtube.com/watch?v=Ujeznl0JAl4)
 
-## Key Features
 
-- **Multi-Layered Detection**: Combines TLS/JA3/JA4 analysis, HTTP header consistency checks, IP reputation, and behavioral tracking (mouse movements, keystrokes).
-- **Adaptive Mitigation**: Imposes progressive cryptographic Proof-of-Work (PoW) challenges to block automated clients without impacting legitimate human users.
-- **Predefined Profiles**: Ready-to-use security profiles (`balanced`, `strict`, `api`, `blog`, `ecommerce`) tailored to your specific use case.
+## 🚀 Key Features
+
+### 1. 🧬 Polymorphic Client-Side WASM & JS Solvers
+* **Polymorphic WebAssembly Solver**: Dynamically generates unique, randomized C++ compiled WebAssembly binary modules per session. Prevents static analysis, bot automation, and emulator tampering.
+* **IndexedDB WASM Caching**: Transparently caches compiled WASM modules (`wasm-cache-db`) in the browser's IndexedDB, minimizing initialization overhead and execution lag on subsequent visits.
+* **Advanced Obfuscation**: Uses multi-layered control flow flattening and string array obfuscation for client-side libraries.
+
+### 2. 💱 Useful Proof-of-Work (uPoW) & PoSpace
+* **Collaborative Useful PoW**: Instead of burning CPU cycles on arbitrary mathematical hash puzzles, suspicious clients solve complex optimization problems (e.g., *Traveling Salesperson*, *Portfolio Allocation*, *Facility Location*, *Fraud Detection Parameter Tuning*).
+* **Proof-of-Space (PoSpace) Challenge**: Forces browser clients to allocate and verify access to massive, persistent storage chunks (e.g., 100MB) inside IndexedDB, multiplying the cost of multi-threaded headless automation.
+* **Chained CPU/Memory Challenges**: Employs client-side resource exhaustion techniques (Chained SHA-256 target seeking & Memory Hard allocation vectors up to 128MB) that are validated in $O(1)$ on the server.
+
+### 3. 🌐 Passive TLS, HTTP/2, and TCP/IP (p0f) Tracking
+* **Native JA3/JA4 TLS Handshake Parsing**: Inspects raw TLS client hello bytes to extract and analyze cipher suite arrangements, extensions, and elliptic curve formats.
+* **Passive TCP/IP Stack Fingerprinting**: Emulates `p0f` rules by analyzing raw TCP SYN packets (TTL, Window Size, MSS, WS, SACK) to classify client OS and detect raw network spoofing.
+* **Multi-Language Handshake Parser**: Built-in support for event-driven PHP runtimes (Swoole, ReactPHP, Workerman), Node.js native sockets, and Python ASGI/WSGI contexts.
+
+### 4. 🧠 Stateful Behavioral Entropy & Click Variance
+* **Click Coordinate Variance**: Tracks exact click relative positions on DOM elements to compute spatial entropy, flagging bots clicking targets with robotic, mathematically perfect precision (zero variance).
+* **Mobile Touch Move Dynamics**: Captures mobile-specific touchscreen signals, analyzing tactile contact area radius, variable pressure indices, and multi-touch capabilities.
+* **Typing Keystroke Latency**: Measures real-time keystroke interval latencies to prevent automated text insertion.
+
+### 5. 🔍 Cross-Layer & Analog Inconsistency Scoring
+* **Layer Cross-Referencing**: Analyzes inconsistencies between User-Agent declarations, Client-Hints (`Sec-CH-UA`), TLS Handshake capabilities, and TCP stacks (e.g., claiming Windows NT on Chrome but negotiating TLS like curl/Safari on a Linux kernel).
+* **Viewport Aspect ratio & Screen mismatches**: Detects virtualized viewports exceeding physical dimensions or fake hardware specifications.
+
+### 6. 🦠 Honeypot Traps & Extensible WAF
+* **Signed Trap URLs**: Injects visually hidden, signed trap URLs into the DOM. Attempts to crawl, probe, or scrape these URLs immediately condemn the device.
+* **Recursive Injection Filters**: Inspects deeply nested payload structures (JSON/NoSQL/GraphQL) using a robust regular expression matrix to flag SQLi, XSS, XXE, SSTI, and JNDI (Log4Shell) vulnerabilities.
+* **ModSecurity NodeJS Extensibility**: Allows plugging in native core rule sets or custom WAF rule compilers into the honeypot pipeline.
+
+### 🧬 Progressive Threshold Auto-Tuning
+* **Genetic Policy Optimizer**: Dynamically updates classification parameters using a multi-objective genetic algorithm on your actual sanitized traffic data.
+* **Inertial Parameter Sliding**: Adjusts security thresholds slowly with an adaptive learning rate to prevent configuration spikes.
+* **Sybil Protection**: Filters out traffic logs, ensuring individual compromised bot networks cannot pollute optimization datasets.
 
 ## Quick Start
 
