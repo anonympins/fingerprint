@@ -225,6 +225,16 @@
          $deviceData = null;
          $newCookie = null;
 
+         // Cookieless Identity Tracking: Attempt to restore device ID using TLS session resume ID
+         $tlsSessionId = $context->tlsSessionId;
+         if (!$deviceId && $tlsSessionId) {
+             $resumedDeviceId = $store->get("tls-session:{$tlsSessionId}");
+             if ($resumedDeviceId) {
+                 $deviceId = $resumedDeviceId;
+                 $this->log('Identity resumed via TLS Session ID', ['deviceId' => $deviceId, 'tlsSessionId' => $tlsSessionId]);
+             }
+         }
+
          if ($deviceId) {
              $deviceData = $store->get("device:{$deviceId}");
          }
@@ -273,6 +283,11 @@
              if (!isset($deviceData['ips']) || !is_array($deviceData['ips'])) { // @phpstan-ignore-line
                  $deviceData['ips'] = [];
              }
+         }
+
+         // Bind the current TLS session ID to the device ID
+         if ($deviceId && $tlsSessionId) {
+             $store->set("tls-session:{$tlsSessionId}", $deviceId, 3600); // 1h cache duration
          }
 
          return [
@@ -515,6 +530,53 @@
          ];
      }
 
+
+     private function decodePolymorphicFingerprint(string $fpString, array $mapping): string
+     {
+         if (empty($mapping['keys'])) {
+             return $fpString;
+         }
+         $reverseKeys = array_flip($mapping['keys']);
+         $parts = explode('|', $fpString);
+         $mappedParts = [];
+         foreach ($parts as $part) {
+             $pair = explode(':', $part, 2);
+             if (count($pair) === 2) {
+                 $origKey = $reverseKeys[$pair[0]] ?? $pair[0];
+                 $mappedParts[] = "{$origKey}:{$pair[1]}";
+             } else {
+                 $mappedParts[] = $part;
+             }
+         }
+         return implode('|', $mappedParts);
+     }
+     private function translatePolymorphicHeaders(RequestContext $context): void
+     {
+         $store = StoreManager::getStore();
+         $activeMappings = $store->get('active-polymorphic-mappings') ?: [];
+         if (!is_array($activeMappings)) {
+             return;
+         }
+
+         foreach ($activeMappings as $mapping) {
+             $devFpHeader = strtolower($mapping['headers']['x-device-fingerprint'] ?? '');
+             $behaviorHeader = strtolower($mapping['headers']['x-behavior-metrics'] ?? '');
+
+             if (!empty($devFpHeader) && isset($context->headers[$devFpHeader])) {
+                 $context->headers['x-device-fingerprint'] = $context->headers[$devFpHeader];
+                 if (!empty($behaviorHeader) && isset($context->headers[$behaviorHeader])) {
+                     $context->headers['x-behavior-metrics'] = $context->headers[$behaviorHeader];
+                 }
+
+                 $clientFp = $context->headers['x-device-fingerprint'];
+                 if ($clientFp && is_string($clientFp)) {
+                     $context->headers['x-device-fingerprint'] = $this->decodePolymorphicFingerprint($clientFp, $mapping);
+                 }
+                 break;
+             }
+         }
+     }
+
      /**
       * Traite une requête entrante et retourne une décision.
       * @param RequestContext $context Le contexte de la requête.
@@ -522,8 +584,21 @@
       */
      public function processRequest(RequestContext $context): array
      {
+        $this->translatePolymorphicHeaders($context);
+
          // Initialiser le vecteur de suspicion pour éviter les erreurs de type.
          $suspicionVector = [];
+        
+        $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
+        
+        // Parse GraphQL query if applicable
+        if ($context->path === '/graphql' && !empty($context->body)) {
+            $gqlInfo = RequestUtils::parseGraphQLQuery(is_array($context->body) ? $context->body : []);
+            if ($gqlInfo) {
+                $context->graphqlOperation = $gqlInfo;
+            }
+        }
+
 
          $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
  
@@ -549,6 +624,7 @@
          $isChallengeSubmission = $powNonce && (
              isset($context->query['pow_solution']) || 
              isset($context->query['pow_solution_cpu']) ||
+             isset($context->query['pow_solution_space']) ||
              (isset($context->query['pow_type']) && $context->query['pow_type'] === 'useful_work_task')
          );
          if ($isChallengeSubmission) {
@@ -587,6 +663,28 @@
                                  $isValid = $isValid && $isMemValid;
                              }
                          }
+                     } elseif ($powType === 'pospace') {
+                         $powSolutionSpace = $context->query['pow_solution_space'] ?? null;
+                         if ($powSolutionSpace && isset($challengeContext['queries'])) {
+                             $isSpaceValid = ChallengeUtils::verifySpacePoW(
+                                 $powNonce,
+                                 $powSolutionSpace,
+                                 $challengeContext['queries'],
+                                 $powNonce . ":" . $challengeContext['clientSecret'],
+                                 $challengeContext['clientSecret']
+                             );
+                             $isValid = $isSpaceValid;
+                             if ($isValid) {
+                                 $ticketTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000;
+                                 $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
+                                 $ticket = ChallengeUtils::generateStatelessTicket([
+                                     'expiry' => $expiry,
+                                     'originalIp' => $context->clientIp,
+                                     'deviceId' => '',
+                                     'deviceHash' => ''
+                                 ]);
+                             }
+                         }
                      } elseif ($powType === 'useful_work_task') {
                          $problemId = $context->query['pow_problem_id'] ?? null;
                          $workResultJson = $context->query['pow_solution_work_result'] ?? null;
@@ -622,10 +720,6 @@
                      $this->log('Challenge solution valid - issuing ticket', ['ticketMaxAge' => $ticketTtl]);
  
                      return [
-                 // ... (le reste de la logique de redirection)
-                 'action' => 'redirect',
-                 'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
-                 'score' => 0.0,
                          'action' => 'redirect',
                          'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
                          'score' => 0.0,
@@ -791,7 +885,11 @@
  
                  $nonce = bin2hex(random_bytes(16));
                  $clientSecret = bin2hex(random_bytes(16));
- 
+                 $highThreshold = $thresholds['high'] ?? 75;
+
+                 $suspicionFactor = ($finalScore - $lowThreshold) / (($thresholds['high'] ?? 75) - $lowThreshold);
+                 $suspicionFactor = max(0, min(1.5, $suspicionFactor));
+
                  // --- NOUVELLE LOGIQUE uPoW ---
                  $shouldUseUsefulWork = ($this->securityConfig['enableUsefulWork'] ?? false) && (
                      ($this->securityConfig['forceUsefulWork'] ?? false) || (random_int(0, 255) / 255) > 0.5
@@ -843,9 +941,39 @@
 
                  // --- FIN DE LA LOGIQUE uPoW (le reste est le fallback) ---
 
-                 $suspicionFactor = ($finalScore - $lowThreshold) / (($thresholds['high'] ?? 75) - $lowThreshold);
-                 $suspicionFactor = max(0, min(1.5, $suspicionFactor));
- 
+                 if ($this->securityConfig['enableProofOfSpace'] ?? false) {
+                     $spaceChallenge = ChallengeUtils::generateSpaceChallenge($context->clientIp, $nonce, $suspicionFactor, $context->path, $this->securityConfig);
+                     $store->set("secret:{$nonce}", [
+                         'clientSecret' => $clientSecret,
+                         'suspicionScore' => $finalScore,
+                         'queries' => $spaceChallenge['queries'],
+                         'sizeMb' => $spaceChallenge['sizeMb'],
+                         'fingerprint' => RequestUtils::getCompositeDeviceHash($context),
+                         'originalPath' => $context->path,
+                     ], $this->securityConfig['challengeTtl'] ?? 300);
+
+                     if ($deviceData) {
+                         $deviceData['lastChallengeNonce'] = $nonce;
+                         $store->set("device:{$deviceId}", $deviceData); // @phpstan-ignore-line
+                     }
+
+                     if ($isApiRequest) {
+                         $decision['body'] = [
+                             'challenge' => [
+                                 'type' => 'pospace',
+                                 'nonce' => $nonce,
+                                 'clientSecret' => $clientSecret,
+                                 'queries' => $spaceChallenge['queries'],
+                                 'sizeMb' => $spaceChallenge['sizeMb'],
+                             ]
+                         ];
+                     } else {
+                         $page = ChallengeUtils::generateSpaceChallengePage($spaceChallenge, $clientSecret, $this->securityConfig);
+                         $decision['body'] = $page;
+                     }
+                     return $decision;
+                 }
+
                  $cpuChallengeDetails = [
                      'type' => 'cpu_target',
                      'nonce' => $nonce,

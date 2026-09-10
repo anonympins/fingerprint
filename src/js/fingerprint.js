@@ -15,6 +15,148 @@ const __dirname = dirname(__filename);
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
+let activeMappings = [];
+let lastMappingTime = 0;
+let isCompilingMapping = false;
+const MAPPING_ROTATION_INTERVAL = 60000; // 60 seconds
+
+function generateSessionMapping() {
+    const randomStr = (len = 6) => crypto.randomBytes(len).toString('hex').replace(/[0-9]/g, 'g').substring(0, len);
+    const randomHeader = () => `X-Sess-${crypto.randomBytes(4).toString('hex')}`;
+
+    return {
+        headers: {
+            'x-device-fingerprint': randomHeader(),
+            'x-behavior-metrics': randomHeader(),
+        },
+        globals: {
+            'ClientLibrary': `ClientLib_${randomStr(6)}`,
+            'getDeviceFingerprint': `getFP_${randomStr(6)}`,
+            'getClientBehaviorMetrics': `getMetrics_${randomStr(6)}`,
+        },
+        keys: {
+            'ua': randomStr(4),
+            'hw': randomStr(4),
+            'geo': randomStr(4),
+            'scr': randomStr(4),
+            'os': randomStr(4),
+            'gpu': randomStr(4),
+            'cvs': randomStr(4),
+            'cdp': randomStr(4),
+            'bot': randomStr(4),
+            'wasm': randomStr(4),
+        },
+        wasmConstants: {
+            seed: crypto.randomBytes(4).readInt32LE(0),
+            multiplier: crypto.randomBytes(4).readInt32LE(0) | 1,
+            adder: crypto.randomBytes(4).readInt32LE(0)
+        }
+    };
+}
+
+async function compilePolymorphicJs(mapping) {
+    const clientScriptPath = join(__dirname, 'fingerprint.client.js');
+    let jsCode = '';
+    try {
+        jsCode = readFileSync(clientScriptPath, 'utf-8');
+    } catch (e) {
+        console.error('[Fingerprint] Could not read fingerprint.client.js for dynamic obfuscation. Fallback to obfuscated build.');
+        try {
+            return readFileSync(join(__dirname, 'fingerprint.client.obfuscated.js'), 'utf-8');
+        } catch (err) {
+            return '';
+        }
+    }
+
+    jsCode = jsCode.replace(/X-Device-Fingerprint/g, mapping.headers['x-device-fingerprint']);
+    jsCode = jsCode.replace(/X-Behavior-Metrics/g, mapping.headers['x-behavior-metrics']);
+    jsCode = jsCode.replace(/ClientLibrary/g, mapping.globals['ClientLibrary']);
+    jsCode = jsCode.replace(/getDeviceFingerprint/g, mapping.globals['getDeviceFingerprint']);
+    jsCode = jsCode.replace(/getClientBehaviorMetrics/g, mapping.globals['getClientBehaviorMetrics']);
+
+    for (const [origKey, randKey] of Object.entries(mapping.keys)) {
+        const regex1 = new RegExp(`add\\(["']${origKey}["']`, 'g');
+        jsCode = jsCode.replace(regex1, `add("${randKey}"`);
+
+        const regex2 = new RegExp(`addRaw\\(["']${origKey}["']`, 'g');
+        jsCode = jsCode.replace(regex2, `addRaw("${randKey}"`);
+    }
+
+    const obfuscationResult = JavaScriptObfuscator.obfuscate(jsCode, {
+        compact: true,
+        controlFlowFlattening: true,
+        deadCodeInjection: true,
+        stringArray: true,
+        stringArrayRotate: true,
+        stringArrayShuffle: true,
+        seed: Math.abs(mapping.wasmConstants.seed),
+        selfDefending: true,
+    });
+
+    return obfuscationResult.getObfuscatedCode();
+}
+
+async function ensureLatestMapping() {
+    const now = Date.now();
+    if ((now - lastMappingTime > MAPPING_ROTATION_INTERVAL || activeMappings.length === 0) && !isCompilingMapping) {
+        isCompilingMapping = true;
+        try {
+            const mapping = generateSessionMapping();
+            const polymorphicJs = await compilePolymorphicJs(mapping);
+            const polymorphicWasm = DynamicWasmGenerator.generate(mapping.wasmConstants);
+
+            mapping.jsBuffer = Buffer.from(polymorphicJs, 'utf8');
+            mapping.wasmBuffer = polymorphicWasm;
+            mapping.timestamp = now;
+
+            activeMappings.unshift(mapping);
+            if (activeMappings.length > 5) {
+                activeMappings.pop();
+            }
+            lastMappingTime = now;
+
+            try {
+                await store.set('active-polymorphic-mappings', activeMappings.map(m => ({
+                    headers: m.headers,
+                    keys: m.keys
+                })));
+            } catch (e) {
+                // Ignore
+            }
+        } finally {
+            isCompilingMapping = false;
+        }
+    }
+}
+
+function getActiveMappingForRequest(headers) {
+    if (!headers) return null;
+    for (const mapping of activeMappings) {
+        const headerName = mapping.headers['x-device-fingerprint'].toLowerCase();
+        if (headers[headerName]) {
+            return mapping;
+        }
+    }
+    return null;
+}
+
+function decodePolymorphicFingerprint(fpString, mapping) {
+    if (!fpString || !mapping || !mapping.keys) return fpString;
+    const reverseKeys = {};
+    for (const [orig, rand] of Object.entries(mapping.keys)) {
+        reverseKeys[rand] = orig;
+    }
+    const parts = fpString.split('|');
+    const mappedParts = parts.map(part => {
+        const pair = part.split(':');
+        if (pair.length === 2) {
+            const origKey = reverseKeys[pair[0]] || pair[0];
+            return `${origKey}:${pair[1]}`;
+        }
+        return part;
+    });
+    return mappedParts.join('|');
+}
 
 const base64UrlEncode = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 const base64UrlDecode = (str) => {
@@ -948,6 +1090,32 @@ export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret =
   }
   return finalHash === parseInt(solution, 10);
 };
+
+export function verifySpacePoW(nonce, solution, queries, seed, clientSecret) {
+  const combined = new Uint8Array(queries.length * 1024);
+  for (let i = 0; i < queries.length; i++) {
+    const idx = queries[i];
+    const block = generateBlock(seed, idx);
+    combined.set(block, i * 1024);
+  }
+  
+  const nonceBytes = Buffer.from(nonce + ":" + clientSecret, "utf8");
+  const finalBlock = Buffer.concat([Buffer.from(combined), nonceBytes]);
+  
+  const hash = crypto.createHash("sha256").update(finalBlock).digest("hex");
+  return hash === solution;
+}
+
+function generateBlock(seed, blockIndex, blockSize = 1024) {
+  const block = new Uint8Array(blockSize);
+  let h = cyrb53(seed + ":" + blockIndex);
+  for (let i = 0; i < blockSize; i++) {
+    h = Math.imul(h ^ i, 1597334677);
+    block[i] = h & 0xff;
+  }
+  return block;
+}
+
 export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
   if (typeof ticket !== 'string' || ticket.length === 0) return false;
@@ -1085,6 +1253,66 @@ function getHeaderAnomalies(context) {
   return {
     headerAnomalyScore: Math.min(100, anomalyScore),
   };
+}
+
+export function generateSpaceChallenge(clientIp, nonce, suspicionFactor, originalUrl, securityConfig) {
+  const sizeMb = securityConfig?.pospace?.sizeMb || 100;
+  const numQueries = securityConfig?.pospace?.numQueries || 10;
+  
+  const queries = [];
+  const maxBlocks = sizeMb * 1024;
+  while (queries.length < numQueries) {
+    const idx = Math.floor(Math.random() * maxBlocks);
+    if (!queries.includes(idx)) {
+      queries.push(idx);
+    }
+  }
+  
+  return {
+    type: "pospace",
+    nonce: nonce,
+    sizeMb,
+    queries,
+    path: originalUrl
+  };
+}
+
+function generateSpaceChallengePage(challengeDetails, clientSecret, securityConfig) {
+  const { nonce, sizeMb, queries, path } = challengeDetails;
+  const solverCode = getPowSolverCode();
+  
+  const challengeScript = `
+    async function solve() {
+      const nonce = ${JSON.stringify(nonce)};
+      const path = ${JSON.stringify(path)};
+      const clientSecret = ${JSON.stringify(clientSecret)};
+      const queries = ${JSON.stringify(queries)};
+      const sizeMb = ${sizeMb};
+      
+      document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
+      await new Promise(r => setTimeout(r, 10));
+      
+      try {
+          await window.initializeSpace(nonce + ":" + clientSecret, sizeMb);
+          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
+          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
+          
+          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+      } catch(e) {
+          document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
+      }
+    }
+    solve();
+  `;
+  
+  return `<html><head><title>Security Check</title></head>
+  <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
+    <h1>Security Check (Level 2)</h1>
+    <p>We are verifying your storage allocation. This may take a few seconds on first load.</p>
+    <div id="loader" style="margin:20px;">⚙️ Initializing storage space...</div>
+    <script>${solverCode}</script>
+    <script>${challengeScript}</script>
+  </body></html>`;
 }
 
 /**
@@ -1469,11 +1697,27 @@ function getCrossLayerInconsistency(context) {
         const clientScreenHash = clientFpMap.get('scr');
         const viewportWidth = context.headers['sec-ch-viewport-width'];
         if (clientScreenHash && viewportWidth) {
-            const clientWidth = clientFpMap.get('scr')?.split('x')[0];
-            // Ce n'est pas une comparaison directe, mais un bot pourrait oublier de forger les CH.
-            // Si le client FP a une largeur et que le CH en a une autre, c'est suspect.
-            // Cette vérification est basique et pourrait être affinée.
-            if (clientWidth && clientWidth !== viewportWidth) {
+                  const viewportWidthInt = parseInt(viewportWidth, 10);
+                  let matchedScreenWidth = null;
+                  const commonWidths = [320, 360, 375, 390, 412, 414, 768, 1024, 1280, 1366, 1440, 1536, 1600, 1920, 2560, 3840];
+                  const commonHeights = [480, 568, 640, 667, 736, 800, 812, 844, 896, 900, 1024, 1080, 1200, 1440, 1600, 2160];
+                  const commonDepths = [24, 30, 32];
+
+                  for (const w of commonWidths) {
+                      for (const h of commonHeights) {
+                          for (const d of commonDepths) {
+                              const candidate = `${w}x${h}_${d}`;
+                              if (clientScreenHash === String(cyrb53(candidate))) {
+                                  matchedScreenWidth = w;
+                                  break;
+                              }
+                          }
+                          if (matchedScreenWidth !== null) break;
+                      }
+                      if (matchedScreenWidth !== null) break;
+                  }
+
+                  if (matchedScreenWidth !== null && viewportWidthInt > matchedScreenWidth) {
                 score += 20;
             }
         }
@@ -1484,10 +1728,17 @@ function getCrossLayerInconsistency(context) {
         const clientGpuHash = clientFpMap.get('gpu');
         const ja3 = getTlsFingerprint(context)?.ja3;
         if (clientGpuHash && ja3) {
-            // Une vraie implémentation nécessiterait une base de données mappant les GPU connus
-            // à des signatures JA3 typiques. Pour l'exemple, on simule une pénalité si les deux
-            // sont présents mais que le score de cohérence global est déjà faible.
-            // (Cette logique est déjà en partie couverte par le `consistencyScore`).
+            let expectedBrowsers = tlsFingerprintDb[ja3];
+            if (expectedBrowsers) {
+                if (!Array.isArray(expectedBrowsers)) {
+                    expectedBrowsers = [expectedBrowsers];
+                }
+                const nonBrowserLibraries = ['Python', 'Go', 'Java', 'curl'];
+                const isLibrary = expectedBrowsers.some(lib => nonBrowserLibraries.includes(lib));
+                if (isLibrary) {
+                    score += 30;
+                }
+            }
         }
 
         return { crossLayerInconsistencyScore: Math.min(100, score) };
@@ -2345,11 +2596,20 @@ export const configureStore = (externalStore) => {
 async function resolveRequestIdentity(context, securityConfig = {}) {
   const existingDeviceId = context.cookies?.device_id;
   const currentDeviceHash = getCompositeDeviceHash(context); // Use the composite hash for consistency checks
-  let deviceId = existingDeviceId;
+    const tlsSessionId = getTlsSessionId(context);
+    let deviceId = existingDeviceId;
   let consistencyScore = 1.0; // 1.0 = perfectly consistent
   let deviceData = null;
   let newCookie = null;
-  if (deviceId) {
+
+    if (!deviceId && tlsSessionId) {
+        const resumedDeviceId = await store.get(`tls-session:${tlsSessionId}`);
+        if (resumedDeviceId) {
+            deviceId = resumedDeviceId;
+        }
+    }
+
+    if (deviceId) {
     deviceData = await store.get(`device:${deviceId}`);
   }
 
@@ -2392,6 +2652,9 @@ async function resolveRequestIdentity(context, securityConfig = {}) {
     // The write will happen in getSuspicionVector after all modifications.
   }
 
+    if (deviceId && tlsSessionId) {
+        await store.set(`tls-session:${tlsSessionId}`, deviceId, 3600); // Bind TLS session for 1 hour
+    }
   return { deviceId, deviceData, consistencyScore, newCookie };
 }
 
@@ -3213,7 +3476,7 @@ export class FingerprintEngine {
   async processRequest(requestContext) {
       sanitizeProxyHeaders(requestContext, this.securityConfig);
 
-      const { clientIp = "unknown", path, cookies, query, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
+      const { clientIp = "unknown", path, cookies = {}, query = {}, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
     const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     
     this._log('Processing request', { clientIp, path, isStatic });
@@ -3293,6 +3556,13 @@ export class FingerprintEngine {
             decision.action = 'next';
             delete decision.status;
             delete decision.body;
+
+            if (requestContext._newCookies) {
+                const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                if (deviceCookie) {
+                    decision.newCookieForResponse = deviceCookie;
+                }
+            }
         }
         return decision;
     }
@@ -3332,8 +3602,8 @@ export class FingerprintEngine {
     // --- NOUVELLE LOGIQUE DE PRIORITÉ ---
     // Si une solution de challenge est soumise, on la traite en priorité absolue,
     // avant même de recalculer le score de suspicion.
-    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp, pow_solution_population, pow_solution_work_result, pow_problem_id } = query;
-    if (pow_nonce && (pow_solution || pow_solution_cpu)) { // Vérifie pow_solution pour la compatibilité ascendante
+    const { pow_type, pow_solution, pow_solution_cpu, pow_solution_mem, pow_fp, pow_solution_population, pow_solution_work_result, pow_problem_id, pow_solution_space } = query;
+    if (pow_nonce && (pow_solution || pow_solution_cpu || pow_solution_space)) { // Vérifie pow_solution pour la compatibilité ascendante
         this._log('Challenge solution submitted', { pow_type, pow_nonce });
 
         // On doit calculer le score de suspicion *avant* de valider le ticket,
@@ -3411,13 +3681,13 @@ export class FingerprintEngine {
             } else {
                 optimalTtl = determineOptimalTicketTtl(preliminaryScore);
                 finalTtl = isProbationary ? probationaryTtl : optimalTtl;
-                this._log('Challenge context found, verifying solution', { optimalTtl, finalTtl });
+                this._log('Challenge context found, verifying solution', {optimalTtl, finalTtl});
 
                 if ((pow_type === "cpu_target" || !pow_type) && (pow_solution_cpu || pow_solution)) { // !pow_type pour compatibilité
                     const cpuSolution = pow_solution_cpu || pow_solution;
                     ticket = await verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, cpuSolution, challengeContext, deviceId, currentDeviceHash);
                     isValid = ticket !== null;
-                    this._log('CPU target challenge verification', { isValid });
+                    this._log('CPU target challenge verification', {isValid});
                 } else if (pow_type === "cpu_mem" && pow_solution_cpu && pow_solution_mem) {
                     const cpuTicket = await verifyCpuTargetPoWAndGenerateTicket(clientIp, finalTtl, pow_nonce, pow_solution_cpu, challengeContext, deviceId, currentDeviceHash);
                     const isMemValid = verifyMemoryPoW(pow_nonce, pow_solution_mem, challengeContext.memDifficulty, challengeContext.clientSecret); // Memory PoW is independent of fingerprint
@@ -3428,6 +3698,18 @@ export class FingerprintEngine {
                         memValid: isMemValid,
                         isValid
                     });
+                } else if (pow_type === "pospace" && pow_solution_space) {
+                    const isSpaceValid = verifySpacePoW(pow_nonce, pow_solution_space, challengeContext.queries, pow_nonce + ":" + challengeContext.clientSecret, challengeContext.clientSecret);
+                    isValid = isSpaceValid;
+                    if (isValid) {
+                        const ttl = finalTtl || 3600000;
+                        ticket = generateStatelessTicket({
+                            expiry: Date.now() + ttl,
+                            originalIp: clientIp,
+                            deviceId,
+                            deviceHash
+                        });
+                    }
                 }
             }
         } else {
@@ -3464,6 +3746,7 @@ export class FingerprintEngine {
             finalSearchParams.delete('pow_solution_cpu');
             finalSearchParams.delete('pow_solution_mem');
             finalSearchParams.delete('pow_fp'); // Ne pas oublier de nettoyer le fingerprint
+            finalSearchParams.delete('pow_solution_space');
             // NOUVEAU: Nettoyer aussi les paramètres des challenges d'optimisation et de travail utile
             finalSearchParams.delete('pow_solution_population');
             finalSearchParams.delete('pow_solution_work_result');
@@ -3501,6 +3784,12 @@ export class FingerprintEngine {
                     decision.action = 'next';
                     delete decision.status;
                     delete decision.body;
+                    if (requestContext._newCookies) {
+                        const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                        if (deviceCookie) {
+                            decision.newCookieForResponse = deviceCookie;
+                        }
+                    }
                 }
                 return decision;
             }
@@ -3593,6 +3882,12 @@ export class FingerprintEngine {
             decision.action = 'next';
             delete decision.status;
             delete decision.body;
+            if (requestContext._newCookies) {
+                const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                if (deviceCookie) {
+                    decision.newCookieForResponse = deviceCookie;
+                }
+            }
         }
         return decision;
     }
@@ -3640,6 +3935,12 @@ export class FingerprintEngine {
           decision.action = 'next';
           delete decision.status;
           delete decision.body;
+          if (requestContext._newCookies) {
+              const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+              if (deviceCookie) {
+                  decision.newCookieForResponse = deviceCookie;
+              }
+          }
       }
       return decision;
     }
@@ -3664,6 +3965,12 @@ export class FingerprintEngine {
             decision.action = 'next';
             delete decision.status;
             delete decision.body;
+            if (requestContext._newCookies) {
+                const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                if (deviceCookie) {
+                    decision.newCookieForResponse = deviceCookie;
+                }
+            }
         }
         return decision;
     }
@@ -3698,6 +4005,12 @@ export class FingerprintEngine {
                 decision.action = 'next';
                 delete decision.status;
                 delete decision.body;
+                if (requestContext._newCookies) {
+                    const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                    if (deviceCookie) {
+                        decision.newCookieForResponse = deviceCookie;
+                    }
+                }
             }
             return decision;
         }
@@ -3707,6 +4020,7 @@ export class FingerprintEngine {
         // --- SELECTION AND SENDING OF THE APPROPRIATE CHALLENGE ---
         const nonce = crypto.randomBytes(16).toString("hex");
         const clientSecret = crypto.randomBytes(16).toString("hex");
+            const isApi = requestContext.rawReq && this.securityConfig?.isApiRequest?.(requestContext.rawReq);
 
         // Pour les scores élevés, on choisit aléatoirement entre un challenge de travail utile et un PoW classique.
         // Cela rend l'automatisation plus difficile pour un attaquant.
@@ -3749,7 +4063,6 @@ export class FingerprintEngine {
         }
 
         if (isSuspicious && usefulWorkDispatched) {
-            const isApi = requestContext.rawReq && this.securityConfig?.isApiRequest?.(requestContext.rawReq);
             if (isApi) {
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
@@ -3767,6 +4080,33 @@ export class FingerprintEngine {
                     delete decision.status;
                     return decision;
                 }
+            if (this.securityConfig.enableProofOfSpace) {
+                const spaceChallenge = generateSpaceChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
+                const clientSecret = crypto.randomBytes(16).toString("hex");
+                await store.set(`secret:${nonce}`, {
+                    clientSecret,
+                    suspicionScore: finalScore,
+                    queries: spaceChallenge.queries,
+                    sizeMb: spaceChallenge.sizeMb,
+                    originalPath: path,
+                }, this.securityConfig.challengeTtl || 300);
+                
+                if (isApi) {
+                    decision.body = {
+                        challenge: {
+                            type: 'pospace',
+                            nonce: nonce,
+                            clientSecret,
+                            queries: spaceChallenge.queries,
+                            sizeMb: spaceChallenge.sizeMb,
+                        }
+                    };
+                } else {
+                    const page = generateSpaceChallengePage(spaceChallenge, clientSecret, this.securityConfig);
+                    decision.body = page;
+                }
+                return decision;
+            }
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce)); // Génère les URL
@@ -3825,9 +4165,6 @@ export class FingerprintEngine {
                 logger({ type: 'challenge_issued', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
             }
 
-            // Check if the request is an API request to return a JSON challenge
-            const isApi = requestContext.rawReq && this.securityConfig?.isApiRequest?.(requestContext.rawReq);
-
             if (isApi) {
                 // For API clients, send a JSON response with challenge details.
                 const challengePayload = {
@@ -3861,8 +4198,14 @@ export class FingerprintEngine {
     if (logger) {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
     }
-
-    return { action: 'next', score: finalScore, vector: suspicionVector, intendedAction: 'next' };
+      const response = { action: 'next', score: finalScore, vector: suspicionVector, intendedAction: 'next' };
+      if (requestContext._newCookies) {
+          const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+          if (deviceCookie) {
+              response.newCookieForResponse = deviceCookie;
+          }
+      }
+      return response;
   }
 
   /**
@@ -4489,6 +4832,32 @@ export const default_whitelist = () => [
 ];
 
 
+/**
+ * Extracts the TLS Session ID or ticket hash from the request context.
+ * Prioritizes proxy-provided headers and falls back to Node's native socket session.
+ * @private
+ * @param {object} context - The request context.
+ * @returns {string|null}
+ */
+function getTlsSessionId(context) {
+    if (!context) return null;
+    const fromHeader = context.headers ? (context.headers['x-tls-session-id'] || context.headers['x-ssl-session-id']) : null;
+    if (fromHeader) return fromHeader;
+
+    const socket = context.rawReq?.socket;
+    if (socket) {
+        if (socket.sessionId) {
+            return socket.sessionId.toString('hex');
+        }
+        if (typeof socket.getSession === 'function') {
+            const session = socket.getSession();
+            if (session) {
+                return crypto.createHash('sha256').update(session).digest('hex');
+            }
+        }
+    }
+    return null;
+}
 
 // --- Proof-of-Work Middleware (The Tollbooth) ---
 export const powMiddleware = (securityConfig) => {
@@ -4521,6 +4890,24 @@ export const powMiddleware = (securityConfig) => {
   }
 
   return async (req, res, next) => {
+      if (!req.headers_translated) {
+          req.headers_translated = true;
+          const matchedMapping = getActiveMappingForRequest(req.headers);
+          if (matchedMapping) {
+              const devFpHeader = matchedMapping.headers['x-device-fingerprint'].toLowerCase();
+              const behaviorHeader = matchedMapping.headers['x-behavior-metrics'].toLowerCase();
+
+              if (req.headers[devFpHeader]) {
+                  req.headers['x-device-fingerprint'] = req.headers[devFpHeader];
+              }
+              if (req.headers[behaviorHeader]) {
+                  req.headers['x-behavior-metrics'] = req.headers[behaviorHeader];
+              }
+              if (req.headers['x-device-fingerprint']) {
+                  req.headers['x-device-fingerprint'] = decodePolymorphicFingerprint(req.headers['x-device-fingerprint'], matchedMapping);
+              }
+          }
+      }
     if (securityConfig?.wasm) {
       const wasmConfig = securityConfig.wasm;
       let jsPath = '/fp.js';
@@ -4542,45 +4929,40 @@ export const powMiddleware = (securityConfig) => {
         wasmFile = wasmConfig.wasmFile ? resolve(wasmConfig.wasmFile) : resolve(__dirname, '..', '..', 'public', 'fp.wasm');
       }
 
-      if (jsFile && req.path === jsPath) {
-        try {
-          if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
-            console.log('[Fingerprint] Generating dynamic polymorphic WASM module...');
-            // Génère des constantes aléatoires uniques pour cette session / requête
-            const seed = crypto.randomBytes(4).readInt32LE(0);
-            const multiplier = crypto.randomBytes(4).readInt32LE(0) | 1; // Doit être impair pour un LCG optimal
-            const adder = crypto.randomBytes(4).readInt32LE(0);
-            
-            const wasmBuffer = DynamicWasmGenerator.generate({ seed, multiplier, adder });
-            res.setHeader('Content-Type', 'application/wasm');
-            return res.send(wasmBuffer);
-          }
-          const fileContent = readFileSync(wasmFile);
-          res.setHeader('Content-Type', 'application/wasm');
-          return res.send(fileContent);
-        } catch (e) {
-          // Fallback
+        if (req.path === jsPath) {
+            try {
+                if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
+                    await ensureLatestMapping();
+                    const latest = activeMappings[0];
+                    if (latest && latest.jsBuffer) {
+                        res.setHeader('Content-Type', 'application/javascript');
+                        return res.send(latest.jsBuffer);
+                    }
+                }
+                if (jsFile && existsSync(jsFile)) {
+                    const fileContent = readFileSync(jsFile);
+                    res.setHeader('Content-Type', 'application/javascript');
+                    return res.send(fileContent);
+                }
+            } catch (e) {}
         }
-      }
-      if (wasmFile && req.path === wasmPath) {
-        try {
-          if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
-            // Génère des constantes aléatoires uniques pour cette session / requête
-            const seed = crypto.randomBytes(4).readInt32LE(0);
-            const multiplier = crypto.randomBytes(4).readInt32LE(0) | 1; // Doit être impair pour un LCG optimal
-            const adder = crypto.randomBytes(4).readInt32LE(0);
-            
-            const wasmBuffer = DynamicWasmGenerator.generate({ seed, multiplier, adder });
-            res.setHeader('Content-Type', 'application/wasm');
-            return res.send(wasmBuffer);
-          }
-          const fileContent = readFileSync(wasmFile);
-          res.setHeader('Content-Type', 'application/wasm');
-          return res.send(fileContent);
-        } catch (e) {
-          // Fallback
+        if (req.path === wasmPath) {
+            try {
+                if (wasmConfig === 'dynamic' || wasmConfig.dynamic || wasmConfig.polymorphic) {
+                    await ensureLatestMapping();
+                    const latest = activeMappings[0];
+                    if (latest && latest.wasmBuffer) {
+                        res.setHeader('Content-Type', 'application/wasm');
+                        return res.send(latest.wasmBuffer);
+                    }
+                }
+                if (wasmFile && existsSync(wasmFile)) {
+                    const fileContent = readFileSync(wasmFile);
+                    res.setHeader('Content-Type', 'application/wasm');
+                    return res.send(fileContent);
+                }
+            } catch (e) {}
         }
-      }
     }
 
     const requestContext = {
@@ -4657,6 +5039,7 @@ export const __internal = {
     getDeviceHash,
     getCompositeDeviceHash,
     getSuspicionVector,
+    getTlsSessionId,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
     calculateTarget,

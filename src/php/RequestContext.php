@@ -24,6 +24,7 @@ class RequestContext
     public array $cookies = [];
     public ?string $httpVersion = null;
     public int $requestTimestamp = 0;
+    public ?string $tlsSessionId = null;
 
     /** @var ?array{type: string, name: string} */
     public ?array $graphqlOperation = null;
@@ -76,6 +77,7 @@ class RequestContext
         $this->ja4h = $this->headers['x-ja4h-hash'] ?? null;
         $this->http2Fingerprint = $this->headers['x-http2-fingerprint'] ?? null;
         $this->tcpFingerprint = $this->headers['x-tcp-fingerprint'] ?? null;
+        $this->tlsSessionId = $this->headers['x-tls-session-id'] ?? $this->headers['x-ssl-session-id'] ?? null;
     }
     /**
      * Récupère la valeur d'un en-tête HTTP de manière insensible à la casse.

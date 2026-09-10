@@ -552,6 +552,51 @@ class RequestUtils
             }
         }
 
+          // 2. Incohérence de l'écran (si les Client Hints sont disponibles)
+          $clientScreenHash = $clientFpMap['scr'] ?? null;
+          $viewportWidth = $context->getHeader('sec-ch-viewport-width');
+          if ($clientScreenHash && $viewportWidth) {
+              $viewportWidthInt = (int)$viewportWidth;
+              $matchedScreenWidth = null;
+              $commonWidths = [320, 360, 375, 390, 412, 414, 768, 1024, 1280, 1366, 1440, 1536, 1600, 1920, 2560, 3840];
+              $commonHeights = [480, 568, 640, 667, 736, 800, 812, 844, 896, 900, 1024, 1080, 1200, 1440, 1600, 2160];
+              $commonDepths = [24, 30, 32];
+              
+              foreach ($commonWidths as $w) {
+                  foreach ($commonHeights as $h) {
+                      foreach ($commonDepths as $d) {
+                          $candidate = "{$w}x{$h}_{$d}";
+                          $candidateHash = (string)FingerprintBuilder::cyrb53($candidate);
+                          if ($clientScreenHash === $candidateHash) {
+                              $matchedScreenWidth = $w;
+                              break 3;
+                          }
+                      }
+                  }
+              }
+              
+              if ($matchedScreenWidth !== null && $viewportWidthInt > $matchedScreenWidth) {
+                  $score += 20;
+              }
+          }
+
+          // 3. Incohérence du GPU/Canvas et JA3
+          $clientGpuHash = $clientFpMap['gpu'] ?? null;
+          $ja3 = $context->ja3;
+          if ($clientGpuHash && $ja3) {
+              $expectedClients = self::TLS_FINGERPRINT_DB[$ja3] ?? null;
+              if ($expectedClients) {
+                  if (!is_array($expectedClients)) {
+                      $expectedClients = [$expectedClients];
+                  }
+                  $nonBrowserLibraries = ['Python', 'Go', 'Java', 'curl'];
+                  $isLibrary = !empty(array_intersect($expectedClients, $nonBrowserLibraries));
+                  if ($isLibrary) {
+                      $score += 30;
+                  }
+              }
+          }
+
         return ['crossLayerInconsistencyScore' => min(100.0, $score)];
     }
 

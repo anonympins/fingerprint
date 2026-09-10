@@ -104,39 +104,6 @@ class OptimizationOperators
     {
         $fitnessFunction = self::createFullSecurityConfigEvaluator($context);
 
-        $createIndividual = function (): array {
-            return [
-                'thresholds' => [
-                    'low' => 15 + self::secureRandom() * 20,
-                    'medium' => 40 + self::secureRandom() * 25,
-                    'high' => 70 + self::secureRandom() * 20,
-                ],
-                'weights' => [
-                    'historyScore' => self::secureRandom(),
-                    'rotationScore' => self::secureRandom(),
-                    'headerAnomalyScore' => self::secureRandom(),
-                    'requestPatternScore' => 0.5 + self::secureRandom(),
-                    'inconsistencyScore' => self::secureRandom(),
-                    'honeypotScore' => 1.0,
-                    'behaviorScore' => self::secureRandom(),
-                    'crossLayerInconsistencyScore' => self::secureRandom(),
-                    'timeInconsistencyScore' => self::secureRandom(),
-                    'tlsSpoofingScore' => self::secureRandom(),
-                    'botScore' => self::secureRandom(),
-                    'cookieDroppingScore' => self::secureRandom(),
-                    'threatIntelScore' => self::secureRandom(),
-                ],
-                'patterns' => [
-                    'velocityThreshold' => 100 + self::secureRandom() * 400,
-                    'burstThreshold' => 300 + self::secureRandom() * 700,
-                    'scrapeThreshold' => 500 + self::secureRandom() * 1000,
-                    'regularityThreshold' => 50 + self::secureRandom() * 200,
-                    'decayFactor' => 0.85 + self::secureRandom() * 0.14,
-                    'inactivityReset' => 15000 + self::secureRandom() * 45000,
-                ]
-            ];
-        };
-
         $crossover = function (array $c1, array $c2): array {
             $child = $c1;
             foreach (['thresholds', 'weights', 'patterns'] as $section) {
@@ -148,8 +115,35 @@ class OptimizationOperators
             }
             return $child;
         };
+        $createIndividual = function () use ($currentConfig): array {
+            if ($currentConfig) {
+                $ind = [
+                    'thresholds' => [],
+                    'weights' => [],
+                    'patterns' => []
+                ];
+                foreach (['thresholds', 'weights', 'patterns'] as $section) {
+                    if (isset($currentConfig[$section]) && is_array($currentConfig[$section])) {
+                        foreach ($currentConfig[$section] as $k => $v) {
+                            if (is_numeric($v) && $k !== 'honeypotScore') {
+                                $randomVariation = 1.0 + (self::secureRandom() - 0.5) * 0.5; // Variation de +/- 25%
+                                $ind[$section][$k] = $v * $randomVariation;
+                            } else {
+                                $ind[$section][$k] = $v;
+                            }
+                        }
+                    }
+                }
+                if (isset($ind['thresholds']['low'], $ind['thresholds']['medium'], $ind['thresholds']['high'])) {
+                    $ind['thresholds']['low'] = max(10.0, min(35.0, (float)$ind['thresholds']['low']));
+                    $ind['thresholds']['medium'] = max($ind['thresholds']['low'] + 5.0, min(70.0, (float)$ind['thresholds']['medium']));
+                    $ind['thresholds']['high'] = max($ind['thresholds']['medium'] + 5.0, min(90.0, (float)$ind['thresholds']['high']));
+                }
+                return $ind;
+            }
+        };
 
-        $mutate = function (array $c): array {
+        $mutate = function (array $c, ?array $currentConfigRef = null) use ($currentConfig): array {
             $newConfig = $c;
             $sections = [
                 ['name' => 'patterns', 'weight' => 0.5],
@@ -179,15 +173,27 @@ class OptimizationOperators
                 $newConfig[$sectionToMutate][$keyToMutate] = max(0, min(1.5, $newConfig[$sectionToMutate][$keyToMutate]));
             }
 
+            $refConfig = $currentConfigRef ?? $currentConfig;
+            if ($refConfig && isset($refConfig[$sectionToMutate][$keyToMutate])) {
+                $originalValue = $refConfig[$sectionToMutate][$keyToMutate];
+                if (is_numeric($originalValue) && $originalValue != 0) {
+                    $minAllowed = $originalValue * 0.7; // -30%
+                    $maxAllowed = $originalValue * 1.3; // +30%
+                    $newConfig[$sectionToMutate][$keyToMutate] = max($minAllowed, min($maxAllowed, $newConfig[$sectionToMutate][$keyToMutate]));
+                }
+            }
+
             return $newConfig;
         };
+        $gaOptions = array_merge(['generations' => 50, 'populationSize' => 50], $options);
 
         return Optimization::geneticAlgorithmMultiObjective(
             $createIndividual,
             $fitnessFunction,
             $crossover,
             $mutate,
-            array_merge(['generations' => 50, 'populationSize' => 50], $options)
+            $currentConfig,
+            $gaOptions
         );
     }
 

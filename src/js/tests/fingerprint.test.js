@@ -66,6 +66,18 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(FingerprintBuilder.compare(fp1, ''), "Comparison with empty string should be 0").toBe(0);
             expect(FingerprintBuilder.compare(null, fp2), "Comparison with null should be 0").toBe(0);
         });
+
+      it('should calculate a high crossLayerInconsistencyScore when viewport width exceeds screen width', () => {
+          const context = {
+              headers: {
+                  'x-device-fingerprint': `scr:${cyrb53("1920x1080_24")}`,
+                  'sec-ch-viewport-width': '2560'
+              }
+          };
+
+          const { crossLayerInconsistencyScore } = __internal.getCrossLayerInconsistency(context);
+          expect(crossLayerInconsistencyScore).toBe(20);
+      });
     });
 
     describe('JA3 Fingerprinting', () => {
@@ -1632,6 +1644,53 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[Fingerprint] Invalid regex in whitelist rule'));
             consoleErrorSpy.mockRestore();
         });
+    });
+});
+
+describe('TLS Session Resumption (Cookieless Identity)', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        async has(key) { return this._map.has(key); },
+        async delete(key) { this._map.delete(key); },
+    };
+
+    beforeEach(() => {
+        inMemoryStore._map.clear();
+        configureStore(inMemoryStore);
+    });
+
+    it('should resume device ID using TLS Session ID even if cookies are cleared', async () => {
+        const securityConfig = {
+            weights: { historyScore: 1.0 },
+            thresholds: { low: 20, block: 95 }
+        };
+        const engine = new FingerprintEngine(securityConfig);
+
+        const req1 = {
+            clientIp: '1.2.3.4',
+            path: '/',
+            cookies: {},
+            headers: { 'x-tls-session-id': 'session-xyz-123', 'user-agent': 'test-agent' },
+            rawHeaders: [],
+            httpVersion: '1.1'
+        };
+        const decision1 = await engine.processRequest(req1);
+        const deviceId = decision1.newCookieForResponse.value;
+        expect(deviceId).toBeDefined();
+
+        const req2 = {
+            clientIp: '1.2.3.4',
+            path: '/',
+            cookies: {}, // Cookies cleared!
+            headers: { 'x-tls-session-id': 'session-xyz-123', 'user-agent': 'test-agent' },
+            rawHeaders: [],
+            httpVersion: '1.1'
+        };
+
+        const decision2 = await engine.processRequest(req2);
+        expect(decision2.newCookieForResponse).toBeUndefined(); // Resumed successfully, no new cookie needed
     });
 });
 

@@ -27,6 +27,23 @@ function encodeSLEB128(val) {
     return bytes;
 }
 
+function generatePolymorphicInstructions() {
+    const ops = [0x6a, 0x6b, 0x6c, 0x73]; // add, sub, mul, xor
+    const insts = [];
+    const count = 3 + Math.floor(Math.random() * 5); // 3 to 7 instructions
+    
+    // Initialize dummy local 4
+    const initVal = Math.floor(Math.random() * 1000) - 500;
+    insts.push(0x41, ...encodeSLEB128(initVal), 0x21, 0x04);
+    
+    for (let i = 0; i < count; i++) {
+        const op = ops[Math.floor(Math.random() * ops.length)];
+        const randVal = Math.floor(Math.random() * 1000) - 500;
+        insts.push(0x20, 0x04, 0x41, ...encodeSLEB128(randVal), op, 0x21, 0x04);
+    }
+    return insts;
+}
+
 export class DynamicWasmGenerator {
     /**
      * Generates a unique polymorphic WebAssembly module containing a custom hash function
@@ -37,8 +54,12 @@ export class DynamicWasmGenerator {
     static generate(constants) {
         const { seed, multiplier, adder } = constants;
 
+        const preLoopPoly = generatePolymorphicInstructions();
+        const midLoopPoly = generatePolymorphicInstructions();
+
         const inst = [
-            0x01, 0x02, 0x7f, // Locals: 1 entry of 2 locals of type i32
+            0x01, 0x05, 0x7f, // Locals: 1 entry of 5 locals of type i32
+            ...preLoopPoly,
             // h = seed
             0x41, ...encodeSLEB128(seed),
             0x21, 0x03,
@@ -77,6 +98,7 @@ export class DynamicWasmGenerator {
 
             // local.set 3
             0x21, 0x03,
+            ...midLoopPoly,
 
             // i = i + 1
             0x20, 0x02,

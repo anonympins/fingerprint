@@ -1,3 +1,21 @@
+## Version 0.4.6
+
+### ✨ New Features
+
+- **Polymorphic WASM Modules**: Further enhances client-side WebAssembly modules by introducing polymorphic generation, making it even harder for bots to fingerprint and reverse-engineer the client-side logic.
+- **Proof-of-Space (PoSpace) Challenge**: Implemented a new Proof-of-Space challenge type. This challenge requires clients to allocate and prove access to a certain amount of storage space, adding another layer of bot detection.
+- **Enhanced TLS Tracking (HTTPS)**: Introduced new capabilities for tracking and analyzing TLS-related information, improving the accuracy of client identification and anomaly detection over HTTPS connections.
+
+### 🚀 Improvements
+
+- **Analog Cross-Layer Inconsistency Score**: Refined the `crossLayerInconsistencyScore` calculation to provide a more nuanced and "analog" assessment of inconsistencies between different layers of client data, leading to more precise bot identification.
+
+### 🐛 Bug Fixes
+
+- **Auto-Tuner Fix**: Addressed several issues within the auto-tuner, improving its stability, learning accuracy, and resilience against edge cases.
+
+---
+
 ## Version 0.4.5
 
 ### ✨ New Features

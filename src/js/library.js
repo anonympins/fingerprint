@@ -508,11 +508,12 @@ Optimization.geneticAlgorithmMultiObjective = function (
     generations = 150, // Augmenté pour une meilleure convergence
     populationSize = 60, // Augmenté pour plus de diversité
     mutationRate = 0.1,
+    currentConfig = null,
   } = options;
 
   let population = Array.from({ length: populationSize }, () => ({
     individual: createIndividual(),
-  }));
+  })); // createIndividual doit maintenant utiliser currentConfig
   population.forEach((p) => (p.objectives = fitnessFunction(p.individual)));
 
   for (let gen = 0; gen < generations; gen++) {
@@ -524,7 +525,7 @@ Optimization.geneticAlgorithmMultiObjective = function (
       const parent2 = population[Math.floor(secureRandom() * population.length)];
       let childIndividual = crossover(parent1.individual, parent2.individual);
       if (secureRandom() < mutationRate) {
-        childIndividual = mutate(childIndividual);
+        childIndividual = mutate(childIndividual, currentConfig); // mutate doit maintenant utiliser currentConfig
       }
       const child = { individual: childIndividual };
       child.objectives = fitnessFunction(child.individual);
@@ -1614,7 +1615,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
  * @param {object} context - Le contexte contenant les données de trafic.
  * @param {object} [options] - Options pour l'algorithme génétique.
  * @returns {Array<{solution: object, objectives: number[]}>} Le front de Pareto des configurations optimales.
- */
+ */ // eslint-disable-line max-len
 Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator(context);
 
@@ -1622,39 +1623,39 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     const createIndividual = () => ({
         thresholds: {
             low: 15 + secureRandom() * 20, // 15-35
-            medium: 40 + secureRandom() * 25, // 40-65
-            high: 70 + secureRandom() * 20, // 70-90
+            medium: 40 + secureRandom() * 25,
+            high: 70 + secureRandom() * 20,
         },
         weights: {
             historyScore: secureRandom(),
             rotationScore: secureRandom(),
             headerAnomalyScore: secureRandom(),
-            requestPatternScore: 0.5 + secureRandom(), // Donner plus d'importance aux patterns
+            requestPatternScore: 0.5 + secureRandom(),
             inconsistencyScore: secureRandom(),
             honeypotScore: 1.0, // Garder le honeypot à 1.0 est une bonne pratique
             behaviorScore: secureRandom(),
             crossLayerInconsistencyScore: secureRandom(),
             timeInconsistencyScore: secureRandom(),
-            tlsSpoofingScore: secureRandom(), // NOUVEAU: Ajout du poids pour le spoofing TLS
-            botScore: secureRandom(), // NOUVEAU: Ajout du poids pour la détection de bot
+            tlsSpoofingScore: secureRandom(),
+            botScore: secureRandom(),
         },
         patterns: {
-            velocityThreshold: 100 + secureRandom() * 400, // 100-500ms
+            velocityThreshold: 100 + secureRandom() * 400,
             velocityWeight: 10 + secureRandom() * 40,
-            burstThreshold: 300 + secureRandom() * 700, // 300-1000ms
+            burstThreshold: 300 + secureRandom() * 700,
             burstWeight: 20 + secureRandom() * 40,
-            scrapeThreshold: 500 + secureRandom() * 1000, // 500-1500ms
+            scrapeThreshold: 500 + secureRandom() * 1000,
             scrapeWeight: 15 + secureRandom() * 35,
-            sequenceLength: 3 + Math.floor(secureRandom() * 3), // 3-5
+            sequenceLength: 3 + Math.floor(secureRandom() * 3),
             sequenceWeight: 20 + secureRandom() * 50,
-            regularityThreshold: 50 + secureRandom() * 200, // 50-250ms
+            regularityThreshold: 50 + secureRandom() * 200,
             regularityWeight: 20 + secureRandom() * 40,
-            decayFactor: 0.85 + secureRandom() * 0.14, // 0.85-0.99
-            inactivityReset: 15000 + secureRandom() * 45000, // 15s-60s
+            decayFactor: 0.85 + secureRandom() * 0.14,
+            inactivityReset: 15000 + secureRandom() * 45000,
         }
     });
 
-    // Le crossover et la mutation doivent maintenant opérer sur des objets complexes
+    // Le crossover et la mutation doivent maintenant opérer sur des objets complexes.
     const crossover = (c1, c2) => {
         const child = JSON.parse(JSON.stringify(c1)); // Deep copy
         // Croisement pour chaque groupe de paramètres
@@ -1672,7 +1673,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         return child;
     };
 
-    const mutate = (c) => {
+    const mutate = (c, currentConfig) => {
         const newConfig = JSON.parse(JSON.stringify(c));
 
         // --- NOUVELLE LOGIQUE : Sélection de section pondérée ---
@@ -1702,7 +1703,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         // Appliquer une mutation avec une amplitude variable
         const mutationAmount = (secureRandom() - 0.5) * 0.4; // +/- 20%
         newConfig[sectionToMutate][keyToMutate] *= (1 + mutationAmount);
-
+    
         // S'assurer que les valeurs restent dans des limites raisonnables
         if (sectionToMutate === 'weights') {
             newConfig[sectionToMutate][keyToMutate] = Math.max(0, Math.min(1.5, newConfig[sectionToMutate][keyToMutate]));
@@ -1713,6 +1714,16 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         if (keyToMutate.includes('Threshold') || keyToMutate.includes('Reset')) {
             newConfig.patterns[keyToMutate] = Math.max(50, newConfig.patterns[keyToMutate]);
         }
+    
+        // Contrainte de dérive maximale (±30% par rapport à la configuration actuelle)
+        if (currentConfig && currentConfig[sectionToMutate] && currentConfig[sectionToMutate][keyToMutate] !== undefined) {
+            const originalValue = currentConfig[sectionToMutate][keyToMutate];
+            if (typeof originalValue === 'number' && originalValue !== 0) { // Éviter la division par zéro ou la contrainte sur 0
+                const minAllowed = originalValue * 0.7; // -30%
+                const maxAllowed = originalValue * 1.3; // +30%
+                newConfig[sectionToMutate][keyToMutate] = Math.max(minAllowed, Math.min(maxAllowed, newConfig[sectionToMutate][keyToMutate]));
+            }
+        }
 
         return newConfig;
     };
@@ -1721,7 +1732,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         createIndividual,
         fitnessFunction,
         crossover,
-        mutate,
+        (c) => mutate(c, context.currentConfig), // Passer currentConfig à la fonction de mutation
         { generations: 50, populationSize: 50, ...options }
     );
 };

@@ -77,7 +77,7 @@ class AutoTuner
 
         echo sprintf("[AutoTuning] Démarrage du cycle d'optimisation complet avec %d points de données assainis.\n", count($sanitizedData));
 
-        $paretoFront = OptimizationOperators::solveFullSecurityTuning(['trafficData' => $sanitizedData]);
+        $paretoFront = OptimizationOperators::solveFullSecurityTuning(['trafficData' => $sanitizedData, 'currentConfig' => $this->securityConfig], []);
 
         if (empty($paretoFront)) {
             echo "[AutoTuning] L'optimisation n'a retourné aucune solution.\n";

@@ -1,5 +1,7 @@
 import sys
 import asyncio
+import hashlib
+import json
 import time
 from pathlib import Path
 import pytest
@@ -87,6 +89,22 @@ def test_client_hints_inconsistency_full_version_mismatch():
     )
     score = RequestUtils.get_client_hints_inconsistency(context)
     assert score == 85.0
+
+def test_cross_layer_inconsistency_viewport_exceeds_screen():
+    """Vérifie le score d'incohérence quand la largeur du viewport dépasse la taille d'écran physique."""
+    scr_hash = cyrb53("1920x1080_24")
+    context = RequestContext(
+        client_ip="1.2.3.4",
+        path="/",
+        headers={
+            "x-device-fingerprint": f"scr:{scr_hash}",
+            "sec-ch-viewport-width": "2560"
+        },
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_cross_layer_inconsistency(context)
+    assert score == 20.0
 # --- TESTS: UTILS & HASHING ---
 
 def test_imul_precision():
@@ -1233,3 +1251,120 @@ async def test_stateless_ticket_generation_and_validation():
         allow_cross_network_roaming=False
     )
     assert valid_diff_ip is False
+
+@pytest.mark.asyncio
+async def test_tls_session_resumption_cookieless_tracking():
+    """Vérifie le traçage sans cookie par reprise de session TLS (TLS Session Resumption)."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"inconsistencyScore": 0.5, "headerAnomalyScore": 0.5}
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    # 1. Première visite du client avec session TLS mais sans cookie
+    tls_session_id = "test-tls1.3-session-resumption-id-abcde"
+    context1 = RequestContext(
+        client_ip="1.2.3.4",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+            "x-tls-session-id": tls_session_id,
+            "accept-language": "fr-FR"
+        },
+        query_params={},
+        cookies={}
+    )
+
+    decision1 = await engine.process_request(context1)
+    assert "newCookieForResponse" in decision1, "Un cookie d'identité doit être généré."
+    device_cookie = decision1["newCookieForResponse"]
+    device_id = device_cookie["value"]
+
+    # 2. Deuxième visite du client : les cookies sont supprimés, mais la session TLS est reprise
+    context2 = RequestContext(
+        client_ip="1.2.3.4",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+            "x-tls-session-id": tls_session_id,
+            "accept-language": "fr-FR"
+        },
+        query_params={},
+        cookies={}  # Cookies supprimés !
+    )
+
+    decision2 = await engine.process_request(context2)
+    assert decision2["action"] == "next"
+    assert "newCookieForResponse" not in decision2, "Aucun nouveau cookie d'identité ne doit être généré."
+
+    # Résoudre l'identité pour vérifier qu'elle est bien identique à la première requête
+    resolution = await engine.resolve_identity(context2)
+    assert resolution["device_id"] == device_id, "L'identifiant d'appareil doit être restauré via la session TLS."
+
+@pytest.mark.asyncio
+async def test_pospace_challenge():
+    """Vérifie le cycle complet d'un challenge Proof of Space (PoSpace)."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"inconsistencyScore": 1.0},
+        "enableProofOfSpace": True,
+        "pospace": {
+            "sizeMb": 1,
+            "numQueries": 5
+        }
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0",
+        },
+        query_params={},
+        cookies={}
+    )
+    
+    import unittest.mock as mock
+    with mock.patch.object(engine, 'calculate_final_score', return_value=50):
+        decision = await engine.process_request(context)
+        
+    assert decision["action"] == "challenge"
+    
+    if isinstance(decision["body"], dict):
+        challenge = decision["body"]["challenge"]
+        nonce = challenge["nonce"]
+        client_secret = challenge["clientSecret"]
+        queries = challenge["queries"]
+    else:
+        import re
+        nonce = re.search(r'const nonce = "([^"]+)"', decision["body"]).group(1)
+        client_secret = re.search(r'const clientSecret = "([^"]+)"', decision["body"]).group(1)
+        queries = json.loads(re.search(r'const queries = (\[[^\]]+\])', decision["body"]).group(1))
+
+    seed = f"{nonce}:{client_secret}"
+    combined = bytearray()
+    for idx in queries:
+        combined.extend(ChallengeUtils.generate_block(seed, int(idx)))
+    final_block = bytes(combined) + f"{nonce}:{client_secret}".encode("utf-8")
+    solution = hashlib.sha256(final_block).hexdigest()
+
+    context_submit = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={
+            "user-agent": "Mozilla/5.0",
+        },
+        query_params={
+            "pow_type": "pospace",
+            "pow_nonce": nonce,
+            "pow_solution_space": solution
+        },
+        cookies={}
+    )
+    
+    decision_submit = await engine.process_request(context_submit)
+    assert decision_submit["action"] == "redirect"
+    assert "pow_clearance" in decision_submit["cookie"]["name"]

@@ -155,6 +155,74 @@ def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Opti
         except socket.error:
             return None
 
+def generate_space_challenge(client_ip: str, nonce: str, suspicion_factor: float, original_url: str, security_config: dict) -> dict:
+    pospace_config = security_config.get("pospace", {})
+    size_mb = pospace_config.get("sizeMb", 100)
+    num_queries = pospace_config.get("numQueries", 10)
+    queries = []
+    max_blocks = size_mb * 1024
+    while len(queries) < num_queries:
+        idx = random.randint(0, max_blocks - 1)
+        if idx not in queries:
+            queries.append(idx)
+    return {
+        "type": "pospace",
+        "nonce": nonce,
+        "sizeMb": size_mb,
+        "queries": queries,
+        "path": original_url
+    }
+
+def generate_space_challenge_page(challenge_details: dict, client_secret: str, security_config: dict) -> str:
+    nonce = challenge_details["nonce"]
+    size_mb = challenge_details["sizeMb"]
+    queries = challenge_details["queries"]
+    path = challenge_details["path"]
+    
+    solver_code = ""
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        solver_path = os.path.join(current_dir, "..", "js", "pow.solver.inline.js")
+        if os.path.exists(solver_path):
+            with open(solver_path, "r", encoding="utf-8") as f:
+                solver_code = f.read()
+    except Exception:
+        pass
+
+    queries_json = json.dumps(queries)
+    challenge_script = f"""
+    async function solve() {{
+      const nonce = "{nonce}";
+      const path = "{path}";
+      const clientSecret = "{client_secret}";
+      const queries = {queries_json};
+      const sizeMb = {size_mb};
+      
+      document.getElementById('loader').innerText = '⚙&#xFE0F; Checking persistent local storage...';
+      await new Promise(r => setTimeout(r, 10));
+      
+      try {{
+          await window.initializeSpace(nonce + ":" + clientSecret, size_mb);
+          document.getElementById('loader').innerText = '⚙&#xFE0F; Generating Proof of Space...';
+          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
+          
+          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+      }} catch(e) {{
+          document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
+      }}
+    }}
+    solve();
+    """
+    
+    return f"""<html><head><title>Security Check</title></head>
+  <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
+    <h1>Security Check (Level 2)</h1>
+    <p>We are verifying your storage allocation. This may take a few seconds on first load.</p>
+    <div id="loader" style="margin:20px;">⚙&#xFE0F; Initializing storage space...</div>
+    <script>{solver_code}</script>
+    <script>{challenge_script}</script>
+  </body></html>"""
+
 def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Sanitizes traffic data to protect the auto-tuner from poisoning attacks."""
     if not traffic_data:
@@ -219,6 +287,13 @@ class RequestContext:
     http_version: str = "1.1"
     request_timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
     new_cookies: List[Dict[str, Any]] = field(default_factory=list)
+    tls_session_id: Optional[str] = None
+
+    def __post_init__(self):
+        # Normalize headers to lowercase for consistent lookup
+        self.headers = {k.lower(): v for k, v in self.headers.items()}
+        if not self.tls_session_id:
+            self.tls_session_id = self.headers.get("x-tls-session-id") or self.headers.get("x-ssl-session-id")
 
 class InMemoryStore:
     """
@@ -339,6 +414,27 @@ class ChallengeUtils:
         if rem > 0:
             string += '=' * (4 - rem)
         return base64.urlsafe_b64decode(string.encode('utf-8'))
+
+    @staticmethod
+    def generate_block(seed: str, block_index: int, block_size: int = 1024) -> bytes:
+        block = bytearray(block_size)
+        h = cyrb53(f"{seed}:{block_index}")
+        h_int = h % 4294967296
+        if h_int >= 2147483648:
+            h_int -= 4294967296
+        for i in range(block_size):
+            h_int = imul(h_int ^ i, 1597334677)
+            block[i] = h_int & 0xff
+        return bytes(block)
+
+    @staticmethod
+    def verify_space_pow(nonce: str, solution: str, queries: list, seed: str, client_secret: str) -> bool:
+        combined = bytearray()
+        for idx in queries:
+            combined.extend(ChallengeUtils.generate_block(seed, int(idx)))
+        final_block = bytes(combined) + f"{nonce}:{client_secret}".encode("utf-8")
+        h = hashlib.sha256(final_block).hexdigest()
+        return hmac.compare_digest(h, solution)
 
     @staticmethod
     def generate_stateless_ticket(payload: Dict[str, Any], secret: str) -> str:
@@ -628,6 +724,25 @@ class RequestUtils:
         return result
 
     @staticmethod
+    def clean_url_from_pow_params(original_path: str, incoming_query: Dict[str, Any]) -> str:
+        from urllib.parse import urlparse, urlencode
+        parsed = urlparse(original_path)
+        path = parsed.path or "/"
+        
+        final_query = {k: v for k, v in incoming_query.items()}
+        pow_params = [
+            "pow_type", "pow_nonce", "pow_solution", "pow_solution_cpu",
+            "pow_solution_mem", "pow_fp", "pow_solution_population",
+            "pow_solution_work_result", "pow_problem_id", "pow_solution_space"
+        ]
+        for param in pow_params:
+            final_query.pop(param, None)
+            
+        if final_query:
+            return f"{path}?{urlencode(final_query, doseq=True)}"
+        return path
+
+    @staticmethod
     def get_header_anomalies(context: RequestContext) -> float:
         """
         Calculates a suspicion score based on HTTP header anomalies.
@@ -809,6 +924,65 @@ class RequestUtils:
             srv_os = RequestUtils.parse_user_agent(ua).get("os")
             if srv_os and client_os_hash != str(cyrb53(srv_os)):
                 score += 50.0
+
+            # 2. Incohérence de l'écran (si les Client Hints sont disponibles)
+        client_screen_hash = fp_map.get("scr")
+        viewport_width = context.headers.get("sec-ch-viewport-width")
+        if client_screen_hash and viewport_width:
+            try:
+                viewport_width_int = int(viewport_width)
+                matched_screen_width = None
+                common_widths = [320, 360, 375, 390, 412, 414, 768, 1024, 1280, 1366, 1440, 1536, 1600, 1920, 2560, 3840]
+                common_heights = [480, 568, 640, 667, 736, 800, 812, 844, 896, 900, 1024, 1080, 1200, 1440, 1600, 2160]
+                common_depths = [24, 30, 32]
+
+                for w in common_widths:
+                    for h in common_heights:
+                        for d in common_depths:
+                            candidate = f"{w}x{h}_{d}"
+                            if client_screen_hash == str(cyrb53(candidate)):
+                                matched_screen_width = w
+                                break
+                        if matched_screen_width is not None:
+                            break
+                    if matched_screen_width is not None:
+                        break
+
+                if matched_screen_width is not None and viewport_width_int > matched_screen_width:
+                    score += 20.0
+            except Exception:
+                pass
+
+        # 3. Incohérence du GPU/Canvas et JA3
+        client_gpu_hash = fp_map.get("gpu")
+        ja3 = context.headers.get("x-ja3-hash")
+        if client_gpu_hash and ja3:
+            tls_fingerprint_db = {
+                "e188a442b87f422c5a1e80b05399435b": ["Chrome"],
+                "d8e35855049321c6042a4325c697858f": ["Chrome"],
+                "a9f90958d44533748c139a5d1895b925": ["Chrome"],
+                "3b5379916d2b3882253c42885956a350": ["Chrome"],
+                "59822058c95c33d2d06e52f410855c8c": ["Chrome"],
+                "b386946a5a586163c7c533636b45c355": ["Firefox"],
+                "66236495a523c1785f8f3a105b248b11": ["Firefox"],
+                "b73d470006575b5e35167a0b5a8540e2": ["Firefox"],
+                "8443d7562933834333943465d52363cf": ["Firefox"],
+                "b633f21d532d35967c8753c38536b4d3": ["Safari"],
+                "4d7a28d5f55b359b69100a311013f03e": ["Safari", "Chrome", "Firefox"],
+                "8dd3d7532873575314df23c447543001": ["Safari", "Chrome", "Firefox"],
+                "47344a349b75c4e82333475553b5f358": ["Python"],
+                "b29587b8a143c42546133ad7704b3310": ["Go"],
+                "d435b5223b2884c5a832b842637e245f": ["Java"],
+                "c72366b9551263d990b7fa574225332c": ["curl"]
+            }
+            expected_clients = tls_fingerprint_db.get(ja3)
+            if expected_clients:
+                if not isinstance(expected_clients, list):
+                    expected_clients = [expected_clients]
+                non_browser_libraries = ["Python", "Go", "Java", "curl"]
+                is_library = any(lib in non_browser_libraries for lib in expected_clients)
+                if is_library:
+                    score += 30.0
         return min(100.0, score)
 
     @staticmethod
@@ -1642,6 +1816,45 @@ class FingerprintEngine:
         stable_parts = [part for part in parts if part.split(":", 1)[0] in stable_keys]
         return "|".join(sorted(stable_parts))
 
+    async def translate_polymorphic_headers(self, context: RequestContext) -> None:
+        if getattr(context, "headers_translated", False):
+            return
+        context.headers_translated = True
+        active_mappings = await self.store.get("active-polymorphic-mappings") or []
+        if not isinstance(active_mappings, list):
+            return
+
+        for mapping in active_mappings:
+            headers_map = mapping.get("headers", {})
+            dev_fp_header = (headers_map.get("x-device-fingerprint") or "").lower()
+            behavior_header = (headers_map.get("x-behavior-metrics") or "").lower()
+
+            if dev_fp_header and dev_fp_header in context.headers:
+                context.headers["x-device-fingerprint"] = context.headers[dev_fp_header]
+                if behavior_header and behavior_header in context.headers:
+                    context.headers["x-behavior-metrics"] = context.headers[behavior_header]
+
+                client_fp = context.headers.get("x-device-fingerprint")
+                if client_fp and isinstance(client_fp, str):
+                    context.headers["x-device-fingerprint"] = self.decode_polymorphic_fingerprint(client_fp, mapping)
+                break
+
+    def decode_polymorphic_fingerprint(self, fp_string: str, mapping: Dict[str, Any]) -> str:
+        keys_map = mapping.get("keys", {})
+        if not keys_map:
+            return fp_string
+        reverse_keys = {v: k for k, v in keys_map.items()}
+        parts = fp_string.split("|")
+        mapped_parts = []
+        for part in parts:
+            pair = part.split(":", 1)
+            if len(pair) == 2:
+                orig_key = reverse_keys.get(pair[0], pair[0])
+                mapped_parts.append(f"{orig_key}:{pair[1]}")
+            else:
+                mapped_parts.append(part)
+        return "|".join(mapped_parts)
+
     def get_composite_device_hash(self, context: RequestContext) -> str:
         """
         Generates a composite device fingerprint hash from the request context.
@@ -1686,9 +1899,13 @@ class FingerprintEngine:
         current_hash = self.get_composite_device_hash(context)
         new_cookie = None
         cookie_dropping_score = 0.0
-        
-        if existing_device_id:
-            device_data = await self.store.get(f"device:{existing_device_id}")
+
+        device_id = existing_device_id
+        if not device_id and context.tls_session_id:
+            device_id = await self.store.get(f"tls-session:{context.tls_session_id}")
+
+        if device_id:
+            device_data = await self.store.get(f"device:{device_id}")
         else:
             device_data = None
 
@@ -1715,12 +1932,14 @@ class FingerprintEngine:
             await self.store.set(f"device:{device_id}", device_data)
             await self.store.set(f"pending_cookie:{context.client_ip}", device_id, 120)
         else:
-            device_id = existing_device_id
             if "ips" not in device_data:
                 device_data["ips"] = set()
             elif isinstance(device_data["ips"], list):
                 device_data["ips"] = set(device_data["ips"])
             device_data["ips"].add(context.client_ip)
+
+        if device_id and context.tls_session_id:
+            await self.store.set(f"tls-session:{context.tls_session_id}", device_id, 3600)
 
         return {"device_id": device_id, "device_data": device_data, "new_cookie": new_cookie, "cookie_dropping_score": cookie_dropping_score}
 
@@ -1753,6 +1972,7 @@ class FingerprintEngine:
         return {"historyScore": history_score, "rotationScore": rotation_score}
 
     async def get_suspicion_vector(self, context: RequestContext, suspicion_vector: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+        await self.translate_polymorphic_headers(context)
         if suspicion_vector is None:
             suspicion_vector = {}
 
@@ -1862,6 +2082,7 @@ class FingerprintEngine:
         return min(100.0, score)
 
     async def get_suspicion_score(self, context: RequestContext) -> float:
+        await self.translate_polymorphic_headers(context)
         vector = await self.get_suspicion_vector(context)
         return self.calculate_final_score(vector)
 
@@ -1876,6 +2097,7 @@ class FingerprintEngine:
         Returns:
             Dict[str, Any]: A dictionary describing the action to be taken and any associated data.
         """
+        await self.translate_polymorphic_headers(context)
         identity = await self.resolve_identity(context)
         decision = await self._process_request_internal(context, identity)
         if identity.get("new_cookie"):
@@ -1948,6 +2170,7 @@ class FingerprintEngine:
         pow_sol_mem = context.query_params.get("pow_solution_mem")
         pow_fp = context.query_params.get("pow_fp") or self.get_composite_device_hash(context)
         pow_type = context.query_params.get("pow_type")
+        pow_solution_space = context.query_params.get("pow_solution_space")
         pow_solution_work_result = context.query_params.get("pow_solution_work_result")
         pow_problem_id = context.query_params.get("pow_problem_id")
 
@@ -1978,6 +2201,35 @@ class FingerprintEngine:
                     }
                 except Exception as e:
                     print(f"[FingerprintEngine] Error processing useful work solution: {e}")
+                    MetricsManager.increment_counter("challenges_failed_total")
+
+        if pow_nonce and pow_type == "pospace" and pow_solution_space:
+            challenge_context = await self.store.get(f"secret:{pow_nonce}")
+            if challenge_context:
+                is_valid = ChallengeUtils.verify_space_pow(
+                    pow_nonce,
+                    pow_solution_space,
+                    challenge_context.get("queries", []),
+                    pow_nonce + ":" + challenge_context.get("client_secret", ""),
+                    challenge_context.get("client_secret", "")
+                )
+                if is_valid:
+                    await self.store.delete(f"secret:{pow_nonce}")
+                    ticket = str(uuid.uuid4())
+                    await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
+                    MetricsManager.increment_counter("challenges_solved_total")
+                    
+                    clean_path = RequestUtils.clean_url_from_pow_params(context.path, context.query_params)
+                    return {
+                        "action": "redirect",
+                        "path": clean_path,
+                        "cookie": {
+                            "name": "pow_clearance",
+                            "value": ticket,
+                            "options": {"httponly": True, "max_age": 3600, "path": "/"}
+                        }
+                    }
+                else:
                     MetricsManager.increment_counter("challenges_failed_total")
 
         if pow_nonce and pow_sol_cpu:
@@ -2145,6 +2397,39 @@ class FingerprintEngine:
                             }
                 except Exception as e:
                     print(f"[FingerprintEngine] Failed to dispatch useful work, falling back to PoW: {e}")
+
+            if self.config.get("enableProofOfSpace"):
+                space_challenge = generate_space_challenge(client_ip, nonce, suspicion_factor, context.path, self.config)
+                await self.store.set(f"secret:{nonce}", {
+                    "client_secret": client_secret,
+                    "suspicionScore": score,
+                    "queries": space_challenge["queries"],
+                    "sizeMb": space_challenge["sizeMb"],
+                    "fingerprint": self.get_composite_device_hash(context),
+                    "original_path": context.path,
+                }, self.config.get("challengeTtl", 300))
+                
+                is_api = self.config.get("isApiRequest")
+                decision = {
+                    "action": "challenge",
+                    "score": score,
+                    "vector": suspicion_vector,
+                    "status": 403
+                }
+                if is_api and callable(is_api) and is_api(context):
+                    decision["body"] = {
+                        "challenge": {
+                            "type": "pospace",
+                            "nonce": nonce,
+                            "clientSecret": client_secret,
+                            "queries": space_challenge["queries"],
+                            "sizeMb": space_challenge["sizeMb"],
+                        }
+                    }
+                else:
+                    page = generate_space_challenge_page(space_challenge, client_secret, self.config)
+                    decision["body"] = page
+                return decision
 
             cpu_target = ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config)
             mem_difficulty = int(round(max(0.0, suspicion_factor - 0.25) * 48))
@@ -2547,10 +2832,29 @@ class OptimizationOperators:
         return evaluator
 
     @staticmethod
-    def solve_full_security_tuning(traffic_data: List[Dict[str, Any]], options: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def solve_full_security_tuning(traffic_data: List[Dict[str, Any]], options: Optional[Dict[str, Any]] = None, current_config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         fitness_fn = OptimizationOperators.create_full_security_config_evaluator(traffic_data)
 
         def create_individual() -> Dict[str, Any]:
+            if current_config:
+                ind = {
+                    "thresholds": {},
+                    "weights": {},
+                    "patterns": {}
+                }
+                for section in ("thresholds", "weights", "patterns"):
+                    if section in current_config:
+                        for k, v in current_config[section].items():
+                            if isinstance(v, (int, float)) and k != "honeypotScore":
+                                ind[section][k] = v * (1.0 + random.uniform(-0.25, 0.25))
+                            else:
+                                ind[section][k] = v
+                if "low" in ind["thresholds"] and "medium" in ind["thresholds"] and "high" in ind["thresholds"]:
+                    ind["thresholds"]["low"] = max(10.0, min(35.0, ind["thresholds"]["low"]))
+                    ind["thresholds"]["medium"] = max(ind["thresholds"]["low"] + 5.0, min(70.0, ind["thresholds"]["medium"]))
+                    ind["thresholds"]["high"] = max(ind["thresholds"]["medium"] + 5.0, min(90.0, ind["thresholds"]["high"]))
+                return ind
+
             return {
                 "thresholds": {
                     "low": 15 + random.random() * 20,
@@ -2615,6 +2919,14 @@ class OptimizationOperators:
 
             if section_to_mutate == "weights":
                 new_config[section_to_mutate][key_to_mutate] = max(0.0, min(1.5, new_config[section_to_mutate][key_to_mutate]))
+
+            # Drift constraint relative to current_config
+            if current_config and section_to_mutate in current_config and key_to_mutate in current_config[section_to_mutate]:
+                orig_val = current_config[section_to_mutate][key_to_mutate]
+                if isinstance(orig_val, (int, float)):
+                    min_val = orig_val * 0.70
+                    max_val = orig_val * 1.30
+                    new_config[section_to_mutate][key_to_mutate] = max(min_val, min(max_val, new_config[section_to_mutate][key_to_mutate]))
             
             return new_config
 
@@ -2754,7 +3066,7 @@ class AutoTuner:
 
         print(f"[AutoTuning] Démarrage du cycle d'optimisation complet avec {len(sanitized_data)} points de données assainis.")
 
-        pareto_front = OptimizationOperators.solve_full_security_tuning(sanitized_data)
+        pareto_front = OptimizationOperators.solve_full_security_tuning(sanitized_data, options=None, current_config=self.security_config)
 
         if not pareto_front:
             print("[AutoTuning] L'optimisation n'a retourné aucune solution.")
