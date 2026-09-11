@@ -1213,6 +1213,7 @@ def test_get_behavior_score_with_bot_like_keystroke_dynamics():
     import json
     metrics = {
         "honeypotInteraction": False,
+        "keystrokeLatency": 100.0,
         "keystrokeDwellTimes": [50, 50, 50, 50, 50],
         "keystrokeFlightTimes": [
             {"digraph": "ab", "time": 100},
@@ -1298,6 +1299,76 @@ def test_rendering_anomaly_score_spoofed():
     )
     score_data = RequestUtils.get_rendering_anomaly_score(context)
     assert score_data["renderingAnomalyScore"] == 65.0
+
+def test_engine_update_config_hot_reload():
+    """Vérifie que la mise à jour à chaud (hot-reload) de la configuration fonctionne sans redémarrage."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"honeypotScore": 1.0, "headerAnomalyScore": 0.5},
+        "dryRun": False
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+    
+    # S'assurer de l'état initial
+    assert engine.thresholds["low"] == 20
+    assert engine.weights["headerAnomalyScore"] == 0.5
+    assert engine.dry_run is False
+
+    # Mise à jour de la configuration à chaud
+    new_config = {
+        "thresholds": {"low": 10},
+        "weights": {"headerAnomalyScore": 1.2},
+        "dryRun": True
+    }
+    engine.update_config(new_config)
+
+    # S'assurer que les valeurs internes de l'instance ont été modifiées
+    assert engine.thresholds["low"] == 10
+    assert engine.thresholds["high"] == 75  # N'a pas changé
+    assert engine.weights["headerAnomalyScore"] == 1.2
+    assert engine.dry_run is True
+
+def test_get_behavior_score_with_human_keystroke_dynamics():
+    """Vérifie que des dynamiques de frappe humaines (haute variance) ne lèvent pas d'anomalie."""
+    import json
+    metrics = {
+        "honeypotInteraction": False,
+        "keystrokeLatency": 150.0,
+        "historyLength": 3,
+        "keystrokeDwellTimes": [45, 85, 110, 60, 95],  # Grande variation, stdDev élevé
+        "keystrokeFlightTimes": [
+            {"digraph": "ab", "time": 180},
+            {"digraph": "bc", "time": 290},
+            {"digraph": "cd", "time": 120},
+            {"digraph": "de", "time": 350},
+            {"digraph": "ef", "time": 210}
+        ]  # Grande variation temporelle
+    }
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"x-behavior-metrics": json.dumps(metrics)},
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_behavior_score(context)
+    # Ne devrait pas subir de pénalités de dynamique de frappe, donc score bas (proche de 0)
+    assert score < 30.0
+
+def test_rendering_anomaly_score_offscreen_canvas():
+    """Vérifie que la détection d'OffscreenCanvas non natif (virtualisé) applique une pénalité maximale."""
+    import json
+    context = RequestContext(
+        client_ip="127.0.0.1", path="/",
+        headers={
+            "x-behavior-metrics": json.dumps({
+                "rendering": { "fps": 60, "jitter": 1.5, "offscreenAnom": True }
+            })
+        }, query_params={}, cookies={}
+    )
+    score_data = RequestUtils.get_rendering_anomaly_score(context)
+    assert score_data["renderingAnomalyScore"] == 100.0
 @pytest.mark.asyncio
 async def test_stateless_ticket_generation_and_validation():
     """Vérifie la génération de tickets stateless chiffrés et signés et leur validation."""

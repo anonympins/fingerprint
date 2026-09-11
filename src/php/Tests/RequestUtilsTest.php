@@ -211,6 +211,7 @@ class RequestUtilsTest extends TestCase
     {
         $metrics = [
             'honeypotInteraction' => false,
+            'keystrokeLatency' => 100.0,
             'keystrokeDwellTimes' => [50, 50, 50, 50, 50],
             'keystrokeFlightTimes' => [
                 ['digraph' => 'ab', 'time' => 100],

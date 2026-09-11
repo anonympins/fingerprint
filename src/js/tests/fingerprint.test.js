@@ -1590,6 +1590,7 @@ describe('Fingerprint & PoW Security Suite', () => {
     it('should return a high score for keystroke dynamics with very low dwell/flight variance (bot emulation)', () => {
         const metrics = {
             honeypotInteraction: false,
+            keystrokeLatency: 100.0,
             keystrokeDwellTimes: [50, 50, 50, 50, 50], // stdDev = 0
             keystrokeFlightTimes: [
                 { digraph: 'ab', time: 100 },

@@ -61,6 +61,19 @@
          $this->validateConfig($securityConfig);
      }
 
+    /**
+     * Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
+     * sans nécessiter de redémarrage.
+     *
+     * @param array $newConfig La nouvelle configuration (partielle ou complète).
+     */
+    public function updateConfig(array $newConfig): void
+    {
+        $this->validateConfig($newConfig);
+        $this->securityConfig = SecurityProfiles::deepMerge($this->securityConfig, $newConfig);
+        $this->log('Configuration mise à jour à chaud (Hot-Reloaded)', $this->securityConfig);
+    }
+
      private function validateConfig(array $config): void
      {
          if (empty($config)) {

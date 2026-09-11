@@ -3268,6 +3268,18 @@ export class FingerprintEngine {
   }
 
   /**
+   * Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
+   * sans nécessiter de redémarrage.
+   * @param {object} newConfig - La nouvelle configuration partielle ou complète.
+   */
+  updateConfig(newConfig) {
+    this._validateConfig(newConfig);
+    this.securityConfig = deepMerge(this.securityConfig, newConfig);
+    this.dryRun = this.securityConfig.dryRun || false;
+    this._log('Configuration mise à jour à chaud (Hot-Reloaded)', this.securityConfig);
+  }
+
+  /**
    * Validates the security configuration object to detect potential typos or missing essential keys.
    * @private
    * @param {object} config - The security configuration object.

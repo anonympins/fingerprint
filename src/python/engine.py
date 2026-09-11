@@ -2153,6 +2153,25 @@ class FingerprintEngine:
             except Exception as e:
                 print(f"[FingerprintEngine] Background initialization of ProblemManager failed: {e}")
 
+    def update_config(self, new_config: Dict[str, Any]) -> None:
+        """
+        Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
+        sans nécessiter de redémarrage.
+        """
+        def deep_merge(target: dict, source: dict) -> dict:
+            out = copy.deepcopy(target)
+            for k, v in source.items():
+                if isinstance(v, dict) and k in out and isinstance(out[k], dict):
+                    out[k] = deep_merge(out[k], v)
+                else:
+                    out[k] = copy.deepcopy(v)
+            return out
+
+        self.config = deep_merge(self.config, new_config)
+        self.thresholds = self.config.get("thresholds", self.thresholds)
+        self.weights = self.config.get("weights", self.weights)
+        self.dry_run = self.config.get("dryRun", self.dry_run)
+
     def _get_weight(self, key: str, default: float) -> float:
         if not self.weights:
             return default
