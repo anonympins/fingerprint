@@ -86,7 +86,11 @@ class ChallengeUtilsTest extends TestCase
             $this->markTestSkipped('openssl extension is not loaded.');
         }
 
-        $pkey = @openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
+        if (!defined('OPENSSL_KEYTYPE_ED25519')) {
+            $this->markTestSkipped('Ed25519 is not supported or constant OPENSSL_KEYTYPE_ED25519 is undefined in this PHP/OpenSSL environment.');
+        }
+
+        $pkey = @openssl_pkey_new(["private_key_type" => constant('OPENSSL_KEYTYPE_ED25519')]);
         if (!$pkey) {
             $this->markTestSkipped('Ed25519 is not supported in this PHP/OpenSSL environment.');
         }
