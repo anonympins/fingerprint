@@ -1,11 +1,11 @@
 # Fingerprint anti-bot protection
 
-NodeJS tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-nodejs.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci.yml) / PHP tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-php.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml) / Python tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-php.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml)
+NodeJS tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-nodejs.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml) / PHP tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-php.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml) / Python tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-php.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml)
 
 [![https://github.com/anonympins/fingerprint/releases/tag/fingerprint-0.5.0](https://img.shields.io/github/v/release/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/releases)
 [![https://raw.githubusercontent.com/anonympins/fingerprint/refs/heads/main/LICENSE](https://img.shields.io/github/license/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/blob/main/LICENSE)
-![https://github.com/anonympins/fingerprint/commits/main/](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)
-![https://github.com/anonympins/fingerprint](https://img.shields.io/github/repo-size/anonympins/fingerprint)
+[![https://github.com/anonympins/fingerprint/commits/main](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/commits/main)
+[![https://github.com/anonympins/fingerprint](https://img.shields.io/github/repo-size/anonympins/fingerprint)](https://github.com/anonympins/fingerprint)
 
 A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Python** and **PHP** environments. 
 
