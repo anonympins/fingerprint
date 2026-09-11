@@ -418,6 +418,47 @@ class FingerprintBuilder:
 # --- CORE: Challenge Utilities ---
 class ChallengeUtils:
     @staticmethod
+    def fround(val: float) -> float:
+        import struct
+        try:
+            return struct.unpack('f', struct.pack('f', val))[0]
+        except OverflowError:
+            return float('-inf') if val < 0 else float('inf')
+
+    @staticmethod
+    def hash_seed_to_float(seed: str) -> float:
+        import ctypes
+        h = 0
+        for char in seed:
+            h = (h << 5) - h + ord(char)
+            h = ctypes.c_int32(h).value
+        return abs(h % 1000000) / 1000000
+
+    @staticmethod
+    def verify_gpu_pow(seed: str, iterations: int, solution: str, sample_indices: list = [0, 12, 35, 57]) -> bool:
+        if not solution:
+            return False
+        values = solution.split(",")
+        if len(values) != 64:
+            return False
+        try:
+            numeric_seed = ChallengeUtils.hash_seed_to_float(seed)
+            r = 3.9999
+            for idx in sample_indices:
+                if idx < 0 or idx >= 64:
+                    return False
+                x = ChallengeUtils.fround(numeric_seed + idx * 0.015)
+                r_float = ChallengeUtils.fround(r)
+                for _ in range(iterations):
+                    x = ChallengeUtils.fround(r_float * x * ChallengeUtils.fround(1.0 - x))
+                client_val = float(values[idx])
+                if abs(client_val - x) > 1e-4:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def _base64url_encode(data: bytes) -> str:
         return base64.urlsafe_b64encode(data).decode('utf-8').rstrip('=')
 

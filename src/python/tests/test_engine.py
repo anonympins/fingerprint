@@ -1533,3 +1533,32 @@ async def test_zkp_proof_stateless_validation():
     ) is True
     del os.environ["ED25519_PRIVATE_KEY"]
     del os.environ["ED25519_PUBLIC_KEY"]
+
+def test_gpu_pow_verification():
+    seed = "python-gpu-test-seed"
+    iterations = 50
+    import ctypes
+    h = 0
+    for char in seed:
+        h = (h << 5) - h + ord(char)
+        h = ctypes.c_int32(h).value
+    numeric_seed = abs(h % 1000000) / 1000000
+    import struct
+    def fround_helper(val: float) -> float:
+        try:
+            return struct.unpack('f', struct.pack('f', val))[0]
+        except OverflowError:
+            return float('-inf') if val < 0 else float('inf')
+    solutions = []
+    r = 3.9999
+    for idx in range(64):
+        x = fround_helper(numeric_seed + idx * 0.015)
+        r_float = fround_helper(r)
+        for _ in range(iterations):
+            x = fround_helper(r_float * x * fround_helper(1.0 - x))
+        solutions.append(f"{x:.6f}")
+    solution_string = ",".join(solutions)
+    assert ChallengeUtils.verify_gpu_pow(seed, iterations, solution_string) is True
+    tampered_solutions = list(solutions)
+    tampered_solutions[0] = f"{float(tampered_solutions[0]) + 0.1:.6f}"
+    assert ChallengeUtils.verify_gpu_pow(seed, iterations, ",".join(tampered_solutions)) is False

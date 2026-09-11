@@ -14,6 +14,48 @@ use Anonympins\Fingerprint\Utils\RequestUtils;
  */
 class ChallengeUtils
 {
+    private static function fround(float $value): float
+    {
+        return unpack('f', pack('f', $value))[1];
+    }
+
+    public static function hashSeedToFloat(string $seed): float
+    {
+        $hash = 0;
+        for ($i = 0; $i < strlen($seed); $i++) {
+            $hash = (($hash << 5) - $hash + ord($seed[$i])) & 0xffffffff;
+            if ($hash & 0x80000000) {
+                $hash = $hash - 0x100000000;
+            }
+        }
+        return abs($hash % 1000000) / 1000000;
+    }
+
+    public static function verifyGpuPow(string $seed, int $iterations, string $solution, array $sampleIndices = [0, 12, 35, 57]): bool
+    {
+        $values = explode(',', $solution);
+        if (count($values) !== 64) {
+            return false;
+        }
+        $numericSeed = self::hashSeedToFloat($seed);
+        $r = 3.9999;
+        foreach ($sampleIndices as $idx) {
+            if ($idx < 0 || $idx >= 64) {
+                return false;
+            }
+            $x = self::fround($numericSeed + $idx * 0.015);
+            $rFloat = self::fround($r);
+            for ($i = 0; $i < $iterations; $i++) {
+                $x = self::fround($rFloat * $x * self::fround(1.0 - $x));
+            }
+            $clientVal = (float)$values[$idx];
+            if (abs($clientVal - $x) > 1e-4) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private const TRAP_URL_TEMPLATES = [
         '/includes/config-{RANDOM}.php',
         '/.env.{RANDOM}',

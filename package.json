@@ -9,6 +9,7 @@
   },
   "scripts": {
     "test": "vitest run --reporter=verbose",
+    "pub": "npm run build && npm login && npm publish --access public",
     "build": "node src/js/build-client.js"
   },
   "exports": {
