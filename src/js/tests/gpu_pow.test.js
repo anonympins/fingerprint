@@ -1,3 +1,7 @@
+/**
+ * @vitest-environment jsdom
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 import { GpuPowSolver } from '../gpu_pow.solver.js';
 
