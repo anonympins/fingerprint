@@ -301,12 +301,15 @@ class RequestContext:
     request_timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
     new_cookies: List[Dict[str, Any]] = field(default_factory=list)
     tls_session_id: Optional[str] = None
+    quic_fingerprint: Optional[str] = None
 
     def __post_init__(self):
         # Normalize headers to lowercase for consistent lookup
         self.headers = {k.lower(): v for k, v in self.headers.items()}
         if not self.tls_session_id:
             self.tls_session_id = self.headers.get("x-tls-session-id") or self.headers.get("x-ssl-session-id")
+        if not self.quic_fingerprint:
+            self.quic_fingerprint = self.headers.get("x-quic-fp")
 
 class InMemoryStore:
     """
@@ -1105,6 +1108,85 @@ class RequestUtils:
         if time_delta > replay_threshold:
             return min(100.0, (time_delta / replay_threshold - 1.0) * 50.0)
         return 0.0
+
+    @staticmethod
+    def get_quic_anomaly_score(context: RequestContext) -> Dict[str, float]:
+        quic_fp = context.headers.get("x-quic-fp") or getattr(context, "quic_fingerprint", None)
+        if not quic_fp or not isinstance(quic_fp, str):
+            return {"quicAnomalyScore": 0.0}
+
+        parts = quic_fp.split(";")
+        if len(parts) < 2:
+            return {"quicAnomalyScore": 0.0}
+
+        params = {}
+        for p in parts[1].split(","):
+            kv = p.split("=", 1)
+            if len(kv) == 2:
+                params[kv[0]] = kv[1]
+        priority_order = parts[2] if len(parts) > 2 else ""
+
+        ua = context.headers.get("user-agent", "")
+        ua_parts = RequestUtils.parse_user_agent(ua)
+        browser = ua_parts.get("browser")
+
+        if not browser:
+            return {"quicAnomalyScore": 0.0}
+
+        anomaly = 0.0
+        if browser.startswith("Chrome") or browser.startswith("Edge"):
+            try:
+                max_data = int(params.get("1", "0"))
+                max_streams = int(params.get("4", "0"))
+                if max_data > 0 and max_data < 1048576:
+                    anomaly += 40.0
+                if max_streams > 0 and max_streams != 100:
+                    anomaly += 30.0
+                if priority_order and "u=" not in priority_order:
+                    anomaly += 30.0
+            except ValueError:
+                pass
+        elif browser.startswith("Firefox"):
+            try:
+                max_data = int(params.get("1", "0"))
+                if max_data > 0 and max_data > 5000000:
+                    anomaly += 40.0
+            except ValueError:
+                pass
+
+        return {"quicAnomalyScore": max(0.0, min(100.0, anomaly))}
+
+    @staticmethod
+    def get_rendering_anomaly_score(context: RequestContext) -> Dict[str, float]:
+        header = context.headers.get("x-behavior-metrics")
+        if not header:
+            return {"renderingAnomalyScore": 0.0}
+        try:
+            metrics = json.loads(header)
+        except Exception:
+            return {"renderingAnomalyScore": 0.0}
+
+        rendering = metrics.get("rendering")
+        if not rendering:
+            return {"renderingAnomalyScore": 0.0}
+
+        score = 0.0
+        if rendering.get("offscreenAnom"):
+            score += 100.0
+
+        try:
+            fps = float(rendering.get("fps", 0.0))
+            jitter = float(rendering.get("jitter", 0.0))
+        except (ValueError, TypeError):
+            fps = 0.0
+            jitter = 0.0
+
+        if fps > 250.0 or (0.0 < fps < 15.0):
+            score += 50.0
+        if jitter > 6.0:
+            score += min(80.0, (jitter - 6.0) * 10.0)
+
+        return {"renderingAnomalyScore": min(100.0, score)}
 
     @staticmethod
     def get_click_variance_score(context: RequestContext) -> float:
@@ -2283,6 +2365,12 @@ class FingerprintEngine:
         tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
         tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
 
+        quic_anomaly = RequestUtils.get_quic_anomaly_score(context)
+        quic_anomaly_score = quic_anomaly.get("quicAnomalyScore", 0.0)
+
+        rendering_anomaly = RequestUtils.get_rendering_anomaly_score(context)
+        rendering_anomaly_score = rendering_anomaly.get("renderingAnomalyScore", 0.0)
+
 
         await self.store.set(f"device:{device_id}", device_data)
 
@@ -2304,7 +2392,9 @@ class FingerprintEngine:
             "ipReputationScore": ip_reputation_score,
             "cookieDroppingScore": cookie_dropping_score,
             "subnetScore": subnet_score,
+            "quicAnomalyScore": quic_anomaly_score,
             "tcpAnomalyScore": tcp_anomaly_score,
+            "renderingAnomalyScore": rendering_anomaly_score,
         })
         return suspicion_vector
 
@@ -3824,6 +3914,8 @@ if __name__ == "__main__":
                 "tlsSpoofingScore": 0.8,
                 "botScore": 1.0,
                 "honeypotScore": 1.0,
+                "quicAnomalyScore": 0.8,
+                "renderingAnomalyScore": 0.8,
             },
             "honeypot": {
                 "fields": ["email_confirm"],

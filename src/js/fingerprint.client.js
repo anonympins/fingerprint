@@ -341,6 +341,52 @@ const ClientLibrary = {
     },
 
     /**
+     * Démarre le suivi de la régularité d'affichage (V-Sync/rAF) pour détecter les framebuffers logiciels sans V-Sync.
+     */
+    startRenderingTracker() {
+        if (this._renderingTrackerAttached) return;
+        this._renderingTrackerAttached = true;
+
+        if (typeof window === 'undefined' || !window.requestAnimationFrame) return;
+
+        const rAfTimestamps = [];
+        let lastTime = performance.now();
+        const maxSamples = 15;
+
+        const checkOffscreenAnom = () => {
+            try {
+                if ('OffscreenCanvas' in window && HTMLCanvasElement.prototype.transferControlToOffscreen) {
+                    const nativeToString = Function.prototype.toString.call(HTMLCanvasElement.prototype.transferControlToOffscreen);
+                    return !nativeToString.includes('[native code]');
+                }
+            } catch (e) {}
+            return false;
+        };
+
+        const loop = (time) => {
+            const delta = time - lastTime;
+            lastTime = time;
+            if (rAfTimestamps.length < maxSamples) {
+                if (rAfTimestamps.length > 0) { // Skip first delta
+                    rAfTimestamps.push(delta);
+                }
+                window.requestAnimationFrame(loop);
+            } else {
+                const avg = rAfTimestamps.reduce((a, b) => a + b, 0) / rAfTimestamps.length;
+                const sqDiffs = rAfTimestamps.map(v => Math.pow(v - avg, 2));
+                const avgSqDiff = sqDiffs.reduce((a, b) => a + b, 0) / sqDiffs.length;
+                
+                metrics.rendering = {
+                    fps: Math.round((1000 / avg) * 100) / 100,
+                    jitter: Math.round(Math.sqrt(avgSqDiff) * 100) / 100,
+                    offscreenAnom: checkOffscreenAnom()
+                };
+            }
+        };
+        window.requestAnimationFrame(loop);
+    },
+
+    /**
      * Initialise l'espace Proof-of-Space persistant dans l'IndexedDB locale.
      */
     async initializeSpace(seed, sizeMb) {
@@ -749,6 +795,7 @@ const ClientLibrary = {
         keystrokes = true,
         clicks = true, // Add new option
         touches = true, // Nouveau paramètre tactiles
+            rendering = true,
             phantomTraps = true, // NOUVEAU
         honeypots = [],
         trapUrls = [], // Nouveau paramètre pour les URL pièges
@@ -773,6 +820,9 @@ const ClientLibrary = {
     if (touches) {
         this.startTouchEventTracker();
     }
+        if (rendering) {
+            this.startRenderingTracker();
+        }
         if (phantomTraps) {
             this.injectPhantomTraps();
         }
@@ -941,6 +991,7 @@ const metrics = {
     honeypotInteraction: false,
     historyLength: 0,
     clientTimestamp: 0,
+    rendering: { fps: 0, jitter: 0, offscreenAnom: false },
 };
 
 let lastMousePos = { x: 0, y: 0 };
@@ -966,6 +1017,7 @@ export const startMouseEntropyTracker = ClientLibrary.startMouseEntropyTracker.b
 export const startKeystrokeDynamicsTracker = ClientLibrary.startKeystrokeDynamicsTracker.bind(ClientLibrary);
 export const startClickTracker = ClientLibrary.startClickTracker.bind(ClientLibrary);
 export const startTouchEventTracker = ClientLibrary.startTouchEventTracker.bind(ClientLibrary);
+export const startRenderingTracker = ClientLibrary.startRenderingTracker.bind(ClientLibrary);
 export const initializeHoneypots = ClientLibrary.initializeHoneypots.bind(ClientLibrary);
 export const getClientBehaviorMetrics = ClientLibrary.getClientBehaviorMetrics.bind(ClientLibrary);
 export const protectedFetch = ClientLibrary.protectedFetch.bind(ClientLibrary);

@@ -467,6 +467,12 @@
          // Score d'anomalie de pile TCP/IP
          $tcpAnomaly = RequestUtils::getTcpAnomalyScore($context);
 
+         // Score d'anomalie de flux QUIC/HTTP3
+         $quicAnomaly = RequestUtils::getQuicAnomalyScore($context);
+
+         // Score d'anomalie de rendu d'affichage (V-Sync)
+         $renderingAnomaly = RequestUtils::getRenderingAnomalyScore($context);
+
          // Assemblage du vecteur de suspicion final
          $suspicionVector = array_merge($suspicionVector, [
              'inconsistencyScore' => $inconsistencyScore,
@@ -486,6 +492,8 @@
              'subnetScore' => $subnetScore['subnetScore'],
              'botnetClusterScore' => $botnetCluster['botnetClusterScore'],
              'tcpAnomalyScore' => $tcpAnomaly['tcpAnomalyScore'],
+             'quicAnomalyScore' => $quicAnomaly['quicAnomalyScore'],
+             'renderingAnomalyScore' => $renderingAnomaly['renderingAnomalyScore'],
          ]);
  
          // Sauvegarder l'état mis à jour de l'appareil dans le store

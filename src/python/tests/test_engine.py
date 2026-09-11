@@ -1257,6 +1257,24 @@ async def test_real_world_console_botnet_clustering():
         elif i == 10:
             assert score_data["botnetClusterScore"] == 95.7
 
+def test_rendering_anomaly_score_empty():
+    context = RequestContext(
+        client_ip="127.0.0.1", path="/", headers={}, query_params={}, cookies={}
+    )
+    score_data = RequestUtils.get_rendering_anomaly_score(context)
+    assert score_data["renderingAnomalyScore"] == 0.0
+
+def test_rendering_anomaly_score_spoofed():
+    context = RequestContext(
+        client_ip="127.0.0.1", path="/",
+        headers={
+            "x-behavior-metrics": json.dumps({
+                "rendering": { "fps": 60, "jitter": 12.5, "offscreenAnom": False }
+            })
+        }, query_params={}, cookies={}
+    )
+    score_data = RequestUtils.get_rendering_anomaly_score(context)
+    assert score_data["renderingAnomalyScore"] == 65.0
 @pytest.mark.asyncio
 async def test_stateless_ticket_generation_and_validation():
     """Vérifie la génération de tickets stateless chiffrés et signés et leur validation."""

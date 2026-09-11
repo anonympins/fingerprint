@@ -33,6 +33,7 @@ const {
     getCompositeDeviceHash,
 } = fingerprint;
 const { store, getRequestPatternScore, getDeviceHash } = __internal;
+const { getRenderingAnomalyScore } = __internal;
 let { getBehaviorScore, getClickVarianceScore } = __internal;
 // Mock the entire dns module
 vi.mock('node:dns/promises');
@@ -1489,6 +1490,50 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(customAnalyzer).toHaveBeenCalledWith({ comment: 'this is a normal comment' });
             // The honeypot score should be 0 as no other traps were triggered
             expect(decisionClean.vector.honeypotScore).toBe(0);
+        });
+    });
+
+    describe('getRenderingAnomalyScore', () => {
+        it('should return 0 if rendering metrics are missing', () => {
+            const context = { headers: {} };
+            const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+            expect(renderingAnomalyScore).toBe(0);
+        });
+
+        it('should return 100 if offscreen canvas spoofing is detected', () => {
+            const context = {
+                headers: {
+                    'x-behavior-metrics': JSON.stringify({
+                        rendering: { fps: 60, jitter: 0.1, offscreenAnom: true }
+                    })
+                }
+            };
+            const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+            expect(renderingAnomalyScore).toBe(100);
+        });
+
+        it('should return a high score if jitter is very high', () => {
+            const context = {
+                headers: {
+                    'x-behavior-metrics': JSON.stringify({
+                        rendering: { fps: 60, jitter: 12.5, offscreenAnom: false }
+                    })
+                }
+            };
+            const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+            expect(renderingAnomalyScore).toBe(65); // (12.5 - 6.0) * 10 = 65
+        });
+
+        it('should return a high score if FPS is abnormal', () => {
+            const context = {
+                headers: {
+                    'x-behavior-metrics': JSON.stringify({
+                        rendering: { fps: 300, jitter: 1.0, offscreenAnom: false }
+                    })
+                }
+            };
+            const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+            expect(renderingAnomalyScore).toBe(50);
         });
     });
 

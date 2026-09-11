@@ -28,7 +28,7 @@ global.TextEncoder = dom.window.TextEncoder;
 describe('ClientLibrary.initializeClient', () => {
 
     // On utilise des espions (spies) pour vérifier si les méthodes internes sont appelées.
-    let startMouseSpy, startKeystrokeSpy, startClickSpy, startTouchSpy, initWasmSpy, initHoneypotsSpy, injectTrapsSpy, initFetchSpy, injectPhantomTrapsSpy;
+    let startMouseSpy, startKeystrokeSpy, startClickSpy, startTouchSpy, startRenderingSpy, initWasmSpy, initHoneypotsSpy, injectTrapsSpy, initFetchSpy, injectPhantomTrapsSpy;
 
     beforeEach(() => {
         // Réinitialiser l'état du client avant chaque test
@@ -39,6 +39,7 @@ describe('ClientLibrary.initializeClient', () => {
         startKeystrokeSpy = vi.spyOn(ClientLibrary, 'startKeystrokeDynamicsTracker');
         startClickSpy = vi.spyOn(ClientLibrary, 'startClickTracker');
         startTouchSpy = vi.spyOn(ClientLibrary, 'startTouchEventTracker');
+        startRenderingSpy = vi.spyOn(ClientLibrary, 'startRenderingTracker');
         initWasmSpy = vi.spyOn(ClientLibrary, 'initializeWasm').mockResolvedValue(undefined);
         initHoneypotsSpy = vi.spyOn(ClientLibrary, 'initializeHoneypots');
         injectTrapsSpy = vi.spyOn(ClientLibrary, 'injectTrapLinks');
@@ -58,16 +59,18 @@ describe('ClientLibrary.initializeClient', () => {
         expect(startKeystrokeSpy).toHaveBeenCalled();
         expect(startClickSpy).toHaveBeenCalled();
         expect(startTouchSpy).toHaveBeenCalled();
+        expect(startRenderingSpy).toHaveBeenCalled();
         expect(injectPhantomTrapsSpy).toHaveBeenCalled();
     });
 
     it('should disable trackers when configured', () => {
-        ClientLibrary.initializeClient({ mouse: false, keystrokes: false, clicks: false, touches: false });
+        ClientLibrary.initializeClient({ mouse: false, keystrokes: false, clicks: false, touches: false, rendering: false });
 
         expect(startMouseSpy).not.toHaveBeenCalled();
         expect(startKeystrokeSpy).not.toHaveBeenCalled();
         expect(startClickSpy).not.toHaveBeenCalled();
         expect(startTouchSpy).not.toHaveBeenCalled();
+        expect(startRenderingSpy).not.toHaveBeenCalled();
     });
 
     it('should initialize WASM if wasmPath is configured', () => {

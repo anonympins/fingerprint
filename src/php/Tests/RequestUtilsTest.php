@@ -48,6 +48,28 @@ class RequestUtilsTest extends TestCase
         $score = RequestUtils::getCrossLayerInconsistency($context);
         $this->assertEquals(20.0, $score['crossLayerInconsistencyScore']);
     }
+    public function testGetRenderingAnomalyScoreEmpty(): void
+    {
+        $context = $this->createRequestContext();
+        $res = RequestUtils::getRenderingAnomalyScore($context);
+        $this->assertEquals(0.0, $res['renderingAnomalyScore']);
+    }
+
+    public function testGetRenderingAnomalyScoreSpoofed(): void
+    {
+        $metrics = [
+            'rendering' => [
+                'fps' => 60,
+                'jitter' => 12.5,
+                'offscreenAnom' => false
+            ]
+        ];
+        $context = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metrics)]
+        ]);
+        $res = RequestUtils::getRenderingAnomalyScore($context);
+        $this->assertEquals(65.0, $res['renderingAnomalyScore']);
+    }
     public function testGetClickVarianceScoreReturnsZeroForNoHistory(): void
     {
         $context = $this->createRequestContext([
