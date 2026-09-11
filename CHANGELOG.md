@@ -1,3 +1,23 @@
+## Version 0.5.1
+
+### ✨ New Features
+
+- **GPU Proof-of-Work (PoW) Challenge**: Introduced a highly parallelized chaotic logistic map float computation challenge utilizing WebGPU (with a fallback to WebGL2). This challenge is specifically designed to exhaust CPU-based headless emulators (such as SwiftShader). It includes sample-based server-side verification to prevent DoS vectors.
+- **Biometric Keystroke Dynamics (Dwell & Flight Times)**: Introduced advanced behavioral biometric tracking by measuring key press duration (*dwell time*) and key-to-key transition intervals (*flight time*) to build a unique digraph/trigraph motor profile for the user.
+    - *Why it's a Killer Feature*: Automated text-injecting bots often simulate simple randomized delays between characters, but they fail to replicate natural human muscle memory patterns (such as ultra-fast cognitive transitions between adjacent keys on physical or virtual layouts). Server-side statistical checks (utilizing standard deviation, variance thresholds, and Benford's Law) immediately flag these robotic, uniform input patterns.
+
+### 🚀 Improvements
+
+- **Display & Protocol Anomaly Scoring**: Fully integrated `renderingAnomalyScore` and `quicAnomalyScore` across all backend engines (Node.js, PHP, Python). This enables real-time detection of virtual software framebuffers (like `Xvfb`) lacking physical V-Sync through jitter analysis, as well as HTTP/3 stream setting inconsistencies.
+- **Security Profile Tuning**: Integrated display and QUIC anomaly detectors into the default security profiles (`balanced`, `strict`, `blog`, `ecommerce`) with custom weights.
+- **Layout-Agnostic Client Tracking**: Enhanced the keystroke dynamics tracker to prioritize physical key locations (`KeyboardEvent.code`) over localized characters (`KeyboardEvent.key`), ensuring robust detection across different keyboard layouts (QWERTY, AZERTY) and virtual mobile keyboards.
+
+### 🐛 Bug Fixes
+
+- **Node.js 24 Test Suite Compatibility**: Fixed unit test suite execution and environment configuration issues specifically encountered on Node.js 24.
+
+---
+
 ## Version 0.5.0
 
 ### ✨ New Features

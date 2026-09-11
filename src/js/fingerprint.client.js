@@ -495,27 +495,77 @@ const ClientLibrary = {
     },
 
     /**
-     * Démarre le suivi de la dynamique de frappe pour calculer la latence.
+     * Démarre le suivi de la dynamique de frappe pour calculer le dwell time et le flight time (digraphie/trigraphie).
      * À appeler une fois sur la page.
      */
     startKeystrokeDynamicsTracker() {
         // S'assurer de ne pas attacher l'écouteur plusieurs fois
-        if (keystrokeTimestamps.length > 0) return;
+        if (this._keystrokeTrackerAttached) return;
+        this._keystrokeTrackerAttached = true;
 
-        document.addEventListener('keydown', () => {
+        const activeKeys = new Map();
+        let lastKeyDownTime = 0;
+        let lastKeyName = '';
+
+        document.addEventListener('keydown', (e) => {
             const now = performance.now();
+            const key = e.key;
+            const code = e.code;
+            if (!key && !code) return;
+
+            const keyIdentifier = code || key;
+
+            // Prevent key repeat triggering multiple events
+            if (activeKeys.has(keyIdentifier)) return;
+            activeKeys.set(keyIdentifier, now);
+
             if (keystrokeTimestamps.length > 0) {
                 const lastTimestamp = keystrokeTimestamps[keystrokeTimestamps.length - 1];
                 const latency = now - lastTimestamp;
-                // On ignore les latences irréalistes (trop longues ou trop courtes)
-                if (latency > 10 && latency < 2000) { // Augmenté à 2s
+                if (latency > 10 && latency < 2000) {
                     if (keystrokeLatencies.length >= KEYSTROKE_HISTORY_MAX) {
-                        keystrokeLatencies.shift(); // Garder la taille de l'historique
+                        keystrokeLatencies.shift();
                     }
                     keystrokeLatencies.push(latency);
                 }
             }
             keystrokeTimestamps.push(now);
+
+            // Flight Time (KeyDown to KeyDown)
+            if (lastKeyDownTime > 0) {
+                const flightTime = now - lastKeyDownTime;
+                if (flightTime > 10 && flightTime < 2000) {
+                    if (keystrokeFlightTimes.length >= KEYSTROKE_HISTORY_MAX) {
+                        keystrokeFlightTimes.shift();
+                    }
+                    const digraph = lastKeyName ? this._hasher(lastKeyName + "_" + keyIdentifier).toString() : "unknown";
+                    keystrokeFlightTimes.push({ digraph, time: flightTime });
+                }
+            }
+            lastKeyDownTime = now;
+            lastKeyName = keyIdentifier;
+        }, {passive: true});
+
+        document.addEventListener('keyup', (e) => {
+            const now = performance.now();
+            const key = e.key;
+            const code = e.code;
+            if (!key && !code) return;
+
+            const keyIdentifier = code || key;
+
+            if (activeKeys.has(keyIdentifier)) {
+                const pressTime = activeKeys.get(keyIdentifier);
+                const dwellTime = now - pressTime;
+                activeKeys.delete(keyIdentifier);
+
+                if (dwellTime > 5 && dwellTime < 1000) {
+                    if (keystrokeDwellTimes.length >= KEYSTROKE_HISTORY_MAX) {
+                        keystrokeDwellTimes.shift();
+                    }
+                    keystrokeDwellTimes.push(dwellTime);
+                }
+            }
         }, {passive: true});
     },
 
@@ -589,6 +639,10 @@ const ClientLibrary = {
         metrics.touchMovementsHistory = touchMovementsHistory;
         // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
         metrics.mouseMovementsHistory = mouseMovementsHistory;
+
+        // NOUVEAU: Keystroke dynamics metrics (dwell and flight times)
+        metrics.keystrokeDwellTimes = keystrokeDwellTimes;
+        metrics.keystrokeFlightTimes = keystrokeFlightTimes;
 
         // Calcule la latence moyenne des frappes
         if (keystrokeLatencies.length > 0) {
@@ -1004,6 +1058,8 @@ const CLICKS_HISTORY_MAX = 50;
 let activeHoneypotListeners = new Map(); // Garde une trace des écouteurs actifs
 let keystrokeTimestamps = [];
 let keystrokeLatencies = []; // NOUVEAU: Tableau dédié pour les latences
+let keystrokeDwellTimes = [];
+let keystrokeFlightTimes = [];
 const KEYSTROKE_HISTORY_MAX = 20; // On garde l'historique des 20 dernières frappes
 
 

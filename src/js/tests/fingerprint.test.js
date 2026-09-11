@@ -1587,6 +1587,23 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
     });
 
+    it('should return a high score for keystroke dynamics with very low dwell/flight variance (bot emulation)', () => {
+        const metrics = {
+            honeypotInteraction: false,
+            keystrokeDwellTimes: [50, 50, 50, 50, 50], // stdDev = 0
+            keystrokeFlightTimes: [
+                { digraph: 'ab', time: 100 },
+                { digraph: 'bc', time: 100 },
+                { digraph: 'cd', time: 100 },
+                { digraph: 'de', time: 100 },
+                { digraph: 'ef', time: 100 }
+            ] // stdDev = 0
+        };
+        const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+        const { behaviorScore } = getBehaviorScore(context);
+        expect(behaviorScore).toBeGreaterThanOrEqual(70); // 35 (stdDevDwell) + 35 (stdDevFlight) = 70
+    });
+
     describe('getClickVarianceScore', () => {
         // FIX: Correctly assign the function before tests run.
         beforeEach(() => {

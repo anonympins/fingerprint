@@ -436,6 +436,41 @@ class RequestUtils
         if (($metrics['keystrokeLatency'] ?? 0) > 0 && $metrics['keystrokeLatency'] < 40) $score += 25;
         if (($metrics['keystrokeLatency'] ?? 0) > 1000) $score += 15;
 
+        // NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
+        $dwellTimes = $metrics['keystrokeDwellTimes'] ?? [];
+        $flightTimes = $metrics['keystrokeFlightTimes'] ?? [];
+
+        if (count($dwellTimes) >= 5) {
+            $meanDwell = array_sum($dwellTimes) / count($dwellTimes);
+            $varDwell = array_reduce($dwellTimes, fn($carry, $item) => $carry + pow($item - $meanDwell, 2), 0) / count($dwellTimes);
+            $stdDevDwell = sqrt($varDwell);
+
+            if ($stdDevDwell < 2.0) {
+                $score += 35.0;
+            }
+            if ($meanDwell < 15.0) {
+                $score += 25.0;
+            }
+        }
+
+        if (count($flightTimes) >= 5) {
+            $times = array_column($flightTimes, 'time');
+            $meanFlight = array_sum($times) / count($times);
+            $varFlight = array_reduce($times, fn($carry, $item) => $carry + pow($item - $meanFlight, 2), 0) / count($times);
+            $stdDevFlight = sqrt($varFlight);
+
+            if ($stdDevFlight < 3.0) {
+                $score += 35.0;
+            }
+            if ($meanFlight < 25.0) {
+                $score += 25.0;
+            }
+            $benfordDev = Optimization::benfordTest($times);
+            if ($benfordDev > 0.18) {
+                $score += 30.0;
+            }
+        }
+
         // Analyse de Benford sur les segments de mouvement de la souris
         if (count($mouseAnalysis['segments']) > 10) {
             $benfordDeviation = Optimization::benfordTest($mouseAnalysis['segments']);

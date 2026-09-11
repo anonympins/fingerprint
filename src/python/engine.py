@@ -1419,6 +1419,36 @@ class RequestUtils:
         ks_latency = metrics.get("keystrokeLatency", 0.0)
         if 0.0 < ks_latency < 40.0: score += 25.0
         if ks_latency > 1000.0: score += 15.0
+
+        # NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
+        dwell_times = metrics.get("keystrokeDwellTimes") or []
+        flight_times = metrics.get("keystrokeFlightTimes") or []
+
+        if len(dwell_times) >= 5:
+            mean_dwell = sum(dwell_times) / len(dwell_times)
+            var_dwell = sum((t - mean_dwell) ** 2 for t in dwell_times) / len(dwell_times)
+            std_dev_dwell = math.sqrt(var_dwell)
+
+            if std_dev_dwell < 2.0:
+                score += 35.0
+            if mean_dwell < 15.0:
+                score += 25.0
+
+        if len(flight_times) >= 5:
+            times = [f.get("time") for f in flight_times if f.get("time") is not None]
+            if len(times) >= 5:
+                mean_flight = sum(times) / len(times)
+                var_flight = sum((t - mean_flight) ** 2 for t in times) / len(times)
+                std_dev_flight = math.sqrt(var_flight)
+
+                if std_dev_flight < 3.0:
+                    score += 35.0
+                if mean_flight < 25.0:
+                    score += 25.0
+                benford_dev = Optimization.benford_test(times)
+                if benford_dev > 0.18:
+                    score += 30.0
+
         if len(mouse_analysis["segments"]) > 10:
             benford_deviation = Optimization.benford_test(mouse_analysis["segments"])
             if benford_deviation > 0.18: score += 35.0

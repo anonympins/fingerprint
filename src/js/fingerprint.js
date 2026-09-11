@@ -1687,6 +1687,41 @@ function getBehaviorScore(context) {
     if (metrics.keystrokeLatency > 0 && metrics.keystrokeLatency < 40) score += 25; // Frappe trop rapide pour un humain.
     if (metrics.keystrokeLatency > 1000) score += 15; // Latence très élevée, peut être un script lent.
 
+    // NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
+    const dwellTimes = metrics.keystrokeDwellTimes || [];
+    const flightTimes = metrics.keystrokeFlightTimes || [];
+
+    if (dwellTimes.length >= 5) {
+        const meanDwell = dwellTimes.reduce((a, b) => a + b, 0) / dwellTimes.length;
+        const varDwell = dwellTimes.reduce((a, b) => a + Math.pow(b - meanDwell, 2), 0) / dwellTimes.length;
+        const stdDevDwell = Math.sqrt(varDwell);
+
+        if (stdDevDwell < 2.0) {
+            score += 35; // Suspicion d'automatisation (pas de variation humaine de pression)
+        }
+        if (meanDwell < 15.0) {
+            score += 25; // Dwell time irréaliste
+        }
+    }
+
+    if (flightTimes.length >= 5) {
+        const times = flightTimes.map(f => f.time);
+        const meanFlight = times.reduce((a, b) => a + b, 0) / times.length;
+        const varFlight = times.reduce((a, b) => a + Math.pow(b - meanFlight, 2), 0) / times.length;
+        const stdDevFlight = Math.sqrt(varFlight);
+
+        if (stdDevFlight < 3.0) {
+            score += 35; // Pas de variation de transition (flight time robotique)
+        }
+        if (meanFlight < 25.0) {
+            score += 25; // Transitions trop rapides
+        }
+        const benfordDev = Optimization.Operators.benfordTest(times);
+        if (benfordDev > 0.18) {
+            score += 30; // Les intervalles ne suivent pas la loi de Benford
+        }
+    }
+
     // 4. Analyse de la distribution avec la loi de Benford (si les valeurs sont non nulles).
     if (segments.length > 10) {
         const benfordDeviation = Optimization.Operators.benfordTest(segments);

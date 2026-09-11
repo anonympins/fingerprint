@@ -1209,6 +1209,29 @@ def test_get_behavior_score_with_human_like_touch_movements():
     score = RequestUtils.get_behavior_score(context)
     assert score < 30.0
 
+def test_get_behavior_score_with_bot_like_keystroke_dynamics():
+    import json
+    metrics = {
+        "honeypotInteraction": False,
+        "keystrokeDwellTimes": [50, 50, 50, 50, 50],
+        "keystrokeFlightTimes": [
+            {"digraph": "ab", "time": 100},
+            {"digraph": "bc", "time": 100},
+            {"digraph": "cd", "time": 100},
+            {"digraph": "de", "time": 100},
+            {"digraph": "ef", "time": 100}
+        ]
+    }
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"x-behavior-metrics": json.dumps(metrics)},
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_behavior_score(context)
+    assert score >= 70.0
+
 
 @pytest.mark.asyncio
 async def test_real_world_console_botnet_clustering():

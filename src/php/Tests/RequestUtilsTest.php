@@ -207,6 +207,26 @@ class RequestUtilsTest extends TestCase
         $this->assertEquals(40.0, $scoreNoActivity['behaviorScore']);
     }
 
+    public function testGetBehaviorScoreWithBotLikeKeystrokeDynamics(): void
+    {
+        $metrics = [
+            'honeypotInteraction' => false,
+            'keystrokeDwellTimes' => [50, 50, 50, 50, 50],
+            'keystrokeFlightTimes' => [
+                ['digraph' => 'ab', 'time' => 100],
+                ['digraph' => 'bc', 'time' => 100],
+                ['digraph' => 'cd', 'time' => 100],
+                ['digraph' => 'de', 'time' => 100],
+                ['digraph' => 'ef', 'time' => 100]
+            ]
+        ];
+        $context = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metrics)]
+        ]);
+        $score = RequestUtils::getBehaviorScore($context);
+        $this->assertGreaterThanOrEqual(70.0, $score['behaviorScore']);
+    }
+
     public function testGetBehaviorScoreWithBotLikeTouchMovements(): void
     {
         $metrics = [
