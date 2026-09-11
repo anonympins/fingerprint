@@ -5,6 +5,7 @@ NodeJS tests : [![Test NodeJS](https://img.shields.io/github/actions/workflow/st
 [![Release](https://img.shields.io/github/v/release/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/releases)
 [![License](https://img.shields.io/github/license/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/blob/main/LICENSE)
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)
+![Repo size](https://img.shields.io/github/repo-size/anonympins/fingerprint)
 
 A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Python** and **PHP** environments. 
 
