@@ -71,7 +71,14 @@ Here is a comprehensive overview of the full configuration array you can pass to
              'type' => 'path_allowlist',
              'entries' => ['/api/public/*']
          ]
-     ]
+     ],
+     
+     'enableUsefulWork => true,
+     'enableProofOfSpace' => true,
+     'dryRun => false,
+     'trustedProxies => ['127.0.0.1', '192.168.1.0/24'],
+     'wasm' => true
+ 
  ];
  ```
  
@@ -156,9 +163,10 @@ Here is the same full configuration tailored for Node.js:
              }
      },
      enableUsefulWork: true,
+     enableProofOfSpace: true,
      dryRun: false,
      trustedProxies: ['127.0.0.1', '192.168.1.0/24'],
-     wasm: './public',
+     wasm: true, // can be a './my_dir' path to fp.js/fp.wasm files too
  };
  ```
  
