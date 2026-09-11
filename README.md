@@ -98,9 +98,16 @@ We welcome community contributions! Please read our **[Contributing Guidelines](
 Thanks to our contributors : 
 - [anonympins](https://github.com/anonympins)
 
-## Used actively on
+## 💖 Sponsor This Project
 
-- https://primals.net and sub-sites
+If this security suite helps protect your business against botnets, automated scraping, credential stuffing, or Layer 7 DDoS attacks, please consider supporting its active development!
+
+Sponsorship helps maintain the library, fund active updates, and keep the dynamic WebAssembly engine cutting-edge.
+
+### 🌟 Featured Sponsors
+
+- ![](https://primals.net/PRIOR.png) https://primals.net and sub-sites
+  <img src="https://s6.imgcdn.dev/YJTWv9.png" width="100" alt="YJTWv9.png" border="0">
 
 ## License
 

@@ -3041,13 +3041,61 @@ class AutoTuner:
     _last_best_solution: Optional[Dict[str, Any]] = None
 
     def __init__(self, security_config: Dict[str, Any], traffic_data: List[Dict[str, Any]], options: Optional[Dict[str, Any]] = None):
+        """
+        Initializes the AutoTuner with security configuration, traffic data, and pruning options.
+
+        Args:
+            security_config (Dict[str, Any]): The live security configuration dictionary to be optimized.
+            traffic_data (List[Dict[str, Any]]): The list of collected traffic data logs.
+            options (Optional[Dict[str, Any]]): Configuration options including:
+                - minDataPoints (int, default 200): Minimum required data points to start tuning.
+                - maxDataPoints (int, default 10000): Maximum data points retained in memory.
+                - maxAgeMs (Optional[int], default None): Maximum age of logs in milliseconds.
+                - clearAfterTuning (bool, default False): If True, clear traffic data after tuning.
+                - onCleanup (Optional[Callable], default None): Callback function for processed/pruned logs.
+        """
         self.security_config = security_config
         self.traffic_data = traffic_data
         options = options or {}
         self.min_data_points = options.get("minDataPoints", 200)
         self.max_data_points = options.get("maxDataPoints", 10000)
+        self.clear_after_tuning = options.get("clearAfterTuning", False)
+        self.options = options
+
+    def prune_traffic_data(self) -> None:
+        now = int(time.time() * 1000)
+        removed = []
+
+        # 1. Expire par temps
+        max_age_ms = self.options.get("maxAgeMs")
+        if max_age_ms and max_age_ms > 0:
+            threshold = now - max_age_ms
+            retained = []
+            for log in self.traffic_data:
+                log_ts = log.get("timestamp") or log.get("requestTimestamp") or now
+                if log_ts < threshold:
+                    removed.append(log)
+                else:
+                    retained.append(log)
+            self.traffic_data[:] = retained
+
+        # 2. Politique de taille maximale (conserver les plus récents)
+        if self.max_data_points > 0 and len(self.traffic_data) > self.max_data_points:
+            overflow_count = len(self.traffic_data) - self.max_data_points
+            removed.extend(self.traffic_data[:overflow_count])
+            self.traffic_data[:] = self.traffic_data[overflow_count:]
+
+        # 3. Invocation du callback
+        on_cleanup = self.options.get("onCleanup")
+        if on_cleanup and callable(on_cleanup) and removed:
+            try:
+                on_cleanup(removed)
+            except Exception as e:
+                print(f"[AutoTuning] Error in onCleanup callback: {e}")
 
     def run_optimization_cycle(self) -> None:
+        self.prune_traffic_data()
+
         sanitized_data = sanitize_traffic_data(self.traffic_data)
 
         high_confidence_logs = len([
@@ -3172,6 +3220,17 @@ class AutoTuner:
         print(f"[AutoTuning] Nouveaux seuils : {json.dumps(self.security_config['thresholds'])}")
         print(f"[AutoTuning] Nouveaux poids : {json.dumps(self.security_config['weights'])}")
         print(f"[AutoTuning] Nouveaux patterns : {json.dumps(self.security_config['patterns'])}")
+
+        if self.clear_after_tuning:
+            cleared = list(self.traffic_data)
+            self.traffic_data.clear()
+            on_cleanup = self.options.get("onCleanup")
+            if on_cleanup and callable(on_cleanup) and cleared:
+                try:
+                    on_cleanup(cleared)
+                except Exception as e:
+                    print(f"[AutoTuning] Error in onCleanup callback after clearing: {e}")
+            print(f"[AutoTuning] Explicitly cleared {len(cleared)} processed traffic data points.")
 
     @staticmethod
     def get_best_tuning_solution() -> Optional[Dict[str, Any]]:

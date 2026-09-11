@@ -3161,12 +3161,25 @@ function parseGraphQLQuery(body) {
 export class FingerprintEngine {
   constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
-    this.securityConfig = securityConfig;
+    
+    let finalConfig = securityConfig;
+    if (securityConfig && securityConfig.autotuning && securityConfig.autotuning.savePath) {
+      const sPath = securityConfig.autotuning.savePath;
+      if (existsSync(sPath)) {
+        try {
+          const savedConfig = JSON.parse(readFileSync(sPath, 'utf-8'));
+          finalConfig = deepMerge(securityConfig, savedConfig);
+        } catch (e) {
+          console.warn(`[Fingerprint] Failed to auto-load optimized config from ${sPath}:`, e.message);
+        }
+      }
+    }
+    this.securityConfig = finalConfig;
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();
-    this._validateConfig(securityConfig); // Validate the configuration
-    this.verbose = securityConfig.verbose || false;
-    this.dryRun = securityConfig.dryRun || false;
+    this._validateConfig(finalConfig); // Validate the configuration
+    this.verbose = finalConfig.verbose || false;
+    this.dryRun = finalConfig.dryRun || false;
   }
 
   /**
@@ -5054,6 +5067,7 @@ export const __internal = {
     getCompositeDeviceHash,
     getSuspicionVector,
     getTlsSessionId,
+    pruneTrafficData,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
     calculateTarget,
@@ -5146,13 +5160,55 @@ export function sanitizeTrafficData(trafficData) {
 
   return [...suspiciousLogs, ...selectedPassed];
 }
+/**
+ * Assainit et limite la taille/ancienneté des données de trafic pour éviter les fuites de mémoire.
+ * @private
+ */
+function pruneTrafficData(trafficData, maxDataPoints, maxAgeMs, onCleanup) {
+    if (!Array.isArray(trafficData)) return;
+    const now = Date.now();
+    const removed = [];
 
+    // 1. Politique temporelle d'expiration
+    if (maxAgeMs && maxAgeMs > 0) {
+        const threshold = now - maxAgeMs;
+        let i = 0;
+        while (i < trafficData.length) {
+            const log = trafficData[i];
+            const logTs = log.timestamp || log.requestTimestamp || now;
+            if (logTs < threshold) {
+                removed.push(trafficData.splice(i, 1)[0]);
+            } else {
+                i++;
+            }
+        }
+    }
+
+    // 2. Politique de taille maximale (conserver les plus récents)
+    if (maxDataPoints && maxDataPoints > 0 && trafficData.length > maxDataPoints) {
+        const overflowCount = trafficData.length - maxDataPoints;
+        const spliced = trafficData.splice(0, overflowCount);
+        removed.push(...spliced);
+    }
+
+    // 3. Callback de nettoyage
+    if (onCleanup && typeof onCleanup === 'function' && removed.length > 0) {
+        try {
+            onCleanup(removed);
+        } catch (e) {
+            console.error('[AutoTuning] Error in onCleanup callback:', e);
+        }
+    }
+}
 /**
  * Executes a threshold optimization pass using collected traffic data.
  * @private
  */
-function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath) {
-  const sanitizedData = sanitizeTrafficData(trafficData);
+function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath, tuningOptions = {}) {
+    const { maxAgeMs, clearAfterTuning = false, onCleanup } = tuningOptions;
+
+    pruneTrafficData(trafficData, maxDataPoints, maxAgeMs, onCleanup);
+    const sanitizedData = sanitizeTrafficData(trafficData);
 
   const highConfidenceLogs = sanitizedData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
   const highConfidenceRatio = sanitizedData.length > 0 ? highConfidenceLogs / sanitizedData.length : 0;
@@ -5169,12 +5225,6 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     }
     return;
   }
-
-  if (trafficData.length > maxDataPoints) {
-    console.log(`[AutoTuning] Le journal de trafic a atteint ${trafficData.length} entrées (max: ${maxDataPoints}). Troncation des données les plus anciennes.`);
-    trafficData.splice(0, trafficData.length - maxDataPoints);
-  }
-
   console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${sanitizedData.length} points de données assainis.`);
 
   const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData: sanitizedData });
@@ -5309,6 +5359,18 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
           console.error(`[AutoTuning] Erreur lors de la sauvegarde de la configuration optimisée : ${error.message}`);
       }
   }
+
+    if (clearAfterTuning) {
+        const cleared = trafficData.splice(0, trafficData.length);
+        if (onCleanup && typeof onCleanup === 'function' && cleared.length > 0) {
+            try {
+                onCleanup(cleared);
+            } catch (e) {
+                console.error('[AutoTuning] Error in onCleanup callback after clearing:', e);
+            }
+        }
+        console.log(`[AutoTuning] Explicitly cleared ${cleared.length} processed traffic data points.`);
+    }
 }
 
 /**
@@ -5335,6 +5397,9 @@ export function startThresholdAutoTuning(options) {
         minDataPoints = 200,
         maxDataPoints = 10000, // Limite par défaut à 10 000 entrées
         savePath, // NOUVEAU: Chemin de sauvegarde optionnel
+        maxAgeMs,
+        clearAfterTuning = false,
+        onCleanup,
     } = options;
 
     if (!securityConfig || !trafficData) {
@@ -5344,7 +5409,7 @@ export function startThresholdAutoTuning(options) {
     console.log(`[AutoTuning] Job d'optimisation des seuils démarré. Prochain cycle dans ${interval / 60000} minutes.`);
 
     autoTuningJobId = setInterval(() => {
-        runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath);
+        runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath, { maxAgeMs, clearAfterTuning, onCleanup });
     }, interval);
 }
 

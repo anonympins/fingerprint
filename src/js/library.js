@@ -1551,7 +1551,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
       // Pour cet exemple, nous utilisons une version simplifiée.
       let score = 0;
       for (const key in config.weights) {
-        score += (log.vector[key] || 0) * config.weights[key];
+        score += (log.vector?.[key] || 0) * config.weights[key];
       }
       return score;
     };

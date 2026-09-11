@@ -1092,6 +1092,63 @@ describe('Fingerprint & PoW Security Suite', () => {
             stopThresholdAutoTuning(); // Ensure cleanup after each test
         });
 
+    test('should prune traffic data based on time, size, clearAfterTuning and invoke onCleanup', async () => {
+        const trafficData = [
+            { type: 'challenge_solved', timestamp: Date.now() - 10000 }, // 10s old
+            { type: 'challenge_solved', timestamp: Date.now() - 5000 },  // 5s old
+            { type: 'challenge_solved', timestamp: Date.now() }          // fresh
+        ];
+
+        const securityConfig = {
+            thresholds: { low: 20, medium: 45, high: 75, block: 95 },
+            weights: { historyScore: 1 },
+            patterns: {}
+        };
+
+        const cleanedLogs = [];
+        const onCleanup = (removed) => {
+            cleanedLogs.push(...removed);
+        };
+
+        // Test 1: Time-based pruning (older than 8 seconds)
+        __internal.pruneTrafficData(trafficData, 10, 8000, onCleanup);
+
+        expect(trafficData.length).toBe(2);
+        expect(cleanedLogs.length).toBe(1);
+        expect(cleanedLogs[0].timestamp).toBeLessThan(Date.now() - 8000);
+
+        // Test 2: Size-based pruning (max size = 1)
+        __internal.pruneTrafficData(trafficData, 1, 0, onCleanup);
+        expect(trafficData.length).toBe(1);
+        expect(cleanedLogs.length).toBe(2);
+
+        // Test 3: Clear after tuning
+        const autoTuningTraffic = [];
+        for (let i = 0; i < 110; i++) {
+            autoTuningTraffic.push({ type: 'challenge_solved', timestamp: Date.now(), deviceId: `dev-solved-${i}` });
+            autoTuningTraffic.push({ type: 'request_passed', timestamp: Date.now(), deviceId: `dev-passed-${i}` });
+        }
+
+        const tuningCleaned = [];
+        startThresholdAutoTuning({
+            securityConfig,
+            trafficData: autoTuningTraffic,
+            interval: 10000,
+            minDataPoints: 100,
+            maxDataPoints: 500,
+            clearAfterTuning: true,
+            onCleanup: (removed) => tuningCleaned.push(...removed)
+        });
+
+        const intervalCallback = setIntervalSpy.mock.calls[0][0];
+        intervalCallback();
+
+        expect(autoTuningTraffic.length).toBe(0);
+        expect(tuningCleaned.length).toBeGreaterThan(0);
+
+        stopThresholdAutoTuning();
+    });
+
         test('should start, run an optimization cycle, and update thresholds', () => {
             const trafficData = [];
             const securityConfig = {

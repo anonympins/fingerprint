@@ -30,6 +30,21 @@
      public function __construct(array $securityConfig)
      {
          $this->isProduction = ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production';
+         
+         // Auto-load optimized config if autotuning savePath is specified
+         if (isset($securityConfig['autotuning']['savePath'])) {
+             $savePath = $securityConfig['autotuning']['savePath'];
+             if (file_exists($savePath)) {
+                 try {
+                     $savedConfig = json_decode(file_get_contents($savePath), true);
+                     if (json_last_error() === JSON_ERROR_NONE && is_array($savedConfig)) {
+                         $securityConfig = SecurityProfiles::deepMerge($securityConfig, $savedConfig);
+                     }
+                 } catch (\Throwable $e) {
+                     error_log("[FingerprintEngine] Failed to auto-load optimized config from {$savePath}: " . $e->getMessage());
+                 }
+             }
+         }
          $this->securityConfig = $securityConfig;
          $this->verbose = $securityConfig['verbose'] ?? false;
          $this->allowlist = $this->buildAllowlist();
