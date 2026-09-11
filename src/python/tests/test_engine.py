@@ -1209,6 +1209,30 @@ def test_get_behavior_score_with_human_like_touch_movements():
     score = RequestUtils.get_behavior_score(context)
     assert score < 30.0
 
+def test_get_behavior_score_with_bot_like_keystroke_dynamics():
+    import json
+    metrics = {
+        "honeypotInteraction": False,
+        "keystrokeLatency": 100.0,
+        "keystrokeDwellTimes": [50, 50, 50, 50, 50],
+        "keystrokeFlightTimes": [
+            {"digraph": "ab", "time": 100},
+            {"digraph": "bc", "time": 100},
+            {"digraph": "cd", "time": 100},
+            {"digraph": "de", "time": 100},
+            {"digraph": "ef", "time": 100}
+        ]
+    }
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"x-behavior-metrics": json.dumps(metrics)},
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_behavior_score(context)
+    assert score >= 70.0
+
 
 @pytest.mark.asyncio
 async def test_real_world_console_botnet_clustering():
@@ -1257,6 +1281,94 @@ async def test_real_world_console_botnet_clustering():
         elif i == 10:
             assert score_data["botnetClusterScore"] == 95.7
 
+def test_rendering_anomaly_score_empty():
+    context = RequestContext(
+        client_ip="127.0.0.1", path="/", headers={}, query_params={}, cookies={}
+    )
+    score_data = RequestUtils.get_rendering_anomaly_score(context)
+    assert score_data["renderingAnomalyScore"] == 0.0
+
+def test_rendering_anomaly_score_spoofed():
+    context = RequestContext(
+        client_ip="127.0.0.1", path="/",
+        headers={
+            "x-behavior-metrics": json.dumps({
+                "rendering": { "fps": 60, "jitter": 12.5, "offscreenAnom": False }
+            })
+        }, query_params={}, cookies={}
+    )
+    score_data = RequestUtils.get_rendering_anomaly_score(context)
+    assert score_data["renderingAnomalyScore"] == 65.0
+
+def test_engine_update_config_hot_reload():
+    """Vérifie que la mise à jour à chaud (hot-reload) de la configuration fonctionne sans redémarrage."""
+    config = {
+        "thresholds": {"low": 20, "high": 75, "block": 95},
+        "weights": {"honeypotScore": 1.0, "headerAnomalyScore": 0.5},
+        "dryRun": False
+    }
+    store = InMemoryStore()
+    engine = FingerprintEngine(config, store)
+    
+    # S'assurer de l'état initial
+    assert engine.thresholds["low"] == 20
+    assert engine.weights["headerAnomalyScore"] == 0.5
+    assert engine.dry_run is False
+
+    # Mise à jour de la configuration à chaud
+    new_config = {
+        "thresholds": {"low": 10},
+        "weights": {"headerAnomalyScore": 1.2},
+        "dryRun": True
+    }
+    engine.update_config(new_config)
+
+    # S'assurer que les valeurs internes de l'instance ont été modifiées
+    assert engine.thresholds["low"] == 10
+    assert engine.thresholds["high"] == 75  # N'a pas changé
+    assert engine.weights["headerAnomalyScore"] == 1.2
+    assert engine.dry_run is True
+
+def test_get_behavior_score_with_human_keystroke_dynamics():
+    """Vérifie que des dynamiques de frappe humaines (haute variance) ne lèvent pas d'anomalie."""
+    import json
+    metrics = {
+        "honeypotInteraction": False,
+        "keystrokeLatency": 150.0,
+        "historyLength": 3,
+        "keystrokeDwellTimes": [45, 85, 110, 60, 95],  # Grande variation, stdDev élevé
+        "keystrokeFlightTimes": [
+            {"digraph": "ab", "time": 180},
+            {"digraph": "bc", "time": 290},
+            {"digraph": "cd", "time": 120},
+            {"digraph": "de", "time": 350},
+            {"digraph": "ef", "time": 210}
+        ]  # Grande variation temporelle
+    }
+    context = RequestContext(
+        client_ip="127.0.0.1",
+        path="/",
+        headers={"x-behavior-metrics": json.dumps(metrics)},
+        query_params={},
+        cookies={}
+    )
+    score = RequestUtils.get_behavior_score(context)
+    # Ne devrait pas subir de pénalités de dynamique de frappe, donc score bas (proche de 0)
+    assert score < 30.0
+
+def test_rendering_anomaly_score_offscreen_canvas():
+    """Vérifie que la détection d'OffscreenCanvas non natif (virtualisé) applique une pénalité maximale."""
+    import json
+    context = RequestContext(
+        client_ip="127.0.0.1", path="/",
+        headers={
+            "x-behavior-metrics": json.dumps({
+                "rendering": { "fps": 60, "jitter": 1.5, "offscreenAnom": True }
+            })
+        }, query_params={}, cookies={}
+    )
+    score_data = RequestUtils.get_rendering_anomaly_score(context)
+    assert score_data["renderingAnomalyScore"] == 100.0
 @pytest.mark.asyncio
 async def test_stateless_ticket_generation_and_validation():
     """Vérifie la génération de tickets stateless chiffrés et signés et leur validation."""
@@ -1533,3 +1645,32 @@ async def test_zkp_proof_stateless_validation():
     ) is True
     del os.environ["ED25519_PRIVATE_KEY"]
     del os.environ["ED25519_PUBLIC_KEY"]
+
+def test_gpu_pow_verification():
+    seed = "python-gpu-test-seed"
+    iterations = 50
+    import ctypes
+    h = 0
+    for char in seed:
+        h = (h << 5) - h + ord(char)
+        h = ctypes.c_int32(h).value
+    numeric_seed = abs(h % 1000000) / 1000000
+    import struct
+    def fround_helper(val: float) -> float:
+        try:
+            return struct.unpack('f', struct.pack('f', val))[0]
+        except OverflowError:
+            return float('-inf') if val < 0 else float('inf')
+    solutions = []
+    r = 3.9999
+    for idx in range(64):
+        x = fround_helper(numeric_seed + idx * 0.015)
+        r_float = fround_helper(r)
+        for _ in range(iterations):
+            x = fround_helper(r_float * x * fround_helper(1.0 - x))
+        solutions.append(f"{x:.6f}")
+    solution_string = ",".join(solutions)
+    assert ChallengeUtils.verify_gpu_pow(seed, iterations, solution_string) is True
+    tampered_solutions = list(solutions)
+    tampered_solutions[0] = f"{float(tampered_solutions[0]) + 0.1:.6f}"
+    assert ChallengeUtils.verify_gpu_pow(seed, iterations, ",".join(tampered_solutions)) is False

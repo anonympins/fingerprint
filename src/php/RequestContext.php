@@ -38,6 +38,7 @@ class RequestContext
     public ?string $ja4s = null;
     public ?string $ja4h = null;
     public ?string $http2Fingerprint = null;
+    public ?string $quicFingerprint = null;
     public ?string $tcpFingerprint = null;
 
     /**
@@ -77,6 +78,7 @@ class RequestContext
         $this->ja4h = $this->headers['x-ja4h-hash'] ?? null;
         $this->http2Fingerprint = $this->headers['x-http2-fingerprint'] ?? null;
         $this->tcpFingerprint = $this->headers['x-tcp-fingerprint'] ?? null;
+        $this->quicFingerprint = $this->headers['x-quic-fp'] ?? null;
         $this->tlsSessionId = $this->headers['x-tls-session-id'] ?? $this->headers['x-ssl-session-id'] ?? null;
     }
     /**

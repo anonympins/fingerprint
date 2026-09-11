@@ -189,7 +189,82 @@ export function generateStatelessTicket(payload) {
   const signature = crypto.createHmac('sha256', key).update(Buffer.concat([iv, encrypted])).digest();
   return `${base64UrlEncode(iv)}.${base64UrlEncode(encrypted)}.${base64UrlEncode(signature)}`;
 }
+/**
+ * Détecte les anomalies de flux QUIC/HTTP3 par rapport au User-Agent.
+ * @private
+ * @param {object} context - Le contexte de la requête.
+ * @returns {{quicAnomalyScore: number}}
+ */
+function getQuicAnomalyScore(context) {
+    const quicFp = context.headers?.['x-quic-fp'] || context.quicFingerprint || null;
+    if (!quicFp || typeof quicFp !== 'string') {
+        return { quicAnomalyScore: 0.0 };
+    }
 
+    const parts = quicFp.split(';');
+    if (parts.length < 2) return { quicAnomalyScore: 0.0 };
+
+    const params = {};
+    parts[1].split(',').forEach(p => {
+        const kv = p.split('=');
+        if (kv.length === 2) params[kv[0]] = kv[1];
+    });
+    const priorityOrder = parts[2] || '';
+
+    const ua = context.headers?.['user-agent'] || '';
+    const uaParts = parseUserAgent(ua);
+    const browser = uaParts.browser;
+
+    if (!browser) return { quicAnomalyScore: 0.0 };
+
+    let anomaly = 0.0;
+    if (browser.startsWith('Chrome') || browser.startsWith('Edge')) {
+        const maxData = parseInt(params['1'] || '0', 10);
+        const maxStreams = parseInt(params['4'] || '0', 10);
+        if (maxData > 0 && maxData < 1048576) anomaly += 40.0;
+        if (maxStreams > 0 && maxStreams !== 100) anomaly += 30.0;
+        if (priorityOrder && !priorityOrder.includes('u=')) anomaly += 30.0;
+    } else if (browser.startsWith('Firefox')) {
+        const maxData = parseInt(params['1'] || '0', 10);
+        if (maxData > 0 && maxData > 5000000) anomaly += 40.0;
+    }
+
+    return { quicAnomalyScore: Math.max(0.0, Math.min(100.0, anomaly)) };
+}
+/**
+ * Détecte les anomalies de rendu (V-Sync, FPS, gigue) à partir des métriques d'affichage.
+ * @private
+ * @param {object} context - Le contexte de la requête.
+ * @returns {{renderingAnomalyScore: number}}
+ */
+function getRenderingAnomalyScore(context) {
+  const behaviorHeader = context.headers?.['x-behavior-metrics'];
+  if (!behaviorHeader) {
+    return { renderingAnomalyScore: 0.0 };
+  }
+  try {
+    const metrics = JSON.parse(behaviorHeader);
+    if (!metrics || !metrics.rendering) {
+      return { renderingAnomalyScore: 0.0 };
+    }
+    const rendering = metrics.rendering;
+    let score = 0.0;
+    if (rendering.offscreenAnom) {
+      score += 100.0;
+    }
+    const fps = parseFloat(rendering.fps || 0.0);
+    const jitter = parseFloat(rendering.jitter || 0.0);
+    if (fps > 250.0 || (fps > 0.0 && fps < 15.0)) {
+      score += 50.0;
+    }
+    if (jitter > 6.0) {
+      score += Math.min(80.0, (jitter - 6.0) * 10.0);
+    }
+    return { renderingAnomalyScore: Math.min(100.0, score) };
+  } catch (e) {
+    return { renderingAnomalyScore: 0.0 };
+  }
+}
 export function parseStatelessTicket(ticket) {
   try {
     if (ticket.startsWith('ed25519.')) {
@@ -304,7 +379,10 @@ const securityProfiles = {
             tlsSpoofingScore: 0.8, // NOUVEAU: Poids pour la détection de spoofing TLS
             subnetScore: 0.4, // NOUVEAU: Poids pour la réputation du sous-réseau
             ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.6 // NOUVEAU: Poids pour le clustering botnet
+            botnetClusterScore: 0.6, // NOUVEAU: Poids pour le clustering botnet
+            tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
+            quicAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie QUIC
+            renderingAnomalyScore: 0.8 // NOUVEAU: Poids pour l'anomalie de rendu
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -340,7 +418,8 @@ const securityProfiles = {
             tlsSpoofingScore: 1.0, // Plus agressif pour le spoofing TLS
             subnetScore: 0.5,
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.8 // NOUVEAU: Poids pour le clustering botnet
+            botnetClusterScore: 0.8, // NOUVEAU: Poids pour le clustering botnet
+            renderingAnomalyScore: 1.0 // NOUVEAU: Poids pour l'anomalie de rendu
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -377,7 +456,9 @@ const securityProfiles = {
             tlsSpoofingScore: 0.7, // Important pour les API
             subnetScore: 0.4,
             ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.7 // NOUVEAU: Poids pour le clustering botnet
+            botnetClusterScore: 0.7, // NOUVEAU: Poids pour le clustering botnet
+            tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
+            quicAnomalyScore: 0.8 // NOUVEAU: Poids pour l'anomalie QUIC
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -415,7 +496,10 @@ const securityProfiles = {
             tlsSpoofingScore: 0.6, // Moins critique pour les blogs
             subnetScore: 0.2,
             ipReputationScore: 0.3, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.5 // NOUVEAU: Poids pour le clustering botnet
+            botnetClusterScore: 0.5, // NOUVEAU: Poids pour le clustering botnet
+            tcpAnomalyScore: 0.5, // NEW: Anomalie de pile TCP/IP
+            quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
+            renderingAnomalyScore: 0.5 // NOUVEAU: Poids pour l'anomalie de rendu
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -452,7 +536,10 @@ const securityProfiles = {
             tlsSpoofingScore: 0.9, // Très important pour l'e-commerce
             subnetScore: 0.5,
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.9 // NOUVEAU: Poids pour le clustering botnet
+            botnetClusterScore: 0.9, // NOUVEAU: Poids pour le clustering botnet
+            tcpAnomalyScore: 0.9, // NEW: Anomalie de pile TCP/IP
+            quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
+            renderingAnomalyScore: 0.9 // NOUVEAU: Poids pour l'anomalie de rendu
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -1599,6 +1686,41 @@ function getBehaviorScore(context) {
     // Plausibilité de la latence de frappe
     if (metrics.keystrokeLatency > 0 && metrics.keystrokeLatency < 40) score += 25; // Frappe trop rapide pour un humain.
     if (metrics.keystrokeLatency > 1000) score += 15; // Latence très élevée, peut être un script lent.
+
+    // NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
+    const dwellTimes = metrics.keystrokeDwellTimes || [];
+    const flightTimes = metrics.keystrokeFlightTimes || [];
+
+    if (dwellTimes.length >= 5) {
+        const meanDwell = dwellTimes.reduce((a, b) => a + b, 0) / dwellTimes.length;
+        const varDwell = dwellTimes.reduce((a, b) => a + Math.pow(b - meanDwell, 2), 0) / dwellTimes.length;
+        const stdDevDwell = Math.sqrt(varDwell);
+
+        if (stdDevDwell < 2.0) {
+            score += 35; // Suspicion d'automatisation (pas de variation humaine de pression)
+        }
+        if (meanDwell < 15.0) {
+            score += 25; // Dwell time irréaliste
+        }
+    }
+
+    if (flightTimes.length >= 5) {
+        const times = flightTimes.map(f => f.time);
+        const meanFlight = times.reduce((a, b) => a + b, 0) / times.length;
+        const varFlight = times.reduce((a, b) => a + Math.pow(b - meanFlight, 2), 0) / times.length;
+        const stdDevFlight = Math.sqrt(varFlight);
+
+        if (stdDevFlight < 3.0) {
+            score += 35; // Pas de variation de transition (flight time robotique)
+        }
+        if (meanFlight < 25.0) {
+            score += 25; // Transitions trop rapides
+        }
+        const benfordDev = Optimization.Operators.benfordTest(times);
+        if (benfordDev > 0.18) {
+            score += 30; // Les intervalles ne suivent pas la loi de Benford
+        }
+    }
 
     // 4. Analyse de la distribution avec la loi de Benford (si les valeurs sont non nulles).
     if (segments.length > 10) {
@@ -2766,8 +2888,9 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const stableFp = extractStablePart(currentDeviceHash);
   const stableFpHash = cyrb53(stableFp).toString();
   const { botnetClusterScore } = await getBotnetClusterScore(context, stableFpHash);
-
-    const { tcpAnomalyScore } = getTcpAnomalyScore(context);
+  const { tcpAnomalyScore } = getTcpAnomalyScore(context);
+  const { quicAnomalyScore } = getQuicAnomalyScore(context);
+  const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -2779,7 +2902,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, quicAnomalyScore, renderingAnomalyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -3145,6 +3268,18 @@ export class FingerprintEngine {
   }
 
   /**
+   * Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
+   * sans nécessiter de redémarrage.
+   * @param {object} newConfig - La nouvelle configuration partielle ou complète.
+   */
+  updateConfig(newConfig) {
+    this._validateConfig(newConfig);
+    this.securityConfig = deepMerge(this.securityConfig, newConfig);
+    this.dryRun = this.securityConfig.dryRun || false;
+    this._log('Configuration mise à jour à chaud (Hot-Reloaded)', this.securityConfig);
+  }
+
+  /**
    * Validates the security configuration object to detect potential typos or missing essential keys.
    * @private
    * @param {object} config - The security configuration object.
@@ -3208,7 +3343,9 @@ export class FingerprintEngine {
             (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0) +
             (suspicionVector.subnetScore || 0) * (weights.subnetScore || 0) +
             (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
-            (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0);
+            (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
+            (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
+            (suspicionVector.renderingAnomalyScore || 0) * (weights.renderingAnomalyScore || 0); // NOUVEAU: Rendering Anomaly
 
         return Math.min(100, score);
     }
@@ -5186,6 +5323,8 @@ export const __internal = {
     parseTcpSyn, // Expose for testing
     classifyTcpOs, // Expose for testing
     getTcpAnomalyScore, // Expose for testing,
+    getQuicAnomalyScore, // NOUVEAU: Expose pour les tests
+    getRenderingAnomalyScore, // NOUVEAU: Expose pour les tests
     registerCooperativeNode,
     findPeerInSubnet,
     handleCooperativeRequest

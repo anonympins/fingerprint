@@ -341,6 +341,52 @@ const ClientLibrary = {
     },
 
     /**
+     * Démarre le suivi de la régularité d'affichage (V-Sync/rAF) pour détecter les framebuffers logiciels sans V-Sync.
+     */
+    startRenderingTracker() {
+        if (this._renderingTrackerAttached) return;
+        this._renderingTrackerAttached = true;
+
+        if (typeof window === 'undefined' || !window.requestAnimationFrame) return;
+
+        const rAfTimestamps = [];
+        let lastTime = performance.now();
+        const maxSamples = 15;
+
+        const checkOffscreenAnom = () => {
+            try {
+                if ('OffscreenCanvas' in window && HTMLCanvasElement.prototype.transferControlToOffscreen) {
+                    const nativeToString = Function.prototype.toString.call(HTMLCanvasElement.prototype.transferControlToOffscreen);
+                    return !nativeToString.includes('[native code]');
+                }
+            } catch (e) {}
+            return false;
+        };
+
+        const loop = (time) => {
+            const delta = time - lastTime;
+            lastTime = time;
+            if (rAfTimestamps.length < maxSamples) {
+                if (rAfTimestamps.length > 0) { // Skip first delta
+                    rAfTimestamps.push(delta);
+                }
+                window.requestAnimationFrame(loop);
+            } else {
+                const avg = rAfTimestamps.reduce((a, b) => a + b, 0) / rAfTimestamps.length;
+                const sqDiffs = rAfTimestamps.map(v => Math.pow(v - avg, 2));
+                const avgSqDiff = sqDiffs.reduce((a, b) => a + b, 0) / sqDiffs.length;
+                
+                metrics.rendering = {
+                    fps: Math.round((1000 / avg) * 100) / 100,
+                    jitter: Math.round(Math.sqrt(avgSqDiff) * 100) / 100,
+                    offscreenAnom: checkOffscreenAnom()
+                };
+            }
+        };
+        window.requestAnimationFrame(loop);
+    },
+
+    /**
      * Initialise l'espace Proof-of-Space persistant dans l'IndexedDB locale.
      */
     async initializeSpace(seed, sizeMb) {
@@ -449,27 +495,77 @@ const ClientLibrary = {
     },
 
     /**
-     * Démarre le suivi de la dynamique de frappe pour calculer la latence.
+     * Démarre le suivi de la dynamique de frappe pour calculer le dwell time et le flight time (digraphie/trigraphie).
      * À appeler une fois sur la page.
      */
     startKeystrokeDynamicsTracker() {
         // S'assurer de ne pas attacher l'écouteur plusieurs fois
-        if (keystrokeTimestamps.length > 0) return;
+        if (this._keystrokeTrackerAttached) return;
+        this._keystrokeTrackerAttached = true;
 
-        document.addEventListener('keydown', () => {
+        const activeKeys = new Map();
+        let lastKeyDownTime = 0;
+        let lastKeyName = '';
+
+        document.addEventListener('keydown', (e) => {
             const now = performance.now();
+            const key = e.key;
+            const code = e.code;
+            if (!key && !code) return;
+
+            const keyIdentifier = code || key;
+
+            // Prevent key repeat triggering multiple events
+            if (activeKeys.has(keyIdentifier)) return;
+            activeKeys.set(keyIdentifier, now);
+
             if (keystrokeTimestamps.length > 0) {
                 const lastTimestamp = keystrokeTimestamps[keystrokeTimestamps.length - 1];
                 const latency = now - lastTimestamp;
-                // On ignore les latences irréalistes (trop longues ou trop courtes)
-                if (latency > 10 && latency < 2000) { // Augmenté à 2s
+                if (latency > 10 && latency < 2000) {
                     if (keystrokeLatencies.length >= KEYSTROKE_HISTORY_MAX) {
-                        keystrokeLatencies.shift(); // Garder la taille de l'historique
+                        keystrokeLatencies.shift();
                     }
                     keystrokeLatencies.push(latency);
                 }
             }
             keystrokeTimestamps.push(now);
+
+            // Flight Time (KeyDown to KeyDown)
+            if (lastKeyDownTime > 0) {
+                const flightTime = now - lastKeyDownTime;
+                if (flightTime > 10 && flightTime < 2000) {
+                    if (keystrokeFlightTimes.length >= KEYSTROKE_HISTORY_MAX) {
+                        keystrokeFlightTimes.shift();
+                    }
+                    const digraph = lastKeyName ? this._hasher(lastKeyName + "_" + keyIdentifier).toString() : "unknown";
+                    keystrokeFlightTimes.push({ digraph, time: flightTime });
+                }
+            }
+            lastKeyDownTime = now;
+            lastKeyName = keyIdentifier;
+        }, {passive: true});
+
+        document.addEventListener('keyup', (e) => {
+            const now = performance.now();
+            const key = e.key;
+            const code = e.code;
+            if (!key && !code) return;
+
+            const keyIdentifier = code || key;
+
+            if (activeKeys.has(keyIdentifier)) {
+                const pressTime = activeKeys.get(keyIdentifier);
+                const dwellTime = now - pressTime;
+                activeKeys.delete(keyIdentifier);
+
+                if (dwellTime > 5 && dwellTime < 1000) {
+                    if (keystrokeDwellTimes.length >= KEYSTROKE_HISTORY_MAX) {
+                        keystrokeDwellTimes.shift();
+                    }
+                    keystrokeDwellTimes.push(dwellTime);
+                }
+            }
         }, {passive: true});
     },
 
@@ -509,22 +605,75 @@ const ClientLibrary = {
         });
         activeHoneypotListeners.clear();
 
-        // 2. Ajouter les nouveaux écouteurs
+        // 2. Ajouter les nouveaux écouteurs sur le DOM classique
         honeypotFieldNames.forEach(fieldName => {
             const field = document.querySelector(`[name="${fieldName}"]`);
             if (field) {
-                // On utilise une fonction nommée (ou une référence) pour pouvoir la supprimer plus tard.
-                // L'option { once: true } est excellente, mais pour une réinitialisation complète,
-                // il est plus propre de gérer le nettoyage nous-mêmes.
                 const listener = () => {
                     this.onHoneypotTrigger();
-                    // Se supprime lui-même après exécution, comme { once: true }
                     field.removeEventListener('input', listener);
                 };
                 field.addEventListener('input', listener);
                 activeHoneypotListeners.set(field, listener); // On stocke la référence
             }
         });
+
+        // 3. Générer des champs d'input pièges masqués dans un Shadow DOM fermé
+        if (typeof document !== 'undefined' && honeypotFieldNames.length > 0) {
+            const host = document.createElement('div');
+            host.setAttribute('aria-hidden', 'true');
+            host.style.position = 'absolute';
+            host.style.width = '0';
+            host.style.height = '0';
+            host.style.overflow = 'hidden';
+
+            const shadow = host.attachShadow({ mode: 'closed' });
+
+            const style = document.createElement('style');
+            style.textContent = `
+              :host {
+                --trap-pos-state: absolute;
+                --trap-off-val: -9999px;
+                --trap-vis-state: hidden;
+                --trap-scale-val: 0;
+              }
+              .shadow-form-wrapper {
+                position: var(--trap-pos-state);
+                left: var(--trap-off-val);
+                top: var(--trap-off-val);
+                visibility: var(--trap-vis-state);
+                transform: scale(var(--trap-scale-val));
+              }
+            `;
+            shadow.appendChild(style);
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'shadow-form-wrapper';
+
+            honeypotFieldNames.forEach(fieldName => {
+                const label = document.createElement('label');
+                label.textContent = fieldName;
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.name = fieldName;
+                input.tabIndex = -1;
+                input.autocomplete = 'off';
+
+                const trigger = () => {
+                    this.onHoneypotTrigger();
+                };
+
+                input.addEventListener('input', trigger, { passive: true });
+                input.addEventListener('change', trigger, { passive: true });
+                input.addEventListener('focus', trigger, { passive: true });
+
+                wrapper.appendChild(label);
+                wrapper.appendChild(input);
+            });
+
+            shadow.appendChild(wrapper);
+            document.body.appendChild(host);
+        }
     },
 
     /**
@@ -543,6 +692,10 @@ const ClientLibrary = {
         metrics.touchMovementsHistory = touchMovementsHistory;
         // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
         metrics.mouseMovementsHistory = mouseMovementsHistory;
+
+        // NOUVEAU: Keystroke dynamics metrics (dwell and flight times)
+        metrics.keystrokeDwellTimes = keystrokeDwellTimes;
+        metrics.keystrokeFlightTimes = keystrokeFlightTimes;
 
         // Calcule la latence moyenne des frappes
         if (keystrokeLatencies.length > 0) {
@@ -672,24 +825,61 @@ const ClientLibrary = {
       return;
     }
 
-    const trapContainer = document.createElement('div');
-    trapContainer.setAttribute('aria-hidden', 'true');
-    trapContainer.style.position = 'absolute';
-    trapContainer.style.left = '-9999px';
-    trapContainer.style.top = '-9999px';
-      trapContainer.style.transform = 'scale(0)';
-      trapContainer.style.pointerEvents = 'none';
+    const host = document.createElement('div');
+    host.setAttribute('aria-hidden', 'true');
+    host.style.position = 'absolute';
+    host.style.width = '0';
+    host.style.height = '0';
+    host.style.overflow = 'hidden';
 
-    urls.forEach((url,i) => {
+    const shadow = host.attachShadow({ mode: 'closed' });
+
+    const style = document.createElement('style');
+    style.textContent = `
+      :host {
+        --trap-layout-pos: absolute;
+        --trap-offset-val: -9999px;
+        --trap-visibility-state: hidden;
+        --trap-scale-factor: 0;
+        --trap-ptr-events: none;
+      }
+      .shadow-trap-wrapper {
+        position: var(--trap-layout-pos);
+        left: var(--trap-offset-val);
+        top: var(--trap-offset-val);
+        visibility: var(--trap-visibility-state);
+        transform: scale(var(--trap-scale-factor));
+        pointer-events: var(--trap-ptr-events);
+      }
+      a {
+        color: transparent;
+        text-decoration: none;
+      }
+    `;
+    shadow.appendChild(style);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'shadow-trap-wrapper';
+
+    urls.forEach((url, i) => {
       const link = document.createElement('a');
       link.href = url;
       link.rel = 'nofollow';
-      link.tabIndex = -1; // Make it unfocusable
-      link.innerHTML = `<span>&gt; ${i+1}</span>`; // SEO-insignificant content
-      trapContainer.appendChild(link);
+      link.tabIndex = -1;
+      link.innerHTML = `<span>&gt; ${i + 1}</span>`;
+
+      const trigger = () => {
+        this.onHoneypotTrigger();
+      };
+      link.addEventListener('click', trigger, { passive: true });
+      link.addEventListener('focus', trigger, { passive: true });
+      link.addEventListener('mouseover', trigger, { passive: true });
+
+      wrapper.appendChild(link);
     });
 
-    document.body.appendChild(trapContainer);
+    shadow.appendChild(wrapper);
+    document.body.appendChild(host);
   },
   /**
    * Intercepte une réponse de challenge JSON, le résout, et réessaie la requête.
@@ -749,6 +939,7 @@ const ClientLibrary = {
         keystrokes = true,
         clicks = true, // Add new option
         touches = true, // Nouveau paramètre tactiles
+            rendering = true,
             phantomTraps = true, // NOUVEAU
         honeypots = [],
         trapUrls = [], // Nouveau paramètre pour les URL pièges
@@ -773,6 +964,9 @@ const ClientLibrary = {
     if (touches) {
         this.startTouchEventTracker();
     }
+        if (rendering) {
+            this.startRenderingTracker();
+        }
         if (phantomTraps) {
             this.injectPhantomTraps();
         }
@@ -941,6 +1135,7 @@ const metrics = {
     honeypotInteraction: false,
     historyLength: 0,
     clientTimestamp: 0,
+    rendering: { fps: 0, jitter: 0, offscreenAnom: false },
 };
 
 let lastMousePos = { x: 0, y: 0 };
@@ -953,6 +1148,8 @@ const CLICKS_HISTORY_MAX = 50;
 let activeHoneypotListeners = new Map(); // Garde une trace des écouteurs actifs
 let keystrokeTimestamps = [];
 let keystrokeLatencies = []; // NOUVEAU: Tableau dédié pour les latences
+let keystrokeDwellTimes = [];
+let keystrokeFlightTimes = [];
 const KEYSTROKE_HISTORY_MAX = 20; // On garde l'historique des 20 dernières frappes
 
 
@@ -966,6 +1163,7 @@ export const startMouseEntropyTracker = ClientLibrary.startMouseEntropyTracker.b
 export const startKeystrokeDynamicsTracker = ClientLibrary.startKeystrokeDynamicsTracker.bind(ClientLibrary);
 export const startClickTracker = ClientLibrary.startClickTracker.bind(ClientLibrary);
 export const startTouchEventTracker = ClientLibrary.startTouchEventTracker.bind(ClientLibrary);
+export const startRenderingTracker = ClientLibrary.startRenderingTracker.bind(ClientLibrary);
 export const initializeHoneypots = ClientLibrary.initializeHoneypots.bind(ClientLibrary);
 export const getClientBehaviorMetrics = ClientLibrary.getClientBehaviorMetrics.bind(ClientLibrary);
 export const protectedFetch = ClientLibrary.protectedFetch.bind(ClientLibrary);

@@ -301,12 +301,15 @@ class RequestContext:
     request_timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
     new_cookies: List[Dict[str, Any]] = field(default_factory=list)
     tls_session_id: Optional[str] = None
+    quic_fingerprint: Optional[str] = None
 
     def __post_init__(self):
         # Normalize headers to lowercase for consistent lookup
         self.headers = {k.lower(): v for k, v in self.headers.items()}
         if not self.tls_session_id:
             self.tls_session_id = self.headers.get("x-tls-session-id") or self.headers.get("x-ssl-session-id")
+        if not self.quic_fingerprint:
+            self.quic_fingerprint = self.headers.get("x-quic-fp")
 
 class InMemoryStore:
     """
@@ -417,6 +420,47 @@ class FingerprintBuilder:
 
 # --- CORE: Challenge Utilities ---
 class ChallengeUtils:
+    @staticmethod
+    def fround(val: float) -> float:
+        import struct
+        try:
+            return struct.unpack('f', struct.pack('f', val))[0]
+        except OverflowError:
+            return float('-inf') if val < 0 else float('inf')
+
+    @staticmethod
+    def hash_seed_to_float(seed: str) -> float:
+        import ctypes
+        h = 0
+        for char in seed:
+            h = (h << 5) - h + ord(char)
+            h = ctypes.c_int32(h).value
+        return abs(h % 1000000) / 1000000
+
+    @staticmethod
+    def verify_gpu_pow(seed: str, iterations: int, solution: str, sample_indices: list = [0, 12, 35, 57]) -> bool:
+        if not solution:
+            return False
+        values = solution.split(",")
+        if len(values) != 64:
+            return False
+        try:
+            numeric_seed = ChallengeUtils.hash_seed_to_float(seed)
+            r = 3.9999
+            for idx in sample_indices:
+                if idx < 0 or idx >= 64:
+                    return False
+                x = ChallengeUtils.fround(numeric_seed + idx * 0.015)
+                r_float = ChallengeUtils.fround(r)
+                for _ in range(iterations):
+                    x = ChallengeUtils.fround(r_float * x * ChallengeUtils.fround(1.0 - x))
+                client_val = float(values[idx])
+                if abs(client_val - x) > 1e-4:
+                    return False
+            return True
+        except Exception:
+            return False
+
     @staticmethod
     def _base64url_encode(data: bytes) -> str:
         return base64.urlsafe_b64encode(data).decode('utf-8').rstrip('=')
@@ -1066,6 +1110,85 @@ class RequestUtils:
         return 0.0
 
     @staticmethod
+    def get_quic_anomaly_score(context: RequestContext) -> Dict[str, float]:
+        quic_fp = context.headers.get("x-quic-fp") or getattr(context, "quic_fingerprint", None)
+        if not quic_fp or not isinstance(quic_fp, str):
+            return {"quicAnomalyScore": 0.0}
+
+        parts = quic_fp.split(";")
+        if len(parts) < 2:
+            return {"quicAnomalyScore": 0.0}
+
+        params = {}
+        for p in parts[1].split(","):
+            kv = p.split("=", 1)
+            if len(kv) == 2:
+                params[kv[0]] = kv[1]
+        priority_order = parts[2] if len(parts) > 2 else ""
+
+        ua = context.headers.get("user-agent", "")
+        ua_parts = RequestUtils.parse_user_agent(ua)
+        browser = ua_parts.get("browser")
+
+        if not browser:
+            return {"quicAnomalyScore": 0.0}
+
+        anomaly = 0.0
+        if browser.startswith("Chrome") or browser.startswith("Edge"):
+            try:
+                max_data = int(params.get("1", "0"))
+                max_streams = int(params.get("4", "0"))
+                if max_data > 0 and max_data < 1048576:
+                    anomaly += 40.0
+                if max_streams > 0 and max_streams != 100:
+                    anomaly += 30.0
+                if priority_order and "u=" not in priority_order:
+                    anomaly += 30.0
+            except ValueError:
+                pass
+        elif browser.startswith("Firefox"):
+            try:
+                max_data = int(params.get("1", "0"))
+                if max_data > 0 and max_data > 5000000:
+                    anomaly += 40.0
+            except ValueError:
+                pass
+
+        return {"quicAnomalyScore": max(0.0, min(100.0, anomaly))}
+
+    @staticmethod
+    def get_rendering_anomaly_score(context: RequestContext) -> Dict[str, float]:
+        header = context.headers.get("x-behavior-metrics")
+        if not header:
+            return {"renderingAnomalyScore": 0.0}
+        try:
+            metrics = json.loads(header)
+        except Exception:
+            return {"renderingAnomalyScore": 0.0}
+
+        rendering = metrics.get("rendering")
+        if not rendering:
+            return {"renderingAnomalyScore": 0.0}
+
+        score = 0.0
+        if rendering.get("offscreenAnom"):
+            score += 100.0
+
+        try:
+            fps = float(rendering.get("fps", 0.0))
+            jitter = float(rendering.get("jitter", 0.0))
+        except (ValueError, TypeError):
+            fps = 0.0
+            jitter = 0.0
+
+        if fps > 250.0 or (0.0 < fps < 15.0):
+            score += 50.0
+        if jitter > 6.0:
+            score += min(80.0, (jitter - 6.0) * 10.0)
+
+        return {"renderingAnomalyScore": min(100.0, score)}
+
+    @staticmethod
     def get_click_variance_score(context: RequestContext) -> float:
         header = context.headers.get("x-behavior-metrics")
         if not header:
@@ -1296,6 +1419,36 @@ class RequestUtils:
         ks_latency = metrics.get("keystrokeLatency", 0.0)
         if 0.0 < ks_latency < 40.0: score += 25.0
         if ks_latency > 1000.0: score += 15.0
+
+        # NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
+        dwell_times = metrics.get("keystrokeDwellTimes") or []
+        flight_times = metrics.get("keystrokeFlightTimes") or []
+
+        if len(dwell_times) >= 5:
+            mean_dwell = sum(dwell_times) / len(dwell_times)
+            var_dwell = sum((t - mean_dwell) ** 2 for t in dwell_times) / len(dwell_times)
+            std_dev_dwell = math.sqrt(var_dwell)
+
+            if std_dev_dwell < 2.0:
+                score += 35.0
+            if mean_dwell < 15.0:
+                score += 25.0
+
+        if len(flight_times) >= 5:
+            times = [f.get("time") for f in flight_times if f.get("time") is not None]
+            if len(times) >= 5:
+                mean_flight = sum(times) / len(times)
+                var_flight = sum((t - mean_flight) ** 2 for t in times) / len(times)
+                std_dev_flight = math.sqrt(var_flight)
+
+                if std_dev_flight < 3.0:
+                    score += 35.0
+                if mean_flight < 25.0:
+                    score += 25.0
+                benford_dev = Optimization.benford_test(times)
+                if benford_dev > 0.18:
+                    score += 30.0
+
         if len(mouse_analysis["segments"]) > 10:
             benford_deviation = Optimization.benford_test(mouse_analysis["segments"])
             if benford_deviation > 0.18: score += 35.0
@@ -2000,6 +2153,25 @@ class FingerprintEngine:
             except Exception as e:
                 print(f"[FingerprintEngine] Background initialization of ProblemManager failed: {e}")
 
+    def update_config(self, new_config: Dict[str, Any]) -> None:
+        """
+        Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
+        sans nécessiter de redémarrage.
+        """
+        def deep_merge(target: dict, source: dict) -> dict:
+            out = copy.deepcopy(target)
+            for k, v in source.items():
+                if isinstance(v, dict) and k in out and isinstance(out[k], dict):
+                    out[k] = deep_merge(out[k], v)
+                else:
+                    out[k] = copy.deepcopy(v)
+            return out
+
+        self.config = deep_merge(self.config, new_config)
+        self.thresholds = self.config.get("thresholds", self.thresholds)
+        self.weights = self.config.get("weights", self.weights)
+        self.dry_run = self.config.get("dryRun", self.dry_run)
+
     def _get_weight(self, key: str, default: float) -> float:
         if not self.weights:
             return default
@@ -2242,6 +2414,12 @@ class FingerprintEngine:
         tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
         tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
 
+        quic_anomaly = RequestUtils.get_quic_anomaly_score(context)
+        quic_anomaly_score = quic_anomaly.get("quicAnomalyScore", 0.0)
+
+        rendering_anomaly = RequestUtils.get_rendering_anomaly_score(context)
+        rendering_anomaly_score = rendering_anomaly.get("renderingAnomalyScore", 0.0)
+
 
         await self.store.set(f"device:{device_id}", device_data)
 
@@ -2263,7 +2441,9 @@ class FingerprintEngine:
             "ipReputationScore": ip_reputation_score,
             "cookieDroppingScore": cookie_dropping_score,
             "subnetScore": subnet_score,
+            "quicAnomalyScore": quic_anomaly_score,
             "tcpAnomalyScore": tcp_anomaly_score,
+            "renderingAnomalyScore": rendering_anomaly_score,
         })
         return suspicion_vector
 
@@ -3783,6 +3963,8 @@ if __name__ == "__main__":
                 "tlsSpoofingScore": 0.8,
                 "botScore": 1.0,
                 "honeypotScore": 1.0,
+                "quicAnomalyScore": 0.8,
+                "renderingAnomalyScore": 0.8,
             },
             "honeypot": {
                 "fields": ["email_confirm"],

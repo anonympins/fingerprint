@@ -61,6 +61,19 @@
          $this->validateConfig($securityConfig);
      }
 
+    /**
+     * Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
+     * sans nécessiter de redémarrage.
+     *
+     * @param array $newConfig La nouvelle configuration (partielle ou complète).
+     */
+    public function updateConfig(array $newConfig): void
+    {
+        $this->validateConfig($newConfig);
+        $this->securityConfig = SecurityProfiles::deepMerge($this->securityConfig, $newConfig);
+        $this->log('Configuration mise à jour à chaud (Hot-Reloaded)', $this->securityConfig);
+    }
+
      private function validateConfig(array $config): void
      {
          if (empty($config)) {
@@ -467,6 +480,12 @@
          // Score d'anomalie de pile TCP/IP
          $tcpAnomaly = RequestUtils::getTcpAnomalyScore($context);
 
+         // Score d'anomalie de flux QUIC/HTTP3
+         $quicAnomaly = RequestUtils::getQuicAnomalyScore($context);
+
+         // Score d'anomalie de rendu d'affichage (V-Sync)
+         $renderingAnomaly = RequestUtils::getRenderingAnomalyScore($context);
+
          // Assemblage du vecteur de suspicion final
          $suspicionVector = array_merge($suspicionVector, [
              'inconsistencyScore' => $inconsistencyScore,
@@ -486,6 +505,8 @@
              'subnetScore' => $subnetScore['subnetScore'],
              'botnetClusterScore' => $botnetCluster['botnetClusterScore'],
              'tcpAnomalyScore' => $tcpAnomaly['tcpAnomalyScore'],
+             'quicAnomalyScore' => $quicAnomaly['quicAnomalyScore'],
+             'renderingAnomalyScore' => $renderingAnomaly['renderingAnomalyScore'],
          ]);
  
          // Sauvegarder l'état mis à jour de l'appareil dans le store

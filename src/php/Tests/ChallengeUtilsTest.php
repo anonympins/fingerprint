@@ -10,6 +10,83 @@ use PHPUnit\Framework\TestCase;
 
 class ChallengeUtilsTest extends TestCase
 {
+    public function testGpuPowDeterministicHashing(): void
+    {
+        $seed = 'test-seed-determinism';
+        $f1 = ChallengeUtils::hashSeedToFloat($seed);
+        $f2 = ChallengeUtils::hashSeedToFloat($seed);
+        $f3 = ChallengeUtils::hashSeedToFloat('different-seed');
+
+        $this->assertEquals($f1, $f2, 'Seed hashing must be deterministic.');
+        $this->assertGreaterThanOrEqual(0, $f1);
+        $this->assertLessThan(1, $f1);
+        $this->assertNotEquals($f1, $f3);
+    }
+
+    public function testGpuPowVerificationRejectsTamperedSolution(): void
+    {
+        $seed = 'php-verification-seed';
+        $iterations = 100;
+
+        // Generate correct solutions mimicking the GPU solver trajectory
+        $numericSeed = ChallengeUtils::hashSeedToFloat($seed);
+        $r = 3.9999;
+        $solutions = [];
+        $fround = function (float $value): float {
+            return unpack('f', pack('f', $value))[1];
+        };
+
+        for ($idx = 0; $idx < 64; $idx++) {
+            $x = $fround($numericSeed + $idx * 0.015);
+            $rFloat = $fround($r);
+            for ($i = 0; $i < $iterations; $i++) {
+                $x = $fround($rFloat * $x * $fround(1.0 - $x));
+            }
+            $solutions[] = number_format($x, 6, '.', '');
+        }
+        $validSolution = implode(',', $solutions);
+
+        $this->assertTrue(ChallengeUtils::verifyGpuPow($seed, $iterations, $validSolution));
+
+        // Tamper with value on verified sample index 12
+        $tampered = $solutions;
+        $tampered[12] = (string)((float)$tampered[12] + 0.0002); // Out of tolerance
+        $this->assertFalse(ChallengeUtils::verifyGpuPow($seed, $iterations, implode(',', $tampered)));
+    }
+
+    public function testGpuPowVerification(): void
+    {
+        $seed = 'php-gpu-test-seed';
+        $iterations = 50;
+        
+        $hash = 0;
+        for ($i = 0; $i < strlen($seed); $i++) {
+            $hash = (($hash << 5) - $hash + ord($seed[$i])) & 0xffffffff;
+            if ($hash & 0x80000000) {
+                $hash = $hash - 0x100000000;
+            }
+        }
+        $numericSeed = abs($hash % 1000000) / 1000000;
+        $r = 3.9999;
+        $solutions = [];
+        $fround = function (float $value): float {
+            return unpack('f', pack('f', $value))[1];
+        };
+        for ($idx = 0; $idx < 64; $idx++) {
+            $x = $fround($numericSeed + $idx * 0.015);
+            $rFloat = $fround($r);
+            for ($i = 0; $i < $iterations; $i++) {
+                $x = $fround($rFloat * $x * $fround(1.0 - $x));
+            }
+            $solutions[] = number_format($x, 6, '.', '');
+        }
+        $solutionString = implode(',', $solutions);
+        $this->assertTrue(ChallengeUtils::verifyGpuPow($seed, $iterations, $solutionString));
+        $tamperedSolutions = $solutions;
+        $tamperedSolutions[0] = (string)((float)$tamperedSolutions[0] + 0.1);
+        $this->assertFalse(ChallengeUtils::verifyGpuPow($seed, $iterations, implode(',', $tamperedSolutions)));
+    }
+
     protected function setUp(): void
     {
         // Définir une clé secrète pour les tests

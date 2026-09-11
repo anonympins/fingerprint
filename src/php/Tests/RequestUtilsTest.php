@@ -48,6 +48,28 @@ class RequestUtilsTest extends TestCase
         $score = RequestUtils::getCrossLayerInconsistency($context);
         $this->assertEquals(20.0, $score['crossLayerInconsistencyScore']);
     }
+    public function testGetRenderingAnomalyScoreEmpty(): void
+    {
+        $context = $this->createRequestContext();
+        $res = RequestUtils::getRenderingAnomalyScore($context);
+        $this->assertEquals(0.0, $res['renderingAnomalyScore']);
+    }
+
+    public function testGetRenderingAnomalyScoreSpoofed(): void
+    {
+        $metrics = [
+            'rendering' => [
+                'fps' => 60,
+                'jitter' => 12.5,
+                'offscreenAnom' => false
+            ]
+        ];
+        $context = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metrics)]
+        ]);
+        $res = RequestUtils::getRenderingAnomalyScore($context);
+        $this->assertEquals(65.0, $res['renderingAnomalyScore']);
+    }
     public function testGetClickVarianceScoreReturnsZeroForNoHistory(): void
     {
         $context = $this->createRequestContext([
@@ -183,6 +205,27 @@ class RequestUtilsTest extends TestCase
         ]);
         $scoreNoActivity = RequestUtils::getBehaviorScore($contextNoActivity);
         $this->assertEquals(40.0, $scoreNoActivity['behaviorScore']);
+    }
+
+    public function testGetBehaviorScoreWithBotLikeKeystrokeDynamics(): void
+    {
+        $metrics = [
+            'honeypotInteraction' => false,
+            'keystrokeLatency' => 100.0,
+            'keystrokeDwellTimes' => [50, 50, 50, 50, 50],
+            'keystrokeFlightTimes' => [
+                ['digraph' => 'ab', 'time' => 100],
+                ['digraph' => 'bc', 'time' => 100],
+                ['digraph' => 'cd', 'time' => 100],
+                ['digraph' => 'de', 'time' => 100],
+                ['digraph' => 'ef', 'time' => 100]
+            ]
+        ];
+        $context = $this->createRequestContext([
+            'headers' => ['x-behavior-metrics' => json_encode($metrics)]
+        ]);
+        $score = RequestUtils::getBehaviorScore($context);
+        $this->assertGreaterThanOrEqual(70.0, $score['behaviorScore']);
     }
 
     public function testGetBehaviorScoreWithBotLikeTouchMovements(): void

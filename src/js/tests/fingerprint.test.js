@@ -33,6 +33,7 @@ const {
     getCompositeDeviceHash,
 } = fingerprint;
 const { store, getRequestPatternScore, getDeviceHash } = __internal;
+const { getRenderingAnomalyScore } = __internal;
 let { getBehaviorScore, getClickVarianceScore } = __internal;
 // Mock the entire dns module
 vi.mock('node:dns/promises');
@@ -1492,6 +1493,50 @@ describe('Fingerprint & PoW Security Suite', () => {
         });
     });
 
+    describe('getRenderingAnomalyScore', () => {
+        it('should return 0 if rendering metrics are missing', () => {
+            const context = { headers: {} };
+            const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+            expect(renderingAnomalyScore).toBe(0);
+        });
+
+        it('should return 100 if offscreen canvas spoofing is detected', () => {
+            const context = {
+                headers: {
+                    'x-behavior-metrics': JSON.stringify({
+                        rendering: { fps: 60, jitter: 0.1, offscreenAnom: true }
+                    })
+                }
+            };
+            const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+            expect(renderingAnomalyScore).toBe(100);
+        });
+
+        it('should return a high score if jitter is very high', () => {
+            const context = {
+                headers: {
+                    'x-behavior-metrics': JSON.stringify({
+                        rendering: { fps: 60, jitter: 12.5, offscreenAnom: false }
+                    })
+                }
+            };
+            const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+            expect(renderingAnomalyScore).toBe(65); // (12.5 - 6.0) * 10 = 65
+        });
+
+        it('should return a high score if FPS is abnormal', () => {
+            const context = {
+                headers: {
+                    'x-behavior-metrics': JSON.stringify({
+                        rendering: { fps: 300, jitter: 1.0, offscreenAnom: false }
+                    })
+                }
+            };
+            const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+            expect(renderingAnomalyScore).toBe(50);
+        });
+    });
+
     describe('getBehaviorScore', () => {
         // La fonction est privée, on la récupère via l'export __internal
         // FIX: Correctly assign the function before tests run.
@@ -1540,6 +1585,24 @@ describe('Fingerprint & PoW Security Suite', () => {
             const { behaviorScore } = getBehaviorScore(context);
             expect(behaviorScore).toBe(10);
         });
+    });
+
+    it('should return a high score for keystroke dynamics with very low dwell/flight variance (bot emulation)', () => {
+        const metrics = {
+            honeypotInteraction: false,
+            keystrokeLatency: 100.0,
+            keystrokeDwellTimes: [50, 50, 50, 50, 50], // stdDev = 0
+            keystrokeFlightTimes: [
+                { digraph: 'ab', time: 100 },
+                { digraph: 'bc', time: 100 },
+                { digraph: 'cd', time: 100 },
+                { digraph: 'de', time: 100 },
+                { digraph: 'ef', time: 100 }
+            ] // stdDev = 0
+        };
+        const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
+        const { behaviorScore } = getBehaviorScore(context);
+        expect(behaviorScore).toBeGreaterThanOrEqual(70); // 35 (stdDevDwell) + 35 (stdDevFlight) = 70
     });
 
     describe('getClickVarianceScore', () => {

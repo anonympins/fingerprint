@@ -436,6 +436,41 @@ class RequestUtils
         if (($metrics['keystrokeLatency'] ?? 0) > 0 && $metrics['keystrokeLatency'] < 40) $score += 25;
         if (($metrics['keystrokeLatency'] ?? 0) > 1000) $score += 15;
 
+        // NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
+        $dwellTimes = $metrics['keystrokeDwellTimes'] ?? [];
+        $flightTimes = $metrics['keystrokeFlightTimes'] ?? [];
+
+        if (count($dwellTimes) >= 5) {
+            $meanDwell = array_sum($dwellTimes) / count($dwellTimes);
+            $varDwell = array_reduce($dwellTimes, fn($carry, $item) => $carry + pow($item - $meanDwell, 2), 0) / count($dwellTimes);
+            $stdDevDwell = sqrt($varDwell);
+
+            if ($stdDevDwell < 2.0) {
+                $score += 35.0;
+            }
+            if ($meanDwell < 15.0) {
+                $score += 25.0;
+            }
+        }
+
+        if (count($flightTimes) >= 5) {
+            $times = array_column($flightTimes, 'time');
+            $meanFlight = array_sum($times) / count($times);
+            $varFlight = array_reduce($times, fn($carry, $item) => $carry + pow($item - $meanFlight, 2), 0) / count($times);
+            $stdDevFlight = sqrt($varFlight);
+
+            if ($stdDevFlight < 3.0) {
+                $score += 35.0;
+            }
+            if ($meanFlight < 25.0) {
+                $score += 25.0;
+            }
+            $benfordDev = Optimization::benfordTest($times);
+            if ($benfordDev > 0.18) {
+                $score += 30.0;
+            }
+        }
+
         // Analyse de Benford sur les segments de mouvement de la souris
         if (count($mouseAnalysis['segments']) > 10) {
             $benfordDeviation = Optimization::benfordTest($mouseAnalysis['segments']);
@@ -469,6 +504,42 @@ class RequestUtils
         }
 
         return ['behaviorScore' => min(100.0, $score)];
+    }
+
+    /**
+     * Calcule un score basé sur la régularité d'affichage (V-Sync) et l'utilisation suspecte d'OffscreenCanvas.
+     * @return array{'renderingAnomalyScore': float}
+     */
+    public static function getRenderingAnomalyScore(RequestContext $context): array
+    {
+        $behaviorHeader = $context->getHeader('x-behavior-metrics');
+        if (!$behaviorHeader) {
+            return ['renderingAnomalyScore' => 0.0];
+        }
+
+        $metrics = json_decode($behaviorHeader, true);
+        if (json_last_error() !== JSON_ERROR_NONE || !isset($metrics['rendering'])) {
+            return ['renderingAnomalyScore' => 0.0];
+        }
+
+        $rendering = $metrics['rendering'];
+        $score = 0.0;
+
+        if (!empty($rendering['offscreenAnom'])) {
+            $score += 100.0;
+        }
+
+        $fps = (float)($rendering['fps'] ?? 0.0);
+        $jitter = (float)($rendering['jitter'] ?? 0.0);
+
+        if ($fps > 250.0 || ($fps > 0.0 && $fps < 15.0)) {
+            $score += 50.0;
+        }
+        if ($jitter > 6.0) {
+            $score += min(80.0, ($jitter - 6.0) * 10.0);
+        }
+
+        return ['renderingAnomalyScore' => min(100.0, $score)];
     }
 
     /**
@@ -1585,6 +1656,55 @@ class RequestUtils
 
         $tcpAnomalyScore = max(0.0, min(100.0, round($tcpAnomalyScore, 1)));
         return ['tcpAnomalyScore' => $tcpAnomalyScore];
+    }
+
+    /**
+     * Détecte les anomalies de flux QUIC/HTTP3 par rapport au User-Agent.
+     * @param RequestContext $context
+     * @return array{'quicAnomalyScore': float}
+     */
+    public static function getQuicAnomalyScore(RequestContext $context): array
+    {
+        $quicFp = $context->getHeader('x-quic-fp') ?? $context->quicFingerprint ?? null;
+        if (empty($quicFp) || !is_string($quicFp)) {
+            return ['quicAnomalyScore' => 0.0];
+        }
+
+        $parts = explode(';', $quicFp);
+        if (count($parts) < 2) {
+            return ['quicAnomalyScore' => 0.0];
+        }
+
+        $params = [];
+        foreach (explode(',', $parts[1]) as $p) {
+            $kv = explode('=', $p, 2);
+            if (count($kv) === 2) {
+                $params[$kv[0]] = $kv[1];
+            }
+        }
+        $priorityOrder = $parts[2] ?? '';
+
+        $ua = $context->getHeader('user-agent') ?? '';
+        $uaParts = self::parseUserAgent($ua);
+        $browser = $uaParts['browser'] ?? null;
+
+        if (empty($browser)) {
+            return ['quicAnomalyScore' => 0.0];
+        }
+
+        $anomaly = 0.0;
+        if (str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge')) {
+            $maxData = isset($params['1']) ? (int)$params['1'] : 0;
+            $maxStreams = isset($params['4']) ? (int)$params['4'] : 0;
+            if ($maxData > 0 && $maxData < 1048576) $anomaly += 40.0;
+            if ($maxStreams > 0 && $maxStreams !== 100) $anomaly += 30.0;
+            if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $anomaly += 30.0;
+        } elseif (str_starts_with($browser, 'Firefox')) {
+            $maxData = isset($params['1']) ? (int)$params['1'] : 0;
+            if ($maxData > 0 && $maxData > 5000000) $anomaly += 40.0;
+        }
+
+        return ['quicAnomalyScore' => max(0.0, min(100.0, $anomaly))];
     }
 
     /**
