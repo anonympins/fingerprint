@@ -155,8 +155,8 @@ def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Opti
         except socket.error:
             return None
 
-def generate_space_challenge(client_ip: str, nonce: str, suspicion_factor: float, original_url: str, security_config: dict) -> dict:
-    pospace_config = security_config.get("pospace", {})
+async def generate_space_challenge(store, client_ip: str, nonce: str, suspicion_factor: float, original_url: str, security_config: dict) -> dict:
+    pospace_config = security_config.get("pospace", {}) or {}
     size_mb = pospace_config.get("sizeMb", 100)
     num_queries = pospace_config.get("numQueries", 10)
     queries = []
@@ -165,13 +165,26 @@ def generate_space_challenge(client_ip: str, nonce: str, suspicion_factor: float
         idx = random.randint(0, max_blocks - 1)
         if idx not in queries:
             queries.append(idx)
-    return {
+    challenge = {
         "type": "pospace",
         "nonce": nonce,
         "sizeMb": size_mb,
         "queries": queries,
         "path": original_url
     }
+
+    peer = await ChallengeUtils.find_peer_in_subnet(store, client_ip, nonce)
+    if peer:
+        challenge["peerId"] = peer["nodeId"]
+        challenge["peerBlockIdx"] = random.randint(0, max_blocks - 1)
+
+        await store.set(f"coop-assoc:{nonce}", {
+            "peerNodeId": peer["nodeId"],
+            "peerSeed": peer["seed"],
+            "peerBlockIdx": challenge["peerBlockIdx"]
+        }, 120)
+
+    return challenge
 
 def generate_space_challenge_page(challenge_details: dict, client_secret: str, security_config: dict) -> str:
     nonce = challenge_details["nonce"]
@@ -428,16 +441,155 @@ class ChallengeUtils:
         return bytes(block)
 
     @staticmethod
-    def verify_space_pow(nonce: str, solution: str, queries: list, seed: str, client_secret: str) -> bool:
+    async def verify_space_pow(store, nonce: str, solution: str, queries: list, seed: str, client_secret: str) -> bool:
         combined = bytearray()
         for idx in queries:
             combined.extend(ChallengeUtils.generate_block(seed, int(idx)))
+
+        assoc = await store.get(f"coop-assoc:{nonce}")
+        if assoc:
+            peer_seed = assoc.get("peerSeed")
+            peer_block_idx = assoc.get("peerBlockIdx")
+            if peer_seed is not None and peer_block_idx is not None:
+                combined.extend(ChallengeUtils.generate_block(peer_seed, int(peer_block_idx)))
+            await store.delete(f"coop-assoc:{nonce}")
+
         final_block = bytes(combined) + f"{nonce}:{client_secret}".encode("utf-8")
         h = hashlib.sha256(final_block).hexdigest()
         return hmac.compare_digest(h, solution)
 
     @staticmethod
+    async def register_cooperative_node(store, client_ip: str, node_id: str, seed: str) -> None:
+        subnet = get_ip_subnet(client_ip)
+        if not subnet:
+            return
+
+        key = f"coop-pospace:subnet:{subnet}"
+        nodes = await store.get(key) or {}
+        now = int(time.time())
+
+        cleaned_nodes = {}
+        for id_, node in nodes.items():
+            if now - node.get("timestamp", 0) < 120:
+                cleaned_nodes[id_] = node
+
+        cleaned_nodes[node_id] = {
+            "nodeId": node_id,
+            "seed": seed,
+            "timestamp": now
+        }
+
+        await store.set(key, cleaned_nodes, 120)
+
+    @staticmethod
+    async def find_peer_in_subnet(store, client_ip: str, exclude_node_id: str) -> Optional[Dict[str, Any]]:
+        subnet = get_ip_subnet(client_ip)
+        if not subnet:
+            return None
+
+        key = f"coop-pospace:subnet:{subnet}"
+        nodes = await store.get(key) or {}
+        now = int(time.time())
+
+        active_peers = []
+        for id_, node in nodes.items():
+            if id_ != exclude_node_id and now - node.get("timestamp", 0) < 120:
+                active_peers.append(node)
+
+        if not active_peers:
+            return None
+
+        return random.choice(active_peers)
+
+    @staticmethod
+    async def handle_cooperative_request(store, params: Dict[str, Any], client_ip: str = '127.0.0.1') -> Optional[Dict[str, Any]]:
+        op = params.get("coop_op")
+        if not op:
+            return None
+
+        node_id = params.get("node_id") or ""
+        if not node_id:
+            return {"error": "Missing node_id"}
+
+        if op == "register":
+            seed = params.get("seed") or ""
+            await ChallengeUtils.register_cooperative_node(store, client_ip, node_id, seed)
+            return {"status": "registered"}
+
+        elif op == "request_peer_block":
+            peer_id = params.get("peer_id") or ""
+            block_idx = int(params.get("block_idx") or "0")
+            req_id = params.get("req_id") or ""
+            if not peer_id or not req_id:
+                return {"error": "Invalid parameters"}
+
+            queue_key = f"coop-mailbox:queue:{peer_id}"
+            requests = await store.get(queue_key) or []
+            requests.append({
+                "req_id": req_id,
+                "requester_id": node_id,
+                "block_idx": block_idx
+            })
+            await store.set(queue_key, requests, 30)
+            return {"status": "queued"}
+
+        elif op == "poll_requests":
+            poll_queue_key = f"coop-mailbox:queue:{node_id}"
+            polled_requests = await store.get(poll_queue_key) or []
+            await store.delete(poll_queue_key)
+            return {"requests": polled_requests}
+
+        elif op == "respond_block":
+            requester_id = params.get("requester_id") or ""
+            respond_req_id = params.get("req_id") or ""
+            block_data = params.get("block_data") or ""
+            if not requester_id or not respond_req_id:
+                return {"error": "Invalid parameters"}
+
+            response_key = f"coop-mailbox:res:{requester_id}:{respond_req_id}"
+            await store.set(response_key, {"block_data": block_data}, 30)
+            return {"status": "delivered"}
+
+        elif op == "poll_response":
+            poll_response_req_id = params.get("req_id") or ""
+            poll_response_key = f"coop-mailbox:res:{node_id}:{poll_response_req_id}"
+            data = await store.get(poll_response_key)
+            if data:
+                await store.delete(poll_response_key)
+                return {"status": "ready", "block_data": data.get("block_data")}
+            return {"status": "pending"}
+
+        return None
+
+    @staticmethod
+    def verify_zkp_proof(y_str: str, t_str: str, s_str: str) -> bool:
+        try:
+            y = int(y_str, 16)
+            t = int(t_str, 16)
+            s = int(s_str, 16)
+            ZKP_P = 115792089237316195423570985008687907853269984665640564039457584007908834671663
+            ZKP_G = 2
+            c_str = f"{ZKP_G}{y}{t}"
+            c = int(hashlib.sha256(c_str.encode("utf-8")).hexdigest(), 16) % ZKP_P
+            left = pow(ZKP_G, s, ZKP_P)
+            right = (t * pow(y, c, ZKP_P)) % ZKP_P
+            return left == right
+        except Exception:
+            return False
+
+    @staticmethod
     def generate_stateless_ticket(payload: Dict[str, Any], secret: str) -> str:
+        ed25519_key_pem = os.environ.get("ED25519_PRIVATE_KEY")
+        if ed25519_key_pem:
+            try:
+                from cryptography.hazmat.primitives.serialization import load_pem_private_key
+                private_key = load_pem_private_key(ed25519_key_pem.encode('utf-8'), password=None, backend=default_backend())
+                serialized = json.dumps(payload).encode('utf-8')
+                signature = private_key.sign(serialized)
+                return f"ed25519.{ChallengeUtils._base64url_encode(serialized)}.{ChallengeUtils._base64url_encode(signature)}"
+            except Exception as e:
+                print(f"[ChallengeUtils] Ed25519 signing failed, falling back to symmetric: {e}")
+
         key = hashlib.sha256(secret.encode('utf-8')).digest()
         iv = os.urandom(16)
         plaintext = json.dumps(payload).encode('utf-8')
@@ -457,6 +609,27 @@ class ChallengeUtils:
     def parse_stateless_ticket(ticket: str, secret: str) -> Optional[Dict[str, Any]]:
         if not ticket or "." not in ticket:
             return None
+        if ticket.startswith("ed25519."):
+            parts = ticket.split(".")
+            if len(parts) != 3:
+                return None
+            try:
+                payload_bytes = ChallengeUtils._base64url_decode(parts[1])
+                signature = ChallengeUtils._base64url_decode(parts[2])
+                
+                ed25519_pub_pem = os.environ.get("ED25519_PUBLIC_KEY")
+                if not ed25519_pub_pem:
+                    print("[ChallengeUtils] ED25519_PUBLIC_KEY is not defined in environment.")
+                    return None
+                    
+                from cryptography.hazmat.primitives.serialization import load_pem_public_key
+                public_key = load_pem_public_key(ed25519_pub_pem.encode('utf-8'), backend=default_backend())
+                public_key.verify(signature, payload_bytes)
+                return json.loads(payload_bytes.decode('utf-8'))
+            except Exception as e:
+                print(f"[ChallengeUtils] Ed25519 verification failed: {e}")
+                return None
+
         parts = ticket.split(".")
         if len(parts) != 3:
             return None
@@ -493,7 +666,8 @@ class ChallengeUtils:
         device_hash: str = '',
         secret: str = '',
         allow_cross_network_roaming: bool = False,
-        store: Optional[Any] = None
+        store: Optional[Any] = None,
+        zkp_proof: str = ''
     ) -> bool:
         if not ip or not ticket:
             return False
@@ -506,6 +680,13 @@ class ChallengeUtils:
             stored_device_hash = ticket_data.get("deviceHash", "")
             
             if not expiry or int(time.time() * 1000) > int(expiry):
+                return False
+            if stored_device_hash and stored_device_hash.startswith("zkp:"):
+                expected_y = stored_device_hash.split(":")[1]
+                if zkp_proof:
+                    y, t, s = zkp_proof.split(":")
+                    if y == expected_y and ChallengeUtils.verify_zkp_proof(y, t, s):
+                        return True
                 return False
             if ip == original_ip:
                 return True
@@ -527,6 +708,13 @@ class ChallengeUtils:
                 
                 if expiry and int(time.time() * 1000) > int(expiry):
                     await store.delete(f"ticket:{ticket}")
+                    return False
+                if stored_device_hash and stored_device_hash.startswith("zkp:"):
+                    expected_y = stored_device_hash.split(":")[1]
+                    if zkp_proof:
+                        y, t, s = zkp_proof.split(":")
+                        if y == expected_y and ChallengeUtils.verify_zkp_proof(y, t, s):
+                            return True
                     return False
                     
                 if ip == original_ip:
@@ -1542,13 +1730,20 @@ class MaliciousPatterns:
         "ssti": re.compile(r"\{\{.*\}\}|\{%.*%\}"),
         "xxe": re.compile(r"<!ENTITY\s+.*SYSTEM", re.IGNORECASE),
         "traversal": re.compile(r"(\.\.\/|\.\.)"),
-        "rce": re.compile(r"`.*`|(?:^|[\n;&|]\s*)(?:ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b", re.IGNORECASE)
+        "rce": re.compile(r"`.*`|(?:^|[\n;&|]\s*)(?:ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b", re.IGNORECASE),
+        "ssrf": re.compile(r"(?:https?://)?(?:127\.\d+\.\d+\.\d+|169\.254\.169\.254|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|localhost|0\.0\.0\.0|\[[0:]+1\])\b", re.IGNORECASE),
+        "crlf": re.compile(r"[\r\n]|%0[ad]", re.IGNORECASE),
+        "xss": re.compile(r"(<script|javascript:|on\w+\s*=|alert\s*\(|confirm\s*\(|prompt\s*\(|<img\s+src[^>]+onerror|<iframe)", re.IGNORECASE),
+        "openRedirect": re.compile(r"^(https?:)?//(?![^\/]*?(localhost|127\.0\.0\.1))[^\s\/]+", re.IGNORECASE),
+        "lfi": re.compile(r"(?:etc/passwd|win\.ini|boot\.ini|php://filter|data://|zip://)", re.IGNORECASE),
+        "shellshock": re.compile(r"\(\)\s*\{\s*:\s*;\s*\}\s*", re.IGNORECASE),
+        "nosql": re.compile(r"\$(?:eq|ne|gt|gte|lt|lte|in|nin|and|or|nor|not|expr|jsonSchema|mod|regex|text|where|elemMatch)", re.IGNORECASE)
     }
 
     @staticmethod
     def is_malicious(string: str, types_to_detect: Optional[List[str]] = None) -> bool:
         if not types_to_detect:
-            types_to_detect = list(MaliciousPatterns.INJECTION_PATTERNS.keys())
+            types_to_detect = [k for k in MaliciousPatterns.INJECTION_PATTERNS.keys() if k != "openRedirect"]
         for t in types_to_detect:
             pattern = MaliciousPatterns.INJECTION_PATTERNS.get(t)
             if pattern and pattern.search(string):
@@ -2206,7 +2401,8 @@ class FingerprintEngine:
         if pow_nonce and pow_type == "pospace" and pow_solution_space:
             challenge_context = await self.store.get(f"secret:{pow_nonce}")
             if challenge_context:
-                is_valid = ChallengeUtils.verify_space_pow(
+                is_valid = await ChallengeUtils.verify_space_pow(
+                    self.store,
                     pow_nonce,
                     pow_solution_space,
                     challenge_context.get("queries", []),
@@ -2399,7 +2595,7 @@ class FingerprintEngine:
                     print(f"[FingerprintEngine] Failed to dispatch useful work, falling back to PoW: {e}")
 
             if self.config.get("enableProofOfSpace"):
-                space_challenge = generate_space_challenge(client_ip, nonce, suspicion_factor, context.path, self.config)
+                space_challenge = await generate_space_challenge(self.store, client_ip, nonce, suspicion_factor, context.path, self.config)
                 await self.store.set(f"secret:{nonce}", {
                     "client_secret": client_secret,
                     "suspicionScore": score,
@@ -3034,13 +3230,61 @@ class AutoTuner:
     _last_best_solution: Optional[Dict[str, Any]] = None
 
     def __init__(self, security_config: Dict[str, Any], traffic_data: List[Dict[str, Any]], options: Optional[Dict[str, Any]] = None):
+        """
+        Initializes the AutoTuner with security configuration, traffic data, and pruning options.
+
+        Args:
+            security_config (Dict[str, Any]): The live security configuration dictionary to be optimized.
+            traffic_data (List[Dict[str, Any]]): The list of collected traffic data logs.
+            options (Optional[Dict[str, Any]]): Configuration options including:
+                - minDataPoints (int, default 200): Minimum required data points to start tuning.
+                - maxDataPoints (int, default 10000): Maximum data points retained in memory.
+                - maxAgeMs (Optional[int], default None): Maximum age of logs in milliseconds.
+                - clearAfterTuning (bool, default False): If True, clear traffic data after tuning.
+                - onCleanup (Optional[Callable], default None): Callback function for processed/pruned logs.
+        """
         self.security_config = security_config
         self.traffic_data = traffic_data
         options = options or {}
         self.min_data_points = options.get("minDataPoints", 200)
         self.max_data_points = options.get("maxDataPoints", 10000)
+        self.clear_after_tuning = options.get("clearAfterTuning", False)
+        self.options = options
+
+    def prune_traffic_data(self) -> None:
+        now = int(time.time() * 1000)
+        removed = []
+
+        # 1. Expire par temps
+        max_age_ms = self.options.get("maxAgeMs")
+        if max_age_ms and max_age_ms > 0:
+            threshold = now - max_age_ms
+            retained = []
+            for log in self.traffic_data:
+                log_ts = log.get("timestamp") or log.get("requestTimestamp") or now
+                if log_ts < threshold:
+                    removed.append(log)
+                else:
+                    retained.append(log)
+            self.traffic_data[:] = retained
+
+        # 2. Politique de taille maximale (conserver les plus récents)
+        if self.max_data_points > 0 and len(self.traffic_data) > self.max_data_points:
+            overflow_count = len(self.traffic_data) - self.max_data_points
+            removed.extend(self.traffic_data[:overflow_count])
+            self.traffic_data[:] = self.traffic_data[overflow_count:]
+
+        # 3. Invocation du callback
+        on_cleanup = self.options.get("onCleanup")
+        if on_cleanup and callable(on_cleanup) and removed:
+            try:
+                on_cleanup(removed)
+            except Exception as e:
+                print(f"[AutoTuning] Error in onCleanup callback: {e}")
 
     def run_optimization_cycle(self) -> None:
+        self.prune_traffic_data()
+
         sanitized_data = sanitize_traffic_data(self.traffic_data)
 
         high_confidence_logs = len([
@@ -3165,6 +3409,17 @@ class AutoTuner:
         print(f"[AutoTuning] Nouveaux seuils : {json.dumps(self.security_config['thresholds'])}")
         print(f"[AutoTuning] Nouveaux poids : {json.dumps(self.security_config['weights'])}")
         print(f"[AutoTuning] Nouveaux patterns : {json.dumps(self.security_config['patterns'])}")
+
+        if self.clear_after_tuning:
+            cleared = list(self.traffic_data)
+            self.traffic_data.clear()
+            on_cleanup = self.options.get("onCleanup")
+            if on_cleanup and callable(on_cleanup) and cleared:
+                try:
+                    on_cleanup(cleared)
+                except Exception as e:
+                    print(f"[AutoTuning] Error in onCleanup callback after clearing: {e}")
+            print(f"[AutoTuning] Explicitly cleared {len(cleared)} processed traffic data points.")
 
     @staticmethod
     def get_best_tuning_solution() -> Optional[Dict[str, Any]]:

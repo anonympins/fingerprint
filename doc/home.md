@@ -58,6 +58,9 @@ Expose and secure Prometheus-compatible metrics for real-time monitoring and obs
 * **Exposed Metrics**: Track request decisions, challenges (solved/failed), and auto-tuning performance.
 * **Integration and Security**: Best practices for securing the `/metrics` endpoint in PHP and Node.js.
 
+### 8. [Ed25519 Key Setup and Configuration](ed25519_keys)
+
+
 ---
 
 *To contribute to the project or run the test suite (Vitest / PHPUnit), please consult the CONTRIBUTING.md file in the project root.*

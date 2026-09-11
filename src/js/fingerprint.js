@@ -8,6 +8,8 @@ import {DynamicWasmGenerator} from "./dynamic-wasm.js";
 import {readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
+import { verifyZkpProof, decodePolymorphicFingerprint, deepMerge, getHeaderSignature, parseJa3, modPow, hashNetwork, normalizeReferer, isPrivateIp, parseUserAgent } from "./fingerprint.utils.js";
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -140,23 +142,7 @@ function getActiveMappingForRequest(headers) {
     return null;
 }
 
-function decodePolymorphicFingerprint(fpString, mapping) {
-    if (!fpString || !mapping || !mapping.keys) return fpString;
-    const reverseKeys = {};
-    for (const [orig, rand] of Object.entries(mapping.keys)) {
-        reverseKeys[rand] = orig;
-    }
-    const parts = fpString.split('|');
-    const mappedParts = parts.map(part => {
-        const pair = part.split(':');
-        if (pair.length === 2) {
-            const origKey = reverseKeys[pair[0]] || pair[0];
-            return `${origKey}:${pair[1]}`;
-        }
-        return part;
-    });
-    return mappedParts.join('|');
-}
+
 
 const base64UrlEncode = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 const base64UrlDecode = (str) => {
@@ -168,6 +154,31 @@ const base64UrlDecode = (str) => {
 };
 
 export function generateStatelessTicket(payload) {
+  let ed25519Key = process.env.ED25519_PRIVATE_KEY;
+  if (ed25519Key) {
+    try {
+      ed25519Key = ed25519Key.replace(/\\n/g, '\n');
+      const serialized = JSON.stringify(payload);
+      let signature;
+      try {
+        signature = crypto.sign(undefined, Buffer.from(serialized), {
+          key: ed25519Key,
+          format: 'pem',
+          type: 'pkcs8'
+        });
+      } catch (signErr) {
+        signature = crypto.sign(null, Buffer.from(serialized), {
+          key: ed25519Key,
+          format: 'pem',
+          type: 'pkcs8'
+        });
+      }
+      return `ed25519.${base64UrlEncode(Buffer.from(serialized))}.${base64UrlEncode(signature)}`;
+    } catch (e) {
+      console.error('[Fingerprint] Ed25519 signing failed, falling back to symmetric:', e.message);
+    }
+  }
+
   const secret = getPowSecret();
   const key = crypto.createHash('sha256').update(secret).digest();
   const iv = crypto.randomBytes(16);
@@ -181,6 +192,40 @@ export function generateStatelessTicket(payload) {
 
 export function parseStatelessTicket(ticket) {
   try {
+    if (ticket.startsWith('ed25519.')) {
+      const parts = ticket.split('.');
+      if (parts.length !== 3) return null;
+      const payloadBuffer = base64UrlDecode(parts[1]);
+      const signatureBuffer = base64UrlDecode(parts[2]);
+      let publicKey = process.env.ED25519_PUBLIC_KEY;
+      if (!publicKey) {
+        console.error('[Fingerprint] ED25519_PUBLIC_KEY is not defined in environment.');
+        return null;
+      }
+      publicKey = publicKey.replace(/\\n/g, '\n');
+      
+      let isVerified = false;
+      try {
+        isVerified = crypto.verify(undefined, payloadBuffer, {
+          key: publicKey,
+          format: 'pem',
+          type: 'spki'
+        }, signatureBuffer);
+      } catch (verifyErr) {
+        try {
+          isVerified = crypto.verify(null, payloadBuffer, {
+            key: publicKey,
+            format: 'pem',
+            type: 'spki'
+          }, signatureBuffer);
+        } catch (verifyErr2) {
+          isVerified = false;
+        }
+      }
+      if (!isVerified) return null;
+      return JSON.parse(payloadBuffer.toString('utf8'));
+    }
+
     const parts = ticket.split('.');
     if (parts.length !== 3) return null;
     
@@ -239,26 +284,6 @@ async function checkChallengeRateLimit(clientIp) {
   return true;
 }
 
-/**
- * @private
- * Deep merges two objects. The `source` object's properties overwrite the `target`'s.
- * @param {object} target - The target object.
- * @param {object} source - The source object.
- * @returns {object} The merged object.
- */
-function deepMerge(target, source) {
-    const output = { ...target };
-    if (target && typeof target === 'object' && source && typeof source === 'object') {
-        Object.keys(source).forEach(key => {
-            if (source[key] && typeof source[key] === 'object' && key in target) {
-                output[key] = deepMerge(target[key], source[key]);
-            } else {
-                output[key] = source[key];
-            }
-        });
-    }
-    return output;
-}
 
 const securityProfiles = {
     /**
@@ -594,44 +619,6 @@ function getTlsFingerprint(context) {
 }
 
 /**
- * Analyses a raw JA3 string.
- * Format: "TLSVersion,Ciphers,Extensions,EllipticCurves,EllipticCurveFormats"
- * @param {string} ja3String
- * @returns {object|null}
- */
-export function parseJa3(ja3String) {
-    if (!ja3String || typeof ja3String !== 'string') {
-        return null;
-    }
-    const parts = ja3String.split(',');
-    if (parts.length !== 5) {
-        return null;
-    }
-    return {
-        tlsVersion: parseInt(parts[0], 10),
-        ciphers: parts[1] !== '' ? parts[1].split('-').map(Number) : [],
-        extensions: parts[2] !== '' ? parts[2].split('-').map(Number) : [],
-        curves: parts[3] !== '' ? parts[3].split('-').map(Number) : [],
-        points: parts[4] !== '' ? parts[4].split('-').map(Number) : []
-    };
-}
-
-/**
- * Creates a stable hash based on device characteristics, independent of the IP.
- * This is our "level 2 fingerprint".
- * @param {object} context - The request context.
- * @returns {string} A hash representing the device.
- */
-function getHeaderSignature(context) {
-    if (!context.rawHeaders) return '';
-    const headerKeys = [];
-    for (let i = 0; i < context.rawHeaders.length; i += 2) {
-        headerKeys.push(context.rawHeaders[i]);
-    }
-    return cyrb53(headerKeys.sort().join(','));
-}
-
-/**
  * Returns the client-side fingerprint if available, otherwise computes a server-side hash.
  * This aligns with the test's expectation for prioritization.
  * @param {object} context The request context.
@@ -764,79 +751,6 @@ const GREASE_VALUES = [
 function hasGrease(values) {
     if (!Array.isArray(values)) return false;
     return values.some(val => GREASE_VALUES.includes(val));
-}
-
-// Fonctions utilitaires
-function parseUserAgent(ua) {
-    // Parser basique du User-Agent
-    const result = {};
-
-    // Détection du navigateur
-    if (ua.includes('Chrome') && !ua.includes('Edg')) {
-        result.browser = 'Chrome';
-        const match = ua.match(/Chrome\/(\d+)/);
-        if (match) result.browser += `/${match[1]}`;
-    } else if (ua.includes('Firefox')) {
-        result.browser = 'Firefox';
-        const match = ua.match(/Firefox\/(\d+)/);
-        if (match) result.browser += `/${match[1]}`;
-    } else if (ua.includes('Safari') && !ua.includes('Chrome')) {
-        result.browser = 'Safari';
-        const match = ua.match(/Version\/(\d+)/);
-        if (match) result.browser += `/${match[1]}`;
-    } else if (ua.includes('Edg')) {
-        result.browser = 'Edge';
-        const match = ua.match(/Edg\/(\d+)/);
-        if (match) result.browser += `/${match[1]}`;
-    }
-
-    // Détection de l'OS
-    if (ua.includes('Windows NT 10.0')) result.os = 'Windows 10';
-    else if (ua.includes('Windows NT 6.1')) result.os = 'Windows 7';
-    else if (ua.includes('Mac OS X')) result.os = 'macOS';
-    else if (ua.includes('Linux') && !ua.includes('Android')) result.os = 'Linux';
-    else if (ua.includes('Android')) result.os = 'Android';
-    else if (ua.includes('iPhone') || ua.includes('iPad')) result.os = 'iOS';
-
-    // Détection du type d'appareil
-    if (ua.includes('Mobile')) result.device = 'mobile';
-    else if (ua.includes('Tablet')) result.device = 'tablet';
-    else result.device = 'desktop';
-
-    return result;
-}
-
-function normalizeReferer(referer) {
-    try {
-        const url = new URL(referer);
-        return `${url.protocol}//${url.hostname}`;
-    } catch {
-        return referer;
-    }
-}
-
-function isPrivateIp(ip) {
-    // Vérifier si l'IP est privée
-    const parts = ip.split('.');
-    if (parts.length !== 4) return false;
-    const first = parseInt(parts[0]);
-    return (first === 10) || (first === 172 && parseInt(parts[1]) >= 16 && parseInt(parts[1]) <= 31) || (first === 192 && parseInt(parts[1]) === 168);
-}
-
-function hashNetwork(ip, prefix = 24) {
-    // Hash du réseau (masque /24 ou /16)
-    const parts = ip.split('.');
-    if (parts.length !== 4) return null;
-    const maskBytes = prefix / 8;
-    const network = parts.slice(0, maskBytes).join('.');
-    // Hash simple
-    let hash = 0;
-    for (let i = 0; i < network.length; i++) {
-        const char = network.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash;
-    }
-    return hash.toString(16);
 }
 
 /**
@@ -1091,19 +1005,30 @@ export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret =
   return finalHash === parseInt(solution, 10);
 };
 
-export function verifySpacePoW(nonce, solution, queries, seed, clientSecret) {
-  const combined = new Uint8Array(queries.length * 1024);
-  for (let i = 0; i < queries.length; i++) {
-    const idx = queries[i];
-    const block = generateBlock(seed, idx);
-    combined.set(block, i * 1024);
-  }
-  
-  const nonceBytes = Buffer.from(nonce + ":" + clientSecret, "utf8");
-  const finalBlock = Buffer.concat([Buffer.from(combined), nonceBytes]);
-  
-  const hash = crypto.createHash("sha256").update(finalBlock).digest("hex");
-  return hash === solution;
+export async function verifySpacePoW(nonce, solution, queries, seed, clientSecret) {
+    let combined = [];
+    for (let i = 0; i < queries.length; i++) {
+        const idx = queries[i];
+        const block = generateBlock(seed, idx);
+        combined.push(...block);
+    }
+
+    const assoc = await store.get(`coop-assoc:${nonce}`);
+    if (assoc) {
+        const peerSeed = assoc.peerSeed;
+        const peerBlockIdx = assoc.peerBlockIdx;
+        if (peerSeed !== undefined && peerBlockIdx !== undefined) {
+            const peerBlock = generateBlock(peerSeed, peerBlockIdx);
+            combined.push(...peerBlock);
+        }
+        await store.delete(`coop-assoc:${nonce}`);
+    }
+
+    const nonceBytes = Buffer.from(nonce + ":" + clientSecret, "utf8");
+    const finalBlock = Buffer.concat([Buffer.from(combined), nonceBytes]);
+
+    const hash = crypto.createHash("sha256").update(finalBlock).digest("hex");
+    return hash === solution;
 }
 
 function generateBlock(seed, blockIndex, blockSize = 1024) {
@@ -1116,26 +1041,31 @@ function generateBlock(seed, blockIndex, blockSize = 1024) {
   return block;
 }
 
-export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
+export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false, zkpProof = '') => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
-  if (typeof ticket !== 'string' || ticket.length === 0) return false;
-
+    if (typeof ticket !== 'string' || ticket.length === 0) return false;
   // 1. Resolve stateless ticket first (zero database I/O cost)
   const statelessData = parseStatelessTicket(ticket);
   if (statelessData) {
     const { expiry, originalIp, deviceId: storedDeviceId, deviceHash: storedDeviceHash } = statelessData;
-
     if (!expiry || Date.now() > expiry) {
       return false;
     }
-
+    if (storedDeviceHash && storedDeviceHash.startsWith('zkp:')) {
+        const expectedY = storedDeviceHash.split(':')[1];
+        if (zkpProof) {
+            const [y, t, s] = zkpProof.split(':');
+            if (y === expectedY && verifyZkpProof(y, t, s)) {
+                return true;
+            }
+        }
+        return false;
+    }
     if (ip === originalIp) return true;
     const currentSubnet = getIpSubnet(ip);
     const originalSubnet = getIpSubnet(originalIp);
     if (currentSubnet && originalSubnet && currentSubnet === originalSubnet) return true;
-
     if (!allowCrossNetworkRoaming) return false;
-
     return !!(deviceId && deviceId === storedDeviceId && deviceHash && deviceHash === storedDeviceHash);
   }
 
@@ -1147,6 +1077,16 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     if (!expiry || Date.now() > expiry) {
       await store.delete(`ticket:${ticket}`);
       return false;
+    }
+    if (storedDeviceHash && storedDeviceHash.startsWith('zkp:')) {
+        const expectedY = storedDeviceHash.split(':')[1];
+        if (zkpProof) {
+            const [y, t, s] = zkpProof.split(':');
+            if (y === expectedY && verifyZkpProof(y, t, s)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     if (ip === originalIp) return true;
@@ -1255,7 +1195,7 @@ function getHeaderAnomalies(context) {
   };
 }
 
-export function generateSpaceChallenge(clientIp, nonce, suspicionFactor, originalUrl, securityConfig) {
+export async function generateSpaceChallenge(clientIp, nonce, suspicionFactor, originalUrl, securityConfig) {
   const sizeMb = securityConfig?.pospace?.sizeMb || 100;
   const numQueries = securityConfig?.pospace?.numQueries || 10;
   
@@ -1268,13 +1208,27 @@ export function generateSpaceChallenge(clientIp, nonce, suspicionFactor, origina
     }
   }
   
-  return {
+  const challenge = {
     type: "pospace",
     nonce: nonce,
     sizeMb,
     queries,
     path: originalUrl
   };
+
+  const peer = await findPeerInSubnet(clientIp, nonce);
+  if (peer) {
+    challenge.peerId = peer.nodeId;
+    challenge.peerBlockIdx = Math.floor(Math.random() * maxBlocks);
+
+    await store.set(`coop-assoc:${nonce}`, {
+      peerNodeId: peer.nodeId,
+      peerSeed: peer.seed,
+      peerBlockIdx: challenge.peerBlockIdx
+    }, 120);
+  }
+
+  return challenge;
 }
 
 function generateSpaceChallengePage(challengeDetails, clientSecret, securityConfig) {
@@ -1418,6 +1372,20 @@ const injectionPatterns = {
     traversal: /(\.\.\/|\.\.\\)/,
     // Remote Command Execution (RCE)
     rce: /`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i,
+    // Server-Side Request Forgery (SSRF) - Detects local/private IPs and hosts
+    ssrf: /((?:https?:\/\/)?(?:127\.\d+\.\d+\.\d+\b|169\.254\.169\.254\b|10\.\d+\.\d+\.\d+\b|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b|192\.168\.\d+\.\d+\b|localhost\b|0\.0\.0\.0\b|\[[0:]+1\](?=\W|$)))/i,
+    // Carriage Return Line Feed (CRLF) Injection / HTTP Response Splitting
+    crlf: /[\r\n]|%0[ad]/i,
+    // Cross-Site Scripting (XSS) - Fast native regex fallback
+    xss: /(<script|javascript:|on\w+\s*=|alert\s*\(|confirm\s*\(|prompt\s*\(|<img\s+src[^>]+onerror|<iframe)/i,
+    // Open Redirect - Basic detection of external protocol/URLs
+    openRedirect: /^(https?:)?\/\/(?![^\/]*?(localhost|127\.0\.0\.1))[^\s\/]+/i,
+    // Local/Remote File Inclusion (LFI/RFI)
+    lfi: /(?:etc\/passwd|win\.ini|boot\.ini|php:\/\/filter|data:\/\/|zip:\/\/)/i,
+    // Shellshock (CVE-2014-6271)
+    shellshock: /\(\)\s*\{\s*:\s*;\s*\}\s*/i,
+    // NoSQL Injection (MongoDB query operators)
+    nosql: /\$(?:eq|ne|gt|gte|lt|lte|in|nin|and|or|nor|not|expr|jsonSchema|mod|regex|text|where|elemMatch)/i
 };
 
 /**
@@ -3147,12 +3115,33 @@ function parseGraphQLQuery(body) {
 export class FingerprintEngine {
   constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
-    this.securityConfig = securityConfig;
+    
+    // Dynamically bind Ed25519 keys if passed via config
+    if (securityConfig && securityConfig.ed25519_private_key) {
+      process.env.ED25519_PRIVATE_KEY = securityConfig.ed25519_private_key;
+    }
+    if (securityConfig && securityConfig.ed25519_public_key) {
+      process.env.ED25519_PUBLIC_KEY = securityConfig.ed25519_public_key;
+    }
+
+    let finalConfig = securityConfig;
+    if (securityConfig && securityConfig.autotuning && securityConfig.autotuning.savePath) {
+      const sPath = securityConfig.autotuning.savePath;
+      if (existsSync(sPath)) {
+        try {
+          const savedConfig = JSON.parse(readFileSync(sPath, 'utf-8'));
+          finalConfig = deepMerge(securityConfig, savedConfig);
+        } catch (e) {
+          console.warn(`[Fingerprint] Failed to auto-load optimized config from ${sPath}:`, e.message);
+        }
+      }
+    }
+    this.securityConfig = finalConfig;
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();
-    this._validateConfig(securityConfig); // Validate the configuration
-    this.verbose = securityConfig.verbose || false;
-    this.dryRun = securityConfig.dryRun || false;
+    this._validateConfig(finalConfig); // Validate the configuration
+    this.verbose = finalConfig.verbose || false;
+    this.dryRun = finalConfig.dryRun || false;
   }
 
   /**
@@ -3173,7 +3162,8 @@ export class FingerprintEngine {
       'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
       'trustedProxies',
       'wasm',
-      'similarityThreshold'
+      'similarityThreshold',
+      'ed25519_private_key', 'ed25519_public_key'
     ]);
 
     // 1. Check for essential keys
@@ -3477,7 +3467,17 @@ export class FingerprintEngine {
       sanitizeProxyHeaders(requestContext, this.securityConfig);
 
       const { clientIp = "unknown", path, cookies = {}, query = {}, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
-    const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
+
+      if (query.coop_op) {
+          const result = await handleCooperativeRequest(query, clientIp);
+          return {
+              action: 'challenge',
+              status: 200,
+              body: result
+          };
+      }
+
+      const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     
     this._log('Processing request', { clientIp, path, isStatic });
     
@@ -3699,7 +3699,7 @@ export class FingerprintEngine {
                         isValid
                     });
                 } else if (pow_type === "pospace" && pow_solution_space) {
-                    const isSpaceValid = verifySpacePoW(pow_nonce, pow_solution_space, challengeContext.queries, pow_nonce + ":" + challengeContext.clientSecret, challengeContext.clientSecret);
+                    const isSpaceValid = await verifySpacePoW(pow_nonce, pow_solution_space, challengeContext.queries, pow_nonce + ":" + challengeContext.clientSecret, challengeContext.clientSecret);
                     isValid = isSpaceValid;
                     if (isValid) {
                         const ttl = finalTtl || 3600000;
@@ -3707,7 +3707,7 @@ export class FingerprintEngine {
                             expiry: Date.now() + ttl,
                             originalIp: clientIp,
                             deviceId,
-                            deviceHash
+                            deviceHash: currentDeviceHash
                         });
                     }
                 }
@@ -3980,7 +3980,8 @@ export class FingerprintEngine {
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
     // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
-    const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming);
+    const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
+    const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
     const mustReChallenge = isSuspiciousHigh && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
@@ -4081,7 +4082,7 @@ export class FingerprintEngine {
                     return decision;
                 }
             if (this.securityConfig.enableProofOfSpace) {
-                const spaceChallenge = generateSpaceChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
+                const spaceChallenge = await generateSpaceChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
                 const clientSecret = crypto.randomBytes(16).toString("hex");
                 await store.set(`secret:${nonce}`, {
                     clientSecret,
@@ -4261,6 +4262,117 @@ const staticExtensions = new RegExp(
   "i",
 );
 const isStaticResource = (path) => staticExtensions.test(path);
+
+export async function registerCooperativeNode(clientIp, nodeId, seed) {
+    const subnet = getIpSubnet(clientIp);
+    if (!subnet) return;
+
+    const key = `coop-pospace:subnet:${subnet}`;
+    const nodes = (await store.get(key)) || {};
+    const now = Math.floor(Date.now() / 1000);
+
+    // Clean up expired nodes (older than 120 seconds)
+    const cleanedNodes = {};
+    for (const [id, node] of Object.entries(nodes)) {
+        if (now - node.timestamp < 120) {
+            cleanedNodes[id] = node;
+        }
+    }
+
+    cleanedNodes[nodeId] = {
+        nodeId,
+        seed,
+        timestamp: now
+    };
+
+    await store.set(key, cleanedNodes, 120);
+}
+
+export async function findPeerInSubnet(clientIp, excludeNodeId) {
+    const subnet = getIpSubnet(clientIp);
+    if (!subnet) return null;
+
+    const key = `coop-pospace:subnet:${subnet}`;
+    const nodes = (await store.get(key)) || {};
+    const now = Math.floor(Date.now() / 1000);
+
+    const activePeers = [];
+    for (const [id, node] of Object.entries(nodes)) {
+        if (id !== excludeNodeId && now - node.timestamp < 120) {
+            activePeers.push(node);
+        }
+    }
+
+    if (activePeers.length === 0) return null;
+
+    // Select a random peer
+    const randomIndex = Math.floor(Math.random() * activePeers.length);
+    return activePeers[randomIndex];
+}
+
+export async function handleCooperativeRequest(params, clientIp = '127.0.0.1') {
+    const op = params.coop_op;
+    if (!op) return null;
+
+    const nodeId = params.node_id || '';
+    if (!nodeId) {
+        return { error: 'Missing node_id' };
+    }
+
+    switch (op) {
+        case 'register':
+            const seed = params.seed || '';
+            await registerCooperativeNode(clientIp, nodeId, seed);
+            return { status: 'registered' };
+
+        case 'request_peer_block':
+            const peerId = params.peer_id || '';
+            const blockIdx = parseInt(params.block_idx || '0', 10);
+            const requestId = params.req_id || '';
+            if (!peerId || !requestId) {
+                return { error: 'Invalid parameters' };
+            }
+
+            const queueKey = `coop-mailbox:queue:${peerId}`;
+            const requests = (await store.get(queueKey)) || [];
+            requests.push({
+                req_id: requestId,
+                requester_id: nodeId,
+                block_idx: blockIdx
+            });
+            await store.set(queueKey, requests, 30);
+            return { status: 'queued' };
+
+        case 'poll_requests':
+            const pollQueueKey = `coop-mailbox:queue:${nodeId}`;
+            const polledRequests = (await store.get(pollQueueKey)) || [];
+            await store.delete(pollQueueKey);
+            return { requests: polledRequests };
+
+        case 'respond_block':
+            const requesterId = params.requester_id || '';
+            const respondRequestId = params.req_id || '';
+            const blockData = params.block_data || '';
+            if (!requesterId || !respondRequestId) {
+                return { error: 'Invalid parameters' };
+            }
+
+            const responseKey = `coop-mailbox:res:${requesterId}:${respondRequestId}`;
+            await store.set(responseKey, { block_data: blockData }, 30);
+            return { status: 'delivered' };
+
+        case 'poll_response':
+            const pollResponseRequestId = params.req_id || '';
+            const pollResponseKey = `coop-mailbox:res:${nodeId}:${pollResponseRequestId}`;
+            const data = await store.get(pollResponseKey);
+            if (data) {
+                await store.delete(pollResponseKey);
+                return { status: 'ready', block_data: data.block_data };
+            }
+            return { status: 'pending' };
+    }
+    return null;
+}
 
 
 /** @type {Map<number, number>} Cache des TTL optimisés par score de suspicion (clés de 0 à 100 par pas de 10) */
@@ -4630,7 +4742,7 @@ function getTcpAnomalyScore(context) {
  * @param {string[]} [typesToDetect=['sql', 'log4shell', 'ssti', 'xxe', 'traversal', 'rce']] - Les types d'injections à détecter.
  * @returns {boolean} - True si un pattern malveillant est détecté.
  */
-function isMalicious(str, typesToDetect = Object.keys(injectionPatterns)) {
+function isMalicious(str, typesToDetect = Object.keys(injectionPatterns).filter(k => k !== 'openRedirect')) {
     if (typeof str !== 'string') return false;
 
     for (const type of typesToDetect) {
@@ -5040,6 +5152,7 @@ export const __internal = {
     getCompositeDeviceHash,
     getSuspicionVector,
     getTlsSessionId,
+    pruneTrafficData,
     cyrb53, // Export for testing
     FingerprintBuilder, // Export for testing
     calculateTarget,
@@ -5068,9 +5181,14 @@ export const __internal = {
     getIpReputationScore, // Expose for testing
     updateIpReputationScore, // Expose for testing
     setLastBestSolution: (val) => { lastBestSolution = val; }, // Expose to test auto-tuning metrics
+    verifyZkpProof,
+    modPow,
     parseTcpSyn, // Expose for testing
     classifyTcpOs, // Expose for testing
-    getTcpAnomalyScore // Expose for testing
+    getTcpAnomalyScore, // Expose for testing,
+    registerCooperativeNode,
+    findPeerInSubnet,
+    handleCooperativeRequest
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
@@ -5132,13 +5250,55 @@ export function sanitizeTrafficData(trafficData) {
 
   return [...suspiciousLogs, ...selectedPassed];
 }
+/**
+ * Assainit et limite la taille/ancienneté des données de trafic pour éviter les fuites de mémoire.
+ * @private
+ */
+function pruneTrafficData(trafficData, maxDataPoints, maxAgeMs, onCleanup) {
+    if (!Array.isArray(trafficData)) return;
+    const now = Date.now();
+    const removed = [];
 
+    // 1. Politique temporelle d'expiration
+    if (maxAgeMs && maxAgeMs > 0) {
+        const threshold = now - maxAgeMs;
+        let i = 0;
+        while (i < trafficData.length) {
+            const log = trafficData[i];
+            const logTs = log.timestamp || log.requestTimestamp || now;
+            if (logTs < threshold) {
+                removed.push(trafficData.splice(i, 1)[0]);
+            } else {
+                i++;
+            }
+        }
+    }
+
+    // 2. Politique de taille maximale (conserver les plus récents)
+    if (maxDataPoints && maxDataPoints > 0 && trafficData.length > maxDataPoints) {
+        const overflowCount = trafficData.length - maxDataPoints;
+        const spliced = trafficData.splice(0, overflowCount);
+        removed.push(...spliced);
+    }
+
+    // 3. Callback de nettoyage
+    if (onCleanup && typeof onCleanup === 'function' && removed.length > 0) {
+        try {
+            onCleanup(removed);
+        } catch (e) {
+            console.error('[AutoTuning] Error in onCleanup callback:', e);
+        }
+    }
+}
 /**
  * Executes a threshold optimization pass using collected traffic data.
  * @private
  */
-function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath) {
-  const sanitizedData = sanitizeTrafficData(trafficData);
+function runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath, tuningOptions = {}) {
+    const { maxAgeMs, clearAfterTuning = false, onCleanup } = tuningOptions;
+
+    pruneTrafficData(trafficData, maxDataPoints, maxAgeMs, onCleanup);
+    const sanitizedData = sanitizeTrafficData(trafficData);
 
   const highConfidenceLogs = sanitizedData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
   const highConfidenceRatio = sanitizedData.length > 0 ? highConfidenceLogs / sanitizedData.length : 0;
@@ -5155,12 +5315,6 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     }
     return;
   }
-
-  if (trafficData.length > maxDataPoints) {
-    console.log(`[AutoTuning] Le journal de trafic a atteint ${trafficData.length} entrées (max: ${maxDataPoints}). Troncation des données les plus anciennes.`);
-    trafficData.splice(0, trafficData.length - maxDataPoints);
-  }
-
   console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${sanitizedData.length} points de données assainis.`);
 
   const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData: sanitizedData });
@@ -5295,6 +5449,18 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
           console.error(`[AutoTuning] Erreur lors de la sauvegarde de la configuration optimisée : ${error.message}`);
       }
   }
+
+    if (clearAfterTuning) {
+        const cleared = trafficData.splice(0, trafficData.length);
+        if (onCleanup && typeof onCleanup === 'function' && cleared.length > 0) {
+            try {
+                onCleanup(cleared);
+            } catch (e) {
+                console.error('[AutoTuning] Error in onCleanup callback after clearing:', e);
+            }
+        }
+        console.log(`[AutoTuning] Explicitly cleared ${cleared.length} processed traffic data points.`);
+    }
 }
 
 /**
@@ -5321,6 +5487,9 @@ export function startThresholdAutoTuning(options) {
         minDataPoints = 200,
         maxDataPoints = 10000, // Limite par défaut à 10 000 entrées
         savePath, // NOUVEAU: Chemin de sauvegarde optionnel
+        maxAgeMs,
+        clearAfterTuning = false,
+        onCleanup,
     } = options;
 
     if (!securityConfig || !trafficData) {
@@ -5330,7 +5499,7 @@ export function startThresholdAutoTuning(options) {
     console.log(`[AutoTuning] Job d'optimisation des seuils démarré. Prochain cycle dans ${interval / 60000} minutes.`);
 
     autoTuningJobId = setInterval(() => {
-        runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath);
+        runThresholdOptimization(securityConfig, trafficData, minDataPoints, maxDataPoints, savePath, { maxAgeMs, clearAfterTuning, onCleanup });
     }, interval);
 }
 

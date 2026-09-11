@@ -5,6 +5,7 @@ NodeJS tests : [![Test NodeJS](https://img.shields.io/github/actions/workflow/st
 [![Release](https://img.shields.io/github/v/release/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/releases)
 [![License](https://img.shields.io/github/license/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/blob/main/LICENSE)
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)
+![Repo size](https://img.shields.io/github/repo-size/anonympins/fingerprint)
 
 A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Python** and **PHP** environments. 
 
@@ -97,9 +98,16 @@ We welcome community contributions! Please read our **[Contributing Guidelines](
 Thanks to our contributors : 
 - [anonympins](https://github.com/anonympins)
 
-## Used actively on
+## 💖 Sponsor This Project
 
-- https://primals.net and sub-sites
+If this security suite helps protect your business against botnets, automated scraping, credential stuffing, or Layer 7 DDoS attacks, please consider supporting its active development!
+
+Sponsorship helps maintain the library, fund active updates, and keep the dynamic WebAssembly engine cutting-edge.
+
+### 🌟 Featured Sponsors
+
+- ![](https://primals.net/PRIOR.png) https://primals.net and sub-sites
+  <img src="https://s6.imgcdn.dev/YJTWv9.png" width="100" alt="YJTWv9.png" border="0">
 
 ## License
 

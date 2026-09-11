@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import time
+import os
 from pathlib import Path
 import pytest
 
@@ -28,6 +29,7 @@ from engine import (
     RedisStore,
     AutoTuner,
     MaliciousPatterns,
+    generate_space_challenge,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
 )
@@ -856,12 +858,53 @@ async def test_engine_honeypot_persistence_with_valid_ticket():
 
 def test_malicious_patterns_waf():
     """Vérifie la détection d'injections malveillantes via MaliciousPatterns."""
+    # SQL / SSTI / Log4Shell / XXE
     assert MaliciousPatterns.is_malicious("SELECT * FROM users;--") is True
     assert MaliciousPatterns.is_malicious("UNION SELECT username, password") is True
     assert MaliciousPatterns.is_malicious("${jndi:ldap://evil.com/a}") is True
     assert MaliciousPatterns.is_malicious("{{ 7*7 }}") is True
     assert MaliciousPatterns.is_malicious("cat /etc/passwd") is True
     assert MaliciousPatterns.is_malicious("normal comment text") is False
+
+    # SSRF
+    assert MaliciousPatterns.is_malicious("http://127.0.0.1/admin") is True
+    assert MaliciousPatterns.is_malicious("https://localhost:8443") is True
+    assert MaliciousPatterns.is_malicious("http://169.254.169.254/latest/meta-data") is True
+    assert MaliciousPatterns.is_malicious("https://google.com") is False
+
+    # CRLF
+    assert MaliciousPatterns.is_malicious("test\r\nHeader: value") is True
+    assert MaliciousPatterns.is_malicious("%0d%0aHeader: value") is True
+    assert MaliciousPatterns.is_malicious("clean string") is False
+
+    # XSS
+    assert MaliciousPatterns.is_malicious("<script>alert(1)</script>") is True
+    assert MaliciousPatterns.is_malicious("javascript:alert(1)") is True
+    assert MaliciousPatterns.is_malicious("<img src=x onerror=alert(1)>") is True
+    assert MaliciousPatterns.is_malicious("<b>bold text</b>") is False
+
+    # Open Redirect
+    assert MaliciousPatterns.is_malicious("https://evil.com/redirect", ["openRedirect"]) is True
+    assert MaliciousPatterns.is_malicious("//malicious-site.com", ["openRedirect"]) is True
+    assert MaliciousPatterns.is_malicious("/local/path", ["openRedirect"]) is False
+    assert MaliciousPatterns.is_malicious("http://localhost/dashboard", ["openRedirect"]) is False
+
+    # LFI/RFI
+    assert MaliciousPatterns.is_malicious("etc/passwd") is True
+    assert MaliciousPatterns.is_malicious("win.ini") is True
+    assert MaliciousPatterns.is_malicious("php://filter/resource=index.php") is True
+    assert MaliciousPatterns.is_malicious("normal_file.txt") is False
+
+    # Shellshock
+    assert MaliciousPatterns.is_malicious("() { :; }; echo 'Vulnerable'") is True
+    assert MaliciousPatterns.is_malicious("() { :;};") is True
+    assert MaliciousPatterns.is_malicious("def test(): pass") is False
+
+    # NoSQL Operator Injection
+    assert MaliciousPatterns.is_malicious("$gt") is True
+    assert MaliciousPatterns.is_malicious("$elemMatch") is True
+    assert MaliciousPatterns.is_malicious("$where") is True
+    assert MaliciousPatterns.is_malicious("This is $10") is False
 
 @pytest.mark.asyncio
 async def test_ip_reputation_and_decay():
@@ -1368,3 +1411,125 @@ async def test_pospace_challenge():
     decision_submit = await engine.process_request(context_submit)
     assert decision_submit["action"] == "redirect"
     assert "pow_clearance" in decision_submit["cookie"]["name"]
+
+@pytest.mark.asyncio
+async def test_cooperative_pospace_workflow():
+    store = InMemoryStore()
+    client_ip = "127.0.0.1"
+    node_id_a = "node-a"
+    seed_a = "seed-a"
+    
+    # 1. Register node A
+    await ChallengeUtils.register_cooperative_node(store, client_ip, node_id_a, seed_a)
+    
+    # 2. Find peer
+    peer = await ChallengeUtils.find_peer_in_subnet(store, client_ip, "node-b")
+    assert peer is not None
+    assert peer["nodeId"] == node_id_a
+    assert peer["seed"] == seed_a
+    
+    # 3. Request block
+    params_req = {
+        "coop_op": "request_peer_block",
+        "node_id": "node-b",
+        "peer_id": "node-a",
+        "block_idx": "42",
+        "req_id": "req-123"
+    }
+    res_req = await ChallengeUtils.handle_cooperative_request(store, params_req, client_ip)
+    assert res_req["status"] == "queued"
+    
+    # 4. Poll requests
+    params_poll = {
+        "coop_op": "poll_requests",
+        "node_id": "node-a"
+    }
+    res_poll = await ChallengeUtils.handle_cooperative_request(store, params_poll, client_ip)
+    assert len(res_poll["requests"]) == 1
+    assert res_poll["requests"][0]["req_id"] == "req-123"
+    assert res_poll["requests"][0]["block_idx"] == 42
+
+@pytest.mark.asyncio
+async def test_ed25519_stateless_ticket_generation_and_validation():
+    """Vérifie la génération de tickets stateless Ed25519 et leur validation."""
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.hazmat.primitives import serialization
+
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    private_key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode('utf-8')
+
+    public_key = private_key.public_key()
+    public_key_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode('utf-8')
+
+    import os
+    os.environ["ED25519_PRIVATE_KEY"] = private_key_pem
+    os.environ["ED25519_PUBLIC_KEY"] = public_key_pem
+
+    payload = {
+        "expiry": int(time.time() * 1000) + 3600000,
+        "originalIp": "127.0.0.1",
+        "deviceId": "device-123",
+        "deviceHash": "hash-abc"
+    }
+    
+    ticket = ChallengeUtils.generate_stateless_ticket(payload, "secret")
+    assert ticket is not None
+    assert ticket.startswith("ed25519.")
+    
+    valid = await ChallengeUtils.is_ticket_valid(
+        ip="127.0.0.1",
+        ticket=ticket,
+        device_id="device-123",
+        device_hash="hash-abc",
+        secret="secret"
+    )
+    assert valid is True
+
+    valid_diff_ip = await ChallengeUtils.is_ticket_valid(
+        ip="192.168.1.1",
+        ticket=ticket,
+        device_id="device-123",
+        device_hash="hash-abc",
+        secret="secret"
+    )
+    assert valid_diff_ip is False
+
+@pytest.mark.asyncio
+async def test_zkp_proof_stateless_validation():
+    """Vérifie la génération et validation cryptographique du ticket via ZKP de Schnorr."""
+    fp = "cvs:12345|gpu:67890"
+    p = 115792089237316195423570985008687907853269984665640564039457584007908834671663
+    g = 2
+
+    x = int(hashlib.sha256(fp.encode("utf-8")).hexdigest(), 16) % p
+    y = pow(g, x, p)
+    v = 987654321 % p
+    t = pow(g, v, p)
+    
+    c_str = f"{g}{y}{t}"
+    c = int(hashlib.sha256(c_str.encode("utf-8")).hexdigest(), 16) % p
+    s = (v + (c * x)) % (p - 1)
+
+    zkp_proof = f"{hex(y)[2:]}:{hex(t)[2:]}:{hex(s)[2:]}"
+    assert ChallengeUtils.verify_zkp_proof(hex(y)[2:], hex(t)[2:], hex(s)[2:]) is True
+
+    secret = "my-test-pow-secret-with-long-length-32-chars"
+    ticket = ChallengeUtils.generate_stateless_ticket({
+        "expiry": int(time.time() * 1000) + 3600000,
+        "originalIp": "127.0.0.1",
+        "deviceId": "dev-zkp",
+        "deviceHash": f"zkp:{hex(y)[2:]}"
+    }, secret)
+
+    assert await ChallengeUtils.is_ticket_valid(
+        ip="127.0.0.1", ticket=ticket, device_id="dev-zkp", secret=secret, zkp_proof=zkp_proof
+    ) is True
+    del os.environ["ED25519_PRIVATE_KEY"]
+    del os.environ["ED25519_PUBLIC_KEY"]

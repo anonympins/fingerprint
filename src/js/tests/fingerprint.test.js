@@ -1,5 +1,5 @@
 import {afterEach, assert, beforeEach, describe, expect, it, test, vi} from 'vitest';
-import {createHash, createHmac} from 'node:crypto';
+import {createHash, createHmac, generateKeyPairSync} from 'node:crypto';
 import {solveCpuTargetInline, solveMemory} from '../pow.solver.js';
 import {readFileSync} from 'node:fs';
 import {cyrb53, FingerprintBuilder} from '../fingerprint.builder.js';
@@ -1091,6 +1091,63 @@ describe('Fingerprint & PoW Security Suite', () => {
             vi.restoreAllMocks();
             stopThresholdAutoTuning(); // Ensure cleanup after each test
         });
+
+    test('should prune traffic data based on time, size, clearAfterTuning and invoke onCleanup', async () => {
+        const trafficData = [
+            { type: 'challenge_solved', timestamp: Date.now() - 10000 }, // 10s old
+            { type: 'challenge_solved', timestamp: Date.now() - 5000 },  // 5s old
+            { type: 'challenge_solved', timestamp: Date.now() }          // fresh
+        ];
+
+        const securityConfig = {
+            thresholds: { low: 20, medium: 45, high: 75, block: 95 },
+            weights: { historyScore: 1 },
+            patterns: {}
+        };
+
+        const cleanedLogs = [];
+        const onCleanup = (removed) => {
+            cleanedLogs.push(...removed);
+        };
+
+        // Test 1: Time-based pruning (older than 8 seconds)
+        __internal.pruneTrafficData(trafficData, 10, 8000, onCleanup);
+
+        expect(trafficData.length).toBe(2);
+        expect(cleanedLogs.length).toBe(1);
+        expect(cleanedLogs[0].timestamp).toBeLessThan(Date.now() - 8000);
+
+        // Test 2: Size-based pruning (max size = 1)
+        __internal.pruneTrafficData(trafficData, 1, 0, onCleanup);
+        expect(trafficData.length).toBe(1);
+        expect(cleanedLogs.length).toBe(2);
+
+        // Test 3: Clear after tuning
+        const autoTuningTraffic = [];
+        for (let i = 0; i < 110; i++) {
+            autoTuningTraffic.push({ type: 'challenge_solved', timestamp: Date.now(), deviceId: `dev-solved-${i}` });
+            autoTuningTraffic.push({ type: 'request_passed', timestamp: Date.now(), deviceId: `dev-passed-${i}` });
+        }
+
+        const tuningCleaned = [];
+        startThresholdAutoTuning({
+            securityConfig,
+            trafficData: autoTuningTraffic,
+            interval: 10000,
+            minDataPoints: 100,
+            maxDataPoints: 500,
+            clearAfterTuning: true,
+            onCleanup: (removed) => tuningCleaned.push(...removed)
+        });
+
+        const intervalCallback = setIntervalSpy.mock.calls[0][0];
+        intervalCallback();
+
+        expect(autoTuningTraffic.length).toBe(0);
+        expect(tuningCleaned.length).toBeGreaterThan(0);
+
+        stopThresholdAutoTuning();
+    });
 
         test('should start, run an optimization cycle, and update thresholds', () => {
             const trafficData = [];
@@ -2423,6 +2480,80 @@ describe('Additional Suspicion Vectors Coverage', () => {
 
         const { crossLayerInconsistencyScore } = __internal.getCrossLayerInconsistency(context);
         expect(crossLayerInconsistencyScore).toBe(50);
+    });
+});
+
+describe('Ed25519 Asymmetric Tickets', () => {
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519', {
+        privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
+        publicKeyEncoding: { format: 'pem', type: 'spki' }
+    });
+    const privateKeyPem = privateKey;
+    const publicKeyPem = publicKey;
+
+    beforeEach(() => {
+        process.env.ED25519_PRIVATE_KEY = privateKeyPem;
+        process.env.ED25519_PUBLIC_KEY = publicKeyPem;
+    });
+
+    afterEach(() => {
+        delete process.env.ED25519_PRIVATE_KEY;
+        delete process.env.ED25519_PUBLIC_KEY;
+    });
+
+    it('should generate and validate an Ed25519 ticket successfully', async () => {
+        const payload = {
+            expiry: Date.now() + 3600000,
+            originalIp: '127.0.0.1',
+            deviceId: 'device-123',
+            deviceHash: 'hash-abc'
+        };
+
+        const ticket = fingerprint.generateStatelessTicket(payload);
+        expect(ticket).toBeDefined();
+        expect(ticket.startsWith('ed25519.')).toBe(true);
+
+        const isValid = await fingerprint.isTicketValid('127.0.0.1', ticket, 'device-123', 'hash-abc');
+        expect(isValid).toBe(true);
+
+        const isDiffIpValid = await fingerprint.isTicketValid('192.168.1.1', ticket, 'device-123', 'hash-abc', false);
+        expect(isDiffIpValid).toBe(false);
+    });
+
+    test('Cooperative PoSpace Workflow', async () => {
+        const clientIp = '127.0.0.1';
+        const nodeIdA = 'node-a';
+        const seedA = 'seed-a';
+
+        // 1. Enregistrement du nœud A (pair)
+        await __internal.registerCooperativeNode(clientIp, nodeIdA, seedA);
+
+        // 2. Recherche de pair pour le nœud B (dans le même sous-réseau)
+        const peer = await __internal.findPeerInSubnet(clientIp, 'node-b');
+        expect(peer).not.toBeNull();
+        expect(peer.nodeId).toBe(nodeIdA);
+        expect(peer.seed).toBe(seedA);
+
+        // 3. Demande de bloc du nœud B vers le nœud A
+        const paramsReq = {
+            coop_op: 'request_peer_block',
+            node_id: 'node-b',
+            peer_id: 'node-a',
+            block_idx: '42',
+            req_id: 'req-123'
+        };
+        const resReq = await __internal.handleCooperativeRequest(paramsReq, clientIp);
+        expect(resReq.status).toBe('queued');
+
+        // 4. Récupération de la demande par le nœud A
+        const paramsPoll = {
+            coop_op: 'poll_requests',
+            node_id: 'node-a'
+        };
+        const resPoll = await __internal.handleCooperativeRequest(paramsPoll, clientIp);
+        expect(resPoll.requests.length).toBe(1);
+        expect(resPoll.requests[0].req_id).toBe('req-123');
+        expect(resPoll.requests[0].block_idx).toBe(42);
     });
 });
 

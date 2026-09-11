@@ -71,7 +71,14 @@ Here is a comprehensive overview of the full configuration array you can pass to
              'type' => 'path_allowlist',
              'entries' => ['/api/public/*']
          ]
-     ]
+     ],
+     
+     'enableUsefulWork => true,
+     'enableProofOfSpace' => true,
+     'dryRun => false,
+     'trustedProxies => ['127.0.0.1', '192.168.1.0/24'],
+     'wasm' => true
+ 
  ];
  ```
  
@@ -148,12 +155,18 @@ Here is the same full configuration tailored for Node.js:
          interval: 1800000, // 30 mins
          minDataPoints: 200,
          maxDataPoints: 20000,
-         savePath: './security-config.optimized.json'
+             maxAgeMs: 86400000, // Prune logs older than 24 hours (86400000 ms)
+             clearAfterTuning: true, // Wipe out processed traffic data after tuning
+             savePath: './security-config.optimized.json',
+             onCleanup: (removedLogs) => {
+                 console.log(`${removedLogs.length} logs pruned and cleaned up.`);
+             }
      },
      enableUsefulWork: true,
+     enableProofOfSpace: true,
      dryRun: false,
      trustedProxies: ['127.0.0.1', '192.168.1.0/24'],
-     wasm: './public',
+     wasm: true, // can be a './my_dir' path to fp.js/fp.wasm files too
  };
  ```
  
@@ -209,3 +222,30 @@ $fingerprint = $protector->protect();
 // Si le script continue, la requête est légitime
 echo "Welcome on the secured page !";
 ```
+
+# Auto-Tuning & Traffic Data Pruning Options
+
+The `autotuning` engine dynamically adjusts your thresholds and weights using a background genetic algorithm. It profiles real-world traffic to find the optimal trade-off between user experience (minimizing false-positive challenges for human users) and strict security (maximizing bot detection).
+
+To prevent unbounded memory growth, the engine features an integrated **Traffic Data Pruning** mechanism to automatically prune old logs.
+
+### Configuration Details
+
+| Property | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `trafficData` | `Array` | `[]` | In-memory storage array that accumulates incoming request telemetry vectors for analysis. |
+| `interval` | `number` | `1800000` | The frequency (in milliseconds) at which the genetic algorithm runs (e.g., 30 minutes). |
+| `minDataPoints` | `number` | `200` | Minimum number of recorded requests needed before the tuning algorithm can execute. |
+| `maxDataPoints` | `number` | `20000` | Hard cap on the number of traffic entries stored in memory to prevent heap exhaustion. |
+| `maxAgeMs` | `number` | `86400000` | Time-to-Live (TTL) for traffic logs in milliseconds. Stale logs older than this limit (e.g., 24 hours) are permanently pruned. |
+| `clearAfterTuning` | `boolean` | `true` | If set to `true`, flushes the accumulated traffic data after completing a successful optimization cycle. |
+| `savePath` | `string` | `undefined` | The local filesystem path where the optimized config JSON will be persisted. |
+| `onCleanup` | `Function` | `undefined` | Event callback executed whenever logs are pruned. Receives an array of the removed logs as its argument. |
+
+### Example of Background Tuning Optimization Flow
+
+1. **Accumulation**: The engine collects telemetry metadata across requests, populating `trafficData`.
+2. **Pruning**: Periodic tasks run to compare data timestamps against `maxAgeMs` to remove expired data.
+3. **Evaluation**: Once `interval` is reached and data size exceeds `minDataPoints`, the genetic tuner initiates.
+4. **Optimization**: It executes a multi-objective optimization (Pareto front) to find the best configuration that would have separated the historical benign traffic from anomalous scores.
+5. **Persistence & Hot-Reload**: The optimized config is saved to `savePath` and seamlessly applied in memory.

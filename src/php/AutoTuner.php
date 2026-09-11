@@ -25,6 +25,11 @@ class AutoTuner
 
     private int $minDataPoints;
     private int $maxDataPoints;
+    private ?int $maxAgeMs;
+    private bool $clearAfterTuning;
+    /** @var ?callable */
+    private $onCleanup;
+    private ?string $savePath;
 
     /**
      * @var ?array<string, mixed> La dernière meilleure solution trouvée par l'optimiseur.
@@ -42,6 +47,48 @@ class AutoTuner
         $this->trafficData = &$trafficData;
         $this->minDataPoints = $options['minDataPoints'] ?? 200;
         $this->maxDataPoints = $options['maxDataPoints'] ?? 10000;
+        $this->maxAgeMs = $options['maxAgeMs'] ?? null;
+        $this->clearAfterTuning = $options['clearAfterTuning'] ?? false;
+        $this->onCleanup = $options['onCleanup'] ?? null;
+        $this->savePath = $options['savePath'] ?? null;
+    }
+
+    /**
+     * Prunes old or excess traffic logs to prevent memory leaks.
+     */
+    private function pruneTrafficData(): void
+    {
+        $now = (int)(microtime(true) * 1000);
+        $removed = [];
+
+        // 1. Expire par temps (maxAgeMs)
+        if ($this->maxAgeMs !== null && $this->maxAgeMs > 0) {
+            $threshold = $now - $this->maxAgeMs;
+            foreach ($this->trafficData as $key => $log) {
+                $logTs = $log['timestamp'] ?? $log['requestTimestamp'] ?? $now;
+                if ($logTs < $threshold) {
+                    $removed[] = $log;
+                    unset($this->trafficData[$key]);
+                }
+            }
+            $this->trafficData = array_values($this->trafficData);
+        }
+
+        // 2. Politique de taille maximale (maxDataPoints)
+        if ($this->maxDataPoints > 0 && count($this->trafficData) > $this->maxDataPoints) {
+            $overflowCount = count($this->trafficData) - $this->maxDataPoints;
+            $spliced = array_splice($this->trafficData, 0, $overflowCount);
+            $removed = array_merge($removed, $spliced);
+        }
+
+        // 3. Invocation du callback onCleanup
+        if ($this->onCleanup !== null && is_callable($this->onCleanup) && !empty($removed)) {
+            try {
+                call_user_func($this->onCleanup, $removed);
+            } catch (\Throwable $e) {
+                error_log("[AutoTuning] Error in onCleanup callback: " . $e->getMessage());
+            }
+        }
     }
 
     /**
@@ -49,6 +96,8 @@ class AutoTuner
      */
     public function runOptimizationCycle(): void
     {
+        $this->pruneTrafficData();
+
         $sanitizedData = RequestUtils::sanitizeTrafficData($this->trafficData);
 
         $highConfidenceLogs = count(array_filter(
@@ -176,6 +225,28 @@ class AutoTuner
         echo "[AutoTuning] Nouveaux seuils : " . json_encode($this->securityConfig['thresholds']) . "\n";
         echo "[AutoTuning] Nouveaux poids : " . json_encode($this->securityConfig['weights']) . "\n";
         echo "[AutoTuning] Nouveaux patterns : " . json_encode($this->securityConfig['patterns']) . "\n";
+
+        // NOUVEAU: Sauvegarder la meilleure configuration si un chemin est fourni.
+        if ($this->savePath !== null) {
+            try {
+                file_put_contents($this->savePath, json_encode($bestSolution['solution'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                echo "[AutoTuning] Meilleure configuration sauvegardée dans : {$this->savePath}\n";
+            } catch (\Throwable $e) {
+                error_log("[AutoTuning] Erreur lors de la sauvegarde de la configuration optimisée : " . $e->getMessage());
+            }
+        }
+
+        if ($this->clearAfterTuning) {
+            $cleared = array_splice($this->trafficData, 0);
+            if ($this->onCleanup !== null && is_callable($this->onCleanup) && !empty($cleared)) {
+                try {
+                    call_user_func($this->onCleanup, $cleared);
+                } catch (\Throwable $e) {
+                    error_log("[AutoTuning] Error in onCleanup callback after clearing: " . $e->getMessage());
+                }
+            }
+            echo sprintf("[AutoTuning] Explicitly cleared %d processed traffic data points.\n", count($cleared));
+        }
     }
 
     /**

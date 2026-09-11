@@ -1,3 +1,24 @@
+## Version 0.5.0
+
+### ✨ New Features
+
+- **Zero-Knowledge Proofs (ZKP)**: Added cryptographically secure Schnorr Zero-Knowledge Proofs (`generateZkpProof` on client and `verifyZkpProof` on server) for device fingerprints, allowing zero-disclosure fingerprint validation and making session tickets completely tamper-proof.
+- **Optional Ed25519 Asymmetric Keys**: Implemented dynamic and optional Ed25519 asymmetric key binding with an automatic fallback to symmetric AES-256-CBC encryption.
+- **Cooperative Proof-of-Space (Coop PoSpace)**: Introduced decentralized, cooperative Proof-of-Space challenge routing within local subnets. Highly suspicious clients must coordinate with neighboring subnet peers to fetch and aggregate cryptographic blocks. This vastly increases the cost and complexity for distributed botnets trying to cycle residential proxy IPs, as they are forced to run and maintain real, synchronized, and cooperative peer nodes within the same local IP subnet to solve challenges.
+
+### 🚀 Improvements
+
+- **Enhanced Malicious Injection Detection**: Upgraded the WAF and input validation subsystem to recursively inspect deeply nested NoSQL/SQL structures, significantly improving protection against complex MongoDb/SQL injection vectors.
+- **Traffic Data Pruning**: Introduced automated traffic data pruning (`pruneTrafficData`) with time-based and size-based limiters to avoid memory leaks during long-running auto-tuning sessions.
+
+### 🐛 Bug Fixes
+
+- **CI/CD OpenSSL Compatibility**: Fixed test environment crashes on older systems or CI/CD pipelines where the `OPENSSL_KEYTYPE_ED25519` constant is undefined.
+- **Autoloader savePath Resolution**: Resolved file-system path resolution bugs when saving optimized configurations inside the auto-tuner.
+- **Repository Size Optimization**: Pruned obsolete resources and optimized package assets to significantly reduce overall repository footprint.
+
+---
+
 ## Version 0.4.6
 
 ### ✨ New Features

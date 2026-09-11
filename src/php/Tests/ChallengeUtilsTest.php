@@ -16,6 +16,34 @@ class ChallengeUtilsTest extends TestCase
         $_ENV['POW_SECRET'] = 'test-secret-key-that-is-long-enough-for-hmac';
     }
 
+    public function testZkpProofValidation(): void
+    {
+        $fp = 'cvs:12345|gpu:67890';
+        $p = BigInt::fromHex('fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f');
+        $g = new BigInt(2);
+
+        $x = BigInt::fromHex(hash('sha256', $fp))->mod($p);
+        $y = $g->modPow($x, $p);
+        $v = new BigInt(987654321);
+        $t = $g->modPow($v, $p);
+
+        $cStr = (string)$g . (string)$y . (string)$t;
+        $c = BigInt::fromHex(hash('sha256', $cStr))->mod($p);
+        $s = $v->add($c->mul($x))->mod($p->sub(new BigInt(1)));
+
+        $zkpProof = $y->toHex() . ':' . $t->toHex() . ':' . $s->toHex();
+        $this->assertTrue(ChallengeUtils::verifyZkpProof($y->toHex(), $t->toHex(), $s->toHex()));
+
+        $ticket = ChallengeUtils::generateStatelessTicket([
+            'expiry' => (time() + 3600) * 1000,
+            'originalIp' => '127.0.0.1',
+            'deviceId' => 'dev-zkp',
+            'deviceHash' => 'zkp:' . $y->toHex()
+        ]);
+
+        $this->assertTrue(ChallengeUtils::isTicketValid('127.0.0.1', $ticket, 'dev-zkp', '', false, '', $zkpProof));
+    }
+
     public function testIsTicketValid(): void
     {
         $ip = '127.0.0.1';
@@ -78,5 +106,104 @@ class ChallengeUtilsTest extends TestCase
         $ticket = ChallengeUtils::verifyCpuTargetPoWAndGenerateTicket($ip, 3600, $nonce, (string)$solution, $challengeContext);
         $this->assertNotNull($ticket, "Un ticket valide aurait dû être généré.");
         $this->assertTrue(ChallengeUtils::isTicketValid($ip, $ticket));
+    }
+
+    public function testEd25519TicketValidation(): void
+    {
+        if (!extension_loaded('openssl')) {
+            $this->markTestSkipped('openssl extension is not loaded.');
+        }
+
+        if (!defined('OPENSSL_KEYTYPE_ED25519')) {
+            $this->markTestSkipped('Ed25519 is not supported or constant OPENSSL_KEYTYPE_ED25519 is undefined in this PHP/OpenSSL environment.');
+        }
+
+        $pkey = @openssl_pkey_new(["private_key_type" => constant('OPENSSL_KEYTYPE_ED25519')]);
+        if (!$pkey) {
+            $this->markTestSkipped('Ed25519 is not supported in this PHP/OpenSSL environment.');
+        }
+
+        openssl_pkey_export($pkey, $privateKeyPem);
+        $details = openssl_pkey_get_details($pkey);
+        $publicKeyPem = $details['key'];
+
+        // Test if openssl_sign supports null algorithm for Ed25519 (PHP 8.0.0 bug)
+        $testSig = '';
+        $testPriv = @openssl_pkey_get_private($privateKeyPem);
+        try {
+            if (!$testPriv || !@openssl_sign('test', $testSig, $testPriv, null)) {
+                $this->markTestSkipped('Ed25519 signing is not fully supported or buggy in this PHP/OpenSSL environment.');
+            }
+        } catch (\TypeError $e) {
+            $this->markTestSkipped('Ed25519 signing is not supported due to PHP 8.0.0 openssl_sign() null algorithm bug.');
+        }
+
+        $_ENV['ED25519_PRIVATE_KEY'] = $privateKeyPem;
+        $_ENV['ED25519_PUBLIC_KEY'] = $publicKeyPem;
+
+        $ip = '127.0.0.1';
+        $expiry = (int)floor(microtime(true) * 1000) + 3600000;
+        $payload = [
+            'expiry' => $expiry,
+            'originalIp' => $ip,
+            'deviceId' => 'device-123',
+            'deviceHash' => 'hash-abc'
+        ];
+
+        $ticket = ChallengeUtils::generateStatelessTicket($payload);
+        $this->assertStringStartsWith('ed25519.', $ticket);
+
+        $this->assertTrue(ChallengeUtils::isTicketValid($ip, $ticket, 'device-123', 'hash-abc'));
+        $this->assertFalse(ChallengeUtils::isTicketValid('192.168.1.1', $ticket, 'device-123', 'hash-abc'));
+
+        unset($_ENV['ED25519_PRIVATE_KEY'], $_ENV['ED25519_PUBLIC_KEY']);
+    }
+
+    public function testCooperativePoSpaceWorkflow(): void
+    {
+        $clientIp = '127.0.0.1';
+        $nodeIdA = 'node-a';
+        $seedA = 'seed-a';
+        
+        // 1. Enregistrement du nœud A (pair)
+        ChallengeUtils::registerCooperativeNode($clientIp, $nodeIdA, $seedA);
+        
+        // 2. Recherche de pair pour le nœud B (dans le même sous-réseau)
+        $peer = ChallengeUtils::findPeerInSubnet($clientIp, 'node-b');
+        $this->assertNotNull($peer);
+        $this->assertEquals($nodeIdA, $peer['nodeId']);
+        $this->assertEquals($seedA, $peer['seed']);
+        
+        // 3. Demande de bloc du nœud B vers le nœud A
+        $paramsReq = [
+            'coop_op' => 'request_peer_block',
+            'node_id' => 'node-b',
+            'peer_id' => 'node-a',
+            'block_idx' => '42',
+            'req_id' => 'req-123'
+        ];
+        $resReq = ChallengeUtils::handleCooperativeRequest($paramsReq);
+        $this->assertEquals('queued', $resReq['status']);
+        
+        // 4. Récupération de la demande par le nœud A
+        $paramsPoll = [
+            'coop_op' => 'poll_requests',
+            'node_id' => 'node-a'
+        ];
+        $resPoll = ChallengeUtils::handleCooperativeRequest($paramsPoll);
+        $this->assertCount(1, $resPoll['requests']);
+        $this->assertEquals('req-123', $resPoll['requests'][0]['req_id']);
+        $this->assertEquals(42, $resPoll['requests'][0]['block_idx']);
+        
+        // 5. Réponse avec la donnée de bloc par le nœud A
+        $paramsResp = [
+            'coop_op' => 'respond_block',
+            'node_id' => 'node-a',
+            'requester_id' => 'node-b',
+            'req_id' => 'req-123',
+            'block_data' => 'dummy-block-data-xyz'
+        ];
+        $resResp = ChallengeUtils::handleCooperativeRequest($paramsResp);
+        $this->assertEquals('delivered', $resResp['status']);
     }
 }

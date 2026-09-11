@@ -30,6 +30,29 @@
      public function __construct(array $securityConfig)
      {
          $this->isProduction = ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production';
+         
+         // Dynamically bind Ed25519 keys if passed via config
+         if (isset($securityConfig['ed25519_private_key'])) {
+             $_ENV['ED25519_PRIVATE_KEY'] = $securityConfig['ed25519_private_key'];
+         }
+         if (isset($securityConfig['ed25519_public_key'])) {
+             $_ENV['ED25519_PUBLIC_KEY'] = $securityConfig['ed25519_public_key'];
+         }
+
+         // Auto-load optimized config if autotuning savePath is specified
+         if (isset($securityConfig['autotuning']['savePath'])) {
+             $savePath = $securityConfig['autotuning']['savePath'];
+             if (file_exists($savePath)) {
+                 try {
+                     $savedConfig = json_decode(file_get_contents($savePath), true);
+                     if (json_last_error() === JSON_ERROR_NONE && is_array($savedConfig)) {
+                         $securityConfig = SecurityProfiles::deepMerge($securityConfig, $savedConfig);
+                     }
+                 } catch (\Throwable $e) {
+                     error_log("[FingerprintEngine] Failed to auto-load optimized config from {$savePath}: " . $e->getMessage());
+                 }
+             }
+         }
          $this->securityConfig = $securityConfig;
          $this->verbose = $securityConfig['verbose'] ?? false;
          $this->allowlist = $this->buildAllowlist();
@@ -50,7 +73,8 @@
              'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
              'honeypot', 'threatIntel', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger', 'probationaryTtl',
              'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
-             'similarityThreshold', 'summary', 'description'
+             'similarityThreshold', 'summary', 'description',
+             'ed25519_private_key', 'ed25519_public_key'
          ];
 
          if (empty($config['weights'])) {
@@ -589,6 +613,16 @@
          // Initialiser le vecteur de suspicion pour éviter les erreurs de type.
          $suspicionVector = [];
         
+         $coopOp = $context->query['coop_op'] ?? null;
+         if ($coopOp) {
+             $result = ChallengeUtils::handleCooperativeRequest($context->query);
+             return [
+                 'action' => 'challenge',
+                 'status' => 200,
+                 'body' => $result
+             ];
+         }
+
         $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
         
         // Parse GraphQL query if applicable
@@ -737,7 +771,11 @@
          // 3. Vérifier un ticket existant
          $hasValidTicket = false;
          $powCookie = $context->cookies['pow_clearance'] ?? null;
-         if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie)) {
+         $zkpProof = $context->getHeader('x-zkp-proof') ?? $context->query['pow_zkp'] ?? '';
+         $deviceId = $context->cookies['device_id'] ?? '';
+         $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
+         $allowRoaming = $this->securityConfig['allowCrossNetworkRoaming'] ?? false;
+         if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie, $deviceId, $currentDeviceHash, $allowRoaming, $zkpProof)) {
              $hasValidTicket = true;
             MetricsManager::incrementCounter('tickets_valid_total');
              // On ne retourne pas tout de suite pour permettre le re-challenge
