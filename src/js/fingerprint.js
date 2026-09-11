@@ -1418,6 +1418,20 @@ const injectionPatterns = {
     traversal: /(\.\.\/|\.\.\\)/,
     // Remote Command Execution (RCE)
     rce: /`.*`|(^|[\n;&|]\s*)(ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b/i,
+    // Server-Side Request Forgery (SSRF) - Detects local/private IPs and hosts
+    ssrf: /((?:https?:\/\/)?(?:127\.\d+\.\d+\.\d+\b|169\.254\.169\.254\b|10\.\d+\.\d+\.\d+\b|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b|192\.168\.\d+\.\d+\b|localhost\b|0\.0\.0\.0\b|\[[0:]+1\](?=\W|$)))/i,
+    // Carriage Return Line Feed (CRLF) Injection / HTTP Response Splitting
+    crlf: /[\r\n]|%0[ad]/i,
+    // Cross-Site Scripting (XSS) - Fast native regex fallback
+    xss: /(<script|javascript:|on\w+\s*=|alert\s*\(|confirm\s*\(|prompt\s*\(|<img\s+src[^>]+onerror|<iframe)/i,
+    // Open Redirect - Basic detection of external protocol/URLs
+    openRedirect: /^(https?:)?\/\/(?![^\/]*?(localhost|127\.0\.0\.1))[^\s\/]+/i,
+    // Local/Remote File Inclusion (LFI/RFI)
+    lfi: /(?:etc\/passwd|win\.ini|boot\.ini|php:\/\/filter|data:\/\/|zip:\/\/)/i,
+    // Shellshock (CVE-2014-6271)
+    shellshock: /\(\)\s*\{\s*:\s*;\s*\}\s*/i,
+    // NoSQL Injection (MongoDB query operators)
+    nosql: /\$(?:eq|ne|gt|gte|lt|lte|in|nin|and|or|nor|not|expr|jsonSchema|mod|regex|text|where|elemMatch)/i
 };
 
 /**
@@ -4630,7 +4644,7 @@ function getTcpAnomalyScore(context) {
  * @param {string[]} [typesToDetect=['sql', 'log4shell', 'ssti', 'xxe', 'traversal', 'rce']] - Les types d'injections à détecter.
  * @returns {boolean} - True si un pattern malveillant est détecté.
  */
-function isMalicious(str, typesToDetect = Object.keys(injectionPatterns)) {
+function isMalicious(str, typesToDetect = Object.keys(injectionPatterns).filter(k => k !== 'openRedirect')) {
     if (typeof str !== 'string') return false;
 
     for (const type of typesToDetect) {
