@@ -605,22 +605,75 @@ const ClientLibrary = {
         });
         activeHoneypotListeners.clear();
 
-        // 2. Ajouter les nouveaux écouteurs
+        // 2. Ajouter les nouveaux écouteurs sur le DOM classique
         honeypotFieldNames.forEach(fieldName => {
             const field = document.querySelector(`[name="${fieldName}"]`);
             if (field) {
-                // On utilise une fonction nommée (ou une référence) pour pouvoir la supprimer plus tard.
-                // L'option { once: true } est excellente, mais pour une réinitialisation complète,
-                // il est plus propre de gérer le nettoyage nous-mêmes.
                 const listener = () => {
                     this.onHoneypotTrigger();
-                    // Se supprime lui-même après exécution, comme { once: true }
                     field.removeEventListener('input', listener);
                 };
                 field.addEventListener('input', listener);
                 activeHoneypotListeners.set(field, listener); // On stocke la référence
             }
         });
+
+        // 3. Générer des champs d'input pièges masqués dans un Shadow DOM fermé
+        if (typeof document !== 'undefined' && honeypotFieldNames.length > 0) {
+            const host = document.createElement('div');
+            host.setAttribute('aria-hidden', 'true');
+            host.style.position = 'absolute';
+            host.style.width = '0';
+            host.style.height = '0';
+            host.style.overflow = 'hidden';
+
+            const shadow = host.attachShadow({ mode: 'closed' });
+
+            const style = document.createElement('style');
+            style.textContent = `
+              :host {
+                --trap-pos-state: absolute;
+                --trap-off-val: -9999px;
+                --trap-vis-state: hidden;
+                --trap-scale-val: 0;
+              }
+              .shadow-form-wrapper {
+                position: var(--trap-pos-state);
+                left: var(--trap-off-val);
+                top: var(--trap-off-val);
+                visibility: var(--trap-vis-state);
+                transform: scale(var(--trap-scale-val));
+              }
+            `;
+            shadow.appendChild(style);
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'shadow-form-wrapper';
+
+            honeypotFieldNames.forEach(fieldName => {
+                const label = document.createElement('label');
+                label.textContent = fieldName;
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.name = fieldName;
+                input.tabIndex = -1;
+                input.autocomplete = 'off';
+
+                const trigger = () => {
+                    this.onHoneypotTrigger();
+                };
+
+                input.addEventListener('input', trigger, { passive: true });
+                input.addEventListener('change', trigger, { passive: true });
+                input.addEventListener('focus', trigger, { passive: true });
+
+                wrapper.appendChild(label);
+                wrapper.appendChild(input);
+            });
+
+            shadow.appendChild(wrapper);
+            document.body.appendChild(host);
+        }
     },
 
     /**
@@ -772,24 +825,61 @@ const ClientLibrary = {
       return;
     }
 
-    const trapContainer = document.createElement('div');
-    trapContainer.setAttribute('aria-hidden', 'true');
-    trapContainer.style.position = 'absolute';
-    trapContainer.style.left = '-9999px';
-    trapContainer.style.top = '-9999px';
-      trapContainer.style.transform = 'scale(0)';
-      trapContainer.style.pointerEvents = 'none';
+    const host = document.createElement('div');
+    host.setAttribute('aria-hidden', 'true');
+    host.style.position = 'absolute';
+    host.style.width = '0';
+    host.style.height = '0';
+    host.style.overflow = 'hidden';
 
-    urls.forEach((url,i) => {
+    const shadow = host.attachShadow({ mode: 'closed' });
+
+    const style = document.createElement('style');
+    style.textContent = `
+      :host {
+        --trap-layout-pos: absolute;
+        --trap-offset-val: -9999px;
+        --trap-visibility-state: hidden;
+        --trap-scale-factor: 0;
+        --trap-ptr-events: none;
+      }
+      .shadow-trap-wrapper {
+        position: var(--trap-layout-pos);
+        left: var(--trap-offset-val);
+        top: var(--trap-offset-val);
+        visibility: var(--trap-visibility-state);
+        transform: scale(var(--trap-scale-factor));
+        pointer-events: var(--trap-ptr-events);
+      }
+      a {
+        color: transparent;
+        text-decoration: none;
+      }
+    `;
+    shadow.appendChild(style);
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'shadow-trap-wrapper';
+
+    urls.forEach((url, i) => {
       const link = document.createElement('a');
       link.href = url;
       link.rel = 'nofollow';
-      link.tabIndex = -1; // Make it unfocusable
-      link.innerHTML = `<span>&gt; ${i+1}</span>`; // SEO-insignificant content
-      trapContainer.appendChild(link);
+      link.tabIndex = -1;
+      link.innerHTML = `<span>&gt; ${i + 1}</span>`;
+
+      const trigger = () => {
+        this.onHoneypotTrigger();
+      };
+      link.addEventListener('click', trigger, { passive: true });
+      link.addEventListener('focus', trigger, { passive: true });
+      link.addEventListener('mouseover', trigger, { passive: true });
+
+      wrapper.appendChild(link);
     });
 
-    document.body.appendChild(trapContainer);
+    shadow.appendChild(wrapper);
+    document.body.appendChild(host);
   },
   /**
    * Intercepte une réponse de challenge JSON, le résout, et réessaie la requête.
