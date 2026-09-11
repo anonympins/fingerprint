@@ -158,4 +158,52 @@ class ChallengeUtilsTest extends TestCase
 
         unset($_ENV['ED25519_PRIVATE_KEY'], $_ENV['ED25519_PUBLIC_KEY']);
     }
+
+    public function testCooperativePoSpaceWorkflow(): void
+    {
+        $clientIp = '127.0.0.1';
+        $nodeIdA = 'node-a';
+        $seedA = 'seed-a';
+        
+        // 1. Enregistrement du nœud A (pair)
+        ChallengeUtils::registerCooperativeNode($clientIp, $nodeIdA, $seedA);
+        
+        // 2. Recherche de pair pour le nœud B (dans le même sous-réseau)
+        $peer = ChallengeUtils::findPeerInSubnet($clientIp, 'node-b');
+        $this->assertNotNull($peer);
+        $this->assertEquals($nodeIdA, $peer['nodeId']);
+        $this->assertEquals($seedA, $peer['seed']);
+        
+        // 3. Demande de bloc du nœud B vers le nœud A
+        $paramsReq = [
+            'coop_op' => 'request_peer_block',
+            'node_id' => 'node-b',
+            'peer_id' => 'node-a',
+            'block_idx' => '42',
+            'req_id' => 'req-123'
+        ];
+        $resReq = ChallengeUtils::handleCooperativeRequest($paramsReq);
+        $this->assertEquals('queued', $resReq['status']);
+        
+        // 4. Récupération de la demande par le nœud A
+        $paramsPoll = [
+            'coop_op' => 'poll_requests',
+            'node_id' => 'node-a'
+        ];
+        $resPoll = ChallengeUtils::handleCooperativeRequest($paramsPoll);
+        $this->assertCount(1, $resPoll['requests']);
+        $this->assertEquals('req-123', $resPoll['requests'][0]['req_id']);
+        $this->assertEquals(42, $resPoll['requests'][0]['block_idx']);
+        
+        // 5. Réponse avec la donnée de bloc par le nœud A
+        $paramsResp = [
+            'coop_op' => 'respond_block',
+            'node_id' => 'node-a',
+            'requester_id' => 'node-b',
+            'req_id' => 'req-123',
+            'block_data' => 'dummy-block-data-xyz'
+        ];
+        $resResp = ChallengeUtils::handleCooperativeRequest($paramsResp);
+        $this->assertEquals('delivered', $resResp['status']);
+    }
 }

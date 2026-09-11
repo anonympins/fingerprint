@@ -155,8 +155,8 @@ def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Opti
         except socket.error:
             return None
 
-def generate_space_challenge(client_ip: str, nonce: str, suspicion_factor: float, original_url: str, security_config: dict) -> dict:
-    pospace_config = security_config.get("pospace", {})
+async def generate_space_challenge(store, client_ip: str, nonce: str, suspicion_factor: float, original_url: str, security_config: dict) -> dict:
+    pospace_config = security_config.get("pospace", {}) or {}
     size_mb = pospace_config.get("sizeMb", 100)
     num_queries = pospace_config.get("numQueries", 10)
     queries = []
@@ -165,13 +165,26 @@ def generate_space_challenge(client_ip: str, nonce: str, suspicion_factor: float
         idx = random.randint(0, max_blocks - 1)
         if idx not in queries:
             queries.append(idx)
-    return {
+    challenge = {
         "type": "pospace",
         "nonce": nonce,
         "sizeMb": size_mb,
         "queries": queries,
         "path": original_url
     }
+
+    peer = await ChallengeUtils.find_peer_in_subnet(store, client_ip, nonce)
+    if peer:
+        challenge["peerId"] = peer["nodeId"]
+        challenge["peerBlockIdx"] = random.randint(0, max_blocks - 1)
+
+        await store.set(f"coop-assoc:{nonce}", {
+            "peerNodeId": peer["nodeId"],
+            "peerSeed": peer["seed"],
+            "peerBlockIdx": challenge["peerBlockIdx"]
+        }, 120)
+
+    return challenge
 
 def generate_space_challenge_page(challenge_details: dict, client_secret: str, security_config: dict) -> str:
     nonce = challenge_details["nonce"]
@@ -428,13 +441,125 @@ class ChallengeUtils:
         return bytes(block)
 
     @staticmethod
-    def verify_space_pow(nonce: str, solution: str, queries: list, seed: str, client_secret: str) -> bool:
+    async def verify_space_pow(store, nonce: str, solution: str, queries: list, seed: str, client_secret: str) -> bool:
         combined = bytearray()
         for idx in queries:
             combined.extend(ChallengeUtils.generate_block(seed, int(idx)))
+
+        assoc = await store.get(f"coop-assoc:{nonce}")
+        if assoc:
+            peer_seed = assoc.get("peerSeed")
+            peer_block_idx = assoc.get("peerBlockIdx")
+            if peer_seed is not None and peer_block_idx is not None:
+                combined.extend(ChallengeUtils.generate_block(peer_seed, int(peer_block_idx)))
+            await store.delete(f"coop-assoc:{nonce}")
+
         final_block = bytes(combined) + f"{nonce}:{client_secret}".encode("utf-8")
         h = hashlib.sha256(final_block).hexdigest()
         return hmac.compare_digest(h, solution)
+
+    @staticmethod
+    async def register_cooperative_node(store, client_ip: str, node_id: str, seed: str) -> None:
+        subnet = get_ip_subnet(client_ip)
+        if not subnet:
+            return
+
+        key = f"coop-pospace:subnet:{subnet}"
+        nodes = await store.get(key) or {}
+        now = int(time.time())
+
+        cleaned_nodes = {}
+        for id_, node in nodes.items():
+            if now - node.get("timestamp", 0) < 120:
+                cleaned_nodes[id_] = node
+
+        cleaned_nodes[node_id] = {
+            "nodeId": node_id,
+            "seed": seed,
+            "timestamp": now
+        }
+
+        await store.set(key, cleaned_nodes, 120)
+
+    @staticmethod
+    async def find_peer_in_subnet(store, client_ip: str, exclude_node_id: str) -> Optional[Dict[str, Any]]:
+        subnet = get_ip_subnet(client_ip)
+        if not subnet:
+            return None
+
+        key = f"coop-pospace:subnet:{subnet}"
+        nodes = await store.get(key) or {}
+        now = int(time.time())
+
+        active_peers = []
+        for id_, node in nodes.items():
+            if id_ != exclude_node_id and now - node.get("timestamp", 0) < 120:
+                active_peers.append(node)
+
+        if not active_peers:
+            return None
+
+        return random.choice(active_peers)
+
+    @staticmethod
+    async def handle_cooperative_request(store, params: Dict[str, Any], client_ip: str = '127.0.0.1') -> Optional[Dict[str, Any]]:
+        op = params.get("coop_op")
+        if not op:
+            return None
+
+        node_id = params.get("node_id") or ""
+        if not node_id:
+            return {"error": "Missing node_id"}
+
+        if op == "register":
+            seed = params.get("seed") or ""
+            await ChallengeUtils.register_cooperative_node(store, client_ip, node_id, seed)
+            return {"status": "registered"}
+
+        elif op == "request_peer_block":
+            peer_id = params.get("peer_id") or ""
+            block_idx = int(params.get("block_idx") or "0")
+            req_id = params.get("req_id") or ""
+            if not peer_id or not req_id:
+                return {"error": "Invalid parameters"}
+
+            queue_key = f"coop-mailbox:queue:{peer_id}"
+            requests = await store.get(queue_key) or []
+            requests.append({
+                "req_id": req_id,
+                "requester_id": node_id,
+                "block_idx": block_idx
+            })
+            await store.set(queue_key, requests, 30)
+            return {"status": "queued"}
+
+        elif op == "poll_requests":
+            poll_queue_key = f"coop-mailbox:queue:{node_id}"
+            polled_requests = await store.get(poll_queue_key) or []
+            await store.delete(poll_queue_key)
+            return {"requests": polled_requests}
+
+        elif op == "respond_block":
+            requester_id = params.get("requester_id") or ""
+            respond_req_id = params.get("req_id") or ""
+            block_data = params.get("block_data") or ""
+            if not requester_id or not respond_req_id:
+                return {"error": "Invalid parameters"}
+
+            response_key = f"coop-mailbox:res:{requester_id}:{respond_req_id}"
+            await store.set(response_key, {"block_data": block_data}, 30)
+            return {"status": "delivered"}
+
+        elif op == "poll_response":
+            poll_response_req_id = params.get("req_id") or ""
+            poll_response_key = f"coop-mailbox:res:{node_id}:{poll_response_req_id}"
+            data = await store.get(poll_response_key)
+            if data:
+                await store.delete(poll_response_key)
+                return {"status": "ready", "block_data": data.get("block_data")}
+            return {"status": "pending"}
+
+        return None
 
     @staticmethod
     def verify_zkp_proof(y_str: str, t_str: str, s_str: str) -> bool:
@@ -2276,7 +2401,8 @@ class FingerprintEngine:
         if pow_nonce and pow_type == "pospace" and pow_solution_space:
             challenge_context = await self.store.get(f"secret:{pow_nonce}")
             if challenge_context:
-                is_valid = ChallengeUtils.verify_space_pow(
+                is_valid = await ChallengeUtils.verify_space_pow(
+                    self.store,
                     pow_nonce,
                     pow_solution_space,
                     challenge_context.get("queries", []),
@@ -2469,7 +2595,7 @@ class FingerprintEngine:
                     print(f"[FingerprintEngine] Failed to dispatch useful work, falling back to PoW: {e}")
 
             if self.config.get("enableProofOfSpace"):
-                space_challenge = generate_space_challenge(client_ip, nonce, suspicion_factor, context.path, self.config)
+                space_challenge = await generate_space_challenge(self.store, client_ip, nonce, suspicion_factor, context.path, self.config)
                 await self.store.set(f"secret:{nonce}", {
                     "client_secret": client_secret,
                     "suspicionScore": score,

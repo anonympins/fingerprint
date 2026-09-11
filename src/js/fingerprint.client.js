@@ -341,6 +341,91 @@ const ClientLibrary = {
     },
 
     /**
+     * Initialise l'espace Proof-of-Space persistant dans l'IndexedDB locale.
+     */
+    async initializeSpace(seed, sizeMb) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('pospace-db', 1);
+            request.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains('blocks')) {
+                    db.createObjectStore('blocks');
+                }
+            };
+            request.onsuccess = async (e) => {
+                const db = e.target.result;
+                const tx = db.transaction('blocks', 'readwrite');
+                const store = tx.objectStore('blocks');
+                
+                const maxBlocks = sizeMb * 1024;
+                const countReq = store.count();
+                countReq.onsuccess = async () => {
+                    if (countReq.result < maxBlocks) {
+                        for (let i = 0; i < maxBlocks; i++) {
+                            const block = new Uint8Array(1024);
+                            let h = 5381;
+                            for (let j = 0; j < seed.length; j++) {
+                                h = (h << 5) + h + seed.charCodeAt(j);
+                            }
+                            h = (h << 5) + h + i;
+                            for (let k = 0; k < 1024; k++) {
+                                h = Math.imul(h ^ k, 1597334677);
+                                block[k] = h & 0xff;
+                            }
+                            store.put(block, i);
+                        }
+                    }
+                    resolve();
+                };
+            };
+            request.onerror = () => reject(new Error("Failed to open pospace database"));
+        });
+    },
+
+    /**
+     * Lit un bloc spécifique de l'IndexedDB locale sous format hexadécimal.
+     */
+    async readSpaceBlock(blockIdx) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open('pospace-db', 1);
+            request.onsuccess = (e) => {
+                const db = e.target.result;
+                const tx = db.transaction('blocks', 'readonly');
+                const store = tx.objectStore('blocks');
+                const getReq = store.get(blockIdx);
+                getReq.onsuccess = () => {
+                    const block = getReq.result;
+                    if (block) {
+                        const hex = Array.from(block).map(b => b.toString(16).padStart(2, '0')).join('');
+                        resolve(hex);
+                    } else {
+                        reject(new Error("Block not found"));
+                    }
+                };
+                getReq.onerror = () => reject(getReq.error);
+            };
+            request.onerror = () => reject(new Error("Failed to open pospace database"));
+        });
+    },
+
+    /**
+     * Résout le Proof-of-Space en combinant optionnellement le bloc du pair.
+     */
+    async solveSpaceChallenge(seed, queries, nonce, clientSecret, peerBlock = '') {
+        const blocks = [];
+        for (const idx of queries) {
+            const blockHex = await this.readSpaceBlock(idx);
+            blocks.push(blockHex);
+        }
+        let finalPayload = blocks.join('') + peerBlock + nonce + ":" + clientSecret;
+        const encoder = new TextEncoder();
+        const data = encoder.encode(finalPayload);
+        const hashBuffer = await window.crypto.subtle.digest('SHA-256', data);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    },
+
+    /**
      * Démarre le suivi des mouvements de la souris pour calculer l'entropie.
      * À appeler une fois sur la page.
      */
@@ -893,6 +978,9 @@ export const injectTrapLinks = ClientLibrary.injectTrapLinks.bind(ClientLibrary)
 export const injectPhantomTraps = ClientLibrary.injectPhantomTraps.bind(ClientLibrary);
 export const solveChallengeAndRetry = ClientLibrary.solveChallengeAndRetry.bind(ClientLibrary);
 export const generateZkpProof = ClientLibrary.generateZkpProof.bind(ClientLibrary);
+export const initializeSpace = ClientLibrary.initializeSpace.bind(ClientLibrary);
+export const readSpaceBlock = ClientLibrary.readSpaceBlock.bind(ClientLibrary);
+export const solveSpaceChallenge = ClientLibrary.solveSpaceChallenge.bind(ClientLibrary);
 
 // Export the internal object for testing purposes
 export default ClientLibrary;

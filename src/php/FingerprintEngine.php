@@ -613,6 +613,16 @@
          // Initialiser le vecteur de suspicion pour éviter les erreurs de type.
          $suspicionVector = [];
         
+         $coopOp = $context->query['coop_op'] ?? null;
+         if ($coopOp) {
+             $result = ChallengeUtils::handleCooperativeRequest($context->query);
+             return [
+                 'action' => 'challenge',
+                 'status' => 200,
+                 'body' => $result
+             ];
+         }
+
         $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
         
         // Parse GraphQL query if applicable

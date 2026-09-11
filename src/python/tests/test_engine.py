@@ -29,6 +29,7 @@ from engine import (
     RedisStore,
     AutoTuner,
     MaliciousPatterns,
+    generate_space_challenge,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
 )
@@ -1410,6 +1411,43 @@ async def test_pospace_challenge():
     decision_submit = await engine.process_request(context_submit)
     assert decision_submit["action"] == "redirect"
     assert "pow_clearance" in decision_submit["cookie"]["name"]
+
+@pytest.mark.asyncio
+async def test_cooperative_pospace_workflow():
+    store = InMemoryStore()
+    client_ip = "127.0.0.1"
+    node_id_a = "node-a"
+    seed_a = "seed-a"
+    
+    # 1. Register node A
+    await ChallengeUtils.register_cooperative_node(store, client_ip, node_id_a, seed_a)
+    
+    # 2. Find peer
+    peer = await ChallengeUtils.find_peer_in_subnet(store, client_ip, "node-b")
+    assert peer is not None
+    assert peer["nodeId"] == node_id_a
+    assert peer["seed"] == seed_a
+    
+    # 3. Request block
+    params_req = {
+        "coop_op": "request_peer_block",
+        "node_id": "node-b",
+        "peer_id": "node-a",
+        "block_idx": "42",
+        "req_id": "req-123"
+    }
+    res_req = await ChallengeUtils.handle_cooperative_request(store, params_req, client_ip)
+    assert res_req["status"] == "queued"
+    
+    # 4. Poll requests
+    params_poll = {
+        "coop_op": "poll_requests",
+        "node_id": "node-a"
+    }
+    res_poll = await ChallengeUtils.handle_cooperative_request(store, params_poll, client_ip)
+    assert len(res_poll["requests"]) == 1
+    assert res_poll["requests"][0]["req_id"] == "req-123"
+    assert res_poll["requests"][0]["block_idx"] == 42
 
 @pytest.mark.asyncio
 async def test_ed25519_stateless_ticket_generation_and_validation():

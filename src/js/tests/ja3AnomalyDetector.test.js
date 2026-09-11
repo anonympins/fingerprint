@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import {getTlsSpoofingScore, parseJa3} from '../fingerprint.js';
 import {vi} from 'vitest';
+import { verifyZkpProof, decodePolymorphicFingerprint, deepMerge, getHeaderSignature, parseJa3, modPow, hashNetwork, normalizeReferer, isPrivateIp, parseUserAgent } from "../../js/fingerprint.utils.js";
 
 describe('JA3 Anomaly Detector (Node.js)', () => {
     

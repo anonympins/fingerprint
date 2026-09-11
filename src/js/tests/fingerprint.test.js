@@ -2519,6 +2519,42 @@ describe('Ed25519 Asymmetric Tickets', () => {
         const isDiffIpValid = await fingerprint.isTicketValid('192.168.1.1', ticket, 'device-123', 'hash-abc', false);
         expect(isDiffIpValid).toBe(false);
     });
+
+    test('Cooperative PoSpace Workflow', async () => {
+        const clientIp = '127.0.0.1';
+        const nodeIdA = 'node-a';
+        const seedA = 'seed-a';
+
+        // 1. Enregistrement du nœud A (pair)
+        await __internal.registerCooperativeNode(clientIp, nodeIdA, seedA);
+
+        // 2. Recherche de pair pour le nœud B (dans le même sous-réseau)
+        const peer = await __internal.findPeerInSubnet(clientIp, 'node-b');
+        expect(peer).not.toBeNull();
+        expect(peer.nodeId).toBe(nodeIdA);
+        expect(peer.seed).toBe(seedA);
+
+        // 3. Demande de bloc du nœud B vers le nœud A
+        const paramsReq = {
+            coop_op: 'request_peer_block',
+            node_id: 'node-b',
+            peer_id: 'node-a',
+            block_idx: '42',
+            req_id: 'req-123'
+        };
+        const resReq = await __internal.handleCooperativeRequest(paramsReq, clientIp);
+        expect(resReq.status).toBe('queued');
+
+        // 4. Récupération de la demande par le nœud A
+        const paramsPoll = {
+            coop_op: 'poll_requests',
+            node_id: 'node-a'
+        };
+        const resPoll = await __internal.handleCooperativeRequest(paramsPoll, clientIp);
+        expect(resPoll.requests.length).toBe(1);
+        expect(resPoll.requests[0].req_id).toBe('req-123');
+        expect(resPoll.requests[0].block_idx).toBe(42);
+    });
 });
 
 describe('Botnet Cluster Scoring (Node.js)', () => {

@@ -70,7 +70,7 @@ async function initializeSpace(seed, sizeMb) {
     store.put({ sizeMb, seed }, metadataKey);
 }
 
-async function solveSpaceChallenge(seed, queries, nonce, clientSecret) {
+async function solveSpaceChallenge(seed, queries, nonce, clientSecret, peerBlock = '') {
     const db = await openDb();
     const transaction = db.transaction("blocks", "readonly");
     const store = transaction.objectStore("blocks");
@@ -88,11 +88,19 @@ async function solveSpaceChallenge(seed, queries, nonce, clientSecret) {
         combined.set(block, i * 1024);
     }
     
+    let finalCombined = combined;
+    if (peerBlock) {
+        const peerBytes = new Uint8Array(peerBlock.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+        finalCombined = new Uint8Array(combined.length + peerBytes.length);
+        finalCombined.set(combined);
+        finalCombined.set(peerBytes, combined.length);
+    }
+    
     const encoder = new TextEncoder();
     const nonceBytes = encoder.encode(nonce + ":" + clientSecret);
-    const finalBlock = new Uint8Array(combined.length + nonceBytes.length);
-    finalBlock.set(combined);
-    finalBlock.set(nonceBytes, combined.length);
+    const finalBlock = new Uint8Array(finalCombined.length + nonceBytes.length);
+    finalBlock.set(finalCombined);
+    finalBlock.set(nonceBytes, finalCombined.length);
     
     const buf = await crypto.subtle.digest("SHA-256", finalBlock);
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');

@@ -48,6 +48,123 @@ class ChallengeUtils
         return $block;
     }
 
+    public static function registerCooperativeNode(string $clientIp, string $nodeId, string $seed): void
+    {
+        $subnet = RequestUtils::getIpSubnet($clientIp);
+        if ($subnet === null) {
+            return;
+        }
+        $store = StoreManager::getStore();
+        $key = "coop-pospace:subnet:{$subnet}";
+        $nodes = $store->get($key) ?? [];
+        
+        $now = time();
+        // Nettoyage des nœuds expirés (vieux de plus de 2 minutes)
+        $nodes = array_filter($nodes, fn($n) => ($now - $n['timestamp']) < 120);
+        
+        $nodes[$nodeId] = [
+            'nodeId' => $nodeId,
+            'seed' => $seed,
+            'timestamp' => $now
+        ];
+        
+        $store->set($key, $nodes, 120);
+    }
+
+    public static function findPeerInSubnet(string $clientIp, string $excludeNodeId): ?array
+    {
+        $subnet = RequestUtils::getIpSubnet($clientIp);
+        if ($subnet === null) {
+            return null;
+        }
+        $store = StoreManager::getStore();
+        $key = "coop-pospace:subnet:{$subnet}";
+        $nodes = $store->get($key) ?? [];
+        
+        $now = time();
+        $activePeers = [];
+        foreach ($nodes as $id => $node) {
+            if ($id !== $excludeNodeId && ($now - $node['timestamp']) < 120) {
+                $activePeers[] = $node;
+            }
+        }
+        
+        if (empty($activePeers)) {
+            return null;
+        }
+        
+        return $activePeers[array_rand($activePeers)];
+    }
+
+    public static function handleCooperativeRequest(array $params): ?array
+    {
+        $op = $params['coop_op'] ?? null;
+        if (!$op) {
+            return null;
+        }
+
+        $store = StoreManager::getStore();
+        $nodeId = $params['node_id'] ?? '';
+        if (empty($nodeId)) {
+            return ['error' => 'Missing node_id'];
+        }
+
+        switch ($op) {
+            case 'register':
+                $clientIp = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+                $seed = $params['seed'] ?? '';
+                self::registerCooperativeNode($clientIp, $nodeId, $seed);
+                return ['status' => 'registered'];
+
+            case 'request_peer_block':
+                $peerId = $params['peer_id'] ?? '';
+                $blockIdx = (int)($params['block_idx'] ?? 0);
+                $requestId = $params['req_id'] ?? '';
+                if (empty($peerId) || empty($requestId)) {
+                    return ['error' => 'Invalid parameters'];
+                }
+                
+                $queueKey = "coop-mailbox:queue:{$peerId}";
+                $requests = $store->get($queueKey) ?? [];
+                $requests[] = [
+                    'req_id' => $requestId,
+                    'requester_id' => $nodeId,
+                    'block_idx' => $blockIdx
+                ];
+                $store->set($queueKey, $requests, 30);
+                return ['status' => 'queued'];
+
+            case 'poll_requests':
+                $queueKey = "coop-mailbox:queue:{$nodeId}";
+                $requests = $store->get($queueKey) ?? [];
+                $store->delete($queueKey);
+                return ['requests' => $requests];
+
+            case 'respond_block':
+                $requesterId = $params['requester_id'] ?? '';
+                $requestId = $params['req_id'] ?? '';
+                $blockData = $params['block_data'] ?? '';
+                if (empty($requesterId) || empty($requestId)) {
+                    return ['error' => 'Invalid parameters'];
+                }
+                
+                $responseKey = "coop-mailbox:res:{$requesterId}:{$requestId}";
+                $store->set($responseKey, ['block_data' => $blockData], 30);
+                return ['status' => 'delivered'];
+
+            case 'poll_response':
+                $requestId = $params['req_id'] ?? '';
+                $responseKey = "coop-mailbox:res:{$nodeId}:{$requestId}";
+                $data = $store->get($responseKey);
+                if ($data) {
+                    $store->delete($responseKey);
+                    return ['status' => 'ready', 'block_data' => $data['block_data']];
+                }
+                return ['status' => 'pending'];
+        }
+        return null;
+    }
+
     public static function generateSpaceChallenge(string $clientIp, string $nonce, float $suspicionFactor, string $originalUrl, array $securityConfig): array
     {
         $pospaceConfig = $securityConfig['pospace'] ?? [];
@@ -63,13 +180,29 @@ class ChallengeUtils
             }
         }
 
-        return [
+        $challenge = [
             'type' => 'pospace',
             'nonce' => $nonce,
             'sizeMb' => $sizeMb,
             'queries' => $queries,
             'path' => $originalUrl
         ];
+
+        // Tentative de couplage coopératif avec un nœud du même sous-réseau
+        $peer = self::findPeerInSubnet($clientIp, $nonce);
+        if ($peer !== null) {
+            $challenge['peerId'] = $peer['nodeId'];
+            $challenge['peerBlockIdx'] = random_int(0, $maxBlocks - 1);
+            
+            $store = StoreManager::getStore();
+            $store->set("coop-assoc:{$nonce}", [
+                'peerNodeId' => $peer['nodeId'],
+                'peerSeed' => $peer['seed'],
+                'peerBlockIdx' => $challenge['peerBlockIdx']
+            ], 120);
+        }
+
+        return $challenge;
     }
 
     public static function verifySpacePoW(string $nonce, string $solution, array $queries, string $seed, string $clientSecret): bool
@@ -78,6 +211,19 @@ class ChallengeUtils
         foreach ($queries as $idx) {
             $combined .= self::generateBlock($seed, (int)$idx);
         }
+        
+        // Vérification de la preuve coopérative
+        $store = StoreManager::getStore();
+        $assoc = $store->get("coop-assoc:{$nonce}");
+        if ($assoc !== null) {
+            $peerSeed = $assoc['peerSeed'] ?? null;
+            $peerBlockIdx = $assoc['peerBlockIdx'] ?? null;
+            if ($peerSeed !== null && $peerBlockIdx !== null) {
+                $combined .= self::generateBlock($peerSeed, (int)$peerBlockIdx);
+            }
+            $store->delete("coop-assoc:{$nonce}");
+        }
+
         $finalBlock = $combined . $nonce . ":" . $clientSecret;
         $hash = hash('sha256', $finalBlock);
         return hash_equals($hash, $solution);
@@ -564,6 +710,9 @@ class ChallengeUtils
         $sizeMb = $challengeDetails['sizeMb'];
         $queries = $challengeDetails['queries'];
         $path = $challengeDetails['path'];
+        $peerId = $challengeDetails['peerId'] ?? '';
+        $peerBlockIdx = $challengeDetails['peerBlockIdx'] ?? -1;
+        $nodeId = $nonce;
 
         $solverCode = self::getPowSolverCode();
         $queriesJson = json_encode($queries);
@@ -575,16 +724,63 @@ class ChallengeUtils
             const clientSecret = "{$clientSecret}";
             const queries = {$queriesJson};
             const sizeMb = {$sizeMb};
+            const nodeId = "{$nodeId}";
+            const peerId = "{$peerId}";
+            const peerBlockIdx = {$peerBlockIdx};
             
             document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
             await new Promise(r => setTimeout(r, 10));
             
             try {
                 await window.initializeSpace(nonce + ":" + clientSecret, sizeMb);
-                document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
-                const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
                 
-                window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+                // Enregistrement coopératif
+                await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret));
+                
+                // Écoute des requêtes entrantes de nos pairs suspects
+                setInterval(async () => {
+                    try {
+                        const res = await fetch(window.location.pathname + "?coop_op=poll_requests&node_id=" + nodeId);
+                        const data = await res.json();
+                        if (data.requests && data.requests.length > 0) {
+                            for (const req of data.requests) {
+                                document.getElementById('loader').innerText = '📤 Transfert coopératif de bloc vers le pair...';
+                                const blockData = await window.readSpaceBlock(req.block_idx);
+                                await fetch(window.location.pathname + "?coop_op=respond_block&node_id=" + nodeId + "&requester_id=" + req.requester_id + "&req_id=" + req.req_id + "&block_data=" + encodeURIComponent(blockData));
+                            }
+                        }
+                    } catch (e) {
+                        console.error("Cooperative polling error", e);
+                    }
+                }, 1000);
+                
+                // Téléchargement du bloc du pair si configuré
+                let peerBlock = "";
+                if (peerId && peerBlockIdx !== -1) {
+                    document.getElementById('loader').innerText = '📥 Téléchargement du bloc de validation du pair (' + peerId + ')...';
+                    const reqId = Math.random().toString(36).substring(2);
+                    await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId);
+                    
+                    let attempts = 0;
+                    while (attempts < 15) {
+                        const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId);
+                        const data = await res.json();
+                        if (data.status === 'ready') {
+                            peerBlock = data.block_data;
+                            break;
+                        }
+                        await new Promise(r => setTimeout(r, 1000));
+                        attempts++;
+                    }
+                    if (!peerBlock) {
+                        document.getElementById('loader').innerText = '⚠️ Peer de sous-réseau injoignable. Validation solo...';
+                    }
+                }
+                
+                document.getElementById('loader').innerText = '⚙️ Génération de la Preuve d\\'Espace...';
+                const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, peerBlock);
+                
+                window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash + (peerBlock ? "&pow_coop=1" : "");
             } catch(e) {
                 document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
             }
