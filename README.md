@@ -106,8 +106,10 @@ Sponsorship helps maintain the library, fund active updates, and keep the dynami
 
 ### 🌟 Featured Sponsors
 
-- ![](https://primals.net/PRIOR.png) https://primals.net and sub-sites
-  <img src="https://s6.imgcdn.dev/YJTWv9.png" width="100" alt="YJTWv9.png" border="0">
+<img src="https://s6.imgcdn.dev/YJTWv9.png" width="100" alt="YJTWv9.png" border="0" valign="middle"> 
+
+[https://primals.net](https://primals.net) and sub-sites
+
 
 ## License
 
