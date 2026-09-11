@@ -102,6 +102,22 @@ class ChallengeUtils
      */
     public static function generateStatelessTicket(array $payload): string
     {
+        $ed25519Key = $_ENV['ED25519_PRIVATE_KEY'] ?? getenv('ED25519_PRIVATE_KEY');
+        if ($ed25519Key) {
+            try {
+                $serialized = json_encode($payload);
+                $privateKey = openssl_pkey_get_private($ed25519Key);
+                if ($privateKey && openssl_sign($serialized, $signature, $privateKey, null)) {
+                    $base64UrlEncode = function ($input) {
+                        return rtrim(strtr(base64_encode($input), '+/', '-_'), '=');
+                    };
+                    return 'ed25519.' . $base64UrlEncode($serialized) . '.' . $base64UrlEncode($signature);
+                }
+            } catch (\Throwable $e) {
+                error_log("[ChallengeUtils] Ed25519 signing failed: " . $e->getMessage());
+            }
+        }
+
         $key = hash('sha256', self::getPowSecret(), true);
         $iv = random_bytes(16);
         $encrypted = openssl_encrypt(json_encode($payload), 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
@@ -119,6 +135,35 @@ class ChallengeUtils
      */
     public static function parseStatelessTicket(string $ticket): ?array
     {
+        try {
+            if (str_starts_with($ticket, 'ed25519.')) {
+                $parts = explode('.', $ticket);
+                if (count($parts) !== 3) {
+                    return null;
+                }
+                $base64UrlDecode = function ($input) {
+                    return base64_decode(strtr($input, '-_', '+/'));
+                };
+                $payloadJson = $base64UrlDecode($parts[1]);
+                $signature = $base64UrlDecode($parts[2]);
+                
+                $ed25519PubKey = $_ENV['ED25519_PUBLIC_KEY'] ?? getenv('ED25519_PUBLIC_KEY');
+                if (!$ed25519PubKey) {
+                    error_log("[ChallengeUtils] ED25519_PUBLIC_KEY is not defined in environment.");
+                    return null;
+                }
+                
+                $publicKey = openssl_pkey_get_public($ed25519PubKey);
+                if ($publicKey && openssl_verify($payloadJson, $signature, $publicKey, null) === 1) {
+                    return json_decode($payloadJson, true);
+                }
+                return null;
+            }
+        } catch (\Throwable $e) {
+            error_log("[ChallengeUtils] Ed25519 verification failed: " . $e->getMessage());
+            return null;
+        }
+
         $parts = explode('.', $ticket);
         if (count($parts) !== 3) {
             return null;

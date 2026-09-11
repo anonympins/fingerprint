@@ -1,5 +1,5 @@
 import {afterEach, assert, beforeEach, describe, expect, it, test, vi} from 'vitest';
-import {createHash, createHmac} from 'node:crypto';
+import {createHash, createHmac, generateKeyPairSync} from 'node:crypto';
 import {solveCpuTargetInline, solveMemory} from '../pow.solver.js';
 import {readFileSync} from 'node:fs';
 import {cyrb53, FingerprintBuilder} from '../fingerprint.builder.js';
@@ -2480,6 +2480,44 @@ describe('Additional Suspicion Vectors Coverage', () => {
 
         const { crossLayerInconsistencyScore } = __internal.getCrossLayerInconsistency(context);
         expect(crossLayerInconsistencyScore).toBe(50);
+    });
+});
+
+describe('Ed25519 Asymmetric Tickets', () => {
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519', {
+        privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
+        publicKeyEncoding: { format: 'pem', type: 'spki' }
+    });
+    const privateKeyPem = privateKey;
+    const publicKeyPem = publicKey;
+
+    beforeEach(() => {
+        process.env.ED25519_PRIVATE_KEY = privateKeyPem;
+        process.env.ED25519_PUBLIC_KEY = publicKeyPem;
+    });
+
+    afterEach(() => {
+        delete process.env.ED25519_PRIVATE_KEY;
+        delete process.env.ED25519_PUBLIC_KEY;
+    });
+
+    it('should generate and validate an Ed25519 ticket successfully', async () => {
+        const payload = {
+            expiry: Date.now() + 3600000,
+            originalIp: '127.0.0.1',
+            deviceId: 'device-123',
+            deviceHash: 'hash-abc'
+        };
+
+        const ticket = fingerprint.generateStatelessTicket(payload);
+        expect(ticket).toBeDefined();
+        expect(ticket.startsWith('ed25519.')).toBe(true);
+
+        const isValid = await fingerprint.isTicketValid('127.0.0.1', ticket, 'device-123', 'hash-abc');
+        expect(isValid).toBe(true);
+
+        const isDiffIpValid = await fingerprint.isTicketValid('192.168.1.1', ticket, 'device-123', 'hash-abc', false);
+        expect(isDiffIpValid).toBe(false);
     });
 });
 

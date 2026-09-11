@@ -438,6 +438,17 @@ class ChallengeUtils:
 
     @staticmethod
     def generate_stateless_ticket(payload: Dict[str, Any], secret: str) -> str:
+        ed25519_key_pem = os.environ.get("ED25519_PRIVATE_KEY")
+        if ed25519_key_pem:
+            try:
+                from cryptography.hazmat.primitives.serialization import load_pem_private_key
+                private_key = load_pem_private_key(ed25519_key_pem.encode('utf-8'), password=None, backend=default_backend())
+                serialized = json.dumps(payload).encode('utf-8')
+                signature = private_key.sign(serialized)
+                return f"ed25519.{ChallengeUtils._base64url_encode(serialized)}.{ChallengeUtils._base64url_encode(signature)}"
+            except Exception as e:
+                print(f"[ChallengeUtils] Ed25519 signing failed, falling back to symmetric: {e}")
+
         key = hashlib.sha256(secret.encode('utf-8')).digest()
         iv = os.urandom(16)
         plaintext = json.dumps(payload).encode('utf-8')
@@ -457,6 +468,27 @@ class ChallengeUtils:
     def parse_stateless_ticket(ticket: str, secret: str) -> Optional[Dict[str, Any]]:
         if not ticket or "." not in ticket:
             return None
+        if ticket.startswith("ed25519."):
+            parts = ticket.split(".")
+            if len(parts) != 3:
+                return None
+            try:
+                payload_bytes = ChallengeUtils._base64url_decode(parts[1])
+                signature = ChallengeUtils._base64url_decode(parts[2])
+                
+                ed25519_pub_pem = os.environ.get("ED25519_PUBLIC_KEY")
+                if not ed25519_pub_pem:
+                    print("[ChallengeUtils] ED25519_PUBLIC_KEY is not defined in environment.")
+                    return None
+                    
+                from cryptography.hazmat.primitives.serialization import load_pem_public_key
+                public_key = load_pem_public_key(ed25519_pub_pem.encode('utf-8'), backend=default_backend())
+                public_key.verify(signature, payload_bytes)
+                return json.loads(payload_bytes.decode('utf-8'))
+            except Exception as e:
+                print(f"[ChallengeUtils] Ed25519 verification failed: {e}")
+                return None
+
         parts = ticket.split(".")
         if len(parts) != 3:
             return None

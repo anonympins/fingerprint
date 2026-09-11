@@ -31,6 +31,14 @@
      {
          $this->isProduction = ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production';
          
+         // Dynamically bind Ed25519 keys if passed via config
+         if (isset($securityConfig['ed25519_private_key'])) {
+             $_ENV['ED25519_PRIVATE_KEY'] = $securityConfig['ed25519_private_key'];
+         }
+         if (isset($securityConfig['ed25519_public_key'])) {
+             $_ENV['ED25519_PUBLIC_KEY'] = $securityConfig['ed25519_public_key'];
+         }
+
          // Auto-load optimized config if autotuning savePath is specified
          if (isset($securityConfig['autotuning']['savePath'])) {
              $savePath = $securityConfig['autotuning']['savePath'];
@@ -65,7 +73,8 @@
              'deviceIdCookieMaxAge', 'challengePagePath', 'verbose', 'patterns',
              'honeypot', 'threatIntel', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger', 'probationaryTtl',
              'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
-             'similarityThreshold', 'summary', 'description'
+             'similarityThreshold', 'summary', 'description',
+             'ed25519_private_key', 'ed25519_public_key'
          ];
 
          if (empty($config['weights'])) {

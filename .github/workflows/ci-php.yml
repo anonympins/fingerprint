@@ -22,7 +22,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
-          extensions: mbstring, gmp, bcmath
+          extensions: mbstring, gmp, bcmath, openssl
           tools: composer:v2
           coverage: none
 

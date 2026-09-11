@@ -1409,3 +1409,58 @@ async def test_pospace_challenge():
     decision_submit = await engine.process_request(context_submit)
     assert decision_submit["action"] == "redirect"
     assert "pow_clearance" in decision_submit["cookie"]["name"]
+
+@pytest.mark.asyncio
+async def test_ed25519_stateless_ticket_generation_and_validation():
+    """Vérifie la génération de tickets stateless Ed25519 et leur validation."""
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+    from cryptography.hazmat.primitives import serialization
+
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    private_key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode('utf-8')
+
+    public_key = private_key.public_key()
+    public_key_pem = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode('utf-8')
+
+    import os
+    os.environ["ED25519_PRIVATE_KEY"] = private_key_pem
+    os.environ["ED25519_PUBLIC_KEY"] = public_key_pem
+
+    payload = {
+        "expiry": int(time.time() * 1000) + 3600000,
+        "originalIp": "127.0.0.1",
+        "deviceId": "device-123",
+        "deviceHash": "hash-abc"
+    }
+    
+    ticket = ChallengeUtils.generate_stateless_ticket(payload, "secret")
+    assert ticket is not None
+    assert ticket.startswith("ed25519.")
+    
+    valid = await ChallengeUtils.is_ticket_valid(
+        ip="127.0.0.1",
+        ticket=ticket,
+        device_id="device-123",
+        device_hash="hash-abc",
+        secret="secret"
+    )
+    assert valid is True
+
+    valid_diff_ip = await ChallengeUtils.is_ticket_valid(
+        ip="192.168.1.1",
+        ticket=ticket,
+        device_id="device-123",
+        device_hash="hash-abc",
+        secret="secret"
+    )
+    assert valid_diff_ip is False
+
+    del os.environ["ED25519_PRIVATE_KEY"]
+    del os.environ["ED25519_PUBLIC_KEY"]

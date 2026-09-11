@@ -168,6 +168,31 @@ const base64UrlDecode = (str) => {
 };
 
 export function generateStatelessTicket(payload) {
+  let ed25519Key = process.env.ED25519_PRIVATE_KEY;
+  if (ed25519Key) {
+    try {
+      ed25519Key = ed25519Key.replace(/\\n/g, '\n');
+      const serialized = JSON.stringify(payload);
+      let signature;
+      try {
+        signature = crypto.sign(undefined, Buffer.from(serialized), {
+          key: ed25519Key,
+          format: 'pem',
+          type: 'pkcs8'
+        });
+      } catch (signErr) {
+        signature = crypto.sign(null, Buffer.from(serialized), {
+          key: ed25519Key,
+          format: 'pem',
+          type: 'pkcs8'
+        });
+      }
+      return `ed25519.${base64UrlEncode(Buffer.from(serialized))}.${base64UrlEncode(signature)}`;
+    } catch (e) {
+      console.error('[Fingerprint] Ed25519 signing failed, falling back to symmetric:', e.message);
+    }
+  }
+
   const secret = getPowSecret();
   const key = crypto.createHash('sha256').update(secret).digest();
   const iv = crypto.randomBytes(16);
@@ -181,6 +206,40 @@ export function generateStatelessTicket(payload) {
 
 export function parseStatelessTicket(ticket) {
   try {
+    if (ticket.startsWith('ed25519.')) {
+      const parts = ticket.split('.');
+      if (parts.length !== 3) return null;
+      const payloadBuffer = base64UrlDecode(parts[1]);
+      const signatureBuffer = base64UrlDecode(parts[2]);
+      let publicKey = process.env.ED25519_PUBLIC_KEY;
+      if (!publicKey) {
+        console.error('[Fingerprint] ED25519_PUBLIC_KEY is not defined in environment.');
+        return null;
+      }
+      publicKey = publicKey.replace(/\\n/g, '\n');
+      
+      let isVerified = false;
+      try {
+        isVerified = crypto.verify(undefined, payloadBuffer, {
+          key: publicKey,
+          format: 'pem',
+          type: 'spki'
+        }, signatureBuffer);
+      } catch (verifyErr) {
+        try {
+          isVerified = crypto.verify(null, payloadBuffer, {
+            key: publicKey,
+            format: 'pem',
+            type: 'spki'
+          }, signatureBuffer);
+        } catch (verifyErr2) {
+          isVerified = false;
+        }
+      }
+      if (!isVerified) return null;console.log('parse:3');
+      return JSON.parse(payloadBuffer.toString('utf8'));
+    }
+
     const parts = ticket.split('.');
     if (parts.length !== 3) return null;
     
@@ -1118,24 +1177,19 @@ function generateBlock(seed, blockIndex, blockSize = 1024) {
 
 export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
-  if (typeof ticket !== 'string' || ticket.length === 0) return false;
-
+    if (typeof ticket !== 'string' || ticket.length === 0) return false;
   // 1. Resolve stateless ticket first (zero database I/O cost)
   const statelessData = parseStatelessTicket(ticket);
   if (statelessData) {
     const { expiry, originalIp, deviceId: storedDeviceId, deviceHash: storedDeviceHash } = statelessData;
-
     if (!expiry || Date.now() > expiry) {
       return false;
     }
-
     if (ip === originalIp) return true;
     const currentSubnet = getIpSubnet(ip);
     const originalSubnet = getIpSubnet(originalIp);
     if (currentSubnet && originalSubnet && currentSubnet === originalSubnet) return true;
-
     if (!allowCrossNetworkRoaming) return false;
-
     return !!(deviceId && deviceId === storedDeviceId && deviceHash && deviceHash === storedDeviceHash);
   }
 
@@ -3162,6 +3216,14 @@ export class FingerprintEngine {
   constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
     
+    // Dynamically bind Ed25519 keys if passed via config
+    if (securityConfig && securityConfig.ed25519_private_key) {
+      process.env.ED25519_PRIVATE_KEY = securityConfig.ed25519_private_key;
+    }
+    if (securityConfig && securityConfig.ed25519_public_key) {
+      process.env.ED25519_PUBLIC_KEY = securityConfig.ed25519_public_key;
+    }
+
     let finalConfig = securityConfig;
     if (securityConfig && securityConfig.autotuning && securityConfig.autotuning.savePath) {
       const sPath = securityConfig.autotuning.savePath;
@@ -3200,7 +3262,8 @@ export class FingerprintEngine {
       'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
       'trustedProxies',
       'wasm',
-      'similarityThreshold'
+      'similarityThreshold',
+      'ed25519_private_key', 'ed25519_public_key'
     ]);
 
     // 1. Check for essential keys

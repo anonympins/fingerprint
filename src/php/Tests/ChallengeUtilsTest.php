@@ -79,4 +79,51 @@ class ChallengeUtilsTest extends TestCase
         $this->assertNotNull($ticket, "Un ticket valide aurait dû être généré.");
         $this->assertTrue(ChallengeUtils::isTicketValid($ip, $ticket));
     }
+
+    public function testEd25519TicketValidation(): void
+    {
+        if (!extension_loaded('openssl')) {
+            $this->markTestSkipped('openssl extension is not loaded.');
+        }
+
+        $pkey = @openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
+        if (!$pkey) {
+            $this->markTestSkipped('Ed25519 is not supported in this PHP/OpenSSL environment.');
+        }
+
+        openssl_pkey_export($pkey, $privateKeyPem);
+        $details = openssl_pkey_get_details($pkey);
+        $publicKeyPem = $details['key'];
+
+        // Test if openssl_sign supports null algorithm for Ed25519 (PHP 8.0.0 bug)
+        $testSig = '';
+        $testPriv = @openssl_pkey_get_private($privateKeyPem);
+        try {
+            if (!$testPriv || !@openssl_sign('test', $testSig, $testPriv, null)) {
+                $this->markTestSkipped('Ed25519 signing is not fully supported or buggy in this PHP/OpenSSL environment.');
+            }
+        } catch (\TypeError $e) {
+            $this->markTestSkipped('Ed25519 signing is not supported due to PHP 8.0.0 openssl_sign() null algorithm bug.');
+        }
+
+        $_ENV['ED25519_PRIVATE_KEY'] = $privateKeyPem;
+        $_ENV['ED25519_PUBLIC_KEY'] = $publicKeyPem;
+
+        $ip = '127.0.0.1';
+        $expiry = (int)floor(microtime(true) * 1000) + 3600000;
+        $payload = [
+            'expiry' => $expiry,
+            'originalIp' => $ip,
+            'deviceId' => 'device-123',
+            'deviceHash' => 'hash-abc'
+        ];
+
+        $ticket = ChallengeUtils::generateStatelessTicket($payload);
+        $this->assertStringStartsWith('ed25519.', $ticket);
+
+        $this->assertTrue(ChallengeUtils::isTicketValid($ip, $ticket, 'device-123', 'hash-abc'));
+        $this->assertFalse(ChallengeUtils::isTicketValid('192.168.1.1', $ticket, 'device-123', 'hash-abc'));
+
+        unset($_ENV['ED25519_PRIVATE_KEY'], $_ENV['ED25519_PUBLIC_KEY']);
+    }
 }
