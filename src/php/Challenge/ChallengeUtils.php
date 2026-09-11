@@ -83,6 +83,30 @@ class ChallengeUtils
         return hash_equals($hash, $solution);
     }
 
+    public static function verifyZkpProof(string $yStr, string $tStr, string $sStr): bool
+    {
+        try {
+            $p = BigInt::fromHex('fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f'); // secp256k1 prime
+            $g = new BigInt(2);
+
+            $y = BigInt::fromHex($yStr);
+            $t = BigInt::fromHex($tStr);
+            $s = BigInt::fromHex($sStr);
+
+            $cStr = (string)$g . (string)$y . (string)$t;
+            $cHex = hash('sha256', $cStr);
+            $c = BigInt::fromHex($cHex)->mod($p);
+
+            $left = $g->modPow($s, $p);
+            $y_c = $y->modPow($c, $p);
+            $right = $t->mul($y_c)->mod($p);
+
+            return $left->compareTo($right) === 0;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     /**
      * Récupère la clé secrète pour les PoW depuis les variables d'environnement.
      */
@@ -131,9 +155,10 @@ class ChallengeUtils
     /**
      * Décode et valide un ticket stateless chiffré et signé.
      * @param string $ticket
+     * @param string $secret
      * @return array|null
      */
-    public static function parseStatelessTicket(string $ticket): ?array
+    public static function parseStatelessTicket(string $ticket, string $secret = ''): ?array
     {
         try {
             if (str_starts_with($ticket, 'ed25519.')) {
@@ -177,7 +202,7 @@ class ChallengeUtils
         if (!$iv || !$encrypted || !$signature || strlen($iv) !== 16) {
             return null;
         }
-        $key = hash('sha256', self::getPowSecret(), true);
+        $key = hash('sha256', !empty($secret) ? $secret : self::getPowSecret(), true);
         $expectedSignature = hash_hmac('sha256', $iv . $encrypted, $key, true);
         if (!hash_equals($expectedSignature, $signature)) {
             return null;
@@ -188,20 +213,23 @@ class ChallengeUtils
 
     /**
      * Vérifie si un ticket de passage est valide (supporte les tickets opaques via store et le fallback legacy).
+     * Supporte une clé secrète optionnelle passée en paramètre pour la compatibilité avec les tests.
      */
     public static function isTicketValid(
         ?string $ip,
         ?string $ticket,
         string $deviceId = '',
         string $deviceHash = '',
-        bool $allowCrossNetworkRoaming = false
+        bool $allowCrossNetworkRoaming = false,
+        string $secret = '',
+        string $zkpProof = ''
     ): bool {
         if (empty($ip) || empty($ticket)) {
             return false;
         }
 
         // Tentative de validation stateless d'abord
-        $ticketData = self::parseStatelessTicket($ticket);
+        $ticketData = self::parseStatelessTicket($ticket, $secret);
         if ($ticketData !== null) {
             $expiry = $ticketData['expiry'] ?? null;
             $originalIp = $ticketData['originalIp'] ?? null;
@@ -211,6 +239,18 @@ class ChallengeUtils
             if (!$expiry || (int)floor(microtime(true) * 1000) > (int)$expiry) {
                 return false;
             }
+                if ($storedDeviceHash && str_starts_with($storedDeviceHash, 'zkp:')) {
+                    $expectedY = explode(':', $storedDeviceHash, 2)[1] ?? '';
+                    if (!empty($zkpProof)) {
+                        $zkpParts = explode(':', $zkpProof);
+                        if (count($zkpParts) === 3 && $zkpParts[0] === $expectedY) {
+                            if (self::verifyZkpProof($zkpParts[0], $zkpParts[1], $zkpParts[2])) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
             if ($ip === $originalIp) {
                 return true;
             }
@@ -238,6 +278,18 @@ class ChallengeUtils
                 $store->delete("ticket:{$ticket}");
                 return false;
             }
+                if ($storedDeviceHash && str_starts_with($storedDeviceHash, 'zkp:')) {
+                    $expectedY = explode(':', $storedDeviceHash, 2)[1] ?? '';
+                    if (!empty($zkpProof)) {
+                        $zkpParts = explode(':', $zkpProof);
+                        if (count($zkpParts) === 3 && $zkpParts[0] === $expectedY) {
+                            if (self::verifyZkpProof($zkpParts[0], $zkpParts[1], $zkpParts[2])) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                }
 
             if ($ip === $originalIp) {
                 return true;
@@ -266,7 +318,7 @@ class ChallengeUtils
             return false;
         }
 
-        $expectedSig = hash_hmac('sha256', "{$ip}:{$expiry}", self::getPowSecret());
+        $expectedSig = hash_hmac('sha256', "{$ip}:{$expiry}", !empty($secret) ? $secret : self::getPowSecret());
 
         return hash_equals($expectedSig, $sig);
     }

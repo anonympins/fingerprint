@@ -761,7 +761,11 @@
          // 3. Vérifier un ticket existant
          $hasValidTicket = false;
          $powCookie = $context->cookies['pow_clearance'] ?? null;
-         if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie)) {
+         $zkpProof = $context->getHeader('x-zkp-proof') ?? $context->query['pow_zkp'] ?? '';
+         $deviceId = $context->cookies['device_id'] ?? '';
+         $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
+         $allowRoaming = $this->securityConfig['allowCrossNetworkRoaming'] ?? false;
+         if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie, $deviceId, $currentDeviceHash, $allowRoaming, $zkpProof)) {
              $hasValidTicket = true;
             MetricsManager::incrementCounter('tickets_valid_total');
              // On ne retourne pas tout de suite pour permettre le re-challenge

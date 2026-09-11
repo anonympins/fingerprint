@@ -16,6 +16,34 @@ class ChallengeUtilsTest extends TestCase
         $_ENV['POW_SECRET'] = 'test-secret-key-that-is-long-enough-for-hmac';
     }
 
+    public function testZkpProofValidation(): void
+    {
+        $fp = 'cvs:12345|gpu:67890';
+        $p = BigInt::fromHex('fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f');
+        $g = new BigInt(2);
+
+        $x = BigInt::fromHex(hash('sha256', $fp))->mod($p);
+        $y = $g->modPow($x, $p);
+        $v = new BigInt(987654321);
+        $t = $g->modPow($v, $p);
+
+        $cStr = (string)$g . (string)$y . (string)$t;
+        $c = BigInt::fromHex(hash('sha256', $cStr))->mod($p);
+        $s = $v->add($c->mul($x))->mod($p->sub(new BigInt(1)));
+
+        $zkpProof = $y->toHex() . ':' . $t->toHex() . ':' . $s->toHex();
+        $this->assertTrue(ChallengeUtils::verifyZkpProof($y->toHex(), $t->toHex(), $s->toHex()));
+
+        $ticket = ChallengeUtils::generateStatelessTicket([
+            'expiry' => (time() + 3600) * 1000,
+            'originalIp' => '127.0.0.1',
+            'deviceId' => 'dev-zkp',
+            'deviceHash' => 'zkp:' . $y->toHex()
+        ]);
+
+        $this->assertTrue(ChallengeUtils::isTicketValid('127.0.0.1', $ticket, 'dev-zkp', '', false, '', $zkpProof));
+    }
+
     public function testIsTicketValid(): void
     {
         $ip = '127.0.0.1';

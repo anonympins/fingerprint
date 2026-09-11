@@ -83,6 +83,56 @@ const ClientLibrary = {
     _hasher: (str, seed) => activeCyrb53(str, seed),
 
     /**
+     * Génère une preuve de connaissance à divulgation nulle (ZKP) de Schnorr pour l'empreinte de l'appareil.
+     * Rend le tout stable et compatible avec les vérifications JS, PHP et Python.
+     * @param {string} fingerprint - L'empreinte de l'appareil.
+     * @returns {Promise<string>} La preuve sous format "y:t:s" en hexadécimal.
+     */
+    async generateZkpProof(fingerprint) {
+        const ZKP_P = 115792089237316195423570985008687907853269984665640564039457584007908834671663n;
+        const ZKP_G = 2n;
+        const cryptoObj = window.crypto || window.msCrypto;
+
+        const sha256Hex = async (str) => {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(str);
+            const hashBuffer = await cryptoObj.subtle.digest('SHA-256', data);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        };
+
+        const modPow = (base, exponent, modulus) => {
+            if (modulus === 1n) return 0n;
+            let result = 1n;
+            base = base % modulus;
+            while (exponent > 0n) {
+                if (exponent % 2n === 1n) {
+                    result = (result * base) % modulus;
+                }
+                exponent = exponent >> 1n;
+                base = (base * base) % modulus;
+            }
+            return result;
+        };
+
+        const xHex = await sha256Hex(fingerprint);
+        const x = BigInt('0x' + xHex) % ZKP_P;
+        const y = modPow(ZKP_G, x, ZKP_P);
+        const randomBytes = new Uint8Array(32);
+        cryptoObj.getRandomValues(randomBytes);
+        let vHex = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        let v = BigInt('0x' + vHex) % (ZKP_P - 1n);
+        if (v === 0n) v = 1n;
+        const t = modPow(ZKP_G, v, ZKP_P);
+        const cStr = ZKP_G.toString() + y.toString() + t.toString();
+        const cHex = await sha256Hex(cStr);
+        const c = BigInt('0x' + cHex) % ZKP_P;
+        const s = (v + c * x) % (ZKP_P - 1n);
+
+        return `${y.toString(16)}:${t.toString(16)}:${s.toString(16)}`;
+    },
+
+    /**
      * Génère l'empreinte de l'appareil actuel.
      */
     getDeviceFingerprint() {
@@ -842,6 +892,7 @@ export const initializeWasm = ClientLibrary.initializeWasm.bind(ClientLibrary);
 export const injectTrapLinks = ClientLibrary.injectTrapLinks.bind(ClientLibrary);
 export const injectPhantomTraps = ClientLibrary.injectPhantomTraps.bind(ClientLibrary);
 export const solveChallengeAndRetry = ClientLibrary.solveChallengeAndRetry.bind(ClientLibrary);
+export const generateZkpProof = ClientLibrary.generateZkpProof.bind(ClientLibrary);
 
 // Export the internal object for testing purposes
 export default ClientLibrary;

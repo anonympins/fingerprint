@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import time
+import os
 from pathlib import Path
 import pytest
 
@@ -1462,5 +1463,35 @@ async def test_ed25519_stateless_ticket_generation_and_validation():
     )
     assert valid_diff_ip is False
 
+@pytest.mark.asyncio
+async def test_zkp_proof_stateless_validation():
+    """Vérifie la génération et validation cryptographique du ticket via ZKP de Schnorr."""
+    fp = "cvs:12345|gpu:67890"
+    p = 115792089237316195423570985008687907853269984665640564039457584007908834671663
+    g = 2
+
+    x = int(hashlib.sha256(fp.encode("utf-8")).hexdigest(), 16) % p
+    y = pow(g, x, p)
+    v = 987654321 % p
+    t = pow(g, v, p)
+    
+    c_str = f"{g}{y}{t}"
+    c = int(hashlib.sha256(c_str.encode("utf-8")).hexdigest(), 16) % p
+    s = (v + (c * x)) % (p - 1)
+
+    zkp_proof = f"{hex(y)[2:]}:{hex(t)[2:]}:{hex(s)[2:]}"
+    assert ChallengeUtils.verify_zkp_proof(hex(y)[2:], hex(t)[2:], hex(s)[2:]) is True
+
+    secret = "my-test-pow-secret-with-long-length-32-chars"
+    ticket = ChallengeUtils.generate_stateless_ticket({
+        "expiry": int(time.time() * 1000) + 3600000,
+        "originalIp": "127.0.0.1",
+        "deviceId": "dev-zkp",
+        "deviceHash": f"zkp:{hex(y)[2:]}"
+    }, secret)
+
+    assert await ChallengeUtils.is_ticket_valid(
+        ip="127.0.0.1", ticket=ticket, device_id="dev-zkp", secret=secret, zkp_proof=zkp_proof
+    ) is True
     del os.environ["ED25519_PRIVATE_KEY"]
     del os.environ["ED25519_PUBLIC_KEY"]

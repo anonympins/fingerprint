@@ -437,6 +437,22 @@ class ChallengeUtils:
         return hmac.compare_digest(h, solution)
 
     @staticmethod
+    def verify_zkp_proof(y_str: str, t_str: str, s_str: str) -> bool:
+        try:
+            y = int(y_str, 16)
+            t = int(t_str, 16)
+            s = int(s_str, 16)
+            ZKP_P = 115792089237316195423570985008687907853269984665640564039457584007908834671663
+            ZKP_G = 2
+            c_str = f"{ZKP_G}{y}{t}"
+            c = int(hashlib.sha256(c_str.encode("utf-8")).hexdigest(), 16) % ZKP_P
+            left = pow(ZKP_G, s, ZKP_P)
+            right = (t * pow(y, c, ZKP_P)) % ZKP_P
+            return left == right
+        except Exception:
+            return False
+
+    @staticmethod
     def generate_stateless_ticket(payload: Dict[str, Any], secret: str) -> str:
         ed25519_key_pem = os.environ.get("ED25519_PRIVATE_KEY")
         if ed25519_key_pem:
@@ -525,7 +541,8 @@ class ChallengeUtils:
         device_hash: str = '',
         secret: str = '',
         allow_cross_network_roaming: bool = False,
-        store: Optional[Any] = None
+        store: Optional[Any] = None,
+        zkp_proof: str = ''
     ) -> bool:
         if not ip or not ticket:
             return False
@@ -538,6 +555,13 @@ class ChallengeUtils:
             stored_device_hash = ticket_data.get("deviceHash", "")
             
             if not expiry or int(time.time() * 1000) > int(expiry):
+                return False
+            if stored_device_hash and stored_device_hash.startswith("zkp:"):
+                expected_y = stored_device_hash.split(":")[1]
+                if zkp_proof:
+                    y, t, s = zkp_proof.split(":")
+                    if y == expected_y and ChallengeUtils.verify_zkp_proof(y, t, s):
+                        return True
                 return False
             if ip == original_ip:
                 return True
@@ -559,6 +583,13 @@ class ChallengeUtils:
                 
                 if expiry and int(time.time() * 1000) > int(expiry):
                     await store.delete(f"ticket:{ticket}")
+                    return False
+                if stored_device_hash and stored_device_hash.startswith("zkp:"):
+                    expected_y = stored_device_hash.split(":")[1]
+                    if zkp_proof:
+                        y, t, s = zkp_proof.split(":")
+                        if y == expected_y and ChallengeUtils.verify_zkp_proof(y, t, s):
+                            return True
                     return False
                     
                 if ip == original_ip:

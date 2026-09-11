@@ -158,6 +158,39 @@ function decodePolymorphicFingerprint(fpString, mapping) {
     return mappedParts.join('|');
 }
 
+function modPow(base, exponent, modulus) {
+    if (modulus === 1n) return 0n;
+    let result = 1n;
+    base = base % modulus;
+    while (exponent > 0n) {
+        if (exponent % 2n === 1n) {
+            result = (result * base) % modulus;
+        }
+        exponent = exponent >> 1n;
+        base = (base * base) % modulus;
+    }
+    return result;
+}
+
+export function verifyZkpProof(yStr, tStr, sStr) {
+    try {
+        const y = BigInt('0x' + yStr);
+        const t = BigInt('0x' + tStr);
+        const s = BigInt('0x' + sStr);
+        
+        const ZKP_P = 115792089237316195423570985008687907853269984665640564039457584007908834671663n;
+        const ZKP_G = 2n;
+
+        const cStr = ZKP_G.toString() + y.toString() + t.toString();
+        const hashHex = crypto.createHash('sha256').update(cStr).digest('hex');
+        const c = BigInt('0x' + hashHex) % ZKP_P;
+
+        return modPow(ZKP_G, s, ZKP_P) === (t * modPow(y, c, ZKP_P)) % ZKP_P;
+    } catch (e) {
+        return false;
+    }
+}
+
 const base64UrlEncode = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 const base64UrlDecode = (str) => {
   let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
@@ -1175,7 +1208,7 @@ function generateBlock(seed, blockIndex, blockSize = 1024) {
   return block;
 }
 
-export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false) => {
+export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', allowCrossNetworkRoaming = false, zkpProof = '') => {
   // Input validation: ensure the ticket is a non-empty string with the correct format.
     if (typeof ticket !== 'string' || ticket.length === 0) return false;
   // 1. Resolve stateless ticket first (zero database I/O cost)
@@ -1184,6 +1217,16 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     const { expiry, originalIp, deviceId: storedDeviceId, deviceHash: storedDeviceHash } = statelessData;
     if (!expiry || Date.now() > expiry) {
       return false;
+    }
+    if (storedDeviceHash && storedDeviceHash.startsWith('zkp:')) {
+        const expectedY = storedDeviceHash.split(':')[1];
+        if (zkpProof) {
+            const [y, t, s] = zkpProof.split(':');
+            if (y === expectedY && verifyZkpProof(y, t, s)) {
+                return true;
+            }
+        }
+        return false;
     }
     if (ip === originalIp) return true;
     const currentSubnet = getIpSubnet(ip);
@@ -1201,6 +1244,16 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     if (!expiry || Date.now() > expiry) {
       await store.delete(`ticket:${ticket}`);
       return false;
+    }
+    if (storedDeviceHash && storedDeviceHash.startsWith('zkp:')) {
+        const expectedY = storedDeviceHash.split(':')[1];
+        if (zkpProof) {
+            const [y, t, s] = zkpProof.split(':');
+            if (y === expectedY && verifyZkpProof(y, t, s)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     if (ip === originalIp) return true;
@@ -4070,7 +4123,8 @@ export class FingerprintEngine {
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
     // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
-    const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming);
+    const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
+    const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
     const mustReChallenge = isSuspiciousHigh && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
@@ -5159,6 +5213,8 @@ export const __internal = {
     getIpReputationScore, // Expose for testing
     updateIpReputationScore, // Expose for testing
     setLastBestSolution: (val) => { lastBestSolution = val; }, // Expose to test auto-tuning metrics
+    verifyZkpProof,
+    modPow,
     parseTcpSyn, // Expose for testing
     classifyTcpOs, // Expose for testing
     getTcpAnomalyScore // Expose for testing
