@@ -3,7 +3,7 @@
  */
 // Exporté pour être utilisé comme fallback par fingerprint.client.js
 export const cyrb53 = (str, seed = 0) => { 
-    const safeStr = typeof str === 'string' ? str : String(str || '');
+    const safeStr = (typeof str === 'string' ? str : String(str || '')).slice(0, 10000);
     let h1 = 0xdeadbeef ^ seed,
         h2 = 0x41c6ce57 ^ seed;
     for (let i = 0, ch; i < safeStr.length; i++) {

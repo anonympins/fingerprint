@@ -22,6 +22,24 @@ const securityConfig = {
     },
 };
 
+const metricsRateLimiter = (() => {
+    const ipRequestHistory = new Map();
+    return (req, res, next) => {
+        const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+        const now = Date.now();
+        const windowMs = 60000; // 1-minute window
+        const maxRequests = 10;   // Allow maximum 10 requests per window
+
+        const history = (ipRequestHistory.get(ip) || []).filter(ts => now - ts < windowMs);
+        if (history.length >= maxRequests) {
+            return res.status(429).send('Too Many Requests: Metrics rate limit exceeded.');
+        }
+        history.push(now);
+        ipRequestHistory.set(ip, history);
+        next();
+    };
+})();
+
 const app = express();
 
 // Middleware pour analyser les cookies requis par le moteur de fingerprinting
@@ -39,7 +57,7 @@ app.get('/', (req, res) => {
 app.get('/protected', (req, res) => {
     res.send('Welcome to the protected page!');
 });
-app.get('/metrics', async (req, res) => {
+app.get('/metrics', metricsRateLimiter, async (req, res) => {
     await handleMetricsRequest(req, res, securityConfig);
 });
 app.listen(3000, () => console.log('Server with Express and powMiddleware started on port 3000'));
