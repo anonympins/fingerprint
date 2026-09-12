@@ -23,7 +23,7 @@ $$x_{n+1} = r \times x_n \times (1.0 - x_n)$$
 
 The computations are initiated with:
 
-$$x_0 = \text{SeedFloat} + \text{channel\_index} \times 0.015$$
+$$x_0 = \text{SeedFloat} + \text{channel\\_index} \times 0.015$$
 
 Because the trajectory is highly sensitive to initial conditions, a chaotic cascade occurs. On dedicated GPU hardware, these parallel calculations complete in milliseconds, whereas single-threaded CPU emulators (such as SwiftShader commonly used by headless bots) take several seconds to compute.
 
