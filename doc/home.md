@@ -9,7 +9,7 @@ Welcome to the official documentation for the fingerprinting and protection libr
 ### 1. [Key Concepts and Suspicion Vectors](concepts)
 Understand the internal workings of the detection engine and how suspicion scores are calculated.
 * **Multi-layered decision architecture**: TLS, protocol, network, global identity, and behavior.
-* **The 15 suspicion vectors explained**:
+* **The 21 suspicion vectors explained**:
 * Scores for rotation, IP history, header anomalies, TLS fingerprints (JA3/JA4), etc.
 * Behavioral analysis (mouse movements, keystrokes, click variance).
 * **Remediation mechanisms (PoW)**:
