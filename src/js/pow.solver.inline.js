@@ -266,7 +266,7 @@ async function solveCpuTarget(message, target) {
  * @param {number} difficulty - La difficulté (en Mo).
  * @returns {Promise<number>} La solution (nombre entier).
  */
-export async function solveMemory(seed, difficulty) {
+async function solveMemory(seed, difficulty) {
     const wasmModule = typeof window !== 'undefined' ? (window.wasmModule || (window.ClientLibrary && window.ClientLibrary.wasmModule)) : null;
     if (wasmModule && typeof wasmModule._solve_memory_challenge === 'function') {
         const encoder = new TextEncoder();
