@@ -24,6 +24,7 @@ export class GpuPowSolver {
             }
         } catch (e) {
             console.warn('[GPU-PoW] WebGPU failed or disabled, falling back to WebGL2:', e);
+            // Fallthrough to WebGL2
         }
 
         // Fallback to WebGL2
@@ -35,7 +36,20 @@ export class GpuPowSolver {
                 duration: performance.now() - start
             };
         } catch (e) {
-            throw new Error(`[GPU-PoW] Both WebGPU and WebGL2 solvers failed: ${e.message}`);
+            console.warn('[GPU-PoW] WebGL2 failed or disabled, falling back to WebGL1:', e);
+            // Fallthrough to WebGL1
+        }
+
+        // Fallback to WebGL1
+        try {
+            const result = await this._solveWebGL1(numericSeed, iterations);
+            return {
+                solution: result,
+                platform: 'webgl1',
+                duration: performance.now() - start
+            };
+        } catch (e) {
+            throw new Error(`[GPU-PoW] All GPU solvers (WebGPU, WebGL2, WebGL1) failed: ${e.message}`);
         }
     }
 
@@ -195,6 +209,87 @@ export class GpuPowSolver {
         const result = [];
         for (let i = 0; i < 64; i++) {
             result.push(pixels[i * 4]);
+        }
+
+        return result.map(v => v.toFixed(6)).join(',');
+    }
+
+    static async _solveWebGL1(seed, iterations) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 8;
+        canvas.height = 8; // 64 pixels total matching WebGPU size
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl'); // Get WebGL1 context with legacy fallback
+        if (!gl) throw new Error('WebGL1 context not supported.');
+
+        // WebGL1 Vertex Shader
+        const vs = `
+            attribute vec4 pos;
+            void main() {
+                gl_Position = pos;
+            }`;
+        // WebGL1 Fragment Shader
+        const fs = `
+            precision highp float; // highp float is an extension in WebGL1, but generally available
+            uniform float uSeed;
+            uniform int uIterations;
+            void main() {
+                float index = gl_FragCoord.x + (gl_FragCoord.y * 8.0);
+                float x = uSeed + (index * 0.015);
+                float r = 3.9999;
+                for(int i = 0; i < uIterations; i++) {
+                    x = r * x * (1.0 - x);
+                }
+                gl_FragColor = vec4(x, 0.0, 0.0, 1.0); // Use gl_FragColor for WebGL1
+            }`;
+
+        const program = this._createProgram(gl, vs, fs);
+        gl.useProgram(program);
+
+        const posAttr = gl.getAttribLocation(program, 'pos');
+        const buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(posAttr);
+        gl.vertexAttribPointer(posAttr, 2, gl.FLOAT, false, 0, 0);
+
+        gl.uniform1f(gl.getUniformLocation(program, 'uSeed'), seed);
+        gl.uniform1i(gl.getUniformLocation(program, 'uIterations'), iterations);
+
+        // Check for OES_texture_float and WEBGL_color_buffer_float extensions for float textures and readPixels
+        const floatTextureExt = gl.getExtension('OES_texture_float');
+        const floatColorBufferExt = gl.getExtension('WEBGL_color_buffer_float');
+
+        if (!floatTextureExt || !floatColorBufferExt) {
+            throw new Error('WebGL1 float texture/color buffer extensions not supported. Cannot read float pixels.');
+        }
+
+        // Create a framebuffer to render to a float texture
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.FLOAT, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const fb = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+
+        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+            throw new Error('WebGL1 framebuffer not complete: ' + status);
+        }
+
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        const pixels = new Float32Array(canvas.width * canvas.height * 4);
+        gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.FLOAT, pixels);
+
+        const result = [];
+        for (let i = 0; i < 64; i++) {
+            result.push(pixels[i * 4]); // Only take the R component
         }
 
         return result.map(v => v.toFixed(6)).join(',');

@@ -63,8 +63,8 @@ describe('Proof-of-Work Solvers', () => {
             const solution1 = await solveMemory(seed, difficulty);
             const solution2 = await solveMemory(seed, difficulty);
 
-            expect(solution1).toBe(solution2);
-            expect(solution1).not.toBe(await solveMemory('different-seed', difficulty));
+            expect(solution1).toStrictEqual(solution2);
+            expect(solution1).not.toStrictEqual(await solveMemory('different-seed', difficulty));
         });
     });
 
@@ -106,7 +106,7 @@ describe('Proof-of-Work Solvers', () => {
 
             const solutions = await solveChallenge(challenge, ''); // Le fingerprint est passé en 2e arg
             expect(solutions.rawSolution).toHaveProperty('cpu', expect.any(Number));
-            expect(solutions.rawSolution).toHaveProperty('mem', expect.any(Number));
+            expect(solutions.rawSolution).toHaveProperty('mem', expect.any(Object));
         }, 20000);
 
         it('should solve a "cpu_mem_inline" challenge for a browser', async () => {
@@ -122,7 +122,7 @@ describe('Proof-of-Work Solvers', () => {
 
             const solutions = await solveChallenge(challenge, '');
             expect(solutions.rawSolution).toHaveProperty('cpu', expect.any(Number));
-            expect(solutions.rawSolution).toHaveProperty('mem', expect.any(Number));
+            expect(solutions.rawSolution).toHaveProperty('mem', expect.any(Object));
         }, 20000);
 
         it('should solve a "tsp" challenge', async () => {

@@ -638,32 +638,32 @@ class ChallengeUtils
     /**
      * Vérifie une solution de PoW mémoire.
      */
-    public static function verifyMemoryPoW(
-        string $nonce,
-        string $solution,
-        int $difficulty,
-        string $clientSecret
-    ): bool {
-        $maxAllowedMemDifficulty = 128; // 128MB
-        if ($difficulty > $maxAllowedMemDifficulty) {
-            error_log("[Security] Memory PoW verification attempt with excessive difficulty: {$difficulty}MB. Denied.");
-            return false;
+    private static function getChallengedIndices(string $seed, int $solution, int $numBlocks, int $k = 4): array
+    {
+        $indices = [];
+        $h = (int)bcmod(\Anonympins\Fingerprint\FingerprintBuilder::cyrb53($seed . ":" . $solution), '4294967296');
+        for ($i = 0; $i < $k; $i++) {
+            $h = self::gmp_imul($h ^ $i, 1597334677);
+            $indices[] = abs($h) % $numBlocks;
         }
+        return $indices;
+    }
 
-        if (empty($solution)) {
-            return false;
+    private static function verifyMerkleProof(string $leafHash, int $index, array $proof, string $root): bool
+    {
+        $currentHash = $leafHash;
+        $idx = $index;
+        foreach ($proof as $sibling) {
+            $combined = ($idx % 2 === 0) ? $currentHash . $sibling : $sibling . $currentHash;
+            $currentHash = hash('sha256', hex2bin($combined));
+            $idx = (int)floor($idx / 2);
         }
+        return $currentHash === $root;
+    }
 
-        // If difficulty is high (production workloads), we treat memory PoW purely as a client-side cost.
-        // Cryptographic integrity is already fully enforced by the chained CPU PoW verification.
-        if ($difficulty > 4) {
-            return true;
-        }
-
+    private static function verifyMemoryPoWLegacy(string $nonce, int $solution, int $difficulty, string $clientSecret): bool
+    {
         $size = $difficulty * 1024 * 1024;
-        if ($size <= 0) {
-            return true; // Pas de challenge mémoire si la difficulté est nulle ou négative.
-        }
         $iterations = (int)floor($size / 16);
         $buffer = new \SplFixedArray((int)floor($size / 4));
 
@@ -684,7 +684,88 @@ class ChallengeUtils
             $finalHash ^= $addr;
         }
 
-        return $finalHash === (int)$solution;
+        return $finalHash === $solution;
+    }
+
+    public static function verifyMemoryPoW(
+        string $nonce,
+        string $solution,
+        int $difficulty,
+        string $clientSecret
+    ): bool {
+        $maxAllowedMemDifficulty = 128; // 128MB
+        if ($difficulty > $maxAllowedMemDifficulty) {
+            error_log("[Security] Memory PoW verification attempt with excessive difficulty: {$difficulty}MB. Denied.");
+            return false;
+        }
+
+        if (empty($solution)) {
+            return false;
+        }
+
+        $data = json_decode($solution, true);
+        if (json_last_error() !== JSON_ERROR_NONE || !isset($data['solution']) || !isset($data['merkleRoot']) || !isset($data['proofs'])) {
+            if ($difficulty <= 4 && preg_match('/^\d+$/', $solution)) {
+                return self::verifyMemoryPoWLegacy($nonce, (int)$solution, $difficulty, $clientSecret);
+            }
+            return false;
+        }
+
+        $sol = $data['solution'];
+        $merkleRoot = $data['merkleRoot'];
+        $proofs = $data['proofs'];
+
+        $numBlocks = $difficulty * 256;
+        $seed = ":{$nonce}:{$clientSecret}";
+
+        $challengedIndices = self::getChallengedIndices($seed, (int)$sol, $numBlocks, 4);
+
+        foreach ($challengedIndices as $b) {
+            $proof = $proofs[$b] ?? $proofs[(string)$b] ?? null;
+            if ($proof === null) return false;
+
+            $blockBytes = '';
+            $h = (int)bcmod(\Anonympins\Fingerprint\FingerprintBuilder::cyrb53($seed . ":" . $b), '4294967296');
+            for ($i = 0; $i < 1024; $i++) {
+                $h = self::gmp_imul($h ^ $i, 1597334677);
+                $blockBytes .= pack('V', $h);
+            }
+
+            $expectedLeaf = hash('sha256', $blockBytes);
+
+            if (!self::verifyMerkleProof($expectedLeaf, $b, $proof, $merkleRoot)) {
+                return false;
+            }
+        }
+
+        $blockCache = [];
+        $getBlockElement = function (int $blockIdx, int $elementIdx) use (&$blockCache, $seed): int {
+            if (!isset($blockCache[$blockIdx])) {
+                $block = [];
+                $h = (int)bcmod(\Anonympins\Fingerprint\FingerprintBuilder::cyrb53($seed . ":" . $blockIdx), '4294967296');
+                for ($i = 0; $i < 1024; $i++) {
+                    $h = self::gmp_imul($h ^ $i, 1597334677);
+                    $block[$i] = $h;
+                }
+                $blockCache[$blockIdx] = $block;
+            }
+            return $blockCache[$blockIdx][$elementIdx];
+        };
+
+        $totalElements = $numBlocks * 1024;
+        $addr = $totalElements > 0 ? $getBlockElement(0, 0) % $totalElements : 0;
+        $addr = $addr & 0xffffffff;
+        $expectedSolution = 0;
+        $iterations = 1024;
+        for ($i = 0; $i < $iterations; $i++) {
+            $blockIdx = (int)floor($addr / 1024);
+            $elementIdx = $addr % 1024;
+            $addr = $getBlockElement($blockIdx, $elementIdx) % $totalElements;
+            $addr = $addr & 0xffffffff;
+            $expectedSolution ^= $addr;
+        }
+
+        return $expectedSolution === (int)$sol;
     }
 
     /**

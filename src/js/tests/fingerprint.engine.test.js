@@ -108,7 +108,7 @@ describe('FingerprintEngine Challenge Validation', () => {
                 pow_type: 'cpu_mem',
                 pow_nonce: nonce,
                 pow_solution_cpu: String(cpuSolution),
-                pow_solution_mem: String(memSolution),
+                pow_solution_mem: JSON.stringify(memSolution),
                 pow_fp: 'fingerprint-A' // The client correctly submits its fingerprint
             },
             headers: {

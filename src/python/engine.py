@@ -943,6 +943,45 @@ class ChallengeUtils:
         except Exception:
             return False
     @staticmethod
+    def get_challenged_indices(seed: str, solution: int, num_blocks: int, k: int = 4) -> list:
+        indices = []
+        h = cyrb53(f"{seed}:{solution}") % 4294967296
+        if h >= 2147483648:
+            h -= 4294967296
+        for i in range(k):
+            h = imul(h ^ i, 1597334677)
+            indices.append(abs(h) % num_blocks)
+        return indices
+
+    @staticmethod
+    def verify_merkle_proof(leaf_hash: str, index: int, proof: list, root: str) -> bool:
+        current_hash = leaf_hash
+        idx = index
+        for sibling in proof:
+            combined = current_hash + sibling if idx % 2 == 0 else sibling + current_hash
+            current_hash = hashlib.sha256(bytes.fromhex(combined)).hexdigest()
+            idx //= 2
+        return current_hash == root
+
+    @staticmethod
+    def verify_memory_pow_legacy(nonce: str, solution: int, difficulty: int, client_secret: str) -> bool:
+        size = difficulty * 1024 * 1024
+        iterations = size // 16
+        buffer_len = size // 4
+        buffer = [0] * buffer_len
+        seed = f":{nonce}:{client_secret}"
+        h = sum(seed.encode("utf-8"))
+        for i in range(buffer_len):
+            h = imul(h ^ i, 1597334677)
+            buffer[i] = h & 0xffffffff
+        final_hash = 0
+        addr = (buffer[0] % buffer_len) if buffer_len > 0 else 0
+        for _ in range(iterations):
+            addr = buffer[addr] % buffer_len
+            final_hash ^= addr
+        return final_hash == solution
+
+    @staticmethod
     def verify_memory_pow(nonce: str, solution: str, difficulty: int, client_secret: str) -> bool:
         """
         Verifies a Memory Proof-of-Work solution.
@@ -957,26 +996,75 @@ class ChallengeUtils:
         Returns:
             bool: True if the solution is valid, False otherwise.
         """
-        if difficulty <= 0:
+        if difficulty == 0:
             return True
         try:
-            size = difficulty * 1024 * 1024
-            iterations = size // 16
-            buffer_len = size // 4
-            buffer = [0] * buffer_len
-            seed = f":{nonce}:{client_secret}"
-            h = sum(seed.encode("utf-8"))
-            for i in range(buffer_len):
-                h = imul(h ^ i, 1597334677)
-                buffer[i] = h & 0xffffffff
-            final_hash = 0
-            addr = (buffer[0] % buffer_len) if buffer_len > 0 else 0
-            for _ in range(iterations):
-                addr = buffer[addr] % buffer_len
-                final_hash ^= addr
-            return final_hash == int(solution)
+            data = json.loads(solution) if isinstance(solution, str) else solution
         except Exception:
+            data = None
+
+        if not isinstance(data, dict):
+            if difficulty <= 4 and re.match(r'^\d+$', str(solution)):
+                return ChallengeUtils.verify_memory_pow_legacy(nonce, int(solution), difficulty, client_secret)
             return False
+
+        if "solution" not in data or "merkleRoot" not in data or "proofs" not in data:
+            if difficulty <= 4 and re.match(r'^\d+$', str(solution)):
+                return ChallengeUtils.verify_memory_pow_legacy(nonce, int(solution), difficulty, client_secret)
+            return False
+
+        sol = data["solution"]
+        merkle_root = data["merkleRoot"]
+        proofs = data["proofs"]
+
+        num_blocks = difficulty * 256
+        seed = f":{nonce}:{client_secret}"
+
+        challenged_indices = ChallengeUtils.get_challenged_indices(seed, int(sol), num_blocks, 4)
+
+        import struct
+        for b in challenged_indices:
+            if str(b) not in proofs and b not in proofs:
+                return False
+            proof = proofs.get(str(b)) or proofs.get(b)
+
+            block_bytes = bytearray()
+            h = cyrb53(f"{seed}:{b}") % 4294967296
+            if h >= 2147483648:
+                h -= 4294967296
+            for i in range(1024):
+                h = imul(h ^ i, 1597334677)
+                block_bytes.extend(struct.pack("<I", h & 0xffffffff))
+
+            expected_leaf = hashlib.sha256(block_bytes).hexdigest()
+
+            if not ChallengeUtils.verify_merkle_proof(expected_leaf, b, proof, merkle_root):
+                return False
+
+        block_cache = {}
+        def get_block_element(block_idx: int, element_idx: int) -> int:
+            if block_idx not in block_cache:
+                block = [0] * 1024
+                h_val = cyrb53(f"{seed}:{block_idx}") % 4294967296
+                if h_val >= 2147483648:
+                    h_val -= 4294967296
+                for i in range(1024):
+                    h_val = imul(h_val ^ i, 1597334677)
+                    block[i] = h_val & 0xffffffff
+                block_cache[block_idx] = block
+            return block_cache[block_idx][element_idx]
+
+        total_elements = num_blocks * 1024
+        addr = (get_block_element(0, 0) % total_elements) if total_elements > 0 else 0
+        expected_solution = 0
+        iterations = 1024
+        for _ in range(iterations):
+            block_idx = addr // 1024
+            element_idx = addr % 1024
+            addr = get_block_element(block_idx, element_idx) % total_elements
+            expected_solution ^= addr
+
+        return expected_solution == int(sol)
 
     @staticmethod
     async def check_challenge_rate_limit(store, client_ip: str) -> bool:

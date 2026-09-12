@@ -749,7 +749,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                     pow_type: 'cpu_mem',
                     pow_nonce: nonce,
                     pow_solution_cpu: String(cpuSolution),
-                    pow_solution_mem: String(memSolution),
+                    pow_solution_mem: JSON.stringify(memSolution),
                     pow_fp: solverFingerprint
                 },
                 headers: { 'user-agent': userAgent, 'x-device-fingerprint': solverFingerprint },
@@ -843,7 +843,7 @@ describe('Fingerprint & PoW Security Suite', () => {
                     pow_type: 'cpu_mem',
                     pow_nonce: nonce,
                     pow_solution_cpu: String(cpuSolution),
-                    pow_solution_mem: String(memSolution),
+                    pow_solution_mem: JSON.stringify(memSolution),
                     pow_fp: solverFingerprint // The client submits its fingerprint.
                 },
                 headers: { 'user-agent': userAgent, 'x-device-fingerprint': solverFingerprint }, rawHeaders: ['User-Agent', userAgent], httpVersion: '1.1'

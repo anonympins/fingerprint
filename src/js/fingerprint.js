@@ -1109,40 +1109,123 @@ export const verifyPoWAndGenerateTicket = async (
  * For higher difficulties (production workloads), we skip the massive memory allocation on the server,
  * avoiding server-side memory DoS vectors completely.
  */
+function getChallengedIndices(seed, solution, numBlocks, k = 4) {
+    const indices = [];
+    let h = cyrb53(seed + ":" + solution);
+    for (let i = 0; i < k; i++) {
+        h = Math.imul(h ^ i, 1597334677);
+        indices.push(Math.abs(h) % numBlocks);
+    }
+    return indices;
+}
+
+function verifyMerkleProof(leafHash, index, proof, root) {
+    let currentHash = leafHash;
+    let idx = index;
+    for (let i = 0; i < proof.length; i++) {
+        const sibling = proof[i];
+        const combined = idx % 2 === 0 ? currentHash + sibling : sibling + currentHash;
+        currentHash = crypto.createHash('sha256').update(Buffer.from(combined, 'hex')).digest('hex');
+        idx = Math.floor(idx / 2);
+    }
+    return currentHash === root;
+}
+
+function verifyMemoryPoWLegacy(nonce, solution, difficulty, clientSecret) {
+    const size = difficulty * 1024 * 1024;
+    const iterations = size / 16;
+    const buffer = new Uint32Array(size / 4);
+    const seed = `:${nonce}:${clientSecret}`;
+    let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
+
+    for (let i = 0; i < buffer.length; i++) {
+        buffer[i] = h = Math.imul(h ^ i, 1597334677);
+    }
+
+    let finalHash = 0;
+    let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+    for (let i = 0; i < iterations; i++) {
+        addr = buffer[addr] % buffer.length;
+        finalHash ^= addr;
+    }
+    return finalHash === solution;
+}
+
 export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret = '') => {
   const MAX_ALLOWED_MEM_DIFFICULTY = 128; // 128MB
   if (difficulty > MAX_ALLOWED_MEM_DIFFICULTY) {
     console.warn(`[Security] Memory PoW verification attempt with excessive difficulty: ${difficulty}MB. Denied.`);
     return false;
   }
+  if (Number(difficulty) === 0) {
+    return true;
+  }
   if (!solution) {
     return false;
   }
 
-  // If difficulty is high (production workloads), we treat memory PoW purely as a client-side cost.
-  // Cryptographic integrity is already fully enforced by the chained CPU PoW verification.
-  if (difficulty > 4) {
-    return true;
+  let data;
+  try {
+      data = typeof solution === 'string' ? JSON.parse(solution) : solution;
+  } catch (e) {
+      data = null;
   }
 
-  // Fallback: Cryptographic verification path for low-difficulty challenges / unit tests
-  const size = difficulty * 1024 * 1024;
-  const iterations = size / 16;
-  const buffer = new Uint32Array(size / 4);
+  if (!data || typeof data !== 'object' || data.solution === undefined || !data.merkleRoot || !data.proofs) {
+      if (difficulty <= 4 && /^\d+$/.test(String(solution))) {
+          return verifyMemoryPoWLegacy(nonce, parseInt(solution, 10), difficulty, clientSecret);
+      }
+      return false;
+  }
+
+  const { solution: sol, merkleRoot, proofs } = data;
+  const numBlocks = difficulty * 256;
   const seed = `:${nonce}:${clientSecret}`;
-  let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
 
-  for (let i = 0; i < buffer.length; i++) {
-    buffer[i] = h = Math.imul(h ^ i, 1597334677);
+  const challengedIndices = getChallengedIndices(seed, sol, numBlocks, 4);
+
+  for (const b of challengedIndices) {
+      const proof = proofs[b] || proofs[String(b)];
+      if (!proof) return false;
+
+      const block = new Uint32Array(1024);
+      let h = cyrb53(seed + ":" + b);
+      for (let i = 0; i < 1024; i++) {
+          block[i] = (h = Math.imul(h ^ i, 1597334677));
+      }
+
+      const expectedLeaf = crypto.createHash('sha256').update(Buffer.from(block.buffer)).digest('hex');
+
+      if (!verifyMerkleProof(expectedLeaf, b, proof, merkleRoot)) {
+          return false;
+      }
   }
 
-  let finalHash = 0;
-  let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+  const blockCache = new Map();
+  function getBlockElement(blockIdx, elementIdx) {
+      if (!blockCache.has(blockIdx)) {
+          const block = new Uint32Array(1024);
+          let h = cyrb53(seed + ":" + blockIdx);
+          for (let i = 0; i < 1024; i++) {
+              block[i] = (h = Math.imul(h ^ i, 1597334677));
+          }
+          blockCache.set(blockIdx, block);
+      }
+      return blockCache.get(blockIdx)[elementIdx];
+  }
+
+  const totalElements = numBlocks * 1024;
+  let addr = totalElements > 0 ? getBlockElement(0, 0) % totalElements : 0;
+  let expectedSolution = 0;
+  const iterations = 1024;
   for (let i = 0; i < iterations; i++) {
-    addr = buffer[addr] % buffer.length;
-    finalHash ^= addr;
+      const blockIdx = Math.floor(addr / 1024);
+      const elementIdx = addr % 1024;
+      addr = getBlockElement(blockIdx, elementIdx) % totalElements;
+      expectedSolution ^= addr;
   }
-  return finalHash === parseInt(solution, 10);
+
+  return expectedSolution === parseInt(sol, 10);
 };
 
 export async function verifySpacePoW(nonce, solution, queries, seed, clientSecret) {
