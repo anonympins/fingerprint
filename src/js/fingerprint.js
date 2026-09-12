@@ -3108,8 +3108,8 @@ function calculateTarget(suspicionFactor, securityConfig = {}) {
   // MAX_DIFFICULTY: Slow enough to heavily penalize a bot, but feasible for a patient human (5-30s).
   // NOUVEAU: La difficulté est maintenant configurable.
   const { cpu: cpuConfig = {} } = securityConfig;
-  const MIN_DIFFICULTY_BITS = cpuConfig.minDifficultyBits ?? 8;
-  const MAX_DIFFICULTY_BITS = cpuConfig.maxDifficultyBits ?? 16;
+                      const MIN_DIFFICULTY_BITS = cpuConfig.minDifficultyBits ?? 8;
+                      const MAX_DIFFICULTY_BITS = cpuConfig.maxDifficultyBits ?? 22;
 
   // Use linear interpolation between min and max difficulty.
   const totalDifficultyBits =
@@ -4399,9 +4399,8 @@ export class FingerprintEngine {
             // On passe la configuration pour que la difficulté soit calculée correctement.
             const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
 
-            // La difficulté mémoire démarre à 0 et augmente seulement après un certain seuil de suspicion.
-            // Par exemple, elle ne commence à augmenter qu'à partir de 25% du chemin entre 'low' et 'high'.
-            const memActivationFactor = Math.max(0, (suspicionFactor - 0.25) / 0.75);
+            // La difficulté mémoire augmente désormais en parfaite synergie avec le facteur de suspicion (ratio constant)
+            const memActivationFactor = suspicionFactor;
 
             const minMemDifficulty = 0;   // Peut être 0 Mo !
             const maxMemDifficulty = 48;  // 48Mo pour les plus suspects

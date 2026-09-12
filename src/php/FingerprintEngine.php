@@ -1139,8 +1139,9 @@
                      'target' => ChallengeUtils::calculateCpuTarget($suspicionFactor, $this->securityConfig),
                      'path' => $context->path,
                  ];
- 
-                 $memActivationFactor = max(0, ($suspicionFactor - 0.25) / 0.75);
+
+                 // Alignement linéaire parfait du ratio d'effort CPU/Mémoire
+                 $memActivationFactor = $suspicionFactor;
                  $memDifficulty = (int)round($memActivationFactor * 48); // 0 à 48MB
  
                  $originalFingerprint = RequestUtils::getCompositeDeviceHash($context);

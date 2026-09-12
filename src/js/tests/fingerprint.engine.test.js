@@ -97,7 +97,7 @@ describe('FingerprintEngine Challenge Validation', () => {
 
         const cpuSolution = await solveCpuTargetInline(baseBlock, cpuTarget, null);
         // The memory challenge seed does not include the fingerprint.
-        const memSeed = `${nonce}:${challengeContext.clientSecret}`;
+        const memSeed = `:${nonce}:${challengeContext.clientSecret}`;
         const memSolution = await solveMemory(memSeed, memDifficulty);
 
         const submissionRequestContext = {
@@ -157,7 +157,7 @@ describe('FingerprintEngine Challenge Validation', () => {
         const baseBlock = new TextEncoder().encode(messageBase);
 
         const cpuSolution = await solveCpuTargetInline(baseBlock, cpuTarget, null);
-        const memSeed = `${nonce}:${challengeContext.clientSecret}`;
+        const memSeed = `:${nonce}:${challengeContext.clientSecret}`;
         const memSolution = await solveMemory(memSeed, memDifficulty);
 
         const submissionRequestContext = {

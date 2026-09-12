@@ -917,7 +917,7 @@ class ChallengeUtils:
         """
         cpu_config = (security_config or {}).get("cpu", {})
         min_bits = cpu_config.get("minDifficultyBits", 8)
-        max_bits = cpu_config.get("maxDifficultyBits", 16)
+        max_bits = cpu_config.get("maxDifficultyBits", 22)
         total_bits = min_bits + suspicion_factor * (max_bits - min_bits)
         if total_bits <= 0:
             return "f" * 64
@@ -3162,7 +3162,8 @@ class FingerprintEngine:
                 return decision
 
             cpu_target = ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config)
-            mem_difficulty = int(round(max(0.0, suspicion_factor - 0.25) * 48))
+            # Ratio d'effort linéaire synchrone CPU / Mémoire
+            mem_difficulty = int(round(suspicion_factor * 48))
 
             self._fast_path_cache[client_ip] = (current_time + 5.0, "challenge")
 
