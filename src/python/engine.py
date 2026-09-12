@@ -203,11 +203,19 @@ def generate_space_challenge_page(challenge_details: dict, client_secret: str, s
         pass
 
     queries_json = json.dumps(queries)
+
+    def safe_json_dumps(val) -> str:
+        return json.dumps(val).replace("<", "\\u003c").replace(">", "\\u003e")
+
+    safe_path = safe_json_dumps(path)
+    safe_nonce = safe_json_dumps(nonce)
+    safe_client_secret = safe_json_dumps(client_secret)
+
     challenge_script = f"""
     async function solve() {{
-      const nonce = "{nonce}";
-      const path = "{path}";
-      const clientSecret = "{client_secret}";
+      const nonce = {safe_nonce};
+      const path = {safe_path};
+      const clientSecret = {safe_client_secret};
       const queries = {queries_json};
       const sizeMb = {size_mb};
       

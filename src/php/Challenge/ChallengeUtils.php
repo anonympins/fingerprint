@@ -759,11 +759,15 @@ class ChallengeUtils
         $solverCode = self::getPowSolverCode();
         $queriesJson = json_encode($queries);
 
+        $safePath = json_encode($path, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
+        $safeNonce = json_encode($nonce, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
+        $safeClientSecret = json_encode($clientSecret, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
+
         $challengeScript = <<<JS
           async function solve() {
-            const nonce = "{$nonce}";
-            const path = "{$path}";
-            const clientSecret = "{$clientSecret}";
+            const nonce = {$safeNonce};
+            const path = {$safePath};
+            const clientSecret = {$safeClientSecret};
             const queries = {$queriesJson};
             const sizeMb = {$sizeMb};
             const nodeId = "{$nodeId}";
@@ -866,11 +870,15 @@ JS;
         ));
         $trapContainerHtml = "<div style=\"position:absolute;left:-9999px;top:-9999px;transform:scale(0);pointer-events:none;\" aria-hidden=\"true\">{$trapLinksHtml}</div>";
 
+        $safePath = json_encode($path, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
+        $safeNonce = json_encode($nonce, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
+        $safeClientSecret = json_encode($clientSecret, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
+
         $challengeScript = <<<JS
           async function solve() {
-            const nonce = "{$nonce}";
-            const path = "{$path}";
-            const clientSecret = "{$clientSecret}";
+            const nonce = {$safeNonce};
+            const path = {$safePath};
+            const clientSecret = {$safeClientSecret};
             const cpuTarget = BigInt("0x" + "{$target}");
             const memDifficulty = {$memoryDifficulty};
             const baseBlock = new Uint8Array({$baseBlockBytes});

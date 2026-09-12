@@ -2122,7 +2122,7 @@ describe('Challenge Page Generation Security (XSS)', () => {
     });
 
     it('should escape the path parameter in generateCombinedPoWChallengePage to prevent XSS', () => {
-        const maliciousPath = `test.com";\nconsole.log("pwned");//`;
+        const maliciousPath = `test.com";\nconsole.log("pwned");//`; // Original malicious path
         const challengeDetails = { nonce: 'test-nonce', target: '0000', path: maliciousPath };
 
         const html = generateCombinedPoWChallengePage(challengeDetails, 16, '127.0.0.1', 'secret', {}, '');

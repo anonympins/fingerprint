@@ -3,10 +3,11 @@
  */
 // Exporté pour être utilisé comme fallback par fingerprint.client.js
 export const cyrb53 = (str, seed = 0) => { 
+    const safeStr = typeof str === 'string' ? str : String(str || '');
     let h1 = 0xdeadbeef ^ seed,
         h2 = 0x41c6ce57 ^ seed;
-    for (let i = 0, ch; i < str.length; i++) {
-        ch = str.charCodeAt(i);
+    for (let i = 0, ch; i < safeStr.length; i++) {
+        ch = safeStr.charCodeAt(i);
         h1 = Math.imul(h1 ^ ch, 2654435761); // Use Math.imul for 32-bit multiplication
         h2 = Math.imul(h2 ^ ch, 1597334677);
     }
