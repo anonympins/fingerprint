@@ -8,3 +8,4 @@ composer-setup.php
 /src/python/tests/__pycache__
 /src/python/__pycache__
 report.md
+test.js
