@@ -205,6 +205,59 @@ $fingerprint = $protector->protect();
 echo "Welcome on the secured page !";
 ```
 
+**Python**
+```python
+import asyncio
+from fingerprint.engine import FingerprintEngine, InMemoryStore, RequestContext
+
+# 1. Choose a security profile and customize it if necessary.
+#    For Python, you typically define the configuration dictionary directly,
+#    mimicking a predefined profile like 'ecommerce' and applying overrides.
+security_config = {
+ "verbose": True,  # Enable verbose mode for development
+ "thresholds": {"low": 15, "medium": 40, "high": 70, "block": 90},
+ "weights": {
+     "inconsistencyScore": 1.0,
+     "requestPatternScore": 0.9,
+     "honeypotScore": 1.0,
+     "behaviorScore": 0.8,
+     "tlsSpoofingScore": 0.9,
+     "botScore": 1.0,
+     "cookieDroppingScore": 1.0,
+     "ipReputationScore": 0.6,
+     "subnetScore": 0.9,
+     "botnetClusterScore": 0.9,
+     "tcpAnomalyScore": 0.9,
+     "quicAnomalyScore": 0.9,
+     "renderingAnomalyScore": 0.9,
+ },
+ "honeypot": {
+     "fields": ["email_confirm", "admin_login_bypass"],
+     "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
+     "detectInjections": True
+ },
+ "challengeNewDevices": True,
+ "allowCrossNetworkRoaming": False,
+}
+
+# 2. Initialize the store (use InMemoryStore for development, replace with Redis/MongoDB for production)
+fingerprint_store = InMemoryStore()
+
+# 3. Create an instance of the FingerprintEngine.
+protector = FingerprintEngine(security_config, fingerprint_store)
+
+# 4. In an actual application, you would then process an incoming request:
+#    (e.g., in an ASGI/WSGI middleware or a direct HTTP handler)
+#    # context = RequestContext(...) # Construct your request context
+#    # decision = await protector.process_request(context)
+#    # if decision["action"] == "next":
+#    #     print("Welcome on the secured page!")
+#    # else:
+#    #     # Handle blocking, challenging, or redirecting
+#    #     print(f"Request {decision['action']}!")
+
+ ```
+
 # Auto-Tuning & Traffic Data Pruning Options
 
 The `autotuning` engine dynamically adjusts your thresholds and weights using a background genetic algorithm. It profiles real-world traffic to find the optimal trade-off between user experience (minimizing false-positive challenges for human users) and strict security (maximizing bot detection).
