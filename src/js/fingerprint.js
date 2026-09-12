@@ -35,6 +35,42 @@ let lastMappingTime = 0;
 let isCompilingMapping = false;
 const MAPPING_ROTATION_INTERVAL = 60000; // 60 seconds
 
+const configDir = resolve(__dirname, '../../config');
+
+const loadBotWhitelist = (filename, fallbackEntries) => {
+  const filePath = join(configDir, filename);
+  if (existsSync(filePath)) {
+    try {
+      return JSON.parse(readFileSync(filePath, 'utf-8'));
+    } catch (e) {
+      console.error(`[Fingerprint] Error loading whitelist file ${filename}:`, e.message);
+    }
+  }
+  return fallbackEntries;
+};
+
+const googlebotEntries = loadBotWhitelist('googlebot.json', [
+  "2001:4860:4801:10::/64",
+  "2001:4860:4801:11::/64",
+  "2001:4860:4801:12::/64",
+  // ... [Keep fallback inline values for safety]
+  "66.249.79.64"
+]);
+
+const bingbotEntries = loadBotWhitelist('bingbot.json', [
+  "157.55.39.0/24",
+  "207.46.13.0/24",
+  // ... [Keep fallback inline values for safety]
+  "40.77.178.0/23"
+]);
+
+const yandexEntries = loadBotWhitelist('yandex.json', [
+  "2a02:6b8::/29",
+  "5.45.192.0/18",
+  // ... [Keep fallback inline values for safety]
+  "213.180.192.0/19"
+]);
+
 function generateSessionMapping() {
     const randomStr = (len = 6) => crypto.randomBytes(len).toString('hex').replace(/[0-9]/g, 'g').substring(0, len);
     const randomHeader = () => `X-Sess-${crypto.randomBytes(4).toString('hex')}`;
@@ -5011,6 +5047,9 @@ export const modsecurity_analyzer = (rulesPath) => {
  * @returns {Array<{userAgent: string, hostnameSuffix: string}>}
  */
 export const default_whitelist = () => [
+    googlebot_whitelist(),
+    bingbot_whitelist(),
+    yandex_whitelist(),
     // === Moteurs de recherche majeurs ===
     { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' },
     { userAgent: 'Google-Extended', hostnameSuffix: '.google.com' },
@@ -5107,6 +5146,26 @@ export const default_whitelist = () => [
     { userAgent: 'Google-Site-Verification', hostnameSuffix: '.google.com' },
     { userAgent: 'KeyCDN', hostnameSuffix: '.keycdn.com' },
 ];
+
+/**
+ * Retourne la liste officielle des préfixes IP/CIDR (IPv4 et IPv6) utilisés par Googlebot
+ * enveloppée dans un objet de type 'allowlist' prêt à être injecté.
+ * @returns {{type: string, entries: string[]}} Règle d'allowlist de sécurité.
+ */
+export const googlebot_whitelist = () => ({
+    type: 'allowlist',
+    entries: googlebotEntries
+});
+
+export const yandex_whitelist = () => ({
+    type: 'allowlist',
+    entries: yandexEntries
+});
+
+export const bingbot_whitelist = () => ({
+    type: 'allowlist',
+    entries: bingbotEntries
+});
 
 
 /**

@@ -11,6 +11,7 @@ import json
 import os
 import asyncio
 import base64
+import ipaddress
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.backends import default_backend
@@ -18,6 +19,112 @@ from typing import Dict, Any, List, Optional, Callable, Set
 from dataclasses import dataclass, field
 
 # --- UTILS ---
+
+class BlockList:
+     def __init__(self):
+         self.entries = []
+ 
+     def add(self, entry: str):
+         try:
+             if "/" in entry:
+                 self.entries.append(ipaddress.ip_network(entry, strict=False))
+             else:
+                 self.entries.append(ipaddress.ip_address(entry))
+         except ValueError:
+             pass
+ 
+     def check(self, ip: str) -> bool:
+         try:
+             ip_obj = ipaddress.ip_address(ip)
+             for entry in self.entries:
+                 if isinstance(entry, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+                     if ip_obj in entry:
+                         return True
+                 else:
+                     if ip_obj == entry:
+                         return True
+         except ValueError:
+             pass
+         return False
+
+_googlebot_entries = None
+_bingbot_entries = None
+_yandex_entries = None
+
+def load_bot_whitelist(filename: str, fallback_entries: list) -> list:
+ config_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config"))
+ file_path = os.path.join(config_dir, filename)
+ if os.path.exists(file_path):
+     try:
+         with open(file_path, "r", encoding="utf-8") as f:
+             return json.load(f)
+     except Exception as e:
+         print(f"[Fingerprint] Error loading whitelist file {filename}: {e}")
+ return fallback_entries
+
+def googlebot_whitelist() -> dict:
+ global _googlebot_entries
+ if _googlebot_entries is None:
+     _googlebot_entries = load_bot_whitelist("googlebot.json", [
+         "2001:4860:4801:10::/64",
+         "2001:4860:4801:11::/64",
+         "2001:4860:4801:12::/64",
+         "66.249.79.64"
+     ])
+ return {
+     "type": "allowlist",
+     "entries": _googlebot_entries
+ }
+
+def bingbot_whitelist() -> dict:
+ global _bingbot_entries
+ if _bingbot_entries is None:
+     _bingbot_entries = load_bot_whitelist("bingbot.json", [
+         "157.55.39.0/24",
+         "207.46.13.0/24",
+         "40.77.178.0/23"
+     ])
+ return {
+     "type": "allowlist",
+     "entries": _bingbot_entries
+ }
+
+def yandex_whitelist() -> dict:
+ global _yandex_entries
+ if _yandex_entries is None:
+     _yandex_entries = load_bot_whitelist("yandex.json", [
+         "2a02:6b8::/29",
+         "5.45.192.0/18",
+         "213.180.192.0/19"
+     ])
+ return {
+     "type": "allowlist",
+     "entries": _yandex_entries
+ }
+
+def default_whitelist() -> list:
+ return [
+     googlebot_whitelist(),
+     bingbot_whitelist(),
+     yandex_whitelist(),
+     {"userAgent": "Googlebot", "hostnameSuffix": ".googlebot.com"},
+     {"userAgent": "Google-Extended", "hostnameSuffix": ".google.com"},
+     {"userAgent": "AdsBot-Google", "hostnameSuffix": ".googlebot.com"},
+     {"userAgent": "Mediapartners-Google", "hostnameSuffix": ".google.com"},
+     {"userAgent": "Google-InspectionTool", "hostnameSuffix": ".google.com"},
+     {"userAgent": "(bingbot|adidxbot)", "hostnameSuffix": ".search.msn.com"},
+     {"userAgent": "DuckDuckBot", "hostnameSuffix": ".duckduckgo.com"},
+     {"userAgent": "YandexBot", "hostnameSuffix": ".yandex.com"},
+     {"userAgent": "YandexImages", "hostnameSuffix": ".yandex.com"},
+     {"userAgent": "Baiduspider", "hostnameSuffix": ".crawl.baidu.com"},
+     {"userAgent": "Slurp", "hostnameSuffix": ".crawl.yahoo.net"},
+     {"userAgent": "Sogou web spider", "hostnameSuffix": ".sogou.com"},
+     {"userAgent": "Exabot", "hostnameSuffix": ".exabot.com"},
+     {"userAgent": "ia_archiver", "hostnameSuffix": ".alexa.com"},
+     {"userAgent": "SeznamBot", "hostnameSuffix": ".seznam.cz"},
+     {"userAgent": "Mail.RU_Bot", "hostnameSuffix": ".mail.ru"},
+     {"userAgent": "Yeti", "hostnameSuffix": ".naver.com"},
+ ]
 
 def imul(a: int, b: int) -> int:
     """
@@ -2132,6 +2239,7 @@ class FingerprintEngine:
         self.thresholds = config.get("thresholds", {"low": 20, "high": 75, "block": 95})
         self.weights = config.get("weights", {})
         self.dry_run = config.get("dryRun", False)
+        self._allowlist = self._build_allowlist()
 
         # Bouclier thermique local (Fast-Path Cache) pour amortir les attaques de masse
         # Format: {"ip_or_subnet": (expiration_timestamp, action_to_take)}
@@ -2160,6 +2268,151 @@ class FingerprintEngine:
                                 pass
             except Exception as e:
                 print(f"[FingerprintEngine] Background initialization of ProblemManager failed: {e}")
+
+    def _build_allowlist(self) -> BlockList:
+         block_list = BlockList()
+         whitelist_rules = self.config.get("whitelist", [])
+         allowlist_rule = next((r for r in whitelist_rules if r.get("type") == "allowlist"), None)
+         if not allowlist_rule or not allowlist_rule.get("entries"):
+             return block_list
+         for entry in allowlist_rule["entries"]:
+             block_list.add(entry)
+         return block_list
+ 
+    def _is_ip_in_allowlist(self, client_ip: str) -> bool:
+         return self._allowlist.check(client_ip)
+ 
+    def _is_path_in_allowlist(self, request_path: str) -> bool:
+         whitelist_rules = self.config.get("whitelist", [])
+         path_rule = next((r for r in whitelist_rules if r.get("type") == "path_allowlist"), None)
+         if not path_rule or not path_rule.get("entries"):
+             return False
+ 
+         for entry in path_rule["entries"]:
+             if entry.endswith("*"):
+                 base = entry[:-1]
+                 if request_path.startswith(base):
+                     return True
+             elif request_path == entry:
+                 return True
+         return False
+ 
+    def _is_host_path_in_allowlist(self, request_host: Optional[str], request_path: str) -> bool:
+         if not request_host:
+             return False
+         whitelist_rules = self.config.get("whitelist", [])
+         host_path_rule = next((r for r in whitelist_rules if r.get("type") == "host_path_allowlist"), None)
+         if not host_path_rule or not host_path_rule.get("entries"):
+             return False
+ 
+         for entry in host_path_rule["entries"]:
+             if "/" not in entry:
+                 continue
+             first_slash = entry.index("/")
+             host_pattern = entry[:first_slash]
+             path_pattern = entry[first_slash:]
+ 
+             if request_host != host_pattern:
+                 continue
+ 
+             if path_pattern.endswith("*"):
+                 base = path_pattern[:-1]
+                 if request_path.startswith(base):
+                     return True
+             elif request_path == path_pattern:
+                 return True
+         return False
+ 
+    def _is_graphql_operation_in_allowlist(self, operation_type: Optional[str], operation_name: Optional[str]) -> bool:
+         if not operation_type or not operation_name:
+             return False
+         whitelist_rules = self.config.get("whitelist", [])
+         graphql_rule = next((r for r in whitelist_rules if r.get("type") == "graphql_operation_allowlist"), None)
+         if not graphql_rule or not graphql_rule.get("entries"):
+             return False
+ 
+         for entry in graphql_rule["entries"]:
+             if ":" not in entry:
+                 continue
+             entry_type, entry_name = entry.split(":", 1)
+             if entry_type != operation_type:
+                 continue
+             if entry_name == operation_name or entry_name == "*":
+                 return True
+             if entry_name.endswith("*") and operation_name.startswith(entry_name[:-1]):
+                 return True
+         return False
+ 
+    async def _verify_whitelisted_bot(self, context: RequestContext) -> bool:
+         whitelist_rules = self.config.get("whitelist", [])
+         bot_rules = [rule for rule in whitelist_rules if "hostnameSuffix" in rule]
+         if not bot_rules:
+             return False
+ 
+         user_agent = context.headers.get("user-agent", "")
+         matched_rule = None
+         for rule in bot_rules:
+             if "userAgent" in rule:
+                 try:
+                     if re.search(rule["userAgent"], user_agent):
+                         matched_rule = rule
+                         break
+                 except Exception:
+                     pass
+ 
+         if matched_rule is None:
+             return False
+ 
+         cache_key = f"ip-whitelist:{context.client_ip}"
+         cached_status = await self.store.get(cache_key)
+ 
+         if cached_status == "verified":
+             return True
+         if cached_status == "failed":
+             return False
+ 
+         import socket
+         try:
+             # 1. Reverse DNS lookup
+             loop = asyncio.get_running_loop()
+             hostname, _, _ = await loop.run_in_executor(None, socket.gethostbyaddr, context.client_ip)
+             if not hostname or hostname == context.client_ip:
+                 await self.store.set(cache_key, "failed", 86400)
+                 return False
+ 
+             if not hostname.endswith(matched_rule["hostnameSuffix"]):
+                 await self.store.set(cache_key, "failed", 86400)
+                 return False
+ 
+             # 2. Forward DNS lookup
+             addr_infos = await loop.run_in_executor(None, socket.getaddrinfo, hostname, None)
+             ips = {info[4][0] for info in addr_infos}
+ 
+             if context.client_ip in ips:
+                 await self.store.set(cache_key, "verified", 86400)
+                 return True
+         except Exception:
+             pass
+ 
+         await self.store.set(cache_key, "failed", 86400)
+         return False
+ 
+    async def _check_allowlists(self, context: RequestContext) -> bool:
+         if self._is_ip_in_allowlist(context.client_ip):
+             return True
+         if self._is_path_in_allowlist(context.path):
+             return True
+         if self._is_host_path_in_allowlist(context.headers.get("host"), context.path):
+             return True
+         
+         graphql_op = getattr(context, "graphql_operation", None)
+         if graphql_op and self._is_graphql_operation_in_allowlist(graphql_op.get("type"), graphql_op.get("name")):
+             return True
+ 
+         if await self._verify_whitelisted_bot(context):
+             return True
+ 
+         return False
 
     def update_config(self, new_config: Dict[str, Any]) -> None:
         """
@@ -2481,6 +2734,11 @@ class FingerprintEngine:
             Dict[str, Any]: A dictionary describing the action to be taken and any associated data.
         """
         await self.translate_polymorphic_headers(context)
+
+        if await self._check_allowlists(context):
+             MetricsManager.increment_counter("requests_total", {"status": "passed"})
+             return {"action": "next", "score": 0.0, "vector": {"whitelisted": 100.0}}
+
         identity = await self.resolve_identity(context)
         decision = await self._process_request_internal(context, identity)
         if identity.get("new_cookie"):

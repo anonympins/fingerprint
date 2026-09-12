@@ -2721,3 +2721,87 @@ describe('Botnet Cluster Scoring (Node.js)', () => {
         const isDiffIpValid = await fingerprint.isTicketValid('192.168.1.1', ticket, 'device-123', 'hash-abc', false);
         expect(isDiffIpValid).toBe(false);
     });
+
+describe('IP Registration and Filtering', () => {
+    const localInMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        async has(key) { return this._map.has(key); },
+        async delete(key) { this._map.delete(key); },
+        clear() { this._map.clear(); }
+    };
+
+    beforeEach(() => {
+        localInMemoryStore.clear();
+        configureStore(localInMemoryStore);
+        vi.restoreAllMocks();
+        vi.spyOn(fingerprint.__internal, 'getTlsFingerprint').mockReturnValue({
+            ja3: 'mock-ja3', ja4: 'mock-ja4'
+        });
+    });
+
+    it('should immediately allow requests from IPs in the static allowlist', async () => {
+        const whitelistedIp = '198.51.100.42';
+        const config = {
+            weights: { historyScore: 1.0 },
+            thresholds: { low: 20, block: 95 },
+            whitelist: [
+                { type: 'allowlist', entries: [whitelistedIp] }
+            ]
+        };
+        const engine = new FingerprintEngine(config);
+
+        const req = {
+            clientIp: whitelistedIp,
+            path: '/',
+            cookies: {},
+            query: {},
+            headers: { 'user-agent': 'test-ua' },
+            rawHeaders: ['User-Agent', 'test-ua'],
+            httpVersion: '1.1'
+        };
+
+        const decision = await engine.processRequest(req);
+        expect(decision.action).toBe('next');
+        expect(decision.vector.whitelisted).toBe(100);
+        expect(decision.vector.type).toBe('allowlist');
+    });
+
+    it('should register distinct client IPs for a device in the data store', async () => {
+        const ip1 = '192.168.1.100';
+        const ip2 = '192.168.1.101';
+        const deviceId = 'test-ip-reg-device';
+
+        await localInMemoryStore.set(`device:${deviceId}`, {
+            initialDeviceHash: 'some-hash',
+            ips: new Set([ip1]),
+            lastUpdate: Date.now(),
+            lastFpHash: 'some-hash',
+            lastChangeTimestamp: 0,
+            rapidChangeCount: 0,
+        });
+
+        const req = {
+            clientIp: ip2,
+            path: '/',
+            cookies: { device_id: deviceId },
+            query: {},
+            headers: { 'user-agent': 'test-ua' },
+            rawHeaders: ['User-Agent', 'test-ua'],
+            httpVersion: '1.1'
+        };
+
+        const engine = new FingerprintEngine({
+            weights: { historyScore: 1.0 },
+            thresholds: { low: 20, block: 95 }
+        });
+
+        await engine.processRequest(req);
+
+        const storedData = await localInMemoryStore.get(`device:${deviceId}`);
+        expect(storedData.ips).toBeInstanceOf(Set);
+        expect(storedData.ips.has(ip1)).toBe(true);
+        expect(storedData.ips.has(ip2)).toBe(true);
+    });
+});

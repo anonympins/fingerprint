@@ -29,7 +29,7 @@ The `ASGIFingerprintMiddleware` is designed for asynchronous Python web framewor
 ```python
 # main.py
 from fastapi import FastAPI, Request, Response
-from fingerprint.engine import FastAPIFingerprintMiddleware, InMemoryStore
+from fingerprint.engine import FastAPIFingerprintMiddleware, default_whitelist, InMemoryStore
 import uvicorn
 
 app = FastAPI()
@@ -49,7 +49,8 @@ security_config = {
         "fields": ["email_confirm"],
         "trapUrls": ["/wp-admin", "/.env"]
     },
-    "similarityThreshold": 0.7
+    "similarityThreshold": 0.7,
+    "whitelist": default_whitelist()
 }
 
 # 2. Initialize the store (use InMemoryStore for development, replace with Redis/MongoDB for production)

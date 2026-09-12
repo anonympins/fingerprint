@@ -27,7 +27,8 @@ You can protect your application's entry point (e.g., `index.php`) by calling th
  
  // 1. Choose a security profile and customize it if necessary.
  $securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
-     'verbose' => true, // Enable verbose mode for development
+    'verbose' => true, // Enable verbose mode for development
+    'whitelist' => FingerprintEngine::default_whitelist() // Enable SEO (Google,Bing,Yandex) IPs and reverse-dns verified user agents
  ]);
  
  // 2. Create an instance of the DirectFingerprint protector.
