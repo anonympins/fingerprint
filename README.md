@@ -26,10 +26,11 @@ Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, and **Python (>
 * **Polymorphic WebAssembly Solver**: Dynamically generates unique, randomized C++ compiled WebAssembly binary modules per session. Prevents static analysis, bot automation, and emulator tampering.
 * **IndexedDB WASM Caching**: Transparently caches compiled WASM modules (`wasm-cache-db`) in the browser's IndexedDB, minimizing initialization overhead and execution lag on subsequent visits.
 * **Advanced Obfuscation**: Uses multi-layered control flow flattening and string array obfuscation for client-side libraries.
+* **Zero-Knowledge Proofs (ZKP) (New in v0.5.0)**: Added cryptographically secure Schnorr ZKPs (`generateZkpProof` on client and `verifyZkpProof` on server) for device fingerprints, allowing zero-disclosure fingerprint validation and making session tickets completely tamper-proof.
 
 ### 2. 💱 Useful Proof-of-Work (uPoW) & PoSpace
 * **Collaborative Useful PoW**: Instead of burning CPU cycles on arbitrary mathematical hash puzzles, suspicious clients solve complex optimization problems (e.g., *Traveling Salesperson*, *Portfolio Allocation*, *Facility Location*, *Fraud Detection Parameter Tuning*).
-* **Proof-of-Space (PoSpace) Challenge**: Forces browser clients to allocate and verify access to massive, persistent storage chunks (e.g., 100MB) inside IndexedDB, multiplying the cost of multi-threaded headless automation.
+* **Cooperative Proof-of-Space (Coop PoSpace) (New in v0.5.0)**: Introduced decentralized, cooperative Proof-of-Space challenge routing within local subnets. Highly suspicious clients must coordinate with neighboring subnet peers to fetch and aggregate cryptographic blocks, vastly increasing the cost and complexity for distributed botnets trying to cycle residential proxy IPs.
 * **Chained CPU/Memory Challenges**: Employs client-side resource exhaustion techniques (Chained SHA-256 target seeking & Memory Hard allocation vectors up to 128MB) that are validated in $O(1)$ on the server.
 
 ### 3. 🌐 Passive TLS, HTTP/2, and TCP/IP (p0f) Tracking
@@ -45,16 +46,18 @@ Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, and **Python (>
 ### 5. 🔍 Cross-Layer & Analog Inconsistency Scoring
 * **Layer Cross-Referencing**: Analyzes inconsistencies between User-Agent declarations, Client-Hints (`Sec-CH-UA`), TLS Handshake capabilities, and TCP stacks (e.g., claiming Windows NT on Chrome but negotiating TLS like curl/Safari on a Linux kernel).
 * **Viewport Aspect ratio & Screen mismatches**: Detects virtualized viewports exceeding physical dimensions or fake hardware specifications.
+* **Optional Ed25519 Asymmetric Keys (New in v0.5.0)**: Dynamic and optional Ed25519 asymmetric key binding with an automatic fallback to symmetric AES-256-CBC encryption for session tickets.
 
 ### 6. 🦠 Honeypot Traps & Extensible WAF
 * **Signed Trap URLs**: Injects visually hidden, signed trap URLs into the DOM. Attempts to crawl, probe, or scrape these URLs immediately condemn the device.
-* **Recursive Injection Filters**: Inspects deeply nested payload structures (JSON/NoSQL/GraphQL) using a robust regular expression matrix to flag SQLi, XSS, XXE, SSTI, and JNDI (Log4Shell) vulnerabilities.
+* **Recursive Injection Filters (Enhanced in v0.5.0)**: Upgraded the WAF and input validation subsystem to recursively inspect deeply nested NoSQL/SQL structures, significantly improving protection against complex MongoDB/SQL injection vectors.
 * **ModSecurity NodeJS Extensibility**: Allows plugging in native core rule sets or custom WAF rule compilers into the honeypot pipeline.
 
 ### 🧬 Progressive Threshold Auto-Tuning
 * **Genetic Policy Optimizer**: Dynamically updates classification parameters using a multi-objective genetic algorithm on your actual sanitized traffic data.
 * **Inertial Parameter Sliding**: Adjusts security thresholds slowly with an adaptive learning rate to prevent configuration spikes.
 * **Sybil Protection**: Filters out traffic logs, ensuring individual compromised bot networks cannot pollute optimization datasets.
+* **Traffic Data Pruning (New in v0.5.0)**: Introduces automated traffic data pruning (`pruneTrafficData`) with time-based and size-based limiters to avoid memory leaks during long-running auto-tuning sessions.
 
 ## Quick Start
 

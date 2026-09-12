@@ -521,8 +521,8 @@ Optimization.geneticAlgorithmMultiObjective = function (
     const offspring = [];
     for (let i = 0; i < populationSize; i++) {
       // Sélection simple pour l'exemple
-      const parent1 = population[Math.floor(secureRandom() * population.length)];
-      const parent2 = population[Math.floor(secureRandom() * population.length)];
+        const parent1 = population[crypto.randomInt(0, population.length)];
+        const parent2 = population[crypto.randomInt(0, population.length)];
       let childIndividual = crossover(parent1.individual, parent2.individual);
       if (secureRandom() < mutationRate) {
         childIndividual = mutate(childIndividual, currentConfig); // mutate doit maintenant utiliser currentConfig
@@ -749,7 +749,7 @@ Optimization.Operators.createTournamentSelection = (options = {}) => {
 
     for (let i = 0; i < tournamentSize; i++) {
       const individual =
-        population[Math.floor(secureRandom() * population.length)];
+        population[crypto.randomInt(0, population.length)];
       if (!best || individual.fitness < best.fitness) {
         best = individual;
       }
@@ -757,7 +757,7 @@ Optimization.Operators.createTournamentSelection = (options = {}) => {
     // Retourne le meilleur trouvé. Dans le pire des cas (tous les scores sont Infinity),
     // on retourne le premier candidat sélectionné au lieu de null.
     if (!best) {
-      return population[Math.floor(secureRandom() * population.length)];
+      return population[crypto.randomInt(0, population.length)];
     }
     return best;
   };
@@ -911,9 +911,12 @@ Optimization.Operators.solveTSP = (cities, options = {}) => {
   // Voisinage : génère un chemin voisin en inversant une sous-séquence (heuristique 2-opt).
   const pathNeighbor = (path) => {
     const newPath = [...path];
-    let i = Math.floor(secureRandom() * newPath.length);
-    let j = Math.floor(secureRandom() * newPath.length);
-    if (i === j) j = (j + 1) % newPath.length;
+    if (newPath.length <= 1) return newPath;
+    let i = crypto.randomInt(0, newPath.length);
+    let j = crypto.randomInt(0, newPath.length);
+    while (i === j) {
+      j = crypto.randomInt(0, newPath.length);
+    }
     const [start, end] = [Math.min(i, j), Math.max(i, j)];
 
     const segment = newPath.slice(start, end + 1).reverse();
@@ -971,7 +974,7 @@ Optimization.Operators.solvePortfolio = (
 
   const mutate = (p) => {
     const newP = [...p];
-    const i = Math.floor(secureRandom() * newP.length);
+      const i = crypto.randomInt(0, newP.length);
     newP[i] += (secureRandom() - 0.5) * 0.2; // Mutation douce
     newP[i] = Math.max(0, newP[i]); // Les poids ne peuvent être négatifs
     return newP;
@@ -1105,7 +1108,7 @@ Optimization.Operators.solveFacilityLocation = (
   // Voisinage : déplace légèrement une infrastructure au hasard.
   const facilityNeighbor = (facilities) => {
     const newFacilities = facilities.map((f) => ({ ...f }));
-    const i = Math.floor(secureRandom() * numFacilities);
+      const i = crypto.randomInt(0, numFacilities);
     const moveX = (secureRandom() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
     const moveY = (secureRandom() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
 
@@ -1485,7 +1488,7 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
     const minTimeToClick = 100 + secureRandom() * 4900; // entre 100ms et 5s
     const maxClickVariance = 1 + secureRandom() * 9999; // entre 1 et 10000
     const minMouseEntropy = secureRandom() * 0.5; // entre 0 et 0.5
-    const minScrollEvents = Math.floor(secureRandom() * 10); // entre 0 et 10
+    const minScrollEvents = crypto.randomInt(0, 10); // entre 0 et 10
     return [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents];
   };
 
@@ -1502,7 +1505,7 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
   // Mutation : légère variation aléatoire d'un des seuils
   const mutate = (solution) => {
     const newSolution = [...solution];
-    const i = Math.floor(secureRandom() * 4);
+    const i = crypto.randomInt(0, 4);
     // Amplitudes de mutation différentes pour chaque seuil
     const mutationFactors = [500, 1000, 0.1, 2];
     const mutationFactor = mutationFactors[i];
@@ -1646,7 +1649,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
             burstWeight: 20 + secureRandom() * 40,
             scrapeThreshold: 500 + secureRandom() * 1000,
             scrapeWeight: 15 + secureRandom() * 35,
-            sequenceLength: 3 + Math.floor(secureRandom() * 3),
+            sequenceLength: 3 + crypto.randomInt(0, 3),
             sequenceWeight: 20 + secureRandom() * 50,
             regularityThreshold: 50 + secureRandom() * 200,
             regularityWeight: 20 + secureRandom() * 40,
@@ -1696,7 +1699,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         }
 
         const keys = Object.keys(newConfig[sectionToMutate]);
-        const keyToMutate = keys[Math.floor(secureRandom() * keys.length)];
+        const keyToMutate = keys[crypto.randomInt(0, keys.length)];
 
         if (keyToMutate === 'honeypotScore') return newConfig; // Ne pas muter le poids du honeypot
 

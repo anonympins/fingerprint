@@ -8,7 +8,20 @@ import {DynamicWasmGenerator} from "./dynamic-wasm.js";
 import {readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
-import { verifyZkpProof, decodePolymorphicFingerprint, deepMerge, getHeaderSignature, parseJa3, modPow, hashNetwork, normalizeReferer, isPrivateIp, parseUserAgent } from "./fingerprint.utils.js";
+import {
+    verifyZkpProof,
+    sanitizeRedirectPath,
+    decodePolymorphicFingerprint,
+    deepMerge,
+    getHeaderSignature,
+    parseJa3,
+    modPow,
+    hashNetwork,
+    normalizeReferer,
+    isPrivateIp,
+    parseUserAgent,
+    safeJsonStringify
+} from "./fingerprint.utils.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -584,15 +597,17 @@ const getPowSecret = () => {
   return secret || "fallback-dev-secret-32-chars-minimum";
 };
 
+let cachedPowSolverCode = null;
 /**
  * Loads the pow.solver.js content for inlining in HTML pages.
  * @returns {string} The solver JavaScript code.
  */
 const getPowSolverCode = () => {
-  // On supprime le try/catch. Si le fichier n'est pas trouvé, le processus plantera,
-  // ce qui est préférable à servir un code de secours potentiellement désynchronisé.
-  const solverPath = join(__dirname, 'pow.solver.inline.js'); // Utilise la version inline
-  return readFileSync(solverPath, 'utf-8');
+  if (!cachedPowSolverCode) {
+    const solverPath = join(__dirname, 'pow.solver.inline.js'); // Utilise la version inline
+    cachedPowSolverCode = readFileSync(solverPath, 'utf-8');
+  }
+  return cachedPowSolverCode;
 };
 /**
  * Extracts the "stable" part of a fingerprint string.
@@ -858,6 +873,7 @@ const generateTspChallenge = (
 ) => {
   const citiesJson = JSON.stringify(cities);
   const solverCode = getPowSolverCode();
+    const safePath = sanitizeRedirectPath(path);
   return `
       <html>
         <head><title>Advanced Security Check (Level 3)</title></head>
@@ -868,14 +884,14 @@ const generateTspChallenge = (
           <script>${solverCode}</script>
           <script>
             const cities = ${citiesJson}; // Safe, as it's JSON
-            const nonce = ${JSON.stringify(nonce)}; // Safe
+            const nonce = ${safeJsonStringify(nonce)}; // Safe
             const targetMaxDistance = ${targetMaxDistance};
 
             async function solve() {
               const result = await window.solveTspChallenge(cities, targetMaxDistance);
               
               if (result.distance <= targetMaxDistance) {
-                window.location.href = ${JSON.stringify(path)} + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(result.path);
+                window.location.href = ${safeJsonStringify(safePath)} + "?pow_type=tsp&pow_nonce=" + nonce + "&pow_solution=" + JSON.stringify(result.path);
               } else {
                 document.getElementById('loader').innerText = "Error: Could not find a sufficient solution. Please try again.";
               }
@@ -972,6 +988,7 @@ const generateMemoryPoWChallenge = (
   difficulty = 16,
   path = "",
 ) => {
+    const safePath = sanitizeRedirectPath(path);
   // difficulty here is the buffer size in MB.
   return `
       <html>
@@ -982,8 +999,8 @@ const generateMemoryPoWChallenge = (
           <div id="loader" style="margin:20px;">⚙️ Performing memory allocation and calculation... (${difficulty} MB)</div>
           <script>
             async function solve() {
-              const nonce = "${nonce}";
-              const size = ${difficulty} * 1024 * 1024; // en octets
+              const nonce = ${safeJsonStringify(nonce)};
+                   const size = ${difficulty} * 1024 * 1024; // en octets
               const iterations = size / 16;
               
               try {
@@ -1000,8 +1017,8 @@ const generateMemoryPoWChallenge = (
                 }
                 window.location.href = "${path}" + "?pow_type=mem&pow_nonce=" + nonce + "&pow_solution=" + finalHash;
               } catch(e) {
-                document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
-              }
+                window.location.href = ${safeJsonStringify(safePath)} + "?pow_type=mem&pow_nonce=" + nonce + "&pow_solution=" + finalHash;
+                 }
             }
             solve();
           </script>
@@ -1321,12 +1338,13 @@ export async function generateSpaceChallenge(clientIp, nonce, suspicionFactor, o
 function generateSpaceChallengePage(challengeDetails, clientSecret, securityConfig) {
   const { nonce, sizeMb, queries, path } = challengeDetails;
   const solverCode = getPowSolverCode();
-  
-  const challengeScript = `
+    const safePath = sanitizeRedirectPath(path);
+
+    const challengeScript = `
     async function solve() {
-      const nonce = ${JSON.stringify(nonce)};
-      const path = ${JSON.stringify(path)};
-      const clientSecret = ${JSON.stringify(clientSecret)};
+      const nonce = ${safeJsonStringify(nonce)};
+       const path = ${safeJsonStringify(safePath)};
+       const clientSecret = ${safeJsonStringify(clientSecret)};
       const queries = ${JSON.stringify(queries)};
       const sizeMb = ${sizeMb};
       
@@ -3026,6 +3044,8 @@ export function generateCpuTargetChallenge(
   };
 }
 
+const htmlTemplateCache = new Map();
+
 /**
  * Generates the HTML page for the CPU target challenge.
  * @param {object} challengeDetails - The details from generateCpuTargetChallenge.
@@ -3034,6 +3054,7 @@ export function generateCpuTargetChallenge(
  */
 function generateCpuTargetChallengePage(challengeDetails, clientIp) {
     const { nonce, target, path } = challengeDetails;
+    const safePath = sanitizeRedirectPath(path);
     const solverCode = getPowSolverCode();
     return `
       <html><head><title>Security Check</title></head>
@@ -3045,14 +3066,14 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
         <script>
           async function solve() {
             const clientIp = ${JSON.stringify(clientIp)};
-            const nonce = ${JSON.stringify(nonce)};
+            const nonce = ${safeJsonStringify(nonce)};
             const cpuTarget = BigInt("0x" + "${target}");
             // La nouvelle version de solveCpuChallengeInline n'a plus besoin de l'IP ou du secret,
             // car tout est dans le baseBlock. Pour la compatibilité de ce challenge simple, on passe null.
             const baseBlockBytes = new TextEncoder().encode(nonce + ":");
             const solution = await window.solveCpuChallengeInline(baseBlockBytes, cpuTarget, (progress) => {});
             window.location.href = ${JSON.stringify(path)} + "?pow_type=cpu_target&pow_nonce=" + nonce + "&pow_solution=" + solution;
-          }
+           }
           solve();
         </script>
       </body></html>`;
@@ -3067,6 +3088,7 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  */
 function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapUrls, originalFingerprint) { // eslint-disable-line max-len
     const { nonce, target, path } = cpuChallengeDetails;
+    const safePath = sanitizeRedirectPath(path);
     const solverCode = getPowSolverCode();
     // On prépare le baseBlock pour le client. Il sera envoyé sous forme de tableau d'octets.
     // Le fingerprint est maintenant passé directement en paramètre.
@@ -3083,10 +3105,10 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
 
     const challengeScript = `
       async function solve() {
-        const nonce = ${JSON.stringify(nonce)};
-        const path = ${JSON.stringify(path)};
-        const clientSecret = ${JSON.stringify(clientSecret)};
-        const clientIp = ${JSON.stringify(clientIp)};
+        const nonce = ${safeJsonStringify(nonce)};
+           const path = ${JSON.stringify(path)};
+           const clientSecret = ${safeJsonStringify(clientSecret)};
+           const clientIp = ${JSON.stringify(clientIp)};
         const cpuTarget = BigInt("0x" + "${target}");
         const memDifficulty = ${memoryDifficulty};
         // Le client reçoit directement le 'baseBlock' sous forme de tableau d'octets.
@@ -3125,10 +3147,15 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     const customTemplatePath = securityConfig?.challengePagePath;
 
     if (customTemplatePath) {
-        try {
-            htmlTemplate = readFileSync(customTemplatePath, 'utf-8');
-        } catch (error) {
-            console.warn(`[Fingerprint] Could not load custom challenge page at '${customTemplatePath}'. Falling back to default. Error: ${error.message}`);
+        if (htmlTemplateCache.has(customTemplatePath)) {
+            htmlTemplate = htmlTemplateCache.get(customTemplatePath);
+        } else {
+            try {
+                htmlTemplate = readFileSync(customTemplatePath, 'utf-8');
+                htmlTemplateCache.set(customTemplatePath, htmlTemplate);
+            } catch (error) {
+                console.warn(`[Fingerprint] Could not load custom challenge page at '${customTemplatePath}'. Falling back to default. Error: ${error.message}`);
+            }
         }
     }
 
@@ -3789,8 +3816,9 @@ export class FingerprintEngine {
             // lors de l'émission du challenge.
             // --- FIX: Use submitted fingerprint, but fallback to current request's fingerprint ---
             // This handles API clients that might not use the full client-side library but still solve the challenge.
-            const solverFingerprint = pow_fp || getCompositeDeviceHash(requestContext);
-    const originalFingerprint = challengeContext.fingerprint; // This is the fingerprint of the request that *triggered* the challenge
+                const safe_pow_fp = typeof pow_fp === 'string' ? pow_fp : (Array.isArray(pow_fp) ? String(pow_fp[0]) : '');
+                const solverFingerprint = safe_pow_fp || getCompositeDeviceHash(requestContext);
+                const originalFingerprint = typeof challengeContext.fingerprint === 'string' ? challengeContext.fingerprint : '';
 
             let similarity;
             const similarityThreshold = this.securityConfig.similarityThreshold ?? 0.95;
@@ -5109,6 +5137,8 @@ function getTlsSessionId(context) {
 }
 
 // --- Proof-of-Work Middleware (The Tollbooth) ---
+const staticFileCache = new Map();
+
 export const powMiddleware = (securityConfig) => {
   const engine = new FingerprintEngine(securityConfig);
 
@@ -5189,7 +5219,11 @@ export const powMiddleware = (securityConfig) => {
                     }
                 }
                 if (jsFile && existsSync(jsFile)) {
-                    const fileContent = readFileSync(jsFile);
+                    let fileContent = staticFileCache.get(jsFile);
+                    if (!fileContent) {
+                        fileContent = readFileSync(jsFile);
+                        staticFileCache.set(jsFile, fileContent);
+                    }
                     res.setHeader('Content-Type', 'application/javascript');
                     return res.send(fileContent);
                 }
@@ -5206,7 +5240,11 @@ export const powMiddleware = (securityConfig) => {
                     }
                 }
                 if (wasmFile && existsSync(wasmFile)) {
-                    const fileContent = readFileSync(wasmFile);
+                    let fileContent = staticFileCache.get(wasmFile);
+                    if (!fileContent) {
+                        fileContent = readFileSync(wasmFile);
+                        staticFileCache.set(wasmFile, fileContent);
+                    }
                     res.setHeader('Content-Type', 'application/wasm');
                     return res.send(fileContent);
                 }
@@ -5216,7 +5254,7 @@ export const powMiddleware = (securityConfig) => {
 
     const requestContext = {
       clientIp: req.ip || req.socket?.remoteAddress || "unknown",
-      path: req.path,
+        path: sanitizeRedirectPath(req.path),
       cookies: req.cookies,
       query: req.query,
       body: req.body,
@@ -5269,7 +5307,7 @@ export const powMiddleware = (securityConfig) => {
         if (decision.cookie) {
           res.cookie(decision.cookie.name, decision.cookie.value, decision.cookie.options);
         }
-        return res.redirect(decision.path);
+        return res.redirect(sanitizeRedirectPath(decision.path));
 
       case 'next':
       default:
@@ -5277,6 +5315,7 @@ export const powMiddleware = (securityConfig) => {
     }
   };
 };
+
 
 /**
  * @internal
@@ -5723,7 +5762,7 @@ export async function handleMetricsRequest(req, res, securityConfig) {
     if (typeof authorizationCallback === 'function') {
         const context = new RequestContext(
             req.ip,
-            req.path,
+            sanitizeRedirectPath(req.path),
             req.headers,
             req.query,
             req.body,

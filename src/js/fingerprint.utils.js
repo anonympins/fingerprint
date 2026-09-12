@@ -19,6 +19,36 @@ export function verifyZkpProof(yStr, tStr, sStr) {
     }
 }
 
+export function safeJsonStringify(val) {
+    return JSON.stringify(val)
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
+}
+
+export function sanitizeRedirectPath(p) {
+    if (typeof p !== 'string') return '/';
+    let sanitized = p.replace(/[^a-zA-Z0-9\/.\-_~%?&=:@+,;]/g, '');
+
+    // Prevent protocol-relative redirects (e.g. //evil.com)
+    if (sanitized.startsWith('//')) {
+        sanitized = '/' + sanitized.replace(/^\/+/g, '');
+    }
+    // Prevent absolute redirects (e.g. http://evil.com)
+    if (/^https?:\/\//i.test(sanitized)) {
+        try {
+            const parsed = new URL(sanitized);
+            sanitized = parsed.pathname + parsed.search + parsed.hash;
+        } catch (e) {
+            sanitized = '/';
+        }
+    }
+    if (!sanitized.startsWith('/')) {
+        sanitized = '/' + sanitized;
+    }
+    return sanitized.replace(/^\/+/g, '/');
+}
 export function decodePolymorphicFingerprint(fpString, mapping) {
     if (!fpString || !mapping || !mapping.keys) return fpString;
     const reverseKeys = {};
