@@ -27,20 +27,59 @@ function encodeSLEB128(val) {
     return bytes;
 }
 
-function generatePolymorphicInstructions() {
-    const ops = [0x6a, 0x6b, 0x6c, 0x73]; // add, sub, mul, xor
+function getRandomNonTrivialOpcodes(tempLocal) {
     const insts = [];
-    const count = 3 + Math.floor(Math.random() * 5); // 3 to 7 instructions
-    
-    // Initialize dummy local 4
-    const initVal = Math.floor(Math.random() * 1000) - 500;
-    insts.push(0x41, ...encodeSLEB128(initVal), 0x21, 0x04);
-    
+    const ops = [
+        // local.get tempLocal, i32.const rand, rotl, local.set tempLocal
+        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(Math.floor(Math.random() * 31) + 1), 0x77, 0x21, tempLocal],
+        // local.get tempLocal, i32.const rand, rotr, local.set tempLocal
+        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(Math.floor(Math.random() * 31) + 1), 0x78, 0x21, tempLocal],
+        // local.get tempLocal, i32.const rand, xor, local.set tempLocal
+        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(Math.floor(Math.random() * 10000)), 0x73, 0x21, tempLocal],
+        // local.get tempLocal, popcnt, i32.const rand, mul, local.set tempLocal
+        () => [0x20, tempLocal, 0x69, 0x41, ...encodeSLEB128(Math.floor(Math.random() * 1000) + 1), 0x6c, 0x21, tempLocal],
+        // local.get tempLocal, clz, local.get tempLocal, ctz, add, local.set tempLocal
+        () => [0x20, tempLocal, 0x67, 0x20, tempLocal, 0x68, 0x6a, 0x21, tempLocal]
+    ];
+    const count = 2 + Math.floor(Math.random() * 3);
     for (let i = 0; i < count; i++) {
         const op = ops[Math.floor(Math.random() * ops.length)];
-        const randVal = Math.floor(Math.random() * 1000) - 500;
-        insts.push(0x20, 0x04, 0x41, ...encodeSLEB128(randVal), op, 0x21, 0x04);
+        insts.push(...op());
     }
+    return insts;
+}
+
+function generatePolymorphicInstructions(stateLocal = 4, tempLocal = 5) {
+    const insts = [];
+    
+    // Initialize tempLocal with a random value
+    const initVal = Math.floor(Math.random() * 1000) - 500;
+    insts.push(0x41, ...encodeSLEB128(initVal), 0x21, tempLocal);
+
+    // Initialize stateLocal to 0
+    insts.push(0x41, ...encodeSLEB128(0), 0x21, stateLocal);
+
+    // Loop & Block for state machine
+    insts.push(0x03, 0x40); // loop
+    insts.push(0x02, 0x40); // block
+
+    for (let state = 0; state < 3; state++) {
+        insts.push(0x20, stateLocal, 0x41, ...encodeSLEB128(state), 0x46); // state == expected
+        insts.push(0x04, 0x40); // if
+        insts.push(...getRandomNonTrivialOpcodes(tempLocal));
+        insts.push(0x41, ...encodeSLEB128(state + 1), 0x21, stateLocal); // transit to state + 1
+        insts.push(0x0c, ...encodeULEB128(2)); // br 2 (targets loop start)
+        insts.push(0x0b); // end if
+    }
+
+    // Fallthrough / Default break (targets block depth 0, which exits the loop)
+    insts.push(0x0c, ...encodeULEB128(0));
+
+    // end block
+    insts.push(0x0b);
+    // end loop
+    insts.push(0x0b);
+
     return insts;
 }
 
@@ -54,11 +93,11 @@ export class DynamicWasmGenerator {
     static generate(constants) {
         const { seed, multiplier, adder } = constants;
 
-        const preLoopPoly = generatePolymorphicInstructions();
-        const midLoopPoly = generatePolymorphicInstructions();
+        const preLoopPoly = generatePolymorphicInstructions(4, 5);
+        const midLoopPoly = generatePolymorphicInstructions(4, 5);
 
         const inst = [
-            0x01, 0x05, 0x7f, // Locals: 1 entry of 5 locals of type i32
+            0x01, 0x06, 0x7f, // Locals: 1 entry of 6 locals of type i32
             ...preLoopPoly,
             // h = seed
             0x41, ...encodeSLEB128(seed),

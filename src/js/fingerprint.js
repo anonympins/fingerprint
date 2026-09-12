@@ -35,6 +35,42 @@ let lastMappingTime = 0;
 let isCompilingMapping = false;
 const MAPPING_ROTATION_INTERVAL = 60000; // 60 seconds
 
+const configDir = resolve(__dirname, '../../config');
+
+const loadBotWhitelist = (filename, fallbackEntries) => {
+  const filePath = join(configDir, filename);
+  if (existsSync(filePath)) {
+    try {
+      return JSON.parse(readFileSync(filePath, 'utf-8'));
+    } catch (e) {
+      console.error(`[Fingerprint] Error loading whitelist file ${filename}:`, e.message);
+    }
+  }
+  return fallbackEntries;
+};
+
+const googlebotEntries = loadBotWhitelist('googlebot.json', [
+  "2001:4860:4801:10::/64",
+  "2001:4860:4801:11::/64",
+  "2001:4860:4801:12::/64",
+  // ... [Keep fallback inline values for safety]
+  "66.249.79.64"
+]);
+
+const bingbotEntries = loadBotWhitelist('bingbot.json', [
+  "157.55.39.0/24",
+  "207.46.13.0/24",
+  // ... [Keep fallback inline values for safety]
+  "40.77.178.0/23"
+]);
+
+const yandexEntries = loadBotWhitelist('yandex.json', [
+  "2a02:6b8::/29",
+  "5.45.192.0/18",
+  // ... [Keep fallback inline values for safety]
+  "213.180.192.0/19"
+]);
+
 function generateSessionMapping() {
     const randomStr = (len = 6) => crypto.randomBytes(len).toString('hex').replace(/[0-9]/g, 'g').substring(0, len);
     const randomHeader = () => `X-Sess-${crypto.randomBytes(4).toString('hex')}`;
@@ -1073,40 +1109,123 @@ export const verifyPoWAndGenerateTicket = async (
  * For higher difficulties (production workloads), we skip the massive memory allocation on the server,
  * avoiding server-side memory DoS vectors completely.
  */
+function getChallengedIndices(seed, solution, numBlocks, k = 4) {
+    const indices = [];
+    let h = cyrb53(seed + ":" + solution);
+    for (let i = 0; i < k; i++) {
+        h = Math.imul(h ^ i, 1597334677);
+        indices.push(Math.abs(h) % numBlocks);
+    }
+    return indices;
+}
+
+function verifyMerkleProof(leafHash, index, proof, root) {
+    let currentHash = leafHash;
+    let idx = index;
+    for (let i = 0; i < proof.length; i++) {
+        const sibling = proof[i];
+        const combined = idx % 2 === 0 ? currentHash + sibling : sibling + currentHash;
+        currentHash = crypto.createHash('sha256').update(Buffer.from(combined, 'hex')).digest('hex');
+        idx = Math.floor(idx / 2);
+    }
+    return currentHash === root;
+}
+
+function verifyMemoryPoWLegacy(nonce, solution, difficulty, clientSecret) {
+    const size = difficulty * 1024 * 1024;
+    const iterations = size / 16;
+    const buffer = new Uint32Array(size / 4);
+    const seed = `:${nonce}:${clientSecret}`;
+    let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
+
+    for (let i = 0; i < buffer.length; i++) {
+        buffer[i] = h = Math.imul(h ^ i, 1597334677);
+    }
+
+    let finalHash = 0;
+    let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+    for (let i = 0; i < iterations; i++) {
+        addr = buffer[addr] % buffer.length;
+        finalHash ^= addr;
+    }
+    return finalHash === solution;
+}
+
 export const verifyMemoryPoW = (nonce, solution, difficulty = 16, clientSecret = '') => {
   const MAX_ALLOWED_MEM_DIFFICULTY = 128; // 128MB
   if (difficulty > MAX_ALLOWED_MEM_DIFFICULTY) {
     console.warn(`[Security] Memory PoW verification attempt with excessive difficulty: ${difficulty}MB. Denied.`);
     return false;
   }
+  if (Number(difficulty) === 0) {
+    return true;
+  }
   if (!solution) {
     return false;
   }
 
-  // If difficulty is high (production workloads), we treat memory PoW purely as a client-side cost.
-  // Cryptographic integrity is already fully enforced by the chained CPU PoW verification.
-  if (difficulty > 4) {
-    return true;
+  let data;
+  try {
+      data = typeof solution === 'string' ? JSON.parse(solution) : solution;
+  } catch (e) {
+      data = null;
   }
 
-  // Fallback: Cryptographic verification path for low-difficulty challenges / unit tests
-  const size = difficulty * 1024 * 1024;
-  const iterations = size / 16;
-  const buffer = new Uint32Array(size / 4);
+  if (!data || typeof data !== 'object' || data.solution === undefined || !data.merkleRoot || !data.proofs) {
+      if (difficulty <= 4 && /^\d+$/.test(String(solution))) {
+          return verifyMemoryPoWLegacy(nonce, parseInt(solution, 10), difficulty, clientSecret);
+      }
+      return false;
+  }
+
+  const { solution: sol, merkleRoot, proofs } = data;
+  const numBlocks = difficulty * 256;
   const seed = `:${nonce}:${clientSecret}`;
-  let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
 
-  for (let i = 0; i < buffer.length; i++) {
-    buffer[i] = h = Math.imul(h ^ i, 1597334677);
+  const challengedIndices = getChallengedIndices(seed, sol, numBlocks, 4);
+
+  for (const b of challengedIndices) {
+      const proof = proofs[b] || proofs[String(b)];
+      if (!proof) return false;
+
+      const block = new Uint32Array(1024);
+      let h = cyrb53(seed + ":" + b);
+      for (let i = 0; i < 1024; i++) {
+          block[i] = (h = Math.imul(h ^ i, 1597334677));
+      }
+
+      const expectedLeaf = crypto.createHash('sha256').update(Buffer.from(block.buffer)).digest('hex');
+
+      if (!verifyMerkleProof(expectedLeaf, b, proof, merkleRoot)) {
+          return false;
+      }
   }
 
-  let finalHash = 0;
-  let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+  const blockCache = new Map();
+  function getBlockElement(blockIdx, elementIdx) {
+      if (!blockCache.has(blockIdx)) {
+          const block = new Uint32Array(1024);
+          let h = cyrb53(seed + ":" + blockIdx);
+          for (let i = 0; i < 1024; i++) {
+              block[i] = (h = Math.imul(h ^ i, 1597334677));
+          }
+          blockCache.set(blockIdx, block);
+      }
+      return blockCache.get(blockIdx)[elementIdx];
+  }
+
+  const totalElements = numBlocks * 1024;
+  let addr = totalElements > 0 ? getBlockElement(0, 0) % totalElements : 0;
+  let expectedSolution = 0;
+  const iterations = 1024;
   for (let i = 0; i < iterations; i++) {
-    addr = buffer[addr] % buffer.length;
-    finalHash ^= addr;
+      const blockIdx = Math.floor(addr / 1024);
+      const elementIdx = addr % 1024;
+      addr = getBlockElement(blockIdx, elementIdx) % totalElements;
+      expectedSolution ^= addr;
   }
-  return finalHash === parseInt(solution, 10);
+
+  return expectedSolution === parseInt(sol, 10);
 };
 
 export async function verifySpacePoW(nonce, solution, queries, seed, clientSecret) {
@@ -2989,8 +3108,8 @@ function calculateTarget(suspicionFactor, securityConfig = {}) {
   // MAX_DIFFICULTY: Slow enough to heavily penalize a bot, but feasible for a patient human (5-30s).
   // NOUVEAU: La difficulté est maintenant configurable.
   const { cpu: cpuConfig = {} } = securityConfig;
-  const MIN_DIFFICULTY_BITS = cpuConfig.minDifficultyBits ?? 8;
-  const MAX_DIFFICULTY_BITS = cpuConfig.maxDifficultyBits ?? 16;
+                      const MIN_DIFFICULTY_BITS = cpuConfig.minDifficultyBits ?? 8;
+                      const MAX_DIFFICULTY_BITS = cpuConfig.maxDifficultyBits ?? 22;
 
   // Use linear interpolation between min and max difficulty.
   const totalDifficultyBits =
@@ -4280,9 +4399,8 @@ export class FingerprintEngine {
             // On passe la configuration pour que la difficulté soit calculée correctement.
             const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
 
-            // La difficulté mémoire démarre à 0 et augmente seulement après un certain seuil de suspicion.
-            // Par exemple, elle ne commence à augmenter qu'à partir de 25% du chemin entre 'low' et 'high'.
-            const memActivationFactor = Math.max(0, (suspicionFactor - 0.25) / 0.75);
+            // La difficulté mémoire augmente désormais en parfaite synergie avec le facteur de suspicion (ratio constant)
+            const memActivationFactor = suspicionFactor;
 
             const minMemDifficulty = 0;   // Peut être 0 Mo !
             const maxMemDifficulty = 48;  // 48Mo pour les plus suspects
@@ -5011,6 +5129,9 @@ export const modsecurity_analyzer = (rulesPath) => {
  * @returns {Array<{userAgent: string, hostnameSuffix: string}>}
  */
 export const default_whitelist = () => [
+    googlebot_whitelist(),
+    bingbot_whitelist(),
+    yandex_whitelist(),
     // === Moteurs de recherche majeurs ===
     { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' },
     { userAgent: 'Google-Extended', hostnameSuffix: '.google.com' },
@@ -5107,6 +5228,26 @@ export const default_whitelist = () => [
     { userAgent: 'Google-Site-Verification', hostnameSuffix: '.google.com' },
     { userAgent: 'KeyCDN', hostnameSuffix: '.keycdn.com' },
 ];
+
+/**
+ * Retourne la liste officielle des préfixes IP/CIDR (IPv4 et IPv6) utilisés par Googlebot
+ * enveloppée dans un objet de type 'allowlist' prêt à être injecté.
+ * @returns {{type: string, entries: string[]}} Règle d'allowlist de sécurité.
+ */
+export const googlebot_whitelist = () => ({
+    type: 'allowlist',
+    entries: googlebotEntries
+});
+
+export const yandex_whitelist = () => ({
+    type: 'allowlist',
+    entries: yandexEntries
+});
+
+export const bingbot_whitelist = () => ({
+    type: 'allowlist',
+    entries: bingbotEntries
+});
 
 
 /**

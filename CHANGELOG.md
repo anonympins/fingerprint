@@ -1,3 +1,12 @@
+## Version 0.5.2
+
+- Security updates (CodeQL issues fixed)
+- **Full options documentation** updated
+- Bing / Google / Yandex bots automatically detected and ignored by `default_whitelist()`
+- **Merkle Tree-Based Memory PoW Verification**: Integrated Merkle tree structures into the memory PoW challenge. By forcing the client to construct a Merkle tree and submit cryptographic proofs (*Merkle Proofs*) for randomly sampled memory blocks, the server can verify the challenge in $O(\log N)$ time and near-zero memory footprint. This mitigates critical server-side memory exhaustion and CPU DoS vulnerabilities, making high-difficulty memory-hard challenges safe for production.
+- **Asynchronous CPU Bottleneck Avoidance (Web Workers)**: Offloaded CPU-intensive Proof-of-Work hashing loops to background Web Workers to prevent main-thread freezing and ensure smooth UI interactions. Includes a seamless, progressive fallback to main-thread execution using scheduler yielding (`scheduler.yield()`) or `setTimeout` timeouts when Web Workers are blocked by strict Content Security Policies (CSP).
+- **WebGL1 & Legacy Context Fallback**: Added a comprehensive WebGL1 and legacy `experimental-webgl` context fallback to the GPU PoW solver and graphic fingerprint collector, ensuring full hardware-accelerated challenge compatibility for older browsers, legacy devices, and virtual machines lacking WebGPU or WebGL2 support.
+
 ## Version 0.5.1
 
 ### ✨ New Features

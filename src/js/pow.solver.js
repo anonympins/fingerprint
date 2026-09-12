@@ -144,6 +144,53 @@ export async function solveCpuTargetInline(baseBlock, target, progressCallback) 
         return solution;
     }
 
+        // Try Web Worker execution first if supported and not blocked by CSP
+        if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
+            try {
+                return await new Promise((resolve, reject) => {
+                    const workerCode = `
+                        self.onmessage = async (e) => {
+                            const { baseBlock, target } = e.data;
+                            const cpuTarget = BigInt(target);
+                            const encoder = new TextEncoder();
+                            let cpuSolution = 0;
+                            while (true) {
+                                const solutionBytes = encoder.encode(String(cpuSolution));
+                                const finalBlock = new Uint8Array(baseBlock.length + solutionBytes.length);
+                                finalBlock.set(baseBlock);
+                                finalBlock.set(solutionBytes, baseBlock.length);
+                                const buf = await crypto.subtle.digest("SHA-256", finalBlock);
+                                const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+                                if (BigInt('0x' + hashHex) < cpuTarget) break;
+                                cpuSolution++;
+                                if (cpuSolution % 25000 === 0) {
+                                    self.postMessage({ type: 'progress', solution: cpuSolution });
+                                }
+                            }
+                            self.postMessage({ type: 'success', solution: cpuSolution });
+                        };
+                    `;
+                    const blob = new Blob([workerCode], { type: 'application/javascript' });
+                    const worker = new Worker(URL.createObjectURL(blob));
+                    worker.onmessage = (event) => {
+                        if (event.data.type === 'progress') {
+                            if (progressCallback) progressCallback(event.data.solution);
+                        } else if (event.data.type === 'success') {
+                            resolve(event.data.solution);
+                            worker.terminate();
+                        }
+                    };
+                    worker.onerror = (err) => {
+                        worker.terminate();
+                        reject(err);
+                    };
+                    worker.postMessage({ baseBlock, target: cpuTarget.toString() });
+                });
+            } catch (workerError) {
+                console.warn("Web Worker creation failed (possibly due to CSP). Falling back to main thread with scheduler/setTimeout yielding.");
+            }
+        }
+
     let cpuSolution = 0;
 
     while (true) {
@@ -167,8 +214,12 @@ export async function solveCpuTargetInline(baseBlock, target, progressCallback) 
         // --- FIN DES LOGS ---
         if (BigInt('0x' + hashHex) < cpuTarget) break;
         cpuSolution++;
-        if (cpuSolution % 100000 === 0) {
-            await new Promise(r => setTimeout(r, 0));
+            if (cpuSolution % 50000 === 0) {
+                if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') {
+                    await scheduler.yield();
+                } else {
+                    await new Promise(r => setTimeout(r, 0));
+                }
             if (progressCallback) progressCallback(cpuSolution);
         }
     }
@@ -217,43 +268,100 @@ export async function solveCpuTarget(message, target) {
  * @returns {Promise<number>} La solution (nombre entier).
  */
 export async function solveMemory(seed, difficulty) {
-    // On définit un seuil pour savoir quand faire une pause, afin de ne pas bloquer le thread UI.
-    const YIELD_THRESHOLD = 100000;
-    const size = difficulty * 1024 * 1024;
-    const buffer = new Uint32Array(size / 4);
-
     const wasmModule = typeof window !== 'undefined' ? (window.wasmModule || (window.ClientLibrary && window.ClientLibrary.wasmModule)) : null;
     if (wasmModule && typeof wasmModule._solve_memory_challenge === 'function') {
-        const seedPtr = wasmModule._malloc(seed.length + 1);
-        for (let i = 0; i < seed.length; i++) {
-            wasmModule.HEAP8[seedPtr + i] = seed.charCodeAt(i);
-        }
-        wasmModule.HEAP8[seedPtr + seed.length] = 0;
-        const solution = wasmModule._solve_memory_challenge(seedPtr, difficulty);
-        wasmModule._free(seedPtr);
+        const encoder = new TextEncoder();
+        const seedBytes = encoder.encode(seed);
+        const ptr = wasmModule._malloc(seedBytes.length + 1);
+        wasmModule.HEAPU8.set(seedBytes, ptr);
+        wasmModule.HEAPU8[ptr + seedBytes.length] = 0; // Null-terminator
+        const solution = wasmModule._solve_memory_challenge(ptr, difficulty);
+        wasmModule._free(ptr);
         return solution;
     }
 
-    let h = new TextEncoder().encode(seed).reduce((acc, v) => acc + v, 0);
+    const size = difficulty * 1024 * 1024;
+    const numBlocks = difficulty * 256;
+    if (numBlocks === 0) return { solution: 0, merkleRoot: '', proofs: {} };
 
-    for (let i = 0; i < buffer.length; i++) {
-        buffer[i] = (h = Math.imul(h ^ i, 1597334677));
-        if (i % YIELD_THRESHOLD === 0) {
-            await new Promise(r => setTimeout(r, 0)); // Respiration pour ne pas geler l'UI
-        }
+    async function hashBlock(block) {
+        const buf = await crypto.subtle.digest("SHA-256", block.buffer);
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
     }
 
+    function hexToBytes(hex) {
+        const bytes = new Uint8Array(hex.length / 2);
+        for (let i = 0; i < hex.length; i += 2) {
+            bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+        }
+        return bytes;
+    }
+
+    const leaves = [];
+    const blocks = [];
+    for (let b = 0; b < numBlocks; b++) {
+        const block = new Uint32Array(1024);
+        let h = cyrb53(seed + ":" + b);
+        for (let i = 0; i < 1024; i++) {
+            block[i] = (h = Math.imul(h ^ i, 1597334677));
+        }
+        blocks.push(block);
+        leaves.push(await hashBlock(block));
+    }
+
+    const tree = [leaves];
+    while (tree[tree.length - 1].length > 1) {
+        const currentLayer = tree[tree.length - 1];
+        const nextLayer = [];
+        for (let i = 0; i < currentLayer.length; i += 2) {
+            const left = currentLayer[i];
+            const right = currentLayer[i + 1] || left;
+            const combined = hexToBytes(left + right);
+            const hashBuf = await crypto.subtle.digest("SHA-256", combined);
+            const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+            nextLayer.push(hashHex);
+        }
+        tree.push(nextLayer);
+    }
+    const merkleRoot = tree[tree.length - 1][0];
+
+    function readBuffer(blocks, addr) {
+        const blockIdx = Math.floor(addr / 1024);
+        const elementIdx = addr % 1024;
+        return blocks[blockIdx][elementIdx];
+    }
+
+    const totalElements = numBlocks * 1024;
+    let addr = totalElements > 0 ? readBuffer(blocks, 0) % totalElements : 0;
     let solution = 0;
-    const iterations = size / 16;
-    let addr = buffer.length > 0 ? buffer[0] % buffer.length : 0;
+    const iterations = 1024;
     for (let i = 0; i < iterations; i++) {
-        addr = buffer[addr] % buffer.length;
+        addr = readBuffer(blocks, addr) % totalElements;
         solution ^= addr;
-        if (i % YIELD_THRESHOLD === 0) {
-            await new Promise(r => setTimeout(r, 0)); // Respiration pour ne pas geler l'UI
-        }
     }
-    return solution;
+
+    const challengedIndices = [];
+    let h_idx = cyrb53(seed + ":" + solution);
+    for (let i = 0; i < 4; i++) {
+        h_idx = Math.imul(h_idx ^ i, 1597334677);
+        challengedIndices.push(Math.abs(h_idx) % numBlocks);
+    }
+
+    const proofs = {};
+    for (const index of challengedIndices) {
+        const proof = [];
+        let idx = index;
+        for (let layer = 0; layer < tree.length - 1; layer++) {
+            const isRight = idx % 2 === 1;
+            const siblingIdx = isRight ? idx - 1 : idx + 1;
+            const sibling = tree[layer][siblingIdx] || tree[layer][idx];
+            proof.push(sibling);
+            idx = Math.floor(idx / 2);
+        }
+        proofs[index] = proof;
+    }
+
+    return { solution, merkleRoot, proofs };
 }
 
 /**
@@ -540,7 +648,11 @@ class ChallengeSolution {
         // Logique de formatage spécifique à chaque type de challenge
         if (this.type === 'cpu_mem' || this.type === 'cpu_mem_inline' || this.type === 'cpu_target') {
             Object.entries(this.rawSolution).forEach(([key, value]) => {
-                url.searchParams.set(`pow_solution_${key}`, String(value));
+                if (typeof value === 'object' && value !== null) {
+                    url.searchParams.set(`pow_solution_${key}`, JSON.stringify(value));
+                } else {
+                    url.searchParams.set(`pow_solution_${key}`, String(value));
+                }
             });
         } else if (this.type === 'useful_work_task') {
             url.searchParams.set('pow_solution_work_result', JSON.stringify(this.rawSolution.work_result));

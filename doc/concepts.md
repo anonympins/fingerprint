@@ -18,7 +18,7 @@ Each detected anomaly generates a partial score (from 0 to 100). The final score
 
 ---
 
-## The 15 Suspicion Vectors Explained
+## The 21 Suspicion Vectors Explained
 
 ### 1. History Score (`historyScore`)
 * **Role**: Detect IP rotation (rotating residential proxies, botnets).
@@ -92,6 +92,30 @@ Each detected anomaly generates a partial score (from 0 to 100). The final score
 ### 15. IP Reputation Score (`ipReputationScore`)
 * **Role**: Short-term historical tracking of individual IP addresses.
 * **Mechanism**: Assigns a poor reputation score to an IP address if it has recently failed challenges or triggered security alerts. This score decreases with each hour of inactivity (a decay of 2 points per hour) to automatically rehabilitate legitimate, reassigned IP addresses.
+
+### 16. Cookie Dropping Score (`cookieDroppingScore`)
+* **Role**: Detects clients that refuse to store or return cookies (cookie-dropping attacks).
+* **Mechanism**: When a client requests a page, the engine registers a temporary pending state for its IP. If subsequent requests from the same IP arrive shortly after without the expected `device_id` cookie, it indicates that the client is either deleting cookies or running in a stateless mode to bypass tracking, triggering a high penalty.
+
+### 17. Threat Intel Score (`threatIntelScore`)
+* **Role**: Leverages global threat intelligence feeds and known malicious IP lists.
+* **Mechanism**: Automatically penalizes requests coming from known residential proxy exits, bulletproof hosting providers, Tor exit nodes, or active malicious infrastructure registered in the system's database or external threat intelligence feeds.
+
+### 18. Botnet Cluster Score (`botnetClusterScore`)
+* **Role**: Identifies distributed botnet waves sharing identical hardware profiles.
+* **Mechanism**: Collects fingerprints and groups clients by their highly stable components (e.g., specific combinations of JA3/JA4, TCP, and GPU hashes). If multiple requests from different IPs (often across various geolocations or subnets) exhibit the exact same stable fingerprint within a short timeframe (e.g., 10 minutes), it indicates a coordinated botnet cluster using cloned device profiles.
+
+### 19. TCP Anomaly Score (`tcpAnomalyScore`)
+* **Role**: Detects OS-level spoofing at the transport layer.
+* **Mechanism**: Inspects raw TCP SYN packets (specifically TTL, Window Size, MSS, Window Scale, and SACK permissions) to reconstruct the client's actual operating system. If the OS classified by the TCP/IP stack (e.g., Linux) differs from the OS claimed in the HTTP `User-Agent` (e.g., Windows), a high anomaly score is applied.
+
+### 20. QUIC Anomaly Score (`quicAnomalyScore`)
+* **Role**: Detects HTTP/3 client spoofing and framework emulation.
+* **Mechanism**: Profiles the QUIC transport flow parameters (such as `initial_max_data`, `initial_max_streams_bidi`, and priority frame extensions). Since modern browsers like Chrome negotiate very specific default QUIC stream limits and frame priorities, handshakes that deviate from these defaults (e.g., tools like curl-impersonate or custom Go/Python packages) are instantly flagged.
+
+### 21. Rendering Anomaly Score (`renderingAnomalyScore`)
+* **Role**: Exposes headless browsers and virtualized graphics environments.
+* **Mechanism**: Analyzes frame rendering telemetry sent by the client, such as vertical synchronization (V-Sync) patterns, frame-rate consistency (FPS), and rendering jitter. Automated headless clients running on virtual framebuffers or software-based GPU emulators (like SwiftShader) typically exhibit highly unstable frame times (high jitter) or abnormal FPS caps, and may trigger virtualized `OffscreenCanvas` exceptions.
 
 ---
 ## Mitigation Mechanisms: The Challenge System (PoW)

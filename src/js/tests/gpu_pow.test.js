@@ -115,4 +115,85 @@ describe('GpuPowSolver - Chaotic Logistic Map PoW', () => {
         expect(result.solution.split(',').length).toBe(64);
         vi.restoreAllMocks();
     });
+
+    it('should fallback to WebGL1 if both WebGPU and WebGL2 are not supported', async () => {
+        // Mock WebGPU as undefined
+        Object.defineProperty(global.navigator, 'gpu', {
+            value: undefined,
+            writable: true,
+            configurable: true
+        });
+
+        // Mock WebGL1 (webgl) context with float extensions enabled
+        const mockGl1 = {
+            FRAMEBUFFER: 36160,
+            FRAMEBUFFER_COMPLETE: 36053,
+            COLOR_ATTACHMENT0: 36064,
+            TEXTURE_2D: 3553,
+            RGBA: 6408,
+            FLOAT: 5126,
+            TRIANGLES: 4,
+            CLAMP_TO_EDGE: 33071,
+            TEXTURE_MAG_FILTER: 10240,
+            TEXTURE_MIN_FILTER: 10241,
+            NEAREST: 9728,
+            TEXTURE_WRAP_S: 10242,
+            TEXTURE_WRAP_T: 10243,
+            useProgram: vi.fn(),
+            createBuffer: vi.fn(),
+            bindBuffer: vi.fn(),
+            bufferData: vi.fn(),
+            enableVertexAttribArray: vi.fn(),
+            vertexAttribPointer: vi.fn(),
+            uniform1f: vi.fn(),
+            uniform1i: vi.fn(),
+            getUniformLocation: vi.fn(),
+            getAttribLocation: vi.fn(),
+            drawArrays: vi.fn(),
+            getExtension: vi.fn().mockImplementation((ext) => {
+                if (ext === 'OES_texture_float' || ext === 'WEBGL_color_buffer_float') {
+                    return {};
+                }
+                return null;
+            }),
+            createTexture: vi.fn(),
+            bindTexture: vi.fn(),
+            texImage2D: vi.fn(),
+            texParameteri: vi.fn(),
+            createFramebuffer: vi.fn(),
+            bindFramebuffer: vi.fn(),
+            framebufferTexture2D: vi.fn(),
+            checkFramebufferStatus: vi.fn().mockReturnValue(36053), // gl.FRAMEBUFFER_COMPLETE
+            viewport: vi.fn(),
+            readPixels: vi.fn((x, y, w, h, format, type, pixels) => {
+                for (let i = 0; i < pixels.length; i++) {
+                    pixels[i] = 0.75;
+                }
+            })
+        };
+
+        const mockCanvas = {
+            width: 8,
+            height: 8,
+            getContext: vi.fn().mockImplementation((contextId) => {
+                if (contextId === 'webgl2') return null;
+                if (contextId === 'webgl' || contextId === 'experimental-webgl') return mockGl1;
+                return null;
+            })
+        };
+
+        vi.spyOn(document, 'createElement').mockImplementation((tagName) => {
+            if (tagName === 'canvas') return mockCanvas;
+            return {};
+        });
+
+        vi.spyOn(GpuPowSolver, '_createProgram').mockReturnValue({});
+
+        const result = await GpuPowSolver.solve(seed, 100);
+
+        expect(result.platform).toBe('webgl1');
+        expect(result.solution.split(',').length).toBe(64);
+        expect(result.solution.split(',')[0]).toBe('0.750000');
+        vi.restoreAllMocks();
+    });
 });

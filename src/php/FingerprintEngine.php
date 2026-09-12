@@ -27,6 +27,10 @@
      private ?Logger $logger = null;
      private bool $dryRun;
 
+     private static ?array $googlebotEntries = null;
+     private static ?array $yandexEntries = null;
+     private static ?array $bingbotEntries = null;
+
      public function __construct(array $securityConfig)
      {
          $this->isProduction = ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production';
@@ -103,7 +107,103 @@
              }
          }
      }
+     private static function loadBotWhitelist(string $filename, array $fallbackEntries): array
+     {
+         $configDir = dirname(__DIR__, 2) . '/config';
+         $filePath = $configDir . '/' . $filename;
+         if (file_exists($filePath)) {
+             try {
+                 $content = file_get_contents($filePath);
+                 if ($content !== false) {
+                     $decoded = json_decode($content, true);
+                     if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                         return $decoded;
+                     }
+                 }
+             } catch (\Throwable $e) {
+                 error_log("[Fingerprint] Error loading whitelist file {$filename}: " . $e->getMessage());
+             }
+         }
+         return $fallbackEntries;
+     }
 
+     public static function googlebot_whitelist(): array
+     {
+         if (self::$googlebotEntries === null) {
+             self::$googlebotEntries = self::loadBotWhitelist('googlebot.json', [
+                 "2001:4860:4801:10::/64",
+                 "2001:4860:4801:11::/64",
+                 "2001:4860:4801:12::/64",
+                 "66.249.79.64"
+             ]);
+         }
+         return [
+             'type' => 'allowlist',
+             'entries' => self::$googlebotEntries
+         ];
+     }
+
+     public static function yandex_whitelist(): array
+     {
+         if (self::$yandexEntries === null) {
+             self::$yandexEntries = self::loadBotWhitelist('yandex.json', [
+                 "2a02:6b8::/29",
+                 "5.45.192.0/18",
+                 "213.180.192.0/19"
+             ]);
+         }
+         return [
+             'type' => 'allowlist',
+             'entries' => self::$yandexEntries
+         ];
+     }
+
+     public static function bingbot_whitelist(): array
+     {
+         if (self::$bingbotEntries === null) {
+             self::$bingbotEntries = self::loadBotWhitelist('bingbot.json', [
+                 "157.55.39.0/24",
+                 "207.46.13.0/24",
+                 "40.77.178.0/23"
+             ]);
+         }
+         return [
+             'type' => 'allowlist',
+             'entries' => self::$bingbotEntries
+         ];
+     }
+
+     public static function default_whitelist(): array
+     {
+         return [
+             self::googlebot_whitelist(),
+             self::bingbot_whitelist(),
+             self::yandex_whitelist(),
+             ['userAgent' => 'Googlebot', 'hostnameSuffix' => '.googlebot.com'],
+             ['userAgent' => 'Google-Extended', 'hostnameSuffix' => '.google.com'],
+             ['userAgent' => 'AdsBot-Google', 'hostnameSuffix' => '.googlebot.com'],
+             ['userAgent' => 'Mediapartners-Google', 'hostnameSuffix' => '.google.com'],
+             ['userAgent' => 'Google-InspectionTool', 'hostnameSuffix' => '.google.com'],
+             ['userAgent' => '(bingbot|adidxbot)', 'hostnameSuffix' => '.search.msn.com'],
+             ['userAgent' => 'DuckDuckBot', 'hostnameSuffix' => '.duckduckgo.com'],
+             ['userAgent' => 'YandexBot', 'hostnameSuffix' => '.yandex.com'],
+             ['userAgent' => 'YandexImages', 'hostnameSuffix' => '.yandex.com'],
+             ['userAgent' => 'Baiduspider', 'hostnameSuffix' => '.crawl.baidu.com'],
+             ['userAgent' => 'Slurp', 'hostnameSuffix' => '.crawl.yahoo.net'],
+             ['userAgent' => 'Sogou web spider', 'hostnameSuffix' => '.sogou.com'],
+             ['userAgent' => 'Exabot', 'hostnameSuffix' => '.exabot.com'],
+             ['userAgent' => 'ia_archiver', 'hostnameSuffix' => '.alexa.com'],
+             ['userAgent' => 'SeznamBot', 'hostnameSuffix' => '.seznam.cz'],
+             ['userAgent' => 'Mail.RU_Bot', 'hostnameSuffix' => '.mail.ru'],
+             ['userAgent' => 'Yeti', 'hostnameSuffix' => '.naver.com'],
+             ['userAgent' => 'AhrefsBot', 'hostnameSuffix' => '.ahrefs.com'],
+             ['userAgent' => 'SemrushBot', 'hostnameSuffix' => '.semrush.com'],
+             ['userAgent' => 'MJ12bot', 'hostnameSuffix' => '.mj12bot.com'],
+             ['userAgent' => 'rogerbot', 'hostnameSuffix' => '.moz.com'],
+             ['userAgent' => 'DotBot', 'hostnameSuffix' => '.moz.com'],
+             ['userAgent' => 'Screaming Frog SEO Spider', 'hostnameSuffix' => '.screamingfrog.co.uk'],
+         ];
+     }
      private function log(string $message, array $data = [], string $level = 'info'): void
      {
          if ($this->verbose) {
@@ -1039,8 +1139,9 @@
                      'target' => ChallengeUtils::calculateCpuTarget($suspicionFactor, $this->securityConfig),
                      'path' => $context->path,
                  ];
- 
-                 $memActivationFactor = max(0, ($suspicionFactor - 0.25) / 0.75);
+
+                 // Alignement linéaire parfait du ratio d'effort CPU/Mémoire
+                 $memActivationFactor = $suspicionFactor;
                  $memDifficulty = (int)round($memActivationFactor * 48); // 0 à 48MB
  
                  $originalFingerprint = RequestUtils::getCompositeDeviceHash($context);

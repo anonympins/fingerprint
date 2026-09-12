@@ -1,175 +1,157 @@
-# Full Configuration Options
+# Configuration Options Reference
 
-This document lists all configuration properties available for both PHP and Node.js.
+This document provides a comprehensive reference for all configuration options available in the `fingerprint` protection engine, with a specific focus on the **21 score weights** used to compute the final suspicion score.
 
-## PHP Configuration Array Example
-
-Here is a comprehensive overview of the full configuration array you can pass to the engine in PHP:
-
- ```php
- <?php
- 
- $securityConfig = [
-     // Suspicion metrics weights. Sum does not need to equal 1.0.
-     'weights' => [
-         'historyScore' => 0.3,       // Penalizes IP rotation (proxy)
-         'rotationScore' => 0.5,      // Penalizes rapid fingerprint changes
-         'headerAnomalyScore' => 0.1, // Penalizes missing or abnormal headers
-         'requestPatternScore' => 0.6,// Penalizes automated scrape patterns
-         'inconsistencyScore' => 0.8, // Penalizes cookie hijacking
-         'behaviorScore' => 0.7,      // Penalizes non-human interactions (mouse/keys)
-         'honeypotScore' => 1.0,      // Penalizes bots filling trap inputs
-         'crossLayerInconsistencyScore' => 0.4, // Penalizes mismatched OS vs User-Agent
-         'timeInconsistencyScore' => 0.9,       // Penalizes replayed metric timestamps
-         'tlsSpoofingScore' => 0.8,             // Penalizes mismatched JA3/JA4 vs User-Agent
-         'botScore' => 1.0,                     // Penalizes automated environments (WebDriver, etc.)
-         'clientHintsInconsistencyScore' => 0.7, // Penalizes mismatched Client Hints vs User-Agent
-     ],
-     // Enforcement thresholds
-     'thresholds' => [
-         'low' => 20,    // Triggers minimal CPU challenge
-         'medium' => 45, // Triggers combined CPU/Memory challenge
-         'high' => 75,   // Triggers severe CPU/Memory challenge
-         'block' => 95,  // Instantly blocks the client
-     ],
-     'cpu' => [
-         'minDifficultyBits' => 8,
-         'maxDifficultyBits' => 24,
-     ],
-     // Time limits (in milliseconds)
-     'ticketMaxAge' => 3600000,      // 1 hour clearance ticket lifespan
-     'challengeTtl' => 300000,       // 5 minutes nonce validity
-     'deviceIdCookieMaxAge' => null, // Session cookie (or set integer in ms)
-     'challengePagePath' => null,    // Custom challenge page template path
-     'verbose' => false,             // Debug logging toggle
-     
-     // Settings for request sequence / scraper analysis
-     'patterns' => [
-         'historySize' => 10,
-         'minSamples' => 5,
-         'regularityThreshold' => 50,
-         'benfordThreshold' => 0.15,
-         'patternWeight' => 80,
-         'decayFactor' => 0.9,
-         'inactivityReset' => 5000,
-     ],
-     
-     // Trap configuration
-     'honeypot' => [
-         'fields' => ['email_confirm', 'user_nickname'],
-         'trapUrls' => ['/wp-admin', '/.env'],
-         'detectInjections' => ['sql', 'rce', 'traversal', 'xxe'],
-     ],
-     
-     // Whitelist definitions
-     'whitelist' => [
-         [
-             'type' => 'allowlist',
-             'entries' => ['192.168.1.100', '203.0.113.0/24']
-         ],
-         [
-             'type' => 'path_allowlist',
-             'entries' => ['/api/public/*']
-         ]
-     ],
-     
-     'enableUsefulWork => true,
-     'enableProofOfSpace' => true,
-     'dryRun => false,
-     'trustedProxies => ['127.0.0.1', '192.168.1.0/24'],
-     'wasm' => true
- 
- ];
- ```
- 
 ---
 
-## Node.js Configuration Object Example
+## Complete Configuration Template (JSON)
 
-Here is the same full configuration tailored for Node.js:
+Here is a complete representation of a custom security configuration containing all available suspicion weights, thresholds, and detection subsystem parameters:
 
- ```javascript
- const securityConfig = {
-     weights: {
-         historyScore: 0.3,
-         rotationScore: 0.5,
-         headerAnomalyScore: 0.1,
-         requestPatternScore: 0.6,
-         inconsistencyScore: 0.8,
-         behaviorScore: 0.7,
-         honeypotScore: 1.0,
-         crossLayerInconsistencyScore: 0.4,
-         timeInconsistencyScore: 0.9,
-         tlsSpoofingScore: 0.8,
-         clientHintsInconsistencyScore: 0.7
-     },
-     thresholds: {
-         low: 20,
-         medium: 45,
-         high: 75,
-         block: 95,
-     },
-     cpu: {
-         minDifficultyBits: 8,
-         maxDifficultyBits: 32,
-     },
-     ticketMaxAge: 3600000,
-     challengeTtl: 300000,
-     deviceIdCookieMaxAge: undefined,
-     challengePagePath: './path/to/custom-challenge-page.html',
-     verbose: process.env.NODE_ENV !== 'production',
-     patterns: {
-         velocityThreshold: 800,
-         burstThreshold: 1500,
-         scrapeThreshold: 1000,
-         historySize: 10,
-         minSamples: 5,
-         regularityThreshold: 50,
-         benfordThreshold: 0.15,
-         patternWeight: 80,
-         decayFactor: 0.9,
-         inactivityReset: 5000,
-     },
-     honeypot: {
-         fields: ['email_confirm', 'admin'],
-         trapUrls: ['/wp-admin', '/.env'],
-         detectInjections: ['sql', 'rce', 'traversal', 'xxe'],
-         analyzers: [
-             // Custom async/sync custom functions
-             (data) => {
-                 const spamKeywords = ['viagra', 'free money'];
-                 const dataString = JSON.stringify(data).toLowerCase();
-                 return spamKeywords.some(kw => dataString.includes(keyword));
-             }
-         ]
-     },
-     whitelist: [
-         { type: 'allowlist', entries: ['127.0.0.1', '10.0.0.0/8'] },
-         { type: 'path_allowlist', entries: ['/assets/*', '/favicon.ico'] }
-     ],
-     isStaticResource: (req) => req.path.startsWith('/static/'),
-     isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
-     logger: (log) => console.log('Log recorded:', log.type),
-     autotuning: {
-         trafficData: [],
-         interval: 1800000, // 30 mins
-         minDataPoints: 200,
-         maxDataPoints: 20000,
-             maxAgeMs: 86400000, // Prune logs older than 24 hours (86400000 ms)
-             clearAfterTuning: true, // Wipe out processed traffic data after tuning
-             savePath: './security-config.optimized.json',
-             onCleanup: (removedLogs) => {
-                 console.log(`${removedLogs.length} logs pruned and cleaned up.`);
-             }
-     },
-     enableUsefulWork: true,
-     enableProofOfSpace: true,
-     dryRun: false,
-     trustedProxies: ['127.0.0.1', '192.168.1.0/24'],
-     wasm: true, // can be a './my_dir' path to fp.js/fp.wasm files too
- };
- ```
- 
+```json
+{
+  "verbose": false,
+  "dryRun": false,
+  "challengeNewDevices": false,
+  "allowCrossNetworkRoaming": true,
+  "similarityThreshold": 0.70,
+  "ticketMaxAge": 3600000,
+  "challengeTtl": 300,
+  "deviceIdCookieMaxAge": 2592000000,
+  "thresholds": {
+    "low": 20,
+    "medium": 45,
+    "high": 75,
+    "block": 95
+  },
+  "weights": {
+    "historyScore": 0.30,
+    "rotationScore": 0.50,
+    "headerAnomalyScore": 0.10,
+    "requestPatternScore": 0.60,
+    "inconsistencyScore": 0.80,
+    "behaviorScore": 0.70,
+    "honeypotScore": 1.00,
+    "crossLayerInconsistencyScore": 0.40,
+    "timeInconsistencyScore": 0.90,
+    "tlsSpoofingScore": 0.80,
+    "botScore": 1.00,
+    "cookieDroppingScore": 0.90,
+    "threatIntelScore": 0.40,
+    "clientHintsInconsistencyScore": 0.70,
+    "clickVarianceScore": 0.60,
+    "subnetScore": 0.50,
+    "botnetClusterScore": 0.60,
+    "tcpAnomalyScore": 0.80,
+    "quicAnomalyScore": 0.80,
+    "renderingAnomalyScore": 0.80,
+    "ipReputationScore": 0.50
+  },
+  "patterns": {
+    "velocityThreshold": 800,
+    "burstThreshold": 1500,
+    "scrapeThreshold": 1000,
+    "historySize": 10,
+    "minSamples": 5,
+    "regularityThreshold": 50,
+    "benfordThreshold": 0.15,
+    "patternWeight": 80,
+    "decayFactor": 0.90,
+    "inactivityReset": 5000,
+    "regularityRatio": 0.40,
+    "benfordRatio": 0.30,
+    "enumerationRatio": 0.30
+  },
+  "honeypot": {
+    "fields": ["email_confirm", "admin_login_bypass"],
+    "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
+    "detectInjections": true
+  },
+  "threatIntel": {
+    "knownIps": []
+  },
+  "cpu": {
+    "minDifficultyBits": 8,
+    "maxDifficultyBits": 16
+  },
+  "pospace": {
+    "sizeMb": 100,
+    "numQueries": 10
+  }
+}
+```
+
+---
+
+## Detailed Score Weights Reference (The 21 Invariants)
+
+The following table details the role of each weight in the `weights` object. These weights determine how heavily each suspicion indicator influences the final score (calculated dynamically out of 100).
+
+| Weight Name | Default (`balanced`) | Impact & Role |
+| :--- | :---: | :--- |
+| **`botScore`** | `1.00` | **Extreme**. Triggers when client-side environment checks explicitly detect browser automation frameworks (e.g., Selenium, Puppeteer). |
+| **`honeypotScore`** | `1.00` | **Extreme**. Triggers when a client visits hidden/forbidden trap URLs or enters data in hidden inputs (honeypots). |
+| **`timeInconsistencyScore`** | `0.90` | **Very High**. Penalizes requests where client and server clocks drastically differ, detecting replayed behavioral telemetry. |
+| **`cookieDroppingScore`** | `0.90` | **Very High**. Penalizes clients that make rapid sequential requests but systematically delete or drop their session cookies. |
+| **`inconsistencyScore`** | `0.80` | **High**. Triggered when the current device hardware hash does not match the anchor hash originally bound to the cookie. |
+| **`tlsSpoofingScore`** | `0.80` | **High**. Penalizes TLS signatures (JA3/JA4) that mismatch the claimed HTTP User-Agent. |
+| **`tcpAnomalyScore`** | `0.80` | **High**. Detects OS-level spoofing by comparing TCP packet parameters (TTL, Window Size) with the claimed User-Agent OS. |
+| **`quicAnomalyScore`** | `0.80` | **High**. Identifies spoofed flow parameters on HTTP/3 and QUIC transport streams. |
+| **`renderingAnomalyScore`** | `0.80` | **High**. Exposes headless browsers and virtualized graphics layers (e.g., SwiftShader) using rendering jitter telemetry. |
+| **`behaviorScore`** | `0.70` | **High**. Analyzes real-time mouse speed, acceleration, keystroke latency, and scroll patterns to flag bot-like interactions. |
+| **`clientHintsInconsistencyScore`** | `0.70` | **High**. Detects inconsistencies between user-agent strings and modern client hints headers (`sec-ch-ua`). |
+| **`requestPatternScore`** | `0.60` | **Medium**. Evaluates rate, statistical intervals (Benford's Law), and path traversal patterns for scrapers. |
+| **`botnetClusterScore`** | `0.60` | **Medium**. Grouping indicator. Raises suspicion if multiple distinct IPs share a mathematically identical hardware fingerprint within a 10-minute window. |
+| **`clickVarianceScore`** | `0.60` | **Medium**. Penalizes clients that click on the exact same pixel coordinates repeatedly, detecting UI automation. |
+| **`subnetScore`** | `0.50` | **Medium**. Elevates risk if other IPs in the same subnet CIDR block (/24 for IPv4, /48 for IPv6) recently triggered anomalies. |
+| **`ipReputationScore`** | `0.50` | **Medium**. Leverages short-term history of individual IP addresses that failed previous proof-of-work challenges. |
+| **`crossLayerInconsistencyScore`** | `0.40` | **Low**. Checks minor cross-layer anomalies like viewport sizes exceeding physical screen size. |
+| **`threatIntelScore`** | `0.40` | **Low**. Penalizes IPs that are registered as commercial VPNs, proxies, or Tor exit nodes. |
+| **`rotationScore`** | `0.50` | **Medium**. Flags devices changing hardware-based fingerprints rapidly over a short time. |
+| **`historyScore`** | `0.30` | **Low**. Monitors the total number of distinct IPs associated with a single device ID cookie. |
+| **`headerAnomalyScore`** | `0.10` | **Low**. Simple parsing checks on headers (e.g., missing basic browser headers). |
+
+---
+
+## Core Engine Controls
+
+### Global Controls
+* **`verbose`** *(bool, default: `false`)*: Enables deep server-side log output.
+* **`dryRun`** *(bool, default: `false`)*: Intended block and challenge actions are logged, but requests are always allowed to pass through (`next`). Useful for evaluating auto-tuner impact in production safely.
+* **`challengeNewDevices`** *(bool, default: `false`)*: Forces a proof-of-work challenge on all new devices by setting their initial score to the `low` threshold.
+* **`allowCrossNetworkRoaming`** *(bool, default: `true`)*: If `true`, a user can switch networks (e.g., from Home Wi-Fi to 4G) without being re-challenged, provided their hardware-based fingerprint remains absolutely identical.
+* **`similarityThreshold`** *(float, default: `0.70`)*: The similarity coefficient (0 to 1) required to consider two composite fingerprints a match.
+
+### Timings & Expirations
+* **`ticketMaxAge`** *(int, default: `3600000`)*: Maximum lifespan of a clearance ticket (PoW resolution cookie) in milliseconds (default: 1 hour).
+* **`challengeTtl`** *(int, default: `300`)*: Lifespan of a generated challenge session in seconds (default: 5 minutes).
+* **`deviceIdCookieMaxAge`** *(int, default: `2592000000`)*: Lifespan of the `device_id` cookie in milliseconds (default: 30 days).
+
+---
+
+## Subsystems Configuration
+
+### `patterns` (Request Sequences Analysis)
+* **`velocityThreshold`**: High-frequency interval threshold (ms).
+* **`burstThreshold`**: Fast retry trigger threshold (ms).
+* **`scrapeThreshold`**: Absolute crawl limit interval (ms).
+* **`historySize`**: The size of the request sliding window.
+* **`minSamples`**: Minimum timing intervals required before executing Benford and regularity checks.
+* **`decayFactor`**: Rate at which suspicion scores decay during inactivity.
+
+### `honeypot` (Form and URL Traps)
+* **`fields`**: List of hidden inputs to inject into HTML shadow forms.
+* **`trapUrls`**: Hidden asset paths that normal users never crawl.
+* **`detectInjections`** *(bool/array)*: Enables SQLi, XSS, RCE, and path traversal detection.
+
+### `cpu` (Target CPU PoW)
+* **`minDifficultyBits`**: Minimum zero-bit difficulty for low suspicion requests.
+* **`maxDifficultyBits`**: Maximum zero-bit difficulty for highly suspicious requests.
+
+### `pospace` (Proof of Space)
+* **`sizeMb`**: Size of the indexed storage space to generate locally (MB).
+* **`numQueries`**: Number of block read queries generated by the server.
+
 ---
 
 ## Profiles
@@ -222,6 +204,59 @@ $fingerprint = $protector->protect();
 // Si le script continue, la requête est légitime
 echo "Welcome on the secured page !";
 ```
+
+**Python**
+```python
+import asyncio
+from fingerprint.engine import FingerprintEngine, InMemoryStore, RequestContext
+
+# 1. Choose a security profile and customize it if necessary.
+#    For Python, you typically define the configuration dictionary directly,
+#    mimicking a predefined profile like 'ecommerce' and applying overrides.
+security_config = {
+ "verbose": True,  # Enable verbose mode for development
+ "thresholds": {"low": 15, "medium": 40, "high": 70, "block": 90},
+ "weights": {
+     "inconsistencyScore": 1.0,
+     "requestPatternScore": 0.9,
+     "honeypotScore": 1.0,
+     "behaviorScore": 0.8,
+     "tlsSpoofingScore": 0.9,
+     "botScore": 1.0,
+     "cookieDroppingScore": 1.0,
+     "ipReputationScore": 0.6,
+     "subnetScore": 0.9,
+     "botnetClusterScore": 0.9,
+     "tcpAnomalyScore": 0.9,
+     "quicAnomalyScore": 0.9,
+     "renderingAnomalyScore": 0.9,
+ },
+ "honeypot": {
+     "fields": ["email_confirm", "admin_login_bypass"],
+     "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
+     "detectInjections": True
+ },
+ "challengeNewDevices": True,
+ "allowCrossNetworkRoaming": False,
+}
+
+# 2. Initialize the store (use InMemoryStore for development, replace with Redis/MongoDB for production)
+fingerprint_store = InMemoryStore()
+
+# 3. Create an instance of the FingerprintEngine.
+protector = FingerprintEngine(security_config, fingerprint_store)
+
+# 4. In an actual application, you would then process an incoming request:
+#    (e.g., in an ASGI/WSGI middleware or a direct HTTP handler)
+#    # context = RequestContext(...) # Construct your request context
+#    # decision = await protector.process_request(context)
+#    # if decision["action"] == "next":
+#    #     print("Welcome on the secured page!")
+#    # else:
+#    #     # Handle blocking, challenging, or redirecting
+#    #     print(f"Request {decision['action']}!")
+
+ ```
 
 # Auto-Tuning & Traffic Data Pruning Options
 
