@@ -31,6 +31,137 @@
      private static ?array $yandexEntries = null;
      private static ?array $bingbotEntries = null;
 
+     private static array $dnsCircuitBreaker = [
+         'state' => 'CLOSED',
+         'failureCount' => 0,
+         'lastStateChange' => 0,
+         'threshold' => 5,
+         'cooldown' => 30, // seconds
+     ];
+
+     private static function recordDnsSuccess(): void
+     {
+         self::$dnsCircuitBreaker['failureCount'] = 0;
+         self::$dnsCircuitBreaker['state'] = 'CLOSED';
+     }
+
+     private static function recordDnsFailure(): void
+     {
+         self::$dnsCircuitBreaker['failureCount']++;
+         if (self::$dnsCircuitBreaker['failureCount'] >= self::$dnsCircuitBreaker['threshold']) {
+             self::$dnsCircuitBreaker['state'] = 'OPEN';
+             self::$dnsCircuitBreaker['lastStateChange'] = microtime(true);
+         }
+     }
+
+     private static function canAttemptDns(): bool
+     {
+         if (self::$dnsCircuitBreaker['state'] === 'CLOSED') {
+             return true;
+         }
+         if (self::$dnsCircuitBreaker['state'] === 'OPEN') {
+             if (microtime(true) - self::$dnsCircuitBreaker['lastStateChange'] >= self::$dnsCircuitBreaker['cooldown']) {
+                 self::$dnsCircuitBreaker['state'] = 'HALF-OPEN';
+                 return true;
+             }
+             return false;
+         }
+         return true; // HALF-OPEN
+     }
+
+     private static function getReverseDnsName(string $ip): ?string
+     {
+         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+             return implode('.', array_reverse(explode('.', $ip))) . '.in-addr.arpa';
+         } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+             $hex = bin2hex((string)inet_pton($ip));
+             return implode('.', array_reverse(str_split($hex))) . '.ip6.arpa';
+         }
+         return null;
+     }
+
+     private static function dnsResolveUdp(string $query, string $type, float $timeout = 0.5): ?array
+     {
+         $dnsServer = '8.8.8.8';
+         $port = 53;
+         $fp = @stream_socket_client("udp://$dnsServer:$port", $errno, $errstr, $timeout);
+         if (!$fp) return null;
+         stream_set_timeout($fp, 0, (int)($timeout * 1000000));
+         
+         $id = rand(10000, 65000);
+         $header = pack('n6', $id, 0x0100, 1, 0, 0, 0);
+         
+         $qType = ($type === 'PTR') ? 12 : (($type === 'AAAA') ? 28 : 1);
+         $parts = explode('.', $query);
+         $qName = '';
+         foreach ($parts as $part) {
+             $qName .= chr(strlen($part)) . $part;
+         }
+         $qName .= chr(0);
+         $question = $qName . pack('n2', $qType, 1);
+         
+         if (!@fwrite($fp, $header . $question)) {
+             fclose($fp);
+             return null;
+         }
+         
+         $response = @fread($fp, 512);
+         fclose($fp);
+         if (!$response || strlen($response) < 12) return null;
+         
+         $resHeader = unpack('n6', substr($response, 0, 12));
+         if ($resHeader[1] !== $id) return null;
+         
+         $answersCount = $resHeader[4];
+         if ($answersCount <= 0) return [];
+         
+         $offset = 12 + strlen($question);
+         $results = [];
+         for ($i = 0; $i < $answersCount; $i++) {
+             if ($offset + 12 > strlen($response)) break;
+             if ((ord($response[$offset]) & 0xc0) === 0xc0) {
+                 $offset += 2;
+             } else {
+                 while ($offset < strlen($response) && ord($response[$offset]) !== 0) {
+                     $offset += 1 + ord($response[$offset]);
+                 }
+                 $offset++;
+             }
+             if ($offset + 10 > strlen($response)) break;
+             $typeAndClass = unpack('n2type_class/Nttl/nlen', substr($response, $offset, 10));
+             $rType = $typeAndClass['type_class1'];
+             $rLen = $typeAndClass['len'];
+             $offset += 10;
+             if ($offset + $rLen > strlen($response)) break;
+             $rData = substr($response, $offset, $rLen);
+             $offset += $rLen;
+             
+             if ($rType === 12) {
+                 $ptrName = '';
+                 $p = 0;
+                 while ($p < strlen($rData)) {
+                     $l = ord($rData[$p]);
+                     if ($l === 0) break;
+                     if (($l & 0xc0) === 0xc0) {
+                         break;
+                     }
+                     $ptrName .= substr($rData, $p + 1, $l) . '.';
+                     $p += 1 + $l;
+                 }
+                 $results[] = rtrim($ptrName, '.');
+             } elseif ($rType === 1) {
+                 if ($rLen === 4) {
+                     $results[] = long2ip(unpack('N', $rData)[1]);
+                 }
+             } elseif ($rType === 28) {
+                 if ($rLen === 16) {
+                     $results[] = inet_ntop($rData);
+                 }
+             }
+         }
+         return $results;
+     }
+
      public function __construct(array $securityConfig)
      {
          $this->isProduction = ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production';
@@ -1284,44 +1415,67 @@
          if ($cachedStatus === 'verified') return true;
          if ($cachedStatus === 'failed') return false;
 
+         if (!self::canAttemptDns()) {
+             return false;
+         }
+
          try {
-             // 1. Reverse DNS lookup. gethostbyaddr peut être lent, mais c'est la méthode standard.
-             // @ pour supprimer les warnings si l'IP n'a pas de PTR record.
-             $hostname = @gethostbyaddr($context->clientIp);
-             if ($hostname === false || $hostname === $context->clientIp) {
-                 $store->set($cacheKey, 'failed', 86400);
+             // 1. Reverse DNS lookup with strict 500ms timeout using our custom UDP DNS Client
+             $revName = self::getReverseDnsName($context->client_ip);
+             if (!$revName) {
+                 $store->set($cacheKey, 'failed', 300); // 5 min negative caching
+                 return false;
+             }
+             $hostnames = self::dnsResolveUdp($revName, 'PTR', 0.5);
+             if ($hostnames === null || empty($hostnames)) {
+                 self::recordDnsFailure();
+                 $store->set($cacheKey, 'failed', 300); // 5 min negative caching
                  return false;
              }
 
              $validHostname = null;
-             if (str_ends_with($hostname, $matchedRule['hostnameSuffix'])) {
-                 $validHostname = $hostname;
+             foreach ($hostnames as $hostname) {
+                 if (str_ends_with($hostname, $matchedRule['hostnameSuffix'])) {
+                     $validHostname = $hostname;
+                     break;
+                 }
              }
 
              if ($validHostname === null) {
-                 $store->set($cacheKey, 'failed', 86400);
+                 $store->set($cacheKey, 'failed', 300); // 5 min negative caching
                  return false;
              }
  
-             // 2. Forward DNS lookup
-             $addresses = array_merge(dns_get_record($validHostname, DNS_A) ?: [], dns_get_record($validHostname, DNS_AAAA) ?: []);
+             // 2. Forward DNS lookup with strict 500ms timeout
              $ips = [];
-             foreach ($addresses as $address) {
-                 if (isset($address['ip'])) {
-                     $ips[] = $address['ip'];
-                 }
-                 if (isset($address['ipv6'])) {
-                     $ips[] = $address['ipv6'];
-                 }
+             $resolvedA = self::dnsResolveUdp($validHostname, 'A', 0.5);
+             if ($resolvedA === null) {
+                 self::recordDnsFailure();
+                 $store->set($cacheKey, 'failed', 300); // 5 min negative caching
+                 return false;
              }
+             $ips = array_merge($ips, $resolvedA);
+
+             $resolvedAaaa = self::dnsResolveUdp($validHostname, 'AAAA', 0.5);
+             if ($resolvedAaaa === null) {
+                 self::recordDnsFailure();
+                 $store->set($cacheKey, 'failed', 300); // 5 min negative caching
+                 return false;
+             }
+             $ips = array_merge($ips, $resolvedAaaa);
  
-             if (in_array($context->clientIp, $ips, true)) {
+             if (in_array($context->client_ip, $ips, true)) {
+                 self::recordDnsSuccess();
                  $store->set($cacheKey, 'verified', 86400);
                  return true;
              }
-         } catch (\Exception $e) { /* DNS errors */ }
+         } catch (\Exception $e) {
+             self::recordDnsFailure();
+             $store->set($cacheKey, 'failed', 300); // 5 min negative caching
+             return false;
+         }
 
-         $store->set($cacheKey, 'failed', 86400);
+         $store->set($cacheKey, 'failed', 300); // 5 min negative caching
          return false;
      }
 

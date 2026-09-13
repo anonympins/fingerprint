@@ -27,6 +27,57 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+let dnsCircuitBreaker = {
+  state: 'CLOSED', // 'CLOSED', 'OPEN', 'HALF-OPEN'
+  failureCount: 0,
+  lastStateChange: 0,
+  threshold: 5,
+  cooldownMs: 30000, // 30 seconds
+};
+
+function recordDnsSuccess() {
+  dnsCircuitBreaker.failureCount = 0;
+  dnsCircuitBreaker.state = 'CLOSED';
+}
+
+function recordDnsFailure() {
+  dnsCircuitBreaker.failureCount++;
+  if (dnsCircuitBreaker.failureCount >= dnsCircuitBreaker.threshold) {
+    dnsCircuitBreaker.state = 'OPEN';
+    dnsCircuitBreaker.lastStateChange = Date.now();
+  }
+}
+
+function canAttemptDns() {
+  if (dnsCircuitBreaker.state === 'CLOSED') {
+    return true;
+  }
+  if (dnsCircuitBreaker.state === 'OPEN') {
+    if (Date.now() - dnsCircuitBreaker.lastStateChange > dnsCircuitBreaker.cooldownMs) {
+      dnsCircuitBreaker.state = 'HALF-OPEN';
+      return true;
+    }
+    return false;
+  }
+  return true; // HALF-OPEN
+}
+
+const withTimeout = (promise, ms) => {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error('DNS_TIMEOUT'));
+    }, ms);
+  });
+  return Promise.race([
+    promise.then((res) => {
+      clearTimeout(timeoutId);
+      return res;
+    }),
+    timeoutPromise
+  ]);
+};
+
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
@@ -3688,6 +3739,10 @@ export class FingerprintEngine {
       return false;
     }
 
+    if (!canAttemptDns()) {
+      return false;
+    }
+
     const cacheKey = `ip-whitelist:${clientIp}`;
     const cachedStatus = await store.get(cacheKey);
 
@@ -3700,32 +3755,35 @@ export class FingerprintEngine {
 
     try {
       // 1. Reverse DNS lookup
-      const hostnames = await dns.reverse(clientIp);
+      const hostnames = await withTimeout(dns.reverse(clientIp), 500);
       const validHostname = hostnames.find(h => h.endsWith(matchedRule.hostnameSuffix));
 
       if (!validHostname) {
-        await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h (TTL in seconds)
+        await store.set(cacheKey, 'failed', 300); // Temporary negative caching (5 minutes)
         return false;
       }
 
       // 2. Forward DNS lookup
     let addresses = [];
     try {
-      addresses = await dns.resolve(validHostname);
+        addresses = await withTimeout(dns.resolve(validHostname), 500);
     } catch (e) {}
     try {
-      const ipv6 = await dns.resolve(validHostname, 'AAAA');
+        const ipv6 = await withTimeout(dns.resolve(validHostname, 'AAAA'), 500);
       addresses = addresses.concat(ipv6);
     } catch (e) {}
     if (addresses.includes(clientIp)) {
+        recordDnsSuccess();
         await store.set(cacheKey, 'verified', 86400); // Cache success for 24h (TTL in seconds)
         return true;
       }
     } catch (error) {
-      // DNS errors are common (e.g., for IPs with no rDNS record), treat as failure.
+      recordDnsFailure();
+      await store.set(cacheKey, 'failed', 300); // Temporary negative caching (5 minutes)
+      return false;
     }
 
-    await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h (TTL in seconds)
+    await store.set(cacheKey, 'failed', 300); // Temporary negative caching (5 minutes)
     return false;
   }
 
@@ -5488,6 +5546,10 @@ export const __internal = {
     getTcpAnomalyScore, // Expose for testing,
     getQuicAnomalyScore, // NOUVEAU: Expose pour les tests
     getRenderingAnomalyScore, // NOUVEAU: Expose pour les tests
+    dnsCircuitBreaker,
+    recordDnsSuccess,
+    recordDnsFailure,
+    canAttemptDns,
     registerCooperativeNode,
     findPeerInSubnet,
     handleCooperativeRequest

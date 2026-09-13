@@ -47,6 +47,34 @@ class BlockList:
              pass
          return False
 
+dns_circuit_breaker = {
+    "state": "CLOSED",
+    "failureCount": 0,
+    "lastStateChange": 0.0,
+    "threshold": 5,
+    "cooldown": 30.0, # seconds
+}
+
+def record_dns_success():
+    dns_circuit_breaker["failureCount"] = 0
+    dns_circuit_breaker["state"] = "CLOSED"
+
+def record_dns_failure():
+    dns_circuit_breaker["failureCount"] += 1
+    if dns_circuit_breaker["failureCount"] >= dns_circuit_breaker["threshold"]:
+        dns_circuit_breaker["state"] = "OPEN"
+        dns_circuit_breaker["lastStateChange"] = time.time()
+
+def can_attempt_dns() -> bool:
+    if dns_circuit_breaker["state"] == "CLOSED":
+        return True
+    if dns_circuit_breaker["state"] == "OPEN":
+        if time.time() - dns_circuit_breaker["lastStateChange"] > dns_circuit_breaker["cooldown"]:
+            dns_circuit_breaker["state"] = "HALF-OPEN"
+            return True
+        return False
+    return True # HALF-OPEN
+
 _googlebot_entries = None
 _bingbot_entries = None
 _yandex_entries = None
@@ -2511,30 +2539,54 @@ class FingerprintEngine:
          if cached_status == "failed":
              return False
  
+         if not can_attempt_dns():
+             return False
+
          import socket
          try:
-             # 1. Reverse DNS lookup
+             # 1. Reverse DNS lookup with strict 500ms timeout
              loop = asyncio.get_running_loop()
-             hostname, _, _ = await loop.run_in_executor(None, socket.gethostbyaddr, context.client_ip)
+             try:
+                 hostname, _, _ = await asyncio.wait_for(
+                     loop.run_in_executor(None, socket.gethostbyaddr, context.client_ip),
+                     timeout=0.5
+                 )
+             except (asyncio.TimeoutError, Exception):
+                 record_dns_failure()
+                 await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
+                 return False
+
              if not hostname or hostname == context.client_ip:
-                 await self.store.set(cache_key, "failed", 86400)
+                 await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
                  return False
  
              if not hostname.endswith(matched_rule["hostnameSuffix"]):
-                 await self.store.set(cache_key, "failed", 86400)
+                 await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
                  return False
  
-             # 2. Forward DNS lookup
-             addr_infos = await loop.run_in_executor(None, socket.getaddrinfo, hostname, None)
+             # 2. Forward DNS lookup with strict 500ms timeout
+             try:
+                 addr_infos = await asyncio.wait_for(
+                     loop.run_in_executor(None, socket.getaddrinfo, hostname, None),
+                     timeout=0.5
+                 )
+             except (asyncio.TimeoutError, Exception):
+                 record_dns_failure()
+                 await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
+                 return False
+
              ips = {info[4][0] for info in addr_infos}
  
              if context.client_ip in ips:
+                 record_dns_success()
                  await self.store.set(cache_key, "verified", 86400)
                  return True
          except Exception:
-             pass
+             record_dns_failure()
+             await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
+             return False
  
-         await self.store.set(cache_key, "failed", 86400)
+         await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
          return False
  
     async def _check_allowlists(self, context: RequestContext) -> bool:
