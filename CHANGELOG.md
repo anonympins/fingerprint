@@ -5,7 +5,8 @@
 - **Memory-Safe Traffic Pruning**: Standardized `pruneTrafficData` across Node.js and PHP engines. Includes strict time-based decay and size-capping policy, keeping the in-memory footprint minimal and preventing leaks during long-running background tuning sessions.
 - **Enhanced Subnet Detection**: Upgraded IPv4 and IPv6 subnet masking routines (`getIpSubnet`). Implemented proper binary bitwise masking and IPv6 compression normalization (`::` expansion), ensuring high-reliability network block reputation scoring (`subnetScore`).
 - **Centralized Problem Configuration**: Relocated `problems.config.json` to the central `/config` directory for unified configuration management and cleaner multi-environment deployments.
-- **Updated store_integration.md**: Extended database integration documentation for Redis, MongoDB, and SQL storage adapters.
+- **Stealthy Honeypot Enhancements**: Hardened client-side honeypots by dynamically rendering hidden input elements inside a closed Shadow DOM using nested randomized CSS variables, effectively evading detection by headless crawlers.
+- **Mathematical Benford Test Optimization**: Re-engineered `benfordTest` across JavaScript, PHP, and Python to extract the first significant digit using math operations (logarithms and modulo) instead of string casts, significantly boosting performance on large time-series.
 
 ## Version 0.5.2
 
