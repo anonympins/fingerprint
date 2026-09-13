@@ -3611,8 +3611,6 @@ class Optimization:
 
     @staticmethod
     def benford_test(numbers: List[float]) -> float:
-        if len(numbers) < 10:
-            return 0.0
         leading_digits = []
         for n in numbers:
             s = str(n).lstrip("0.")
@@ -3622,12 +3620,28 @@ class Optimization:
         if len(leading_digits) < 10:
             return 0.0
         counts = {str(i): 0 for i in range(1, 10)}
-        for d in leading_digits:
-            counts[d] += 1
+        valid_count = 0
+
+        for n in numbers:
+            try:
+                val = abs(float(n))
+            except (ValueError, TypeError):
+                continue
+            if val == 0.0:
+                continue
+            log = math.log10(val)
+            factor = 10 ** math.floor(log)
+            digit = math.floor(val / factor)
+            if 1 <= digit <= 9:
+                counts[str(digit)] += 1
+                valid_count += 1
+
+        if valid_count < 10:
+            return 0.0
         benford = {1: 30.1, 2: 17.6, 3: 12.5, 4: 9.7, 5: 7.9, 6: 6.7, 7: 5.8, 8: 5.1, 9: 4.6}
         deviation = 0.0
         for i in range(1, 10):
-            obs = (counts[str(i)] / len(leading_digits)) * 100.0
+            obs = (counts[str(i)] / valid_count) * 100.0
             exp = benford[i]
             deviation += (obs - exp) ** 2
         return math.sqrt(deviation) / 50.0
