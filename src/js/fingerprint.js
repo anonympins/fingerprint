@@ -5509,11 +5509,13 @@ export function sanitizeTrafficData(trafficData) {
   if (!trafficData || trafficData.length === 0) {
     return [];
   }
-  const tempSanitized = [];
+  const suspiciousLogs = [];
+  const passedLogs = [];
   const deviceCounts = new Map();
   const ipCounts = new Map();
   const subnetCounts = new Map();
   const hardwareClusterCounts = new Map();
+  const hwClusterCache = new Map();
 
   // Calcul des quotas maximums pour éviter l'influence démesurée d'une entité
   const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
@@ -5523,20 +5525,23 @@ export function sanitizeTrafficData(trafficData) {
 
   const getHardwareCluster = (log) => {
     const fp = log.deviceHash || log.fingerprint || log.deviceFingerprint || '';
-    if (fp && typeof fp === 'string') {
-      const parts = fp.split('|');
-      const hwComponents = [];
-      for (const part of parts) {
-        const pair = part.split(':');
-        if (pair.length === 2 && (pair[0] === 'gpu' || pair[0] === 'cvs' || pair[0] === 'hw')) {
-          hwComponents.push(part);
-        }
-      }
-      if (hwComponents.length > 0) {
-        return hwComponents.sort().join('|');
+    if (!fp || typeof fp !== 'string') {
+      return log.deviceId || 'anonymous-cluster';
+    }
+    if (hwClusterCache.has(fp)) {
+      return hwClusterCache.get(fp);
+    }
+    const parts = fp.split('|');
+    const hwComponents = [];
+    for (const part of parts) {
+      const pair = part.split(':');
+      if (pair.length === 2 && (pair[0] === 'gpu' || pair[0] === 'cvs' || pair[0] === 'hw')) {
+        hwComponents.push(part);
       }
     }
-    return log.deviceId || 'anonymous-cluster';
+    const result = hwComponents.length > 0 ? hwComponents.sort().join('|') : (log.deviceId || 'anonymous-cluster');
+    hwClusterCache.set(fp, result);
+    return result;
   };
 
   for (const log of trafficData) {
@@ -5562,19 +5567,21 @@ export function sanitizeTrafficData(trafficData) {
       if (subnet !== 'unknown-subnet') subnetCounts.set(subnet, currentSubnetCount + 1);
       hardwareClusterCounts.set(hwCluster, currentHwClusterCount + 1);
 
-      tempSanitized.push(log);
+      if (log.type === 'request_passed') {
+        passedLogs.push(log);
+      } else {
+        suspiciousLogs.push(log);
+      }
     }
   }
 
-  const passedLogs = tempSanitized.filter(log => log.type === 'request_passed');
-  const suspiciousLogs = tempSanitized.filter(log => log.type !== 'request_passed');
-
   const minDataPoints = 200; // Seuil par défaut
   const maxPassedAllowed = Math.max(minDataPoints, suspiciousLogs.length * 9);
-  const shuffledPassed = passedLogs.sort(() => 0.5 - Math.random());
-  const selectedPassed = shuffledPassed.slice(0, maxPassedAllowed);
-
-  return [...suspiciousLogs, ...selectedPassed];
+  if (passedLogs.length > maxPassedAllowed) {
+    const shuffledPassed = passedLogs.sort(() => 0.5 - Math.random());
+    return [...suspiciousLogs, ...shuffledPassed.slice(0, maxPassedAllowed)];
+  }
+  return [...suspiciousLogs, ...passedLogs];
 }
 /**
  * Assainit et limite la taille/ancienneté des données de trafic pour éviter les fuites de mémoire.

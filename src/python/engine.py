@@ -381,11 +381,13 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
     if not traffic_data:
         return []
     
-    temp_sanitized = []
+    suspicious_logs = []
+    passed_logs = []
     device_counts = {}
     ip_counts = {}
     subnet_counts = {}
     hw_cluster_counts = {}
+    hw_cluster_cache = {}
 
     total_count = len(traffic_data)
     max_logs_per_device = max(3, total_count // 50) # 2%
@@ -396,6 +398,8 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
     def get_hardware_cluster(log_entry: Dict[str, Any]) -> str:
         fp = log_entry.get("deviceHash") or log_entry.get("fingerprint") or log_entry.get("deviceFingerprint") or ""
         if fp and isinstance(fp, str):
+            if fp in hw_cluster_cache:
+                return hw_cluster_cache[fp]
             parts = fp.split("|")
             hw_components = []
             for part in parts:
@@ -403,7 +407,11 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
                 if len(pair) == 2 and pair[0] in ("gpu", "cvs", "hw"):
                     hw_components.append(part)
             if hw_components:
-                return "|".join(sorted(hw_components))
+                result = "|".join(sorted(hw_components))
+            else:
+                result = log_entry.get("deviceId") or "anonymous-cluster"
+            hw_cluster_cache[fp] = result
+            return result
         return log_entry.get("deviceId") or "anonymous-cluster"
 
     for log in traffic_data:
@@ -429,10 +437,10 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
             if subnet != "unknown-subnet":
                 subnet_counts[subnet] = current_subnet_count + 1
             hw_cluster_counts[hw_cluster] = current_hw_cluster_count + 1
-            temp_sanitized.append(log)
-
-    passed_logs = [log for log in temp_sanitized if log.get("type") == "request_passed"]
-    suspicious_logs = [log for log in temp_sanitized if log.get("type") != "request_passed"]
+            if log.get("type") == "request_passed":
+                passed_logs.append(log)
+            else:
+                suspicious_logs.append(log)
 
     min_data_points = 200
     max_passed_allowed = max(min_data_points, len(suspicious_logs) * 9)

@@ -1407,11 +1407,13 @@ class RequestUtils
             return [];
         }
 
-        $tempSanitized = [];
+        $suspiciousLogs = [];
+        $passedLogs = [];
         $deviceCounts = [];
         $ipCounts = [];
         $subnetCounts = [];
         $hardwareClusterCounts = [];
+        $hwClusterCache = [];
 
         $totalCount = count($trafficData);
         $maxLogsPerDevice = max(3, (int)floor($totalCount * 0.02)); // Max 2% contribution per device
@@ -1419,9 +1421,12 @@ class RequestUtils
         $maxLogsPerSubnet = max(5, (int)floor($totalCount * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
         $maxLogsPerHardwareCluster = max(3, (int)floor($totalCount * 0.02)); // Max 2% par cluster matériel stable
 
-        $getHardwareCluster = function (array $log): string {
+        $getHardwareCluster = function (array $log) use (&$hwClusterCache): string {
             $fp = $log['deviceHash'] ?? $log['fingerprint'] ?? $log['deviceFingerprint'] ?? '';
             if (!empty($fp) && is_string($fp)) {
+                if (isset($hwClusterCache[$fp])) {
+                    return $hwClusterCache[$fp];
+                }
                 $parts = explode('|', $fp);
                 $hwComponents = [];
                 foreach ($parts as $part) {
@@ -1432,8 +1437,12 @@ class RequestUtils
                 }
                 if (!empty($hwComponents)) {
                     sort($hwComponents);
-                    return implode('|', $hwComponents);
+                    $result = implode('|', $hwComponents);
+                } else {
+                    $result = $log['deviceId'] ?? 'anonymous-cluster';
                 }
+                $hwClusterCache[$fp] = $result;
+                return $result;
             }
             return $log['deviceId'] ?? 'anonymous-cluster';
         };
@@ -1463,17 +1472,11 @@ class RequestUtils
                     $subnetCounts[$subnet] = $currentSubnetCount + 1;
                 }
                 $hardwareClusterCounts[$hwCluster] = $currentHwClusterCount + 1;
-                $tempSanitized[] = $log;
-            }
-        }
-
-        $passedLogs = [];
-        $suspiciousLogs = [];
-        foreach ($tempSanitized as $log) {
-            if (($log['type'] ?? '') === 'request_passed') {
-                $passedLogs[] = $log;
-            } else {
-                $suspiciousLogs[] = $log;
+                if (($log['type'] ?? '') === 'request_passed') {
+                    $passedLogs[] = $log;
+                } else {
+                    $suspiciousLogs[] = $log;
+                }
             }
         }
 
