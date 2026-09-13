@@ -1175,14 +1175,39 @@ class RequestUtils
             $networkBinary = $ipBinary & $mask;
             return inet_ntop($networkBinary) . '/' . $ipv4Prefix;
         } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-            $ipBinary = inet_pton($ip);
-            if ($ipBinary === false) return null;
-
-            $mask = self::generateMask($ipv6Prefix, 16);
-            if ($mask === null) return null;
-
-            $networkBinary = $ipBinary & $mask;
-            return inet_ntop($networkBinary) . '/' . $ipv6Prefix; // FIX: Use the provided ipv6Prefix
+            $normalized = trim(strtolower($ip));
+            if (str_contains($normalized, '::')) {
+                $parts = explode('::', $normalized, 2);
+                $left = $parts[0] !== '' ? explode(':', $parts[0]) : [];
+                $right = $parts[1] !== '' ? explode(':', $parts[1]) : [];
+                $missing = 8 - (count($left) + count($right));
+                $middle = array_fill(0, $missing, '0000');
+                $groups = array_merge($left, $middle, $right);
+            } else {
+                $groups = explode(':', $normalized);
+                if (count($groups) !== 8) {
+                    return null;
+                }
+            }
+            foreach ($groups as $i => &$g) {
+                $val = hexdec($g);
+                $g = str_pad(dechex($val), 4, '0', STR_PAD_LEFT);
+            }
+            unset($g);
+            for ($i = 0; $i < 8; $i++) {
+                $startBit = $i * 16;
+                if ($ipv6Prefix >= ($i + 1) * 16) {
+                    continue;
+                } elseif ($ipv6Prefix <= $startBit) {
+                    $groups[$i] = '0000';
+                } else {
+                    $bitsToKeep = $ipv6Prefix - $startBit;
+                    $val = hexdec($groups[$i]);
+                    $mask = (0xffff << (16 - $bitsToKeep)) & 0xffff;
+                    $groups[$i] = str_pad(dechex($val & $mask), 4, '0', STR_PAD_LEFT);
+                }
+            }
+            return implode(':', $groups) . '/' . $ipv6Prefix;
         }
         return null;
     }

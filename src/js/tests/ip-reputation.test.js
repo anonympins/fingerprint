@@ -96,7 +96,7 @@ describe('IP Reputation Local System (Node.js)', () => {
         expect(ipv4Subnet).toBe('192.168.1.0/24');
 
         const ipv6Subnet = __internal.getIpSubnet('2001:db8:abcd:12::1', 24, 48);
-        expect(ipv6Subnet).toBe('2001:db8:abcd:0:0:0:0:0/48');
+        expect(ipv6Subnet).toBe('2001:0db8:abcd:0000:0000:0000:0000:0000/48');
     });
 
     it('should calculate client hints inconsistency score correctly', async () => {

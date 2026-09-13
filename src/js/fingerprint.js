@@ -2385,80 +2385,6 @@ function getClickVarianceScore(context) {
  * @returns {string|null} The subnet CIDR or null if the IP is invalid.
  */
 function getIpSubnet(ip, ipv4Prefix = 24, ipv6Prefix = 48) { // eslint-disable-line no-unused-vars
-  /**
-   * @private
-   * Parses an IPv6 string, expanding '::' into a 16-byte Buffer.
-   * @param {string} ipStr The IPv6 address string.
-   * @returns {Buffer|null}
-   */
-  const parseIPv6 = (ipStr) => {
-    const parts = ipStr.split('::');
-    if (parts.length > 2) return null;
-
-    let hextets = [];
-    if (parts[0]) hextets.push(...parts[0].split(':'));
-
-    if (parts.length === 2) {
-      const hextetsInPart2 = parts[1] ? parts[1].split(':').length : 0;
-      const zerosToInsert = 8 - hextets.length - hextetsInPart2;
-      for (let i = 0; i < zerosToInsert; i++) {
-        hextets.push('0');
-      }
-      if (parts[1]) hextets.push(...parts[1].split(':'));
-    }
-
-    if (hextets.length !== 8) return null;
-
-    const buffer = Buffer.alloc(16);
-    for (let i = 0; i < 8; i++) {
-      const val = parseInt(hextets[i] || '0', 16);
-      if (isNaN(val)) return null;
-      buffer.writeUInt16BE(val, i * 2);
-    }
-    return buffer;
-  };
-
-  /**
-   * @private
-   * Formats a 16-byte IPv6 buffer into a compressed string representation.
-   * @param {Buffer} buffer The 16-byte buffer.
-   * @returns {string}
-   */
-  const formatIPv6 = (buffer) => {
-    const hextets = [];
-    for (let i = 0; i < 16; i += 2) {
-      hextets.push(buffer.readUInt16BE(i).toString(16));
-    }
-
-    let bestStart = -1, bestLength = 0, currentStart = -1, currentLength = 0;
-    for (let i = 0; i < hextets.length; i++) {
-      if (hextets[i] === '0') {
-        if (currentStart === -1) currentStart = i;
-        currentLength++;
-      } else {
-        if (currentLength > bestLength) {
-          bestStart = currentStart;
-          bestLength = currentLength;
-        }
-        currentStart = -1;
-        currentLength = 0;
-      }
-    }
-    if (currentLength > bestLength) {
-      bestStart = currentStart;
-      bestLength = currentLength;
-    }
-
-    // For subnet calculations, an uncompressed view is often clearer.
-    // We will avoid compression to match test expectations.
-    // if (bestLength > 1) {
-    //   const part1 = hextets.slice(0, bestStart).join(':');
-    //   const part2 = hextets.slice(bestStart + bestLength).join(':');
-    //   return `${part1}::${part2}`;
-    // }
-    return hextets.join(':');
-  };
-
   try {
     if (isIPv4(ip)) {
       const ipBuffer = Buffer.from(ip.split('.').map(Number));
@@ -2467,14 +2393,37 @@ function getIpSubnet(ip, ipv4Prefix = 24, ipv6Prefix = 48) { // eslint-disable-l
       for (let i = 0; i < 4; i++) ipBuffer[i] &= mask[i];
       return `${Array.from(ipBuffer).join('.')}/${ipv4Prefix}`;
     } else if (isIPv6(ip)) {
-      const ipBuffer = parseIPv6(ip);
-      if (!ipBuffer) return null;
-
-      const mask = Buffer.alloc(16, 0);
-      for (let i = 0; i < ipv6Prefix; i++) mask[Math.floor(i / 8)] |= 1 << (7 - (i % 8));
-      for (let i = 0; i < 16; i++) ipBuffer[i] &= mask[i];
-
-      return `${formatIPv6(ipBuffer)}/${ipv6Prefix}`;
+      let normalized = ip.trim().toLowerCase();
+      if (normalized.includes("::")) {
+        const parts = normalized.split("::");
+        if (parts.length > 2) return null;
+        const left = parts[0] ? parts[0].split(":") : [];
+        const right = parts[1] ? parts[1].split(":") : [];
+        const missing = 8 - (left.length + right.length);
+        const middle = Array(missing).fill("0000");
+        normalized = [...left, ...middle, ...right].join(":");
+      } else {
+        const parts = normalized.split(":");
+        if (parts.length !== 8) return null;
+      }
+      const groups = normalized.split(":").map(g => {
+        const val = parseInt(g, 16);
+        return isNaN(val) ? "0000" : val.toString(16).padStart(4, "0");
+      });
+      for (let i = 0; i < 8; i++) {
+        const startBit = i * 16;
+        if (ipv6Prefix >= (i + 1) * 16) {
+          continue;
+        } else if (ipv6Prefix <= startBit) {
+          groups[i] = "0000";
+        } else {
+          const bitsToKeep = ipv6Prefix - startBit;
+          const val = parseInt(groups[i], 16);
+          const mask = (0xffff << (16 - bitsToKeep)) & 0xffff;
+          groups[i] = (val & mask).toString(16).padStart(4, "0");
+        }
+      }
+      return `${groups.join(":")}/${ipv6Prefix}`;
     }
   } catch (e) {
     // Catch any unexpected errors during parsing or manipulation

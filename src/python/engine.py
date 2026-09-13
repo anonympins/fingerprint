@@ -253,12 +253,37 @@ def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Opti
     except socket.error:
         try:
             # Check IPv6
-            ip_bin = socket.inet_pton(socket.AF_INET6, ip)
-            words = struct.unpack("!8H", ip_bin)
-            keep_words = ipv6_prefix // 16
-            net_words = list(words[:keep_words]) + [0] * (8 - keep_words)
-            net_str = ":".join(f"{w:x}" for w in net_words)
-            return f"{net_str}/{ipv6_prefix}"
+                socket.inet_pton(socket.AF_INET6, ip)
+                normalized = ip.strip().lower()
+                if "::" in normalized:
+                    parts = normalized.split("::", 1)
+                    left = parts[0].split(":") if parts[0] else []
+                    right = parts[1].split(":") if parts[1] else []
+                    missing = 8 - (len(left) + len(right))
+                    middle = ["0000"] * missing
+                    groups = left + middle + right
+                else:
+                    groups = normalized.split(":")
+                    if len(groups) != 8:
+                        return None
+                for i in range(8):
+                    try:
+                        val = int(groups[i], 16)
+                    except ValueError:
+                        val = 0
+                    groups[i] = f"{val:04x}"
+                for i in range(8):
+                    start_bit = i * 16
+                    if ipv6_prefix >= (i + 1) * 16:
+                        continue
+                    elif ipv6_prefix <= start_bit:
+                        groups[i] = "0000"
+                    else:
+                        bits_to_keep = ipv6_prefix - start_bit
+                        val = int(groups[i], 16)
+                        mask = (0xffff << (16 - bits_to_keep)) & 0xffff
+                        groups[i] = f"{val & mask:04x}"
+                return f"{':'.join(groups)}/{ipv6_prefix}"
         except socket.error:
             return None
 

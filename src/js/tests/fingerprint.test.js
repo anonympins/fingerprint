@@ -2335,9 +2335,9 @@ describe('Subnet Scoring (Node.js)', () => {
         // The new version handles other prefixes
         expect(getIpSubnet('10.20.30.40', 16)).toBe('10.20.0.0/16');
         // IPv6
-        expect(getIpSubnet('2001:db8:abcd:0012:0000:0000:0000:0001', 48)).toBe('2001:db8:abcd:0:0:0:0:0/48');
+        expect(getIpSubnet('2001:db8:abcd:0012:0000:0000:0000:0001', 48)).toBe('2001:0db8:abcd:0000:0000:0000:0000:0000/48');
         // The new version handles other prefixes
-        expect(getIpSubnet('2a01:e0a:129:57c0:a1b2:c3d4:e5f6:a7b8', 64)).toBe('2a01:e0a:129:0:0:0:0:0/48');
+        expect(getIpSubnet('2a01:e0a:129:57c0:a1b2:c3d4:e5f6:a7b8', 64)).toBe('2a01:0e0a:0129:0000:0000:0000:0000:0000/48');
         // Invalid IPs
         expect(getIpSubnet('not-an-ip')).toBeNull();
     });
