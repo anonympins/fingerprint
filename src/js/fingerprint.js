@@ -3284,7 +3284,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         }
 
         // Redirect with both solutions and the fingerprint used to solve.
-        const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
+        const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + ${JSON.stringify(nonce)} + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + encodeURIComponent(JSON.stringify(memSolution));
         window.location.href = finalUrl;
       }
 

@@ -993,7 +993,7 @@ JS;
                 return;
             }
 
-            const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + memSolution;
+        const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + encodeURIComponent(JSON.stringify(memSolution));
             window.location.href = finalUrl;
           }
           solve();
