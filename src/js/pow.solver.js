@@ -430,6 +430,81 @@ export async function solveTsp(cities, targetMaxDistance) {
 
 // --- Fonctions d'optimisation copiées/adaptées de library.js pour le client ---
 
+function paretoDominates(objectivesA, objectivesB) {
+    let aIsBetterInOne = false;
+    for (let i = 0; i < objectivesA.length; i++) {
+        if (objectivesA[i] > objectivesB[i]) {
+            return false;
+        }
+        if (objectivesA[i] < objectivesB[i]) {
+            aIsBetterInOne = true;
+        }
+    }
+    return aIsBetterInOne;
+}
+
+function nonDominatedSort(populationWithObjectives) {
+    const fronts = [[]];
+    for (const p1 of populationWithObjectives) {
+        p1.dominationCount = 0;
+        p1.dominatedSolutions = [];
+        for (const p2 of populationWithObjectives) {
+            if (p1 === p2) continue;
+            if (paretoDominates(p1.objectives, p2.objectives)) {
+                p1.dominatedSolutions.push(p2);
+            } else if (paretoDominates(p2.objectives, p1.objectives)) {
+                p1.dominationCount++;
+            }
+        }
+        if (p1.dominationCount === 0) {
+            p1.rank = 0;
+            fronts[0].push(p1);
+        }
+    }
+
+    let i = 0;
+    while (fronts[i] && fronts[i].length > 0) {
+        const nextFront = [];
+        for (const p1 of fronts[i]) {
+            for (const p2 of p1.dominatedSolutions) {
+                p2.dominationCount--;
+                if (p2.dominationCount === 0) {
+                    p2.rank = i + 1;
+                    nextFront.push(p2);
+                }
+            }
+        }
+        i++;
+        if (nextFront.length > 0) {
+            fronts[i] = nextFront;
+        }
+    }
+    return fronts;
+}
+
+function calculateCrowdingDistance(front) {
+    if (front.length === 0) return;
+    front.forEach((p) => (p.crowdingDistance = 0));
+    const numObjectives = front[0].objectives.length;
+
+    for (let i = 0; i < numObjectives; i++) {
+        front.sort((a, b) => a.objectives[i] - b.objectives[i]);
+        const minObj = front[0].objectives[i];
+        const maxObj = front[front.length - 1].objectives[i];
+
+        front[0].crowdingDistance = Infinity;
+        front[front.length - 1].crowdingDistance = Infinity;
+
+        if (maxObj === minObj) continue;
+
+        for (let j = 1; j < front.length - 1; j++) {
+            front[j].crowdingDistance +=
+                (front[j + 1].objectives[i] - front[j - 1].objectives[i]) /
+                (maxObj - minObj);
+        }
+    }
+}
+
 const ClientOptimizers = {
     simulatedAnnealing(initialSolution, evaluator, neighbor, iterations, temp, cooling) {
         let currentSolution = initialSolution;
@@ -467,6 +542,236 @@ const ClientOptimizers = {
             population = newPopulation;
         }
         return population;
+    },
+
+    geneticAlgorithmMultiObjective(createIndividual, fitnessFunction, crossover, mutate, options = {}) {
+        const generations = options.generations || 50;
+        const populationSize = options.populationSize || 40;
+        const mutationRate = options.mutationRate !== undefined ? options.mutationRate : 0.1;
+
+        let population = Array.from({ length: populationSize }, () => ({
+            individual: createIndividual(),
+        }));
+        population.forEach((p) => (p.objectives = fitnessFunction(p.individual)));
+
+        for (let gen = 0; gen < generations; gen++) {
+            const offspring = [];
+            for (let i = 0; i < populationSize; i++) {
+                const parent1 = population[Math.floor(Math.random() * population.length)];
+                const parent2 = population[Math.floor(Math.random() * population.length)];
+                let childIndividual = crossover(parent1.individual, parent2.individual);
+                if (Math.random() < mutationRate) {
+                    childIndividual = mutate(childIndividual);
+                }
+                const child = { individual: childIndividual };
+                child.objectives = fitnessFunction(child.individual);
+                offspring.push(child);
+            }
+
+            const combinedPopulation = [...population, ...offspring];
+            const fronts = nonDominatedSort(combinedPopulation);
+            const newPopulation = [];
+            for (const front of fronts) {
+                if (newPopulation.length + front.length <= populationSize) {
+                    newPopulation.push(...front);
+                } else {
+                    calculateCrowdingDistance(front);
+                    front.sort((a, b) => b.crowdingDistance - a.crowdingDistance);
+                    const remaining = populationSize - newPopulation.length;
+                    newPopulation.push(...front.slice(0, remaining));
+                    break;
+                }
+            }
+            population = newPopulation;
+        }
+
+        const finalFronts = nonDominatedSort(population);
+        const bestFront = finalFronts.length > 0 ? finalFronts[0] : [];
+        const uniqueSolutionsMap = new Map();
+        for (const p of bestFront) {
+            const key = JSON.stringify(p.objectives);
+            if (!uniqueSolutionsMap.has(key)) {
+                uniqueSolutionsMap.set(key, {
+                    solution: p.individual,
+                    objectives: p.objectives,
+                });
+            }
+        }
+        return Array.from(uniqueSolutionsMap.values());
+    },
+
+    'cpc.solve'(context, options = {}) {
+        const optimalBaseCommission = context.platformParams ? context.platformParams.optimalBaseCommission : 0.3;
+        const optimalBonusFactor = context.platformParams ? context.platformParams.optimalBonusFactor : 0.1;
+        const websiteQualityScore = ((context.website && context.website.relevanceScore) || 50) / 100;
+        const effectiveCommissionRate = Math.max(0, optimalBaseCommission - websiteQualityScore * optimalBonusFactor);
+
+        const advertiserDemand = (cpc) => {
+            if (cpc <= 0) return Infinity;
+            return (context.advertiser.credits || 0) / cpc;
+        };
+
+        const supply = context.estimatedImpressions || 1;
+        const competingAdsCount = context.competingAds ? context.competingAds.length : 0;
+        const competitionFactor = Math.min(2.5, 1 + competingAdsCount * 0.1);
+
+        const fitnessFunction = (cpcMultiplier) => {
+            const adjustedCPC = 1.0 * cpcMultiplier * competitionFactor;
+            if (adjustedCPC < 0.1) return [Infinity, Infinity, Infinity];
+
+            const demand = advertiserDemand(adjustedCPC);
+            const estimatedClicks = Math.min(demand, supply);
+            const platformRevenue = estimatedClicks * adjustedCPC * effectiveCommissionRate;
+            const advertiserValue = estimatedClicks;
+            const marketImbalance = Math.abs(demand - supply);
+
+            return [-platformRevenue, -advertiserValue, marketImbalance];
+        };
+
+        const createIndividual = () => 0.5 + Math.random() * 4.5;
+        const crossover = (cpc1, cpc2) => (cpc1 + cpc2) / 2;
+        const mutate = (cpc) => Math.max(0.1, cpc + (Math.random() - 0.5) * 0.5);
+
+        const gaOptions = {
+            generations: 50,
+            populationSize: 40,
+            ...options,
+        };
+
+        const paretoFront = ClientOptimizers.geneticAlgorithmMultiObjective(
+            createIndividual,
+            fitnessFunction,
+            crossover,
+            mutate,
+            gaOptions
+        );
+
+        return {
+            paretoFront: paretoFront.map((result) => {
+                const cpcMultiplier = result.solution;
+                const finalCpc = Math.max(0.1, 1.0 * cpcMultiplier * competitionFactor);
+                return {
+                    ...result,
+                    solution: finalCpc,
+                };
+            })
+        };
+    },
+
+    'fraud.solve'(context, options = {}) {
+        const legitimateClicks = context.legitimateClicks || [];
+        const fraudulentClicks = context.fraudulentClicks || [];
+
+        const fitnessFunction = (solution) => {
+            const [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents] = solution;
+            if (
+                minTimeToClick < 100 ||
+                minTimeToClick > 5000 ||
+                maxClickVariance < 1 ||
+                maxClickVariance > 10000 ||
+                minMouseEntropy < 0 ||
+                minMouseEntropy > 1 ||
+                minScrollEvents < 0
+            ) {
+                return [Infinity, Infinity];
+            }
+
+            const calculateClickVariance = (clicks) => {
+                if (!clicks || clicks.length < 2) return 0;
+                const meanX = clicks.reduce((sum, c) => sum + c.clickX, 0) / clicks.length;
+                const meanY = clicks.reduce((sum, c) => sum + c.clickY, 0) / clicks.length;
+                return clicks.reduce((sum, c) => sum + Math.pow(c.clickX - meanX, 2) + Math.pow(c.clickY - meanY, 2), 0) / clicks.length;
+            };
+
+            const getClicksByFingerprint = (clickData) => {
+                const grouped = {};
+                for (const click of clickData) {
+                    if (!grouped[click.fingerprint]) grouped[click.fingerprint] = [];
+                    grouped[click.fingerprint].push(click);
+                }
+                return grouped;
+            };
+
+            const legitimateGroups = getClicksByFingerprint(legitimateClicks);
+            const fraudulentGroups = getClicksByFingerprint(fraudulentClicks);
+
+            let truePositives = 0;
+            let falsePositives = 0;
+
+            for (const fingerprint in fraudulentGroups) {
+                const clicks = fraudulentGroups[fingerprint];
+                if (!clicks) continue;
+                const variance = calculateClickVariance(clicks);
+                const isTooFast = clicks.some((c) => c.timeToClick < minTimeToClick);
+                const isTooUniform = variance < maxClickVariance;
+                const hasLowEntropy = clicks.some((c) => c.mouseEntropy < minMouseEntropy);
+                const hasFewScrolls = clicks.some((c) => c.scrollEvents < minScrollEvents);
+
+                if (isTooFast || isTooUniform || hasLowEntropy || hasFewScrolls) {
+                    truePositives++;
+                }
+            }
+
+            for (const fingerprint in legitimateGroups) {
+                const clicks = legitimateGroups[fingerprint];
+                if (!clicks) continue;
+                const variance = calculateClickVariance(clicks);
+                if (
+                    clicks.some((c) => c.timeToClick < minTimeToClick || c.mouseEntropy < minMouseEntropy || c.scrollEvents < minScrollEvents) ||
+                    variance < maxClickVariance
+                ) {
+                    falsePositives++;
+                }
+            }
+
+            const totalFraudulent = Object.keys(fraudulentGroups).length || 1;
+            const totalLegitimate = Object.keys(legitimateGroups).length || 1;
+
+            const objective1 = 1 - truePositives / totalFraudulent;
+            const objective2 = falsePositives / totalLegitimate;
+
+            return [objective1, objective2];
+        };
+
+        const createIndividual = () => [
+            100 + Math.random() * 4900,
+            1 + Math.random() * 9999,
+            Math.random() * 0.5,
+            Math.floor(Math.random() * 10)
+        ];
+
+        const crossover = (s1, s2) => [
+            (s1[0] + s2[0]) / 2,
+            (s1[1] + s2[1]) / 2,
+            (s1[2] + s2[2]) / 2,
+            (s1[3] + s2[3]) / 2,
+        ];
+
+        const mutate = (solution) => {
+            const newSolution = [...solution];
+            const i = Math.floor(Math.random() * 4);
+            const mutationFactors = [500, 1000, 0.1, 2];
+            newSolution[i] += (Math.random() - 0.5) * mutationFactors[i];
+            return newSolution;
+        };
+
+        const gaOptions = {
+            generations: 80,
+            populationSize: 60,
+            ...options,
+        };
+
+        const paretoFront = ClientOptimizers.geneticAlgorithmMultiObjective(
+            createIndividual,
+            fitnessFunction,
+            crossover,
+            mutate,
+            gaOptions
+        );
+
+        return {
+            paretoFront
+        };
     }
 };
 
