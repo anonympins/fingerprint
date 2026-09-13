@@ -2365,10 +2365,20 @@ class FingerprintClient:
     def generate_honeypot_field(self, field_name: str) -> str:
         if field_name not in self.client_config["honeypots"]:
             self.client_config["honeypots"].append(field_name)
-        styles = "position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;"
-        from html import escape
-        f_name = escape(field_name)
-        return f'<div style="{styles}" aria-hidden="true"><label for="{f_name}">&gt;</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></div>'
+            style_options = [
+                "position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;",
+                "position:fixed; left:-8888px; top:-8888px; width:0; height:0; overflow:hidden; opacity:0; pointer-events:none;",
+                "display:none; visibility:hidden; pointer-events:none;"
+            ]
+            styles = random.choice(style_options)
+            container_tags = ["div", "span", "p", "section"]
+            tag = random.choice(container_tags)
+            from html import escape
+            f_name = escape(field_name)
+            nesting_type = random.randint(0, 1)
+            if nesting_type == 1:
+                return f'<{tag} style="{styles}" aria-hidden="true"><label for="{f_name}">{f_name}<input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></label></{tag}>'
+            return f'<{tag} style="{styles}" aria-hidden="true"><label for="{f_name}">{f_name}</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></{tag}>'
 
     def get_script_tag(self) -> str:
         config_json = json.dumps(self.client_config)

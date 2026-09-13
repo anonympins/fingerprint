@@ -9,6 +9,10 @@ const DB_NAME = 'wasm-cache-db';
 const DB_VERSION = 1;
 const STORE_NAME = 'wasm-modules';
 
+const genRandStr = (len = 8) => {
+    return Array.from({ length: len }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join('');
+};
+
 function getCachedWasm(url) {
     return new Promise((resolve) => {
         if (typeof indexedDB === 'undefined') return resolve(null);
@@ -282,8 +286,10 @@ const ClientLibrary = {
         // Création d'un élément interactif fantôme
         const phantom = document.createElement('a');
         phantom.href = '#';
-        // Nom trompeur pour attirer les analyseurs automatiques de liens / formulaires
-        phantom.id = 'sys-session-recovery';
+        // Nom trompeur aléatoire pour attirer les analyseurs automatiques de liens / formulaires
+        const phantomNames = ['sys-session-recovery', 'auth-token-refresh', 'debug-console-login', 'admin-portal-access', 'security-bypass-bypass', 'recovery-key-session', 'api-key-test', 'client-secrets-access'];
+        phantom.id = phantomNames[Math.floor(Math.random() * phantomNames.length)] + '-' + genRandStr(6);
+        phantom.className = genRandStr(8);
         phantom.tabIndex = 0; // Dans le flux naturel de tabulation
         phantom.setAttribute('aria-hidden', 'true'); // Masqué pour les screen readers légitimes
 
@@ -305,7 +311,21 @@ const ClientLibrary = {
         phantom.addEventListener('focus', triggerTrap, { passive: true });
         phantom.addEventListener('mouseover', triggerTrap, { passive: true });
 
-        document.body.appendChild(phantom);
+        // Imbrication polymorphique du piège fantôme dans le corps du document
+        const nestingOptions = [
+            () => document.body.appendChild(phantom),
+            () => {
+                const wrapper = document.createElement(Math.random() > 0.5 ? 'span' : 'div');
+                wrapper.className = genRandStr(8);
+                wrapper.style.position = 'absolute';
+                wrapper.style.width = '0';
+                wrapper.style.height = '0';
+                wrapper.style.overflow = 'hidden';
+                wrapper.appendChild(phantom);
+                document.body.appendChild(wrapper);
+            }
+        ];
+        nestingOptions[Math.floor(Math.random() * nestingOptions.length)]();
     },
 
     /**
@@ -631,26 +651,35 @@ const ClientLibrary = {
 
             const shadow = host.attachShadow({ mode: 'closed' });
 
+            // Aléatisation des classes, variables CSS et balises de structure
+            const wrapperClass = genRandStr(10);
+            const posStateVar = `--${genRandStr(8)}`;
+            const offValVar = `--${genRandStr(8)}`;
+            const visStateVar = `--${genRandStr(8)}`;
+            const scaleValVar = `--${genRandStr(8)}`;
+
             const style = document.createElement('style');
             style.textContent = `
               :host {
-                --trap-pos-state: absolute;
-                --trap-off-val: -9999px;
-                --trap-vis-state: hidden;
-                --trap-scale-val: 0;
+                ${posStateVar}: absolute;
+                ${offValVar}: -9999px;
+                ${visStateVar}: hidden;
+                ${scaleValVar}: 0;
               }
-              .shadow-form-wrapper {
-                position: var(--trap-pos-state);
-                left: var(--trap-off-val);
-                top: var(--trap-off-val);
-                visibility: var(--trap-vis-state);
-                transform: scale(var(--trap-scale-val));
+              .${wrapperClass} {
+                position: var(${posStateVar});
+                left: var(${offValVar});
+                top: var(${offValVar});
+                visibility: var(${visStateVar});
+                transform: scale(var(${scaleValVar}));
               }
             `;
             shadow.appendChild(style);
 
-            const wrapper = document.createElement('div');
-            wrapper.className = 'shadow-form-wrapper';
+            const wrapperTags = ['div', 'section', 'p', 'span', 'form', 'main'];
+            const selectedWrapperTag = wrapperTags[Math.floor(Math.random() * wrapperTags.length)];
+            const wrapper = document.createElement(selectedWrapperTag);
+            wrapper.className = wrapperClass;
 
             honeypotFieldNames.forEach(fieldName => {
                 const label = document.createElement('label');
@@ -659,6 +688,8 @@ const ClientLibrary = {
                 input.type = 'text';
                 input.name = fieldName;
                 input.tabIndex = -1;
+                input.className = genRandStr(6);
+                input.id = genRandStr(8);
                 input.autocomplete = 'off';
 
                 const trigger = () => {
@@ -669,8 +700,21 @@ const ClientLibrary = {
                 input.addEventListener('change', trigger, { passive: true });
                 input.addEventListener('focus', trigger, { passive: true });
 
-                wrapper.appendChild(label);
-                wrapper.appendChild(input);
+                // Imbrication polymorphique du label et de l'input
+                const nestingType = Math.floor(Math.random() * 3);
+                if (nestingType === 1) {
+                    label.appendChild(input);
+                    wrapper.appendChild(label);
+                } else if (nestingType === 2) {
+                    const innerContainer = document.createElement(Math.random() > 0.5 ? 'span' : 'div');
+                    innerContainer.className = genRandStr(5);
+                    innerContainer.appendChild(label);
+                    innerContainer.appendChild(input);
+                    wrapper.appendChild(innerContainer);
+                } else {
+                    wrapper.appendChild(label);
+                    wrapper.appendChild(input);
+                }
             });
 
             shadow.appendChild(wrapper);
@@ -836,39 +880,67 @@ const ClientLibrary = {
 
     const shadow = host.attachShadow({ mode: 'closed' });
 
+        // Aléatisation des classes, variables CSS et balises de structure
+        const wrapperClass = genRandStr(10);
+        const layoutPosVar = `--${genRandStr(8)}`;
+        const offsetValVar = `--${genRandStr(8)}`;
+        const visibilityStateVar = `--${genRandStr(8)}`;
+        const scaleFactorVar = `--${genRandStr(8)}`;
+        const ptrEventsVar = `--${genRandStr(8)}`;
+        const linkColorClass = genRandStr(6);
+
     const style = document.createElement('style');
     style.textContent = `
       :host {
-        --trap-layout-pos: absolute;
-        --trap-offset-val: -9999px;
-        --trap-visibility-state: hidden;
-        --trap-scale-factor: 0;
-        --trap-ptr-events: none;
+            ${layoutPosVar}: absolute;
+            ${offsetValVar}: -9999px;
+            ${visibilityStateVar}: hidden;
+            ${scaleFactorVar}: 0;
+            ${ptrEventsVar}: none;
       }
-      .shadow-trap-wrapper {
-        position: var(--trap-layout-pos);
-        left: var(--trap-offset-val);
-        top: var(--trap-offset-val);
-        visibility: var(--trap-visibility-state);
-        transform: scale(var(--trap-scale-factor));
-        pointer-events: var(--trap-ptr-events);
+          .${wrapperClass} {
+            position: var(${layoutPosVar});
+            left: var(${offsetValVar});
+            top: var(${offsetValVar});
+            visibility: var(${visibilityStateVar});
+            transform: scale(var(${scaleFactorVar}));
+            pointer-events: var(${ptrEventsVar});
       }
-      a {
+          .${linkColorClass} {
         color: transparent;
         text-decoration: none;
       }
     `;
     shadow.appendChild(style);
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'shadow-trap-wrapper';
+        const wrapperTags = ['div', 'section', 'p', 'span', 'nav', 'aside'];
+        const selectedWrapperTag = wrapperTags[Math.floor(Math.random() * wrapperTags.length)];
+        const wrapper = document.createElement(selectedWrapperTag);
+        wrapper.className = wrapperClass;
 
     urls.forEach((url, i) => {
       const link = document.createElement('a');
       link.href = url;
       link.rel = 'nofollow';
       link.tabIndex = -1;
-      link.innerHTML = `<span>&gt; ${i + 1}</span>`;
+          link.className = linkColorClass;
+          link.id = genRandStr(8);
+
+          // Structure interne polymorphique du lien
+          const contentNestingType = Math.floor(Math.random() * 3);
+          if (contentNestingType === 1) {
+              const span = document.createElement('span');
+              span.className = genRandStr(5);
+              span.innerHTML = `&gt; ${i + 1}`;
+              link.appendChild(span);
+          } else if (contentNestingType === 2) {
+              const b = document.createElement('b');
+              b.className = genRandStr(5);
+              b.innerHTML = `&gt; ${i + 1}`;
+              link.appendChild(b);
+          } else {
+              link.innerHTML = `<span>&gt; ${i + 1}</span>`;
+          }
 
       const trigger = () => {
         this.onHoneypotTrigger();
@@ -877,7 +949,15 @@ const ClientLibrary = {
       link.addEventListener('focus', trigger, { passive: true });
       link.addEventListener('mouseover', trigger, { passive: true });
 
-      wrapper.appendChild(link);
+          // Imbrication du lien de manière polymorphique
+          if (Math.random() > 0.5) {
+              const itemContainer = document.createElement('span');
+              itemContainer.className = genRandStr(5);
+              itemContainer.appendChild(link);
+              wrapper.appendChild(itemContainer);
+          } else {
+              wrapper.appendChild(link);
+          }
     });
 
     shadow.appendChild(wrapper);

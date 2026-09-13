@@ -1,3 +1,12 @@
+## Version 0.5.3
+
+- **DNS Circuit Breaker with Strict Timeouts**: Protected reverse/forward DNS verification of legitimate crawlers against DNS server degradation or DDoS exhaustion. Integrated a stateful Circuit Breaker (`CLOSED`, `OPEN`, `HALF-OPEN`) with a strict **500 ms timeout** and **5-minute temporary negative caching** on resolution failures.
+- **Anti-Poisoning via Hardware Clustering**: Hardened `sanitizeTrafficData` to cluster traffic logs by stable hardware signatures (Canvas + GPU + CPU). Contributions from any single hardware footprint are strictly capped to **2% of the dataset**, neutralizing massive proxy-rotation Sybil attacks designed to manipulate tuning thresholds.
+- **Memory-Safe Traffic Pruning**: Standardized `pruneTrafficData` across Node.js and PHP engines. Includes strict time-based decay and size-capping policy, keeping the in-memory footprint minimal and preventing leaks during long-running background tuning sessions.
+- **Enhanced Subnet Detection**: Upgraded IPv4 and IPv6 subnet masking routines (`getIpSubnet`). Implemented proper binary bitwise masking and IPv6 compression normalization (`::` expansion), ensuring high-reliability network block reputation scoring (`subnetScore`).
+- **Centralized Problem Configuration**: Relocated `problems.config.json` to the central `/config` directory for unified configuration management and cleaner multi-environment deployments.
+- **Updated store_integration.md**: Extended database integration documentation for Redis, MongoDB, and SQL storage adapters.
+
 ## Version 0.5.2
 
 - Security updates (CodeQL issues fixed)

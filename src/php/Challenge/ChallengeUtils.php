@@ -946,12 +946,23 @@ JS;
         $baseBlock = self::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint);
         $baseBlockBytes = '[' . implode(',', array_values(unpack('C*', $baseBlock))) . ']';
 
-        $trapLinksHtml = implode(' ', array_map(
-            fn($url, $index) => "<a href=\"{$url}\" tabindex=\"-1\"><span>&gt; " . ($index + 1) . "</span></a>",
-            $trapUrls,
-            array_keys($trapUrls)
-        ));
-        $trapContainerHtml = "<div style=\"position:absolute;left:-9999px;top:-9999px;transform:scale(0);pointer-events:none;\" aria-hidden=\"true\">{$trapLinksHtml}</div>";
+        $trapTags = ['div', 'span', 'p', 'section'];
+        $selectedTrapTag = $trapTags[array_rand($trapTags)];
+        $layoutProps = [
+            'position:absolute;left:-9999px;top:-9999px;transform:scale(0);pointer-events:none;',
+            'position:fixed;left:-8888px;top:-8888px;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden;',
+            'display:none;visibility:hidden;pointer-events:none;'
+        ];
+        $selectedLayout = $layoutProps[array_rand($layoutProps)];
+
+        $trapLinks = [];
+        foreach ($trapUrls as $index => $url) {
+            $nestingType = rand(0, 2);
+            $innerHtml = ($nestingType === 1) ? "<b>&gt; " . ($index + 1) . "</b>" : (($nestingType === 2) ? "<i>&gt; " . ($index + 1) . "</i>" : "<span>&gt; " . ($index + 1) . "</span>");
+            $trapLinks[] = "<a href=\"{$url}\" tabindex=\"-1\">{$innerHtml}</a>";
+        }
+        $trapLinksHtml = implode(' ', $trapLinks);
+        $trapContainerHtml = "<{$selectedTrapTag} style=\"{$selectedLayout}\" aria-hidden=\"true\">{$trapLinksHtml}</{$selectedTrapTag}>";
 
         $safePath = json_encode($path, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
         $safeNonce = json_encode($nonce, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
