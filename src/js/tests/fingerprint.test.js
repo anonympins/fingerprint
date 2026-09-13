@@ -31,6 +31,7 @@ const {
     default_whitelist,
     stopThresholdAutoTuning,
     getCompositeDeviceHash,
+    sanitizeTrafficData,
 } = fingerprint;
 const { store, getRequestPatternScore, getDeviceHash } = __internal;
 const { getRenderingAnomalyScore } = __internal;
@@ -1082,6 +1083,35 @@ describe('Fingerprint & PoW Security Suite', () => {
 
     describe('Threshold Auto-Tuning', () => {
         let setIntervalSpy, clearIntervalSpy, consoleLogSpy;
+
+    test('should sanitize traffic data based on stable hardware cluster', async () => {
+        const trafficData = [];
+        // Attacker rotating IPs and deviceIds but having the same hardware fingerprint
+        for (let i = 0; i < 100; i++) {
+            trafficData.push({
+                type: 'trap_triggered',
+                deviceId: `attacker-dev-${i}`,
+                clientIp: `192.168.1.${i}`,
+                fingerprint: 'gpu:spoofed-nvidia-gpu|cvs:spoofed-canvas-data'
+            });
+        }
+
+        // Unique legit users
+        for (let i = 0; i < 10; i++) {
+            trafficData.push({
+                type: 'challenge_solved',
+                deviceId: `legit-dev-${i}`,
+                clientIp: `10.0.0.${i}`,
+                fingerprint: `gpu:legit-gpu-${i}|cvs:legit-canvas-${i}`
+            });
+        }
+
+        const sanitized = sanitizeTrafficData(trafficData);
+        const attackerLogs = sanitized.filter(log => log.deviceId.startsWith('attacker-dev-'));
+
+        // Total 110 logs. 2% limit = Math.max(3, 2) = 3.
+        expect(attackerLogs.length).toBeLessThanOrEqual(3);
+    });
 
         beforeEach(() => {
             setIntervalSpy = vi.spyOn(global, 'setInterval');

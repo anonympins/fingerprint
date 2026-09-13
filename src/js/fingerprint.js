@@ -1455,9 +1455,10 @@ export async function generateSpaceChallenge(clientIp, nonce, suspicionFactor, o
 }
 
 function generateSpaceChallengePage(challengeDetails, clientSecret, securityConfig) {
-  const { nonce, sizeMb, queries, path } = challengeDetails;
+  const { nonce, sizeMb, queries, path, peerId, peerBlockIdx } = challengeDetails;
   const solverCode = getPowSolverCode();
     const safePath = sanitizeRedirectPath(path);
+  const coopTimeout = securityConfig?.pospace?.coopTimeout ?? 15;
 
     const challengeScript = `
     async function solve() {
@@ -1466,16 +1467,49 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
        const clientSecret = ${safeJsonStringify(clientSecret)};
       const queries = ${JSON.stringify(queries)};
       const sizeMb = ${sizeMb};
+      const nodeId = nonce;
+      const peerId = ${safeJsonStringify(peerId || '')};
+      const peerBlockIdx = ${peerBlockIdx ?? -1};
+      const coopTimeout = ${coopTimeout};
       
       document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
       await new Promise(r => setTimeout(r, 10));
       
       try {
           await window.initializeSpace(nonce + ":" + clientSecret, sizeMb);
-          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
-          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
           
-          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+          if (peerId && peerBlockIdx !== -1) {
+              // Enregistrement coopératif
+              await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret));
+          }
+
+          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
+
+          let peerBlock = "";
+          if (peerId && peerBlockIdx !== -1) {
+              document.getElementById('loader').innerText = '📥 Téléchargement du bloc de validation du pair (' + peerId + ')...';
+              const reqId = Math.random().toString(36).substring(2);
+              await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId);
+              
+              let attempts = 0;
+              while (attempts < coopTimeout) {
+                  const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId);
+                  const data = await res.json();
+                  if (data.status === 'ready') {
+                      peerBlock = data.block_data;
+                      break;
+                  }
+                  await new Promise(r => setTimeout(r, 1000));
+                  attempts++;
+              }
+              if (!peerBlock) {
+                  document.getElementById('loader').innerText = '⚠️ Peer de sous-réseau injoignable. Validation solo...';
+              }
+          }
+
+          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, peerBlock);
+          
+          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash + (peerBlock ? "&pow_coop=1" : "");
       } catch(e) {
           document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
       }
@@ -5530,30 +5564,54 @@ export function sanitizeTrafficData(trafficData) {
   const deviceCounts = new Map();
   const ipCounts = new Map();
   const subnetCounts = new Map();
+  const hardwareClusterCounts = new Map();
 
   // Calcul des quotas maximums pour éviter l'influence démesurée d'une entité
   const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
   const maxLogsPerIp = Math.max(3, Math.floor(trafficData.length * 0.02));      // Max 2% par adresse IP individuelle
   const maxLogsPerSubnet = Math.max(5, Math.floor(trafficData.length * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
+  const maxLogsPerHardwareCluster = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% par cluster matériel stable
+
+  const getHardwareCluster = (log) => {
+    const fp = log.deviceHash || log.fingerprint || log.deviceFingerprint || '';
+    if (fp && typeof fp === 'string') {
+      const parts = fp.split('|');
+      const hwComponents = [];
+      for (const part of parts) {
+        const pair = part.split(':');
+        if (pair.length === 2 && (pair[0] === 'gpu' || pair[0] === 'cvs' || pair[0] === 'hw')) {
+          hwComponents.push(part);
+        }
+      }
+      if (hwComponents.length > 0) {
+        return hwComponents.sort().join('|');
+      }
+    }
+    return log.deviceId || 'anonymous-cluster';
+  };
 
   for (const log of trafficData) {
     const devId = log.deviceId || 'anonymous';
     const ip = log.clientIp || log.ip || 'unknown';
     const subnet = getIpSubnet(ip) || 'unknown-subnet';
+    const hwCluster = getHardwareCluster(log);
 
     const currentDeviceCount = deviceCounts.get(devId) || 0;
     const currentIpCount = ipCounts.get(ip) || 0;
     const currentSubnetCount = subnetCounts.get(subnet) || 0;
+    const currentHwClusterCount = hardwareClusterCounts.get(hwCluster) || 0;
 
-    // Filtrage anti-poisoning strict sur 3 axes cumulatifs
+    // Filtrage anti-poisoning strict sur 4 axes cumulatifs (incluant le clustering matériel stable)
     if (
       currentDeviceCount < maxLogsPerDevice &&
       (ip === 'unknown' || currentIpCount < maxLogsPerIp) &&
-      (subnet === 'unknown-subnet' || currentSubnetCount < maxLogsPerSubnet)
+      (subnet === 'unknown-subnet' || currentSubnetCount < maxLogsPerSubnet) &&
+      currentHwClusterCount < maxLogsPerHardwareCluster
     ) {
       deviceCounts.set(devId, currentDeviceCount + 1);
       if (ip !== 'unknown') ipCounts.set(ip, currentIpCount + 1);
       if (subnet !== 'unknown-subnet') subnetCounts.set(subnet, currentSubnetCount + 1);
+      hardwareClusterCounts.set(hwCluster, currentHwClusterCount + 1);
 
       tempSanitized.push(log);
     }

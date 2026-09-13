@@ -839,6 +839,7 @@ class ChallengeUtils
 
         $solverCode = self::getPowSolverCode();
         $queriesJson = json_encode($queries);
+        $coopTimeout = $securityConfig['pospace']['coopTimeout'] ?? 15;
 
         $safePath = json_encode($path, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
         $safeNonce = json_encode($nonce, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
@@ -854,6 +855,7 @@ class ChallengeUtils
             const nodeId = "{$nodeId}";
             const peerId = "{$peerId}";
             const peerBlockIdx = {$peerBlockIdx};
+            const coopTimeout = {$coopTimeout};
             
             document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
             await new Promise(r => setTimeout(r, 10));
@@ -889,7 +891,7 @@ class ChallengeUtils
                     await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId);
                     
                     let attempts = 0;
-                    while (attempts < 15) {
+                    while (attempts < coopTimeout) {
                         const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId);
                         const data = await res.json();
                         if (data.status === 'ready') {

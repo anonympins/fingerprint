@@ -141,6 +141,35 @@ class RequestUtilsTest extends TestCase
         $this->assertLessThanOrEqual(3, count($attackerLogs));
     }
 
+    public function testSanitizeTrafficDataFiltersHardwareClusters(): void
+    {
+        $trafficData = [];
+        // Simulated attacker rotating deviceId and IP, but keeping identical hardware fingerprint
+        for ($i = 0; $i < 100; $i++) {
+            $trafficData[] = [
+                'deviceId' => "attacker_device_{$i}",
+                'clientIp' => "192.168.1.{$i}",
+                'type' => 'trap_triggered',
+                'fingerprint' => 'gpu:heavy_nvidia_hash|cvs:canvas_hash_1'
+            ];
+        }
+        // Legit users with unique hardware fingerprints
+        for ($i = 0; $i < 10; $i++) {
+            $trafficData[] = [
+                'deviceId' => "legit_device_{$i}",
+                'clientIp' => "10.0.0.{$i}",
+                'type' => 'challenge_solved',
+                'fingerprint' => "gpu:legit_gpu_{$i}|cvs:legit_cvs_{$i}"
+            ];
+        }
+
+        $sanitized = RequestUtils::sanitizeTrafficData($trafficData);
+        $attackerLogs = array_filter($sanitized, fn($log) => str_starts_with($log['deviceId'], 'attacker_device_'));
+
+        // Max limit of 2% of 110 total = 2.2 -> max(3, 2) = 3 logs allowed for this hardware cluster
+        $this->assertLessThanOrEqual(3, count($attackerLogs));
+    }
+
     public function testChallengePayloadSigningAndVerification(): void
     {
         $secret = 'test-fallback-dev-secret-32-chars-minimum';

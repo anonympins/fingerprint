@@ -360,31 +360,50 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
     device_counts = {}
     ip_counts = {}
     subnet_counts = {}
+    hw_cluster_counts = {}
 
     total_count = len(traffic_data)
     max_logs_per_device = max(3, total_count // 50) # 2%
     max_logs_per_ip = max(3, total_count // 50)      # 2%
     max_logs_per_subnet = max(5, total_count // 20)  # 5%
+    max_logs_per_hw_cluster = max(3, total_count // 50) # 2%
+
+    def get_hardware_cluster(log_entry: Dict[str, Any]) -> str:
+        fp = log_entry.get("deviceHash") or log_entry.get("fingerprint") or log_entry.get("deviceFingerprint") or ""
+        if fp and isinstance(fp, str):
+            parts = fp.split("|")
+            hw_components = []
+            for part in parts:
+                pair = part.split(":", 1)
+                if len(pair) == 2 and pair[0] in ("gpu", "cvs", "hw"):
+                    hw_components.append(part)
+            if hw_components:
+                return "|".join(sorted(hw_components))
+        return log_entry.get("deviceId") or "anonymous-cluster"
 
     for log in traffic_data:
         dev_id = log.get("deviceId") or "anonymous"
         ip = log.get("clientIp") or log.get("ip") or "unknown"
         subnet = get_ip_subnet(ip) or "unknown-subnet"
+        hw_cluster = get_hardware_cluster(log)
 
         current_device_count = device_counts.get(dev_id, 0)
         current_ip_count = ip_counts.get(ip, 0)
         current_subnet_count = subnet_counts.get(subnet, 0)
+        current_hw_cluster_count = hw_cluster_counts.get(hw_cluster, 0)
 
         if (
             current_device_count < max_logs_per_device and
             (ip == "unknown" or current_ip_count < max_logs_per_ip) and
-            (subnet == "unknown-subnet" or current_subnet_count < max_logs_per_subnet)
+            (subnet == "unknown-subnet" or current_subnet_count < max_logs_per_subnet) and
+            current_hw_cluster_count < max_logs_per_hw_cluster
         ):
             device_counts[dev_id] = current_device_count + 1
             if ip != "unknown":
                 ip_counts[ip] = current_ip_count + 1
             if subnet != "unknown-subnet":
                 subnet_counts[subnet] = current_subnet_count + 1
+            hw_cluster_counts[hw_cluster] = current_hw_cluster_count + 1
             temp_sanitized.append(log)
 
     passed_logs = [log for log in temp_sanitized if log.get("type") == "request_passed"]
