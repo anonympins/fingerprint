@@ -586,7 +586,7 @@ let managerPromise = null;
  * @returns {Promise<ProblemManager>} The singleton instance.
  */
 export function getProblemManager(options = {}, store) {
-    const defaultPath = join(__dirname, '..', '..', 'problems.config.json');
+    const defaultPath = join(__dirname, '..', '..', 'config', 'problems.config.json');
     const { configPath = defaultPath, config } = options;
 
     const hasConfigChanged = problemManagerInstance && (

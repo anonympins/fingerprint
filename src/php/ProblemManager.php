@@ -36,7 +36,7 @@ class ProblemManager
     {
         if (self::$instance === null) {
             if ($configPath === null) {
-                $defaultPath = dirname(__DIR__, 2) . '/problems.config.json';
+                $defaultPath = dirname(__DIR__, 2) . '/config/problems.config.json';
                 $configPath = file_exists($defaultPath) ? $defaultPath : null;
             }
             // Si on essaie d'obtenir l'instance sans l'initialiser d'abord, c'est une erreur.
