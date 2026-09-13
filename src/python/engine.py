@@ -47,6 +47,34 @@ class BlockList:
              pass
          return False
 
+dns_circuit_breaker = {
+    "state": "CLOSED",
+    "failureCount": 0,
+    "lastStateChange": 0.0,
+    "threshold": 5,
+    "cooldown": 30.0, # seconds
+}
+
+def record_dns_success():
+    dns_circuit_breaker["failureCount"] = 0
+    dns_circuit_breaker["state"] = "CLOSED"
+
+def record_dns_failure():
+    dns_circuit_breaker["failureCount"] += 1
+    if dns_circuit_breaker["failureCount"] >= dns_circuit_breaker["threshold"]:
+        dns_circuit_breaker["state"] = "OPEN"
+        dns_circuit_breaker["lastStateChange"] = time.time()
+
+def can_attempt_dns() -> bool:
+    if dns_circuit_breaker["state"] == "CLOSED":
+        return True
+    if dns_circuit_breaker["state"] == "OPEN":
+        if time.time() - dns_circuit_breaker["lastStateChange"] > dns_circuit_breaker["cooldown"]:
+            dns_circuit_breaker["state"] = "HALF-OPEN"
+            return True
+        return False
+    return True # HALF-OPEN
+
 _googlebot_entries = None
 _bingbot_entries = None
 _yandex_entries = None
@@ -253,12 +281,37 @@ def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Opti
     except socket.error:
         try:
             # Check IPv6
-            ip_bin = socket.inet_pton(socket.AF_INET6, ip)
-            words = struct.unpack("!8H", ip_bin)
-            keep_words = ipv6_prefix // 16
-            net_words = list(words[:keep_words]) + [0] * (8 - keep_words)
-            net_str = ":".join(f"{w:x}" for w in net_words)
-            return f"{net_str}/{ipv6_prefix}"
+                socket.inet_pton(socket.AF_INET6, ip)
+                normalized = ip.strip().lower()
+                if "::" in normalized:
+                    parts = normalized.split("::", 1)
+                    left = parts[0].split(":") if parts[0] else []
+                    right = parts[1].split(":") if parts[1] else []
+                    missing = 8 - (len(left) + len(right))
+                    middle = ["0000"] * missing
+                    groups = left + middle + right
+                else:
+                    groups = normalized.split(":")
+                    if len(groups) != 8:
+                        return None
+                for i in range(8):
+                    try:
+                        val = int(groups[i], 16)
+                    except ValueError:
+                        val = 0
+                    groups[i] = f"{val:04x}"
+                for i in range(8):
+                    start_bit = i * 16
+                    if ipv6_prefix >= (i + 1) * 16:
+                        continue
+                    elif ipv6_prefix <= start_bit:
+                        groups[i] = "0000"
+                    else:
+                        bits_to_keep = ipv6_prefix - start_bit
+                        val = int(groups[i], 16)
+                        mask = (0xffff << (16 - bits_to_keep)) & 0xffff
+                        groups[i] = f"{val & mask:04x}"
+                return f"{':'.join(groups)}/{ipv6_prefix}"
         except socket.error:
             return None
 
@@ -356,39 +409,66 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
     if not traffic_data:
         return []
     
-    temp_sanitized = []
+    suspicious_logs = []
+    passed_logs = []
     device_counts = {}
     ip_counts = {}
     subnet_counts = {}
+    hw_cluster_counts = {}
+    hw_cluster_cache = {}
 
     total_count = len(traffic_data)
     max_logs_per_device = max(3, total_count // 50) # 2%
     max_logs_per_ip = max(3, total_count // 50)      # 2%
     max_logs_per_subnet = max(5, total_count // 20)  # 5%
+    max_logs_per_hw_cluster = max(3, total_count // 50) # 2%
+
+    def get_hardware_cluster(log_entry: Dict[str, Any]) -> str:
+        fp = log_entry.get("deviceHash") or log_entry.get("fingerprint") or log_entry.get("deviceFingerprint") or ""
+        if fp and isinstance(fp, str):
+            if fp in hw_cluster_cache:
+                return hw_cluster_cache[fp]
+            parts = fp.split("|")
+            hw_components = []
+            for part in parts:
+                pair = part.split(":", 1)
+                if len(pair) == 2 and pair[0] in ("gpu", "cvs", "hw"):
+                    hw_components.append(part)
+            if hw_components:
+                result = "|".join(sorted(hw_components))
+            else:
+                result = log_entry.get("deviceId") or "anonymous-cluster"
+            hw_cluster_cache[fp] = result
+            return result
+        return log_entry.get("deviceId") or "anonymous-cluster"
 
     for log in traffic_data:
         dev_id = log.get("deviceId") or "anonymous"
         ip = log.get("clientIp") or log.get("ip") or "unknown"
         subnet = get_ip_subnet(ip) or "unknown-subnet"
+        hw_cluster = get_hardware_cluster(log)
 
         current_device_count = device_counts.get(dev_id, 0)
         current_ip_count = ip_counts.get(ip, 0)
         current_subnet_count = subnet_counts.get(subnet, 0)
+        current_hw_cluster_count = hw_cluster_counts.get(hw_cluster, 0)
 
         if (
             current_device_count < max_logs_per_device and
             (ip == "unknown" or current_ip_count < max_logs_per_ip) and
-            (subnet == "unknown-subnet" or current_subnet_count < max_logs_per_subnet)
+            (subnet == "unknown-subnet" or current_subnet_count < max_logs_per_subnet) and
+            current_hw_cluster_count < max_logs_per_hw_cluster
         ):
             device_counts[dev_id] = current_device_count + 1
             if ip != "unknown":
                 ip_counts[ip] = current_ip_count + 1
             if subnet != "unknown-subnet":
                 subnet_counts[subnet] = current_subnet_count + 1
-            temp_sanitized.append(log)
-
-    passed_logs = [log for log in temp_sanitized if log.get("type") == "request_passed"]
-    suspicious_logs = [log for log in temp_sanitized if log.get("type") != "request_passed"]
+            hw_cluster_counts[hw_cluster] = current_hw_cluster_count + 1
+            if log.get("type") == "request_passed":
+                passed_logs.append(log)
+            else:
+                suspicious_logs.append(log)
 
     min_data_points = 200
     max_passed_allowed = max(min_data_points, len(suspicious_logs) * 9)
@@ -2285,10 +2365,20 @@ class FingerprintClient:
     def generate_honeypot_field(self, field_name: str) -> str:
         if field_name not in self.client_config["honeypots"]:
             self.client_config["honeypots"].append(field_name)
-        styles = "position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;"
-        from html import escape
-        f_name = escape(field_name)
-        return f'<div style="{styles}" aria-hidden="true"><label for="{f_name}">&gt;</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></div>'
+            style_options = [
+                "position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;",
+                "position:fixed; left:-8888px; top:-8888px; width:0; height:0; overflow:hidden; opacity:0; pointer-events:none;",
+                "display:none; visibility:hidden; pointer-events:none;"
+            ]
+            styles = random.choice(style_options)
+            container_tags = ["div", "span", "p", "section"]
+            tag = random.choice(container_tags)
+            from html import escape
+            f_name = escape(field_name)
+            nesting_type = random.randint(0, 1)
+            if nesting_type == 1:
+                return f'<{tag} style="{styles}" aria-hidden="true"><label for="{f_name}">{f_name}<input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></label></{tag}>'
+            return f'<{tag} style="{styles}" aria-hidden="true"><label for="{f_name}">{f_name}</label><input type="text" id="{f_name}" name="{f_name}" tabindex="-1" autocomplete="off"></{tag}>'
 
     def get_script_tag(self) -> str:
         config_json = json.dumps(self.client_config)
@@ -2459,30 +2549,54 @@ class FingerprintEngine:
          if cached_status == "failed":
              return False
  
+         if not can_attempt_dns():
+             return False
+
          import socket
          try:
-             # 1. Reverse DNS lookup
+             # 1. Reverse DNS lookup with strict 500ms timeout
              loop = asyncio.get_running_loop()
-             hostname, _, _ = await loop.run_in_executor(None, socket.gethostbyaddr, context.client_ip)
+             try:
+                 hostname, _, _ = await asyncio.wait_for(
+                     loop.run_in_executor(None, socket.gethostbyaddr, context.client_ip),
+                     timeout=0.5
+                 )
+             except (asyncio.TimeoutError, Exception):
+                 record_dns_failure()
+                 await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
+                 return False
+
              if not hostname or hostname == context.client_ip:
-                 await self.store.set(cache_key, "failed", 86400)
+                 await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
                  return False
  
              if not hostname.endswith(matched_rule["hostnameSuffix"]):
-                 await self.store.set(cache_key, "failed", 86400)
+                 await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
                  return False
  
-             # 2. Forward DNS lookup
-             addr_infos = await loop.run_in_executor(None, socket.getaddrinfo, hostname, None)
+             # 2. Forward DNS lookup with strict 500ms timeout
+             try:
+                 addr_infos = await asyncio.wait_for(
+                     loop.run_in_executor(None, socket.getaddrinfo, hostname, None),
+                     timeout=0.5
+                 )
+             except (asyncio.TimeoutError, Exception):
+                 record_dns_failure()
+                 await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
+                 return False
+
              ips = {info[4][0] for info in addr_infos}
  
              if context.client_ip in ips:
+                 record_dns_success()
                  await self.store.set(cache_key, "verified", 86400)
                  return True
          except Exception:
-             pass
+             record_dns_failure()
+             await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
+             return False
  
-         await self.store.set(cache_key, "failed", 86400)
+         await self.store.set(cache_key, "failed", 300) # Temporary negative caching (5 minutes)
          return False
  
     async def _check_allowlists(self, context: RequestContext) -> bool:
@@ -3497,8 +3611,6 @@ class Optimization:
 
     @staticmethod
     def benford_test(numbers: List[float]) -> float:
-        if len(numbers) < 10:
-            return 0.0
         leading_digits = []
         for n in numbers:
             s = str(n).lstrip("0.")
@@ -3508,12 +3620,28 @@ class Optimization:
         if len(leading_digits) < 10:
             return 0.0
         counts = {str(i): 0 for i in range(1, 10)}
-        for d in leading_digits:
-            counts[d] += 1
+        valid_count = 0
+
+        for n in numbers:
+            try:
+                val = abs(float(n))
+            except (ValueError, TypeError):
+                continue
+            if val == 0.0:
+                continue
+            log = math.log10(val)
+            factor = 10 ** math.floor(log)
+            digit = math.floor(val / factor)
+            if 1 <= digit <= 9:
+                counts[str(digit)] += 1
+                valid_count += 1
+
+        if valid_count < 10:
+            return 0.0
         benford = {1: 30.1, 2: 17.6, 3: 12.5, 4: 9.7, 5: 7.9, 6: 6.7, 7: 5.8, 8: 5.1, 9: 4.6}
         deviation = 0.0
         for i in range(1, 10):
-            obs = (counts[str(i)] / len(leading_digits)) * 100.0
+            obs = (counts[str(i)] / valid_count) * 100.0
             exp = benford[i]
             deviation += (obs - exp) ** 2
         return math.sqrt(deviation) / 50.0

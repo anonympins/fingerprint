@@ -106,7 +106,7 @@ class IpReputationTest extends TestCase
         $this->assertEquals('192.168.1.0/24', $ipv4Subnet);
 
         $ipv6Subnet = RequestUtils::getIpSubnet('2001:db8:abcd:0012::1', 24, 48);
-        $this->assertEquals('2001:db8:abcd::/48', $ipv6Subnet);
+        $this->assertEquals('2001:0db8:abcd:0000:0000:0000:0000:0000/48', $ipv6Subnet);
     }
 
     public function testGetClientHintsInconsistencyScoreMismatch(): void

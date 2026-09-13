@@ -77,13 +77,30 @@ class FingerprintClient
             $this->clientConfig['honeypots'][] = $fieldName;
         }
 
-        // Styles CSS pour cacher le champ de manière robuste.
-        $styles = 'position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;';
+        // Styles CSS polymorphiques pour cacher le champ de manière robuste.
+        $styleOptions = [
+            'position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;',
+            'position:fixed; left:-8888px; top:-8888px; width:0; height:0; overflow:hidden; opacity:0; pointer-events:none;',
+            'display:none; visibility:hidden; pointer-events:none;'
+        ];
+        $styles = $styleOptions[array_rand($styleOptions)];
 
-        return '<div style="' . $styles . '" aria-hidden="true">'
-            . '<label for="' . htmlspecialchars($fieldName) . '">' . $fieldName . '</label>'
+        $containerTags = ['div', 'span', 'p', 'section'];
+        $tag = $containerTags[array_rand($containerTags)];
+
+        $nestingType = rand(0, 1);
+        if ($nestingType === 1) {
+            return '<' . $tag . ' style="' . $styles . '" aria-hidden="true">'
+                . '<label for="' . htmlspecialchars($fieldName) . '">' . htmlspecialchars($fieldName) 
+                . '<input type="text" id="' . htmlspecialchars($fieldName) . '" name="' . htmlspecialchars($fieldName) . '" tabindex="-1" autocomplete="off">'
+                . '</label>'
+                . '</' . $tag . '>';
+        }
+
+        return '<' . $tag . ' style="' . $styles . '" aria-hidden="true">'
+            . '<label for="' . htmlspecialchars($fieldName) . '">' . htmlspecialchars($fieldName) . '</label>'
             . '<input type="text" id="' . htmlspecialchars($fieldName) . '" name="' . htmlspecialchars($fieldName) . '" tabindex="-1" autocomplete="off">'
-            . '</div>';
+            . '</' . $tag . '>';
     }
 
     /**

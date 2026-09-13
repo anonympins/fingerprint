@@ -1329,16 +1329,32 @@ Optimization.Operators.benfordTest = (numbers) => {
         // Si l'entrée n'est pas un tableau, on ne peut pas l'analyser.
         return 0;
     }
-    const leadingDigits = numbers.map(n => String(n).trim().charAt(0))
-                                 .filter(d => d >= '1' && d <= '9'); // On ne garde que les chiffres de 1 à 9.
+    const counts = Array(10).fill(0);
+    let validCount = 0;
 
-    if (leadingDigits.length < 10) {
-        return 0; // Pas assez de données pour un test fiable
+    for (let i = 0; i < numbers.length; i++) {
+        let n = numbers[i];
+        if (typeof n === 'string') {
+            n = parseFloat(n);
+        }
+        if (typeof n !== 'number' || isNaN(n) || !isFinite(n)) {
+            continue;
+        }
+        const val = Math.abs(n);
+        if (val === 0) {
+            continue;
+        }
+        const log = Math.log10(val);
+        const factor = Math.pow(10, Math.floor(log));
+        let digit = Math.floor(val / factor);
+        if (digit >= 1 && digit <= 9) {
+            counts[digit]++;
+            validCount++;
+        }
     }
 
-    const counts = Array(10).fill(0);
-    for (let i = 0; i < leadingDigits.length; i++) {
-        counts[parseInt(leadingDigits[i], 10)]++;
+    if (validCount < 10) {
+        return 0; // Pas assez de données pour un test fiable
     }
 
     // Distribution attendue selon la loi de Benford pour le premier chiffre
@@ -1349,7 +1365,7 @@ Optimization.Operators.benfordTest = (numbers) => {
 
     let totalDeviation = 0;
     for (let i = 1; i <= 9; i++) {
-        const observedFrequency = (counts[i] / leadingDigits.length) * 100;
+        const observedFrequency = (counts[i] / validCount) * 100;
         const expectedFrequency = benfordDistribution[i];
         totalDeviation += Math.pow(observedFrequency - expectedFrequency, 2);
     }

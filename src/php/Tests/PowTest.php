@@ -23,7 +23,7 @@ class PowTest extends TestCase
 
         // 2. Initialiser le ProblemManager avec une configuration et un store valides.
         // C'est l'étape cruciale qui manquait.
-        $configPath = dirname(__FILE__) . '/problems.config.json';
+        $configPath = dirname(__FILE__) . '/config/problems.config.json';
         ProblemManager::getInstance($configPath, $store);
 
         // 3. Créer l'instance du moteur.

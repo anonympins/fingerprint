@@ -30,6 +30,7 @@ from engine import (
     AutoTuner,
     MaliciousPatterns,
     generate_space_challenge,
+    sanitize_traffic_data,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
 )
@@ -1671,6 +1672,28 @@ def test_gpu_pow_verification():
         solutions.append(f"{x:.6f}")
     solution_string = ",".join(solutions)
     assert ChallengeUtils.verify_gpu_pow(seed, iterations, solution_string) is True
+
     tampered_solutions = list(solutions)
     tampered_solutions[0] = f"{float(tampered_solutions[0]) + 0.1:.6f}"
     assert ChallengeUtils.verify_gpu_pow(seed, iterations, ",".join(tampered_solutions)) is False
+
+def test_sanitize_traffic_data_hardware_clustering():
+    traffic_data = []
+    for i in range(100):
+        traffic_data.append({
+            "type": "trap_triggered",
+            "deviceId": f"attacker-dev-{i}",
+            "clientIp": f"192.168.1.{i}",
+            "fingerprint": "gpu:spoofed-nvidia-gpu|cvs:spoofed-canvas-data"
+        })
+    for i in range(10):
+        traffic_data.append({
+            "type": "challenge_solved",
+            "deviceId": f"legit-dev-{i}",
+            "clientIp": f"10.0.0.{i}",
+            "fingerprint": f"gpu:legit-gpu-{i}|cvs:legit-canvas-{i}"
+        })
+        
+    sanitized = sanitize_traffic_data(traffic_data)
+    attacker_logs = [log for log in sanitized if log["deviceId"].startswith("attacker-dev-")]
+    assert len(attacker_logs) <= 3

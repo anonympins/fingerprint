@@ -224,31 +224,38 @@ class Optimization
      */
     public static function benfordTest(array $numbers): float // Rendre la méthode publique et statique
     {
-        if (count($numbers) < 10) {
-            return 0.0; // Pas assez de données
-        }
-
-        $leadingDigits = array_map(function ($n) {
-            $str = ltrim((string)$n, '0.');
-            return $str[0] ?? '';
-        }, $numbers);
-
-        $leadingDigits = array_filter($leadingDigits, fn ($d) => $d >= '1' && $d <= '9');
-
-        if (count($leadingDigits) < 10) {
-            return 0.0;
-        }
-
         $counts = array_fill(1, 9, 0);
-        foreach ($leadingDigits as $digit) {
-            $counts[(int)$digit]++;
+        $validCount = 0;
+
+        foreach ($numbers as $n) {
+            if (is_string($n)) {
+                $n = (float)$n;
+            }
+            if (!is_numeric($n)) {
+                continue;
+            }
+            $val = abs((float)$n);
+            if ($val == 0.0) {
+                continue;
+            }
+            $log = log10($val);
+            $factor = pow(10, (int)floor($log));
+            $digit = (int)floor($val / $factor);
+            if ($digit >= 1 && $digit <= 9) {
+                $counts[$digit]++;
+                $validCount++;
+            }
+        }
+
+        if ($validCount < 10) {
+            return 0.0;
         }
 
         $benfordDistribution = [1 => 30.1, 2 => 17.6, 3 => 12.5, 4 => 9.7, 5 => 7.9, 6 => 6.7, 7 => 5.8, 8 => 5.1, 9 => 4.6];
 
         $totalDeviation = 0.0;
         for ($i = 1; $i <= 9; $i++) {
-            $observedFrequency = ($counts[$i] / count($leadingDigits)) * 100;
+            $observedFrequency = ($counts[$i] / $validCount) * 100.0;
             $expectedFrequency = $benfordDistribution[$i];
             $totalDeviation += pow($observedFrequency - $expectedFrequency, 2);
         }

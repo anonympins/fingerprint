@@ -127,7 +127,7 @@ configureStore(redisStore);
 
 While the library provides a convenient `powMiddleware` for Express, the core logic is contained within the `FingerprintEngine` class. This allows for integration into any Node.js framework.
 
-The general workflow is detailed in the `README.md` under "Manual Integration". Here are specific examples for Koa and Fastify.
+The general workflow is detailed in the `../README.md` under "Manual Integration". Here are specific examples for Koa and Fastify.
 
 ### Example: Koa.js Middleware
 

@@ -27,6 +27,57 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+let dnsCircuitBreaker = {
+  state: 'CLOSED', // 'CLOSED', 'OPEN', 'HALF-OPEN'
+  failureCount: 0,
+  lastStateChange: 0,
+  threshold: 5,
+  cooldownMs: 30000, // 30 seconds
+};
+
+function recordDnsSuccess() {
+  dnsCircuitBreaker.failureCount = 0;
+  dnsCircuitBreaker.state = 'CLOSED';
+}
+
+function recordDnsFailure() {
+  dnsCircuitBreaker.failureCount++;
+  if (dnsCircuitBreaker.failureCount >= dnsCircuitBreaker.threshold) {
+    dnsCircuitBreaker.state = 'OPEN';
+    dnsCircuitBreaker.lastStateChange = Date.now();
+  }
+}
+
+function canAttemptDns() {
+  if (dnsCircuitBreaker.state === 'CLOSED') {
+    return true;
+  }
+  if (dnsCircuitBreaker.state === 'OPEN') {
+    if (Date.now() - dnsCircuitBreaker.lastStateChange > dnsCircuitBreaker.cooldownMs) {
+      dnsCircuitBreaker.state = 'HALF-OPEN';
+      return true;
+    }
+    return false;
+  }
+  return true; // HALF-OPEN
+}
+
+const withTimeout = (promise, ms) => {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error('DNS_TIMEOUT'));
+    }, ms);
+  });
+  return Promise.race([
+    promise.then((res) => {
+      clearTimeout(timeoutId);
+      return res;
+    }),
+    timeoutPromise
+  ]);
+};
+
 export { createRedisStore } from "./redis-store.js";
 export { createMongoDbStore } from "./mongodb-store.js";
 
@@ -1455,9 +1506,10 @@ export async function generateSpaceChallenge(clientIp, nonce, suspicionFactor, o
 }
 
 function generateSpaceChallengePage(challengeDetails, clientSecret, securityConfig) {
-  const { nonce, sizeMb, queries, path } = challengeDetails;
+  const { nonce, sizeMb, queries, path, peerId, peerBlockIdx } = challengeDetails;
   const solverCode = getPowSolverCode();
     const safePath = sanitizeRedirectPath(path);
+  const coopTimeout = securityConfig?.pospace?.coopTimeout ?? 15;
 
     const challengeScript = `
     async function solve() {
@@ -1466,16 +1518,49 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
        const clientSecret = ${safeJsonStringify(clientSecret)};
       const queries = ${JSON.stringify(queries)};
       const sizeMb = ${sizeMb};
+      const nodeId = nonce;
+      const peerId = ${safeJsonStringify(peerId || '')};
+      const peerBlockIdx = ${peerBlockIdx ?? -1};
+      const coopTimeout = ${coopTimeout};
       
       document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
       await new Promise(r => setTimeout(r, 10));
       
       try {
           await window.initializeSpace(nonce + ":" + clientSecret, sizeMb);
-          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
-          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
           
-          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+          if (peerId && peerBlockIdx !== -1) {
+              // Enregistrement coopératif
+              await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret));
+          }
+
+          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
+
+          let peerBlock = "";
+          if (peerId && peerBlockIdx !== -1) {
+              document.getElementById('loader').innerText = '📥 Téléchargement du bloc de validation du pair (' + peerId + ')...';
+              const reqId = Math.random().toString(36).substring(2);
+              await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId);
+              
+              let attempts = 0;
+              while (attempts < coopTimeout) {
+                  const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId);
+                  const data = await res.json();
+                  if (data.status === 'ready') {
+                      peerBlock = data.block_data;
+                      break;
+                  }
+                  await new Promise(r => setTimeout(r, 1000));
+                  attempts++;
+              }
+              if (!peerBlock) {
+                  document.getElementById('loader').innerText = '⚠️ Peer de sous-réseau injoignable. Validation solo...';
+              }
+          }
+
+          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, peerBlock);
+          
+          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash + (peerBlock ? "&pow_coop=1" : "");
       } catch(e) {
           document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
       }
@@ -2351,80 +2436,6 @@ function getClickVarianceScore(context) {
  * @returns {string|null} The subnet CIDR or null if the IP is invalid.
  */
 function getIpSubnet(ip, ipv4Prefix = 24, ipv6Prefix = 48) { // eslint-disable-line no-unused-vars
-  /**
-   * @private
-   * Parses an IPv6 string, expanding '::' into a 16-byte Buffer.
-   * @param {string} ipStr The IPv6 address string.
-   * @returns {Buffer|null}
-   */
-  const parseIPv6 = (ipStr) => {
-    const parts = ipStr.split('::');
-    if (parts.length > 2) return null;
-
-    let hextets = [];
-    if (parts[0]) hextets.push(...parts[0].split(':'));
-
-    if (parts.length === 2) {
-      const hextetsInPart2 = parts[1] ? parts[1].split(':').length : 0;
-      const zerosToInsert = 8 - hextets.length - hextetsInPart2;
-      for (let i = 0; i < zerosToInsert; i++) {
-        hextets.push('0');
-      }
-      if (parts[1]) hextets.push(...parts[1].split(':'));
-    }
-
-    if (hextets.length !== 8) return null;
-
-    const buffer = Buffer.alloc(16);
-    for (let i = 0; i < 8; i++) {
-      const val = parseInt(hextets[i] || '0', 16);
-      if (isNaN(val)) return null;
-      buffer.writeUInt16BE(val, i * 2);
-    }
-    return buffer;
-  };
-
-  /**
-   * @private
-   * Formats a 16-byte IPv6 buffer into a compressed string representation.
-   * @param {Buffer} buffer The 16-byte buffer.
-   * @returns {string}
-   */
-  const formatIPv6 = (buffer) => {
-    const hextets = [];
-    for (let i = 0; i < 16; i += 2) {
-      hextets.push(buffer.readUInt16BE(i).toString(16));
-    }
-
-    let bestStart = -1, bestLength = 0, currentStart = -1, currentLength = 0;
-    for (let i = 0; i < hextets.length; i++) {
-      if (hextets[i] === '0') {
-        if (currentStart === -1) currentStart = i;
-        currentLength++;
-      } else {
-        if (currentLength > bestLength) {
-          bestStart = currentStart;
-          bestLength = currentLength;
-        }
-        currentStart = -1;
-        currentLength = 0;
-      }
-    }
-    if (currentLength > bestLength) {
-      bestStart = currentStart;
-      bestLength = currentLength;
-    }
-
-    // For subnet calculations, an uncompressed view is often clearer.
-    // We will avoid compression to match test expectations.
-    // if (bestLength > 1) {
-    //   const part1 = hextets.slice(0, bestStart).join(':');
-    //   const part2 = hextets.slice(bestStart + bestLength).join(':');
-    //   return `${part1}::${part2}`;
-    // }
-    return hextets.join(':');
-  };
-
   try {
     if (isIPv4(ip)) {
       const ipBuffer = Buffer.from(ip.split('.').map(Number));
@@ -2433,14 +2444,37 @@ function getIpSubnet(ip, ipv4Prefix = 24, ipv6Prefix = 48) { // eslint-disable-l
       for (let i = 0; i < 4; i++) ipBuffer[i] &= mask[i];
       return `${Array.from(ipBuffer).join('.')}/${ipv4Prefix}`;
     } else if (isIPv6(ip)) {
-      const ipBuffer = parseIPv6(ip);
-      if (!ipBuffer) return null;
-
-      const mask = Buffer.alloc(16, 0);
-      for (let i = 0; i < ipv6Prefix; i++) mask[Math.floor(i / 8)] |= 1 << (7 - (i % 8));
-      for (let i = 0; i < 16; i++) ipBuffer[i] &= mask[i];
-
-      return `${formatIPv6(ipBuffer)}/${ipv6Prefix}`;
+      let normalized = ip.trim().toLowerCase();
+      if (normalized.includes("::")) {
+        const parts = normalized.split("::");
+        if (parts.length > 2) return null;
+        const left = parts[0] ? parts[0].split(":") : [];
+        const right = parts[1] ? parts[1].split(":") : [];
+        const missing = 8 - (left.length + right.length);
+        const middle = Array(missing).fill("0000");
+        normalized = [...left, ...middle, ...right].join(":");
+      } else {
+        const parts = normalized.split(":");
+        if (parts.length !== 8) return null;
+      }
+      const groups = normalized.split(":").map(g => {
+        const val = parseInt(g, 16);
+        return isNaN(val) ? "0000" : val.toString(16).padStart(4, "0");
+      });
+      for (let i = 0; i < 8; i++) {
+        const startBit = i * 16;
+        if (ipv6Prefix >= (i + 1) * 16) {
+          continue;
+        } else if (ipv6Prefix <= startBit) {
+          groups[i] = "0000";
+        } else {
+          const bitsToKeep = ipv6Prefix - startBit;
+          const val = parseInt(groups[i], 16);
+          const mask = (0xffff << (16 - bitsToKeep)) & 0xffff;
+          groups[i] = (val & mask).toString(16).padStart(4, "0");
+        }
+      }
+      return `${groups.join(":")}/${ipv6Prefix}`;
     }
   } catch (e) {
     // Catch any unexpected errors during parsing or manipulation
@@ -3705,6 +3739,10 @@ export class FingerprintEngine {
       return false;
     }
 
+    if (!canAttemptDns()) {
+      return false;
+    }
+
     const cacheKey = `ip-whitelist:${clientIp}`;
     const cachedStatus = await store.get(cacheKey);
 
@@ -3717,32 +3755,35 @@ export class FingerprintEngine {
 
     try {
       // 1. Reverse DNS lookup
-      const hostnames = await dns.reverse(clientIp);
+      const hostnames = await withTimeout(dns.reverse(clientIp), 500);
       const validHostname = hostnames.find(h => h.endsWith(matchedRule.hostnameSuffix));
 
       if (!validHostname) {
-        await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h (TTL in seconds)
+        await store.set(cacheKey, 'failed', 300); // Temporary negative caching (5 minutes)
         return false;
       }
 
       // 2. Forward DNS lookup
     let addresses = [];
     try {
-      addresses = await dns.resolve(validHostname);
+        addresses = await withTimeout(dns.resolve(validHostname), 500);
     } catch (e) {}
     try {
-      const ipv6 = await dns.resolve(validHostname, 'AAAA');
+        const ipv6 = await withTimeout(dns.resolve(validHostname, 'AAAA'), 500);
       addresses = addresses.concat(ipv6);
     } catch (e) {}
     if (addresses.includes(clientIp)) {
+        recordDnsSuccess();
         await store.set(cacheKey, 'verified', 86400); // Cache success for 24h (TTL in seconds)
         return true;
       }
     } catch (error) {
-      // DNS errors are common (e.g., for IPs with no rDNS record), treat as failure.
+      recordDnsFailure();
+      await store.set(cacheKey, 'failed', 300); // Temporary negative caching (5 minutes)
+      return false;
     }
 
-    await store.set(cacheKey, 'failed', 86400); // Cache failure for 24h (TTL in seconds)
+    await store.set(cacheKey, 'failed', 300); // Temporary negative caching (5 minutes)
     return false;
   }
 
@@ -4123,7 +4164,7 @@ export class FingerprintEngine {
         if (challengeContext) {
             try {
                 const workResult = JSON.parse(pow_solution_work_result);
-                const defaultPath = resolve(__dirname, '..', '..', 'problems.config.json');
+                const defaultPath = resolve(__dirname, '..', '..', 'config', 'problems.config.json');
                 const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
                 const manager = await getProblemManager({
                     configPath,
@@ -4319,7 +4360,7 @@ export class FingerprintEngine {
             this._log('Issuing a useful work challenge', { finalScore });
 
             try {
-                const defaultPath = resolve(process.cwd(), 'problems.config.json');
+                const defaultPath = resolve(process.cwd(), 'config', 'problems.config.json');
                 const configPath = this.securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
                 const manager = await getProblemManager({
                     configPath,
@@ -5285,7 +5326,7 @@ export const powMiddleware = (securityConfig) => {
 
   // Initialize the problem manager with the configured path, if provided.
   if (securityConfig.enableUsefulWork) {
-    const defaultPath = resolve(__dirname, '..', '..', 'problems.config.json');
+    const defaultPath = resolve(__dirname, '..', '..', 'config', 'problems.config.json');
     const configPath = securityConfig.usefulWorkConfigPath || (existsSync(defaultPath) ? defaultPath : undefined);
     getProblemManager({
         configPath,
@@ -5505,6 +5546,10 @@ export const __internal = {
     getTcpAnomalyScore, // Expose for testing,
     getQuicAnomalyScore, // NOUVEAU: Expose pour les tests
     getRenderingAnomalyScore, // NOUVEAU: Expose pour les tests
+    dnsCircuitBreaker,
+    recordDnsSuccess,
+    recordDnsFailure,
+    canAttemptDns,
     registerCooperativeNode,
     findPeerInSubnet,
     handleCooperativeRequest
@@ -5526,48 +5571,79 @@ export function sanitizeTrafficData(trafficData) {
   if (!trafficData || trafficData.length === 0) {
     return [];
   }
-  const tempSanitized = [];
+  const suspiciousLogs = [];
+  const passedLogs = [];
   const deviceCounts = new Map();
   const ipCounts = new Map();
   const subnetCounts = new Map();
+  const hardwareClusterCounts = new Map();
+  const hwClusterCache = new Map();
 
   // Calcul des quotas maximums pour éviter l'influence démesurée d'une entité
   const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
   const maxLogsPerIp = Math.max(3, Math.floor(trafficData.length * 0.02));      // Max 2% par adresse IP individuelle
   const maxLogsPerSubnet = Math.max(5, Math.floor(trafficData.length * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
+  const maxLogsPerHardwareCluster = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% par cluster matériel stable
+
+  const getHardwareCluster = (log) => {
+    const fp = log.deviceHash || log.fingerprint || log.deviceFingerprint || '';
+    if (!fp || typeof fp !== 'string') {
+      return log.deviceId || 'anonymous-cluster';
+    }
+    if (hwClusterCache.has(fp)) {
+      return hwClusterCache.get(fp);
+    }
+    const parts = fp.split('|');
+    const hwComponents = [];
+    for (const part of parts) {
+      const pair = part.split(':');
+      if (pair.length === 2 && (pair[0] === 'gpu' || pair[0] === 'cvs' || pair[0] === 'hw')) {
+        hwComponents.push(part);
+      }
+    }
+    const result = hwComponents.length > 0 ? hwComponents.sort().join('|') : (log.deviceId || 'anonymous-cluster');
+    hwClusterCache.set(fp, result);
+    return result;
+  };
 
   for (const log of trafficData) {
     const devId = log.deviceId || 'anonymous';
     const ip = log.clientIp || log.ip || 'unknown';
     const subnet = getIpSubnet(ip) || 'unknown-subnet';
+    const hwCluster = getHardwareCluster(log);
 
     const currentDeviceCount = deviceCounts.get(devId) || 0;
     const currentIpCount = ipCounts.get(ip) || 0;
     const currentSubnetCount = subnetCounts.get(subnet) || 0;
+    const currentHwClusterCount = hardwareClusterCounts.get(hwCluster) || 0;
 
-    // Filtrage anti-poisoning strict sur 3 axes cumulatifs
+    // Filtrage anti-poisoning strict sur 4 axes cumulatifs (incluant le clustering matériel stable)
     if (
       currentDeviceCount < maxLogsPerDevice &&
       (ip === 'unknown' || currentIpCount < maxLogsPerIp) &&
-      (subnet === 'unknown-subnet' || currentSubnetCount < maxLogsPerSubnet)
+      (subnet === 'unknown-subnet' || currentSubnetCount < maxLogsPerSubnet) &&
+      currentHwClusterCount < maxLogsPerHardwareCluster
     ) {
       deviceCounts.set(devId, currentDeviceCount + 1);
       if (ip !== 'unknown') ipCounts.set(ip, currentIpCount + 1);
       if (subnet !== 'unknown-subnet') subnetCounts.set(subnet, currentSubnetCount + 1);
+      hardwareClusterCounts.set(hwCluster, currentHwClusterCount + 1);
 
-      tempSanitized.push(log);
+      if (log.type === 'request_passed') {
+        passedLogs.push(log);
+      } else {
+        suspiciousLogs.push(log);
+      }
     }
   }
 
-  const passedLogs = tempSanitized.filter(log => log.type === 'request_passed');
-  const suspiciousLogs = tempSanitized.filter(log => log.type !== 'request_passed');
-
   const minDataPoints = 200; // Seuil par défaut
   const maxPassedAllowed = Math.max(minDataPoints, suspiciousLogs.length * 9);
-  const shuffledPassed = passedLogs.sort(() => 0.5 - Math.random());
-  const selectedPassed = shuffledPassed.slice(0, maxPassedAllowed);
-
-  return [...suspiciousLogs, ...selectedPassed];
+  if (passedLogs.length > maxPassedAllowed) {
+    const shuffledPassed = passedLogs.sort(() => 0.5 - Math.random());
+    return [...suspiciousLogs, ...shuffledPassed.slice(0, maxPassedAllowed)];
+  }
+  return [...suspiciousLogs, ...passedLogs];
 }
 /**
  * Assainit et limite la taille/ancienneté des données de trafic pour éviter les fuites de mémoire.

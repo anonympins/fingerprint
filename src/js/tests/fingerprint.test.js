@@ -31,6 +31,7 @@ const {
     default_whitelist,
     stopThresholdAutoTuning,
     getCompositeDeviceHash,
+    sanitizeTrafficData,
 } = fingerprint;
 const { store, getRequestPatternScore, getDeviceHash } = __internal;
 const { getRenderingAnomalyScore } = __internal;
@@ -1082,6 +1083,35 @@ describe('Fingerprint & PoW Security Suite', () => {
 
     describe('Threshold Auto-Tuning', () => {
         let setIntervalSpy, clearIntervalSpy, consoleLogSpy;
+
+    test('should sanitize traffic data based on stable hardware cluster', async () => {
+        const trafficData = [];
+        // Attacker rotating IPs and deviceIds but having the same hardware fingerprint
+        for (let i = 0; i < 100; i++) {
+            trafficData.push({
+                type: 'trap_triggered',
+                deviceId: `attacker-dev-${i}`,
+                clientIp: `192.168.1.${i}`,
+                fingerprint: 'gpu:spoofed-nvidia-gpu|cvs:spoofed-canvas-data'
+            });
+        }
+
+        // Unique legit users
+        for (let i = 0; i < 10; i++) {
+            trafficData.push({
+                type: 'challenge_solved',
+                deviceId: `legit-dev-${i}`,
+                clientIp: `10.0.0.${i}`,
+                fingerprint: `gpu:legit-gpu-${i}|cvs:legit-canvas-${i}`
+            });
+        }
+
+        const sanitized = sanitizeTrafficData(trafficData);
+        const attackerLogs = sanitized.filter(log => log.deviceId.startsWith('attacker-dev-'));
+
+        // Total 110 logs. 2% limit = Math.max(3, 2) = 3.
+        expect(attackerLogs.length).toBeLessThanOrEqual(3);
+    });
 
         beforeEach(() => {
             setIntervalSpy = vi.spyOn(global, 'setInterval');
@@ -2305,9 +2335,9 @@ describe('Subnet Scoring (Node.js)', () => {
         // The new version handles other prefixes
         expect(getIpSubnet('10.20.30.40', 16)).toBe('10.20.0.0/16');
         // IPv6
-        expect(getIpSubnet('2001:db8:abcd:0012:0000:0000:0000:0001', 48)).toBe('2001:db8:abcd:0:0:0:0:0/48');
+        expect(getIpSubnet('2001:db8:abcd:0012:0000:0000:0000:0001', 48)).toBe('2001:0db8:abcd:0000:0000:0000:0000:0000/48');
         // The new version handles other prefixes
-        expect(getIpSubnet('2a01:e0a:129:57c0:a1b2:c3d4:e5f6:a7b8', 64)).toBe('2a01:e0a:129:0:0:0:0:0/48');
+        expect(getIpSubnet('2a01:e0a:129:57c0:a1b2:c3d4:e5f6:a7b8', 64)).toBe('2a01:0e0a:0129:0000:0000:0000:0000:0000/48');
         // Invalid IPs
         expect(getIpSubnet('not-an-ip')).toBeNull();
     });

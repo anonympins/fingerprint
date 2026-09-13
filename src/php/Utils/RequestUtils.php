@@ -1175,14 +1175,39 @@ class RequestUtils
             $networkBinary = $ipBinary & $mask;
             return inet_ntop($networkBinary) . '/' . $ipv4Prefix;
         } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-            $ipBinary = inet_pton($ip);
-            if ($ipBinary === false) return null;
-
-            $mask = self::generateMask($ipv6Prefix, 16);
-            if ($mask === null) return null;
-
-            $networkBinary = $ipBinary & $mask;
-            return inet_ntop($networkBinary) . '/' . $ipv6Prefix; // FIX: Use the provided ipv6Prefix
+            $normalized = trim(strtolower($ip));
+            if (str_contains($normalized, '::')) {
+                $parts = explode('::', $normalized, 2);
+                $left = $parts[0] !== '' ? explode(':', $parts[0]) : [];
+                $right = $parts[1] !== '' ? explode(':', $parts[1]) : [];
+                $missing = 8 - (count($left) + count($right));
+                $middle = array_fill(0, $missing, '0000');
+                $groups = array_merge($left, $middle, $right);
+            } else {
+                $groups = explode(':', $normalized);
+                if (count($groups) !== 8) {
+                    return null;
+                }
+            }
+            foreach ($groups as $i => &$g) {
+                $val = hexdec($g);
+                $g = str_pad(dechex($val), 4, '0', STR_PAD_LEFT);
+            }
+            unset($g);
+            for ($i = 0; $i < 8; $i++) {
+                $startBit = $i * 16;
+                if ($ipv6Prefix >= ($i + 1) * 16) {
+                    continue;
+                } elseif ($ipv6Prefix <= $startBit) {
+                    $groups[$i] = '0000';
+                } else {
+                    $bitsToKeep = $ipv6Prefix - $startBit;
+                    $val = hexdec($groups[$i]);
+                    $mask = (0xffff << (16 - $bitsToKeep)) & 0xffff;
+                    $groups[$i] = str_pad(dechex($val & $mask), 4, '0', STR_PAD_LEFT);
+                }
+            }
+            return implode(':', $groups) . '/' . $ipv6Prefix;
         }
         return null;
     }
@@ -1382,29 +1407,62 @@ class RequestUtils
             return [];
         }
 
-        $tempSanitized = [];
+        $suspiciousLogs = [];
+        $passedLogs = [];
         $deviceCounts = [];
         $ipCounts = [];
         $subnetCounts = [];
+        $hardwareClusterCounts = [];
+        $hwClusterCache = [];
 
         $totalCount = count($trafficData);
         $maxLogsPerDevice = max(3, (int)floor($totalCount * 0.02)); // Max 2% contribution per device
         $maxLogsPerIp = max(3, (int)floor($totalCount * 0.02));      // Max 2% par adresse IP individuelle
         $maxLogsPerSubnet = max(5, (int)floor($totalCount * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
+        $maxLogsPerHardwareCluster = max(3, (int)floor($totalCount * 0.02)); // Max 2% par cluster matériel stable
+
+        $getHardwareCluster = function (array $log) use (&$hwClusterCache): string {
+            $fp = $log['deviceHash'] ?? $log['fingerprint'] ?? $log['deviceFingerprint'] ?? '';
+            if (!empty($fp) && is_string($fp)) {
+                if (isset($hwClusterCache[$fp])) {
+                    return $hwClusterCache[$fp];
+                }
+                $parts = explode('|', $fp);
+                $hwComponents = [];
+                foreach ($parts as $part) {
+                    $pair = explode(':', $part, 2);
+                    if (count($pair) === 2 && in_array($pair[0], ['gpu', 'cvs', 'hw'], true)) {
+                        $hwComponents[] = $part;
+                    }
+                }
+                if (!empty($hwComponents)) {
+                    sort($hwComponents);
+                    $result = implode('|', $hwComponents);
+                } else {
+                    $result = $log['deviceId'] ?? 'anonymous-cluster';
+                }
+                $hwClusterCache[$fp] = $result;
+                return $result;
+            }
+            return $log['deviceId'] ?? 'anonymous-cluster';
+        };
 
         foreach ($trafficData as $log) {
             $devId = $log['deviceId'] ?? 'anonymous';
             $ip = $log['clientIp'] ?? $log['ip'] ?? 'unknown';
             $subnet = self::getIpSubnet($ip) ?? 'unknown-subnet';
+            $hwCluster = $getHardwareCluster($log);
 
             $currentDeviceCount = $deviceCounts[$devId] ?? 0;
             $currentIpCount = $ipCounts[$ip] ?? 0;
             $currentSubnetCount = $subnetCounts[$subnet] ?? 0;
+            $currentHwClusterCount = $hardwareClusterCounts[$hwCluster] ?? 0;
 
             if (
                 $currentDeviceCount < $maxLogsPerDevice &&
                 ($ip === 'unknown' || $currentIpCount < $maxLogsPerIp) &&
-                ($subnet === 'unknown-subnet' || $currentSubnetCount < $maxLogsPerSubnet)
+                ($subnet === 'unknown-subnet' || $currentSubnetCount < $maxLogsPerSubnet) &&
+                $currentHwClusterCount < $maxLogsPerHardwareCluster
             ) {
                 $deviceCounts[$devId] = $currentDeviceCount + 1;
                 if ($ip !== 'unknown') {
@@ -1413,17 +1471,12 @@ class RequestUtils
                 if ($subnet !== 'unknown-subnet') {
                     $subnetCounts[$subnet] = $currentSubnetCount + 1;
                 }
-                $tempSanitized[] = $log;
-            }
-        }
-
-        $passedLogs = [];
-        $suspiciousLogs = [];
-        foreach ($tempSanitized as $log) {
-            if (($log['type'] ?? '') === 'request_passed') {
-                $passedLogs[] = $log;
-            } else {
-                $suspiciousLogs[] = $log;
+                $hardwareClusterCounts[$hwCluster] = $currentHwClusterCount + 1;
+                if (($log['type'] ?? '') === 'request_passed') {
+                    $passedLogs[] = $log;
+                } else {
+                    $suspiciousLogs[] = $log;
+                }
             }
         }
 
