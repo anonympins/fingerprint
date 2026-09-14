@@ -1964,9 +1964,28 @@ function getBehaviorScore(context) {
  * @param {object} metrics - Les métriques comportementales parsées depuis le client.
  * @returns {{timeInconsistencyScore: number}}
  */
-function getTimeInconsistencyScore(context, metrics) {
+function getTimeInconsistencyScore(context, metrics, deviceData = null) {
   const REPLAY_THRESHOLD_MS = 5000; // 5 secondes
   let score = 0;
+
+  if (deviceData && deviceData.sessionHmacKey && metrics.signature) {
+    try {
+      const copy = JSON.parse(JSON.stringify(metrics));
+      const clientSig = copy.signature;
+      delete copy.signature;
+      const dataToSign = JSON.stringify(copy);
+      const expectedSig = crypto.createHmac('sha256', Buffer.from(deviceData.sessionHmacKey, 'hex'))
+                                .update(dataToSign)
+                                .digest('hex');
+      if (!crypto.timingSafeEqual(Buffer.from(clientSig, 'hex'), Buffer.from(expectedSig, 'hex'))) {
+        return { timeInconsistencyScore: 100 }; // Replay/tampering detected
+      }
+    } catch (e) {
+      return { timeInconsistencyScore: 100 };
+    }
+  } else if (deviceData && deviceData.sessionHmacKey && !metrics.signature) {
+    return { timeInconsistencyScore: 100 }; // Missing mandatory signature
+  }
 
   if (metrics.clientTimestamp && context.requestTimestamp) {
     const timeDelta = context.requestTimestamp - metrics.clientTimestamp;
@@ -3044,7 +3063,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const { botScore } = getBotScore(context);
 
   // NOUVEAU: On calcule le score d'incohérence temporelle.
-  const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'));
+  const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'), deviceData);
 
   // NOUVEAU: On calcule le score d'incohérence entre les couches.
   const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
@@ -5374,6 +5393,36 @@ export const powMiddleware = (securityConfig) => {
   }
 
   return async (req, res, next) => {
+      if (req.query && req.query.fp_handshake) {
+          const clientKeyHex = req.headers['x-client-ephemeral-key'];
+          if (clientKeyHex) {
+              try {
+                  const serverECDH = crypto.createECDH('prime256v1');
+                  serverECDH.generateKeys();
+                  const serverPubKeyHex = serverECDH.getKeys('hex');
+                  const sharedSecret = serverECDH.computeSecret(clientKeyHex, 'hex');
+                  const hmacKey = crypto.createHash('sha256').update(sharedSecret).digest('hex');
+
+                  const requestContext = {
+                      clientIp: req.ip || req.socket?.remoteAddress || "unknown",
+                      headers: req.headers,
+                      cookies: req.cookies
+                  };
+                  const { deviceId, deviceData } = await resolveRequestIdentity(requestContext, securityConfig);
+                  if (deviceData) {
+                      deviceData.sessionHmacKey = hmacKey;
+                      await store.set(`device:${deviceId}`, deviceData);
+                  }
+
+                  res.setHeader('x-server-ephemeral-key', serverPubKeyHex);
+                  return res.status(200).json({ status: 'success' });
+              } catch (e) {
+                  return res.status(400).json({ error: 'Handshake failed' });
+              }
+          }
+          return res.status(400).json({ error: 'Missing client key' });
+      }
+
       if (!req.headers_translated) {
           req.headers_translated = true;
           const matchedMapping = getActiveMappingForRequest(req.headers);

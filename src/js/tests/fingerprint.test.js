@@ -2075,6 +2075,31 @@ describe('getTimeInconsistencyScore', () => {
         expect(timeInconsistencyScore).toBe(0);
     });
 
+    it('should return 100 if the signature is invalid or missing when sessionHmacKey is negotiated', () => {
+        const requestTimestamp = Date.now();
+        const clientTimestamp = requestTimestamp - 100;
+        const context = { requestTimestamp };
+        const metrics = { clientTimestamp, signature: 'bad-signature' };
+        const deviceData = { sessionHmacKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' };
+
+        const { timeInconsistencyScore } = __internal.getTimeInconsistencyScore(context, metrics, deviceData);
+        expect(timeInconsistencyScore).toBe(100);
+    });
+
+    it('should return 0 if the signature is valid when sessionHmacKey is negotiated', () => {
+        const requestTimestamp = Date.now();
+        const clientTimestamp = requestTimestamp - 100;
+        const context = { requestTimestamp };
+        const deviceData = { sessionHmacKey: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' };
+        const metrics = { clientTimestamp };
+        const dataToSign = JSON.stringify(metrics);
+        const signature = createHmac('sha256', Buffer.from(deviceData.sessionHmacKey, 'hex')).update(dataToSign).digest('hex');
+        metrics.signature = signature;
+
+        const { timeInconsistencyScore } = __internal.getTimeInconsistencyScore(context, metrics, deviceData);
+        expect(timeInconsistencyScore).toBe(0);
+    });
+
     it('should return a score > 0 for a replayed request (clientTimestamp significantly before requestTimestamp)', () => {
         const requestTimestamp = Date.now();
         const clientTimestamp = requestTimestamp - (REPLAY_THRESHOLD_MS + 1000); // 1 second beyond threshold

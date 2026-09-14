@@ -1,16 +1,94 @@
 import {cyrb53 as jsCyrb53, FingerprintBuilder} from './fingerprint.builder.js';
 import {solveChallenge} from './pow.solver.js';
 
+function secureRandom() {
+    if (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) {
+        const array = new Uint32Array(1);
+        (window.crypto || window.msCrypto).getRandomValues(array);
+        return array[0] / 0x100000000;
+    }
+    return Math.random();
+}
+
 // Variable pour stocker la fonction de hachage active.
 // Par défaut, c'est l'implémentation JavaScript.
 let activeCyrb53 = jsCyrb53;
+let derivedKey = null;
+
+async function negotiateSessionKey() {
+    if (typeof window === 'undefined' || !window.crypto || !window.crypto.subtle) return;
+    try {
+        const keyPair = await window.crypto.subtle.generateKey(
+            { name: "ECDH", namedCurve: "P-256" },
+            false,
+            ["deriveKey"]
+        );
+        const clientPubKeyBuffer = await window.crypto.subtle.exportKey("raw", keyPair.publicKey);
+        const clientPubKeyHex = Array.from(new Uint8Array(clientPubKeyBuffer))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+
+        const response = await fetch(window.location.pathname + '?fp_handshake=1', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-client-ephemeral-key': clientPubKeyHex
+            },
+            body: JSON.stringify({ fp: ClientLibrary.getDeviceFingerprint() })
+        });
+
+        const serverPubKeyHex = response.headers.get('x-server-ephemeral-key');
+        if (serverPubKeyHex) {
+            const serverPubKeyBuffer = new Uint8Array(
+                serverPubKeyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16))
+            );
+            const serverPubKey = await window.crypto.subtle.importKey(
+                "raw",
+                serverPubKeyBuffer,
+                { name: "ECDH", namedCurve: "P-256" },
+                true,
+                []
+            );
+            derivedKey = await window.crypto.subtle.deriveKey(
+                { name: "ECDH", public: serverPubKey },
+                keyPair.privateKey,
+                { name: "HMAC", hash: "SHA-256", length: 256 },
+                true,
+                ["sign"]
+            );
+            console.log('[Fingerprint] Cryptographic session negotiated successfully.');
+        }
+    } catch (e) {
+        console.warn('[Fingerprint] Cryptographic session negotiation failed:', e);
+    }
+}
+
+async function signMetrics(metricsObj) {
+    if (!derivedKey) return metricsObj;
+    try {
+        const copy = JSON.parse(JSON.stringify(metricsObj));
+        delete copy.signature;
+        const dataToSign = new TextEncoder().encode(JSON.stringify(copy));
+        const signatureBuffer = await window.crypto.subtle.sign(
+            "HMAC",
+            derivedKey,
+            dataToSign
+        );
+        copy.signature = Array.from(new Uint8Array(signatureBuffer))
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('');
+        return copy;
+    } catch (e) {
+        return metricsObj;
+    }
+}
 
 const DB_NAME = 'wasm-cache-db';
 const DB_VERSION = 1;
 const STORE_NAME = 'wasm-modules';
 
 const genRandStr = (len = 8) => {
-    return Array.from({ length: len }, () => String.fromCharCode(97 + Math.floor(Math.random() * 26))).join('');
+    return Array.from({ length: len }, () => String.fromCharCode(97 + Math.floor(secureRandom() * 26))).join('');
 };
 
 function getCachedWasm(url) {
@@ -288,7 +366,7 @@ const ClientLibrary = {
         phantom.href = '#';
         // Nom trompeur aléatoire pour attirer les analyseurs automatiques de liens / formulaires
         const phantomNames = ['sys-session-recovery', 'auth-token-refresh', 'debug-console-login', 'admin-portal-access', 'security-bypass-bypass', 'recovery-key-session', 'api-key-test', 'client-secrets-access'];
-        phantom.id = phantomNames[Math.floor(Math.random() * phantomNames.length)] + '-' + genRandStr(6);
+        phantom.id = phantomNames[Math.floor(secureRandom() * phantomNames.length)] + '-' + genRandStr(6);
         phantom.className = genRandStr(8);
         phantom.tabIndex = 0; // Dans le flux naturel de tabulation
         phantom.setAttribute('aria-hidden', 'true'); // Masqué pour les screen readers légitimes
@@ -315,7 +393,7 @@ const ClientLibrary = {
         const nestingOptions = [
             () => document.body.appendChild(phantom),
             () => {
-                const wrapper = document.createElement(Math.random() > 0.5 ? 'span' : 'div');
+                const wrapper = document.createElement(secureRandom() > 0.5 ? 'span' : 'div');
                 wrapper.className = genRandStr(8);
                 wrapper.style.position = 'absolute';
                 wrapper.style.width = '0';
@@ -325,7 +403,7 @@ const ClientLibrary = {
                 document.body.appendChild(wrapper);
             }
         ];
-        nestingOptions[Math.floor(Math.random() * nestingOptions.length)]();
+        nestingOptions[Math.floor(secureRandom() * nestingOptions.length)]();
     },
 
     /**
@@ -677,7 +755,7 @@ const ClientLibrary = {
             shadow.appendChild(style);
 
             const wrapperTags = ['div', 'section', 'p', 'span', 'form', 'main'];
-            const selectedWrapperTag = wrapperTags[Math.floor(Math.random() * wrapperTags.length)];
+            const selectedWrapperTag = wrapperTags[Math.floor(secureRandom() * wrapperTags.length)];
             const wrapper = document.createElement(selectedWrapperTag);
             wrapper.className = wrapperClass;
 
@@ -701,12 +779,12 @@ const ClientLibrary = {
                 input.addEventListener('focus', trigger, { passive: true });
 
                 // Imbrication polymorphique du label et de l'input
-                const nestingType = Math.floor(Math.random() * 3);
+                const nestingType = Math.floor(secureRandom() * 3);
                 if (nestingType === 1) {
                     label.appendChild(input);
                     wrapper.appendChild(label);
                 } else if (nestingType === 2) {
-                    const innerContainer = document.createElement(Math.random() > 0.5 ? 'span' : 'div');
+                    const innerContainer = document.createElement(secureRandom() > 0.5 ? 'span' : 'div');
                     innerContainer.className = genRandStr(5);
                     innerContainer.appendChild(label);
                     innerContainer.appendChild(input);
@@ -761,7 +839,8 @@ const ClientLibrary = {
      */
     async protectedFetch(resource, options = {}) {
         const fp = this.getDeviceFingerprint();
-        const behavior = this.getClientBehaviorMetrics();
+        const rawBehavior = this.getClientBehaviorMetrics();
+        const behavior = await signMetrics(rawBehavior);
 
         const headers = new Headers(options.headers || {});
         headers.set('X-Device-Fingerprint', fp);
@@ -828,7 +907,7 @@ const ClientLibrary = {
    * Si non fourni, protège les requêtes de même origine.
    */
   initializeFetch(targetDomains = []) {
-    const fingerprintInterceptor = (resource, options, next) => {        
+    const fingerprintInterceptor = async (resource, options, next) => {        
         const requestUrl = (resource instanceof Request) ? resource.url : String(resource);        
         let shouldProtect = false;
 
@@ -847,7 +926,8 @@ const ClientLibrary = {
 
         if (shouldProtect) {
             const fp = this.getDeviceFingerprint();
-            const behavior = this.getClientBehaviorMetrics();
+            const rawBehavior = this.getClientBehaviorMetrics();
+            const behavior = await signMetrics(rawBehavior);
             const headers = new Headers(options.headers || {});
             headers.set('X-Device-Fingerprint', fp);
             headers.set('X-Behavior-Metrics', JSON.stringify(behavior));
@@ -914,7 +994,7 @@ const ClientLibrary = {
     shadow.appendChild(style);
 
         const wrapperTags = ['div', 'section', 'p', 'span', 'nav', 'aside'];
-        const selectedWrapperTag = wrapperTags[Math.floor(Math.random() * wrapperTags.length)];
+        const selectedWrapperTag = wrapperTags[Math.floor(secureRandom() * wrapperTags.length)];
         const wrapper = document.createElement(selectedWrapperTag);
         wrapper.className = wrapperClass;
 
@@ -927,7 +1007,7 @@ const ClientLibrary = {
           link.id = genRandStr(8);
 
           // Structure interne polymorphique du lien
-          const contentNestingType = Math.floor(Math.random() * 3);
+          const contentNestingType = Math.floor(secureRandom() * 3);
           if (contentNestingType === 1) {
               const span = document.createElement('span');
               span.className = genRandStr(5);
@@ -950,7 +1030,7 @@ const ClientLibrary = {
       link.addEventListener('mouseover', trigger, { passive: true });
 
           // Imbrication du lien de manière polymorphique
-          if (Math.random() > 0.5) {
+          if (secureRandom() > 0.5) {
               const itemContainer = document.createElement('span');
               itemContainer.className = genRandStr(5);
               itemContainer.appendChild(link);
@@ -992,7 +1072,7 @@ const ClientLibrary = {
 
       this._dispatchEvent('challengeSolved', { solution: solutionWrapper.rawSolution });
       // Ajouter la solution aux paramètres de la requête pour le nouvel essai
-      const url = new URL((resource instanceof Request) ? resource.url : String(resource), window.location.origin);
+              const url = new URL((resource instanceof Request) ? resource.url : String(resource), window.location.origin);
       // La logique de formatage est maintenant cachée dans la classe ChallengeSolution.
       solutionWrapper.applyToUrl(url);
 
@@ -1029,6 +1109,7 @@ const ClientLibrary = {
         fetch: fetchConfig = {}
     } = config;
 
+        negotiateSessionKey();
     // Tentative de chargement du WASM si le chemin est fourni
     if (wasmPath) {
         this.initializeWasm(wasmPath);
