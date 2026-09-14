@@ -13,6 +13,8 @@ inline int32_t imul(int32_t a, int32_t b) {
 
 uint64_t cyrb53(const std::string& str, uint32_t seed = 0);
 
+float hash_seed_to_float(const std::string& seed);
+void generate_gpu_pow_trajectory(const std::string& seed, int iterations, float* output);
 int32_t solve_cpu_target(const uint8_t* base_block, int base_block_len, const char* target_hex);
 int32_t solve_memory_challenge(const char* seed, int difficulty_mb);
 
