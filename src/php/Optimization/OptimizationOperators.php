@@ -10,6 +10,33 @@ namespace Anonympins\Fingerprint\Optimization;
 class OptimizationOperators
 {
     /**
+     * Crée une fonction de sélection par tournoi pour un algorithme génétique.
+     * @param array $options Options pour le tournoi.
+     * @return callable Une fonction de sélection.
+     */
+    public static function createTournamentSelection(array $options = []): callable
+    {
+        $tournamentSize = $options['size'] ?? 5;
+
+        return function (array $population) use ($tournamentSize) {
+            $best = null;
+            $count = count($population);
+
+            for ($i = 0; $i < $tournamentSize; $i++) {
+                $individual = $population[random_int(0, $count - 1)];
+                $individualFitness = $individual['fitness'] ?? (isset($individual['objectives']) ? array_sum($individual['objectives']) : INF);
+                $bestFitness = $best !== null ? ($best['fitness'] ?? (isset($best['objectives']) ? array_sum($best['objectives']) : INF)) : INF;
+
+                if ($best === null || $individualFitness < $bestFitness) {
+                    $best = $individual;
+                }
+            }
+
+            return $best ?? $population[random_int(0, $count - 1)];
+        };
+    }
+
+    /**
      * Génère un nombre flottant aléatoire cryptographiquement sûr entre 0 (inclus) et 1 (exclus).
      */
     private static function secureRandom(): float

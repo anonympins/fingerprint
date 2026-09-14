@@ -1071,6 +1071,8 @@ def test_tls_client_hello_parser():
     assert res is not None
     assert "ja3_string" in res
     assert "ja3_hash" in res
+    assert "ja4_raw" in res
+    assert res["ja4_raw"].startswith("t12")
 
 
 def test_fingerprint_client():

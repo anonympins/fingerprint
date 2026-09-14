@@ -2326,6 +2326,9 @@ class TLSClientHelloParser:
         offset += 2
 
         extensions, curves, points = [], [], []
+        sig_algs, supported_versions = [], []
+        has_sni = False
+        alpn_protocol = ""
         ext_limit = offset + extensions_len
         while offset < ext_limit and offset + 4 <= length:
             ext_type = struct.unpack("!H", binary[offset:offset+2])[0]
@@ -2334,18 +2337,98 @@ class TLSClientHelloParser:
             if offset + ext_len > length:
                 break
             extensions.append(ext_type)
-            if ext_type == 10 and ext_len >= 2:
+            if ext_type == 0:
+                has_sni = True
+            elif ext_type == 10 and ext_len >= 2:
                 curves_len = struct.unpack("!H", binary[offset:offset+2])[0]
                 curves.extend(struct.unpack(f"!{curves_len//2}H", binary[offset+2:offset+2+curves_len]))
             elif ext_type == 11 and ext_len >= 1:
                 points_len = binary[offset]
                 points.extend(binary[offset+1:offset+1+points_len])
+            elif ext_type == 13 and ext_len >= 2:
+                if offset + 2 <= length:
+                    sig_algs_len = struct.unpack("!H", binary[offset:offset+2])[0]
+                    for j in range(2, sig_algs_len + 2, 2):
+                        if offset + j + 2 <= length and j + 2 <= ext_len:
+                            sig_algs.append(struct.unpack("!H", binary[offset+j:offset+j+2])[0])
+            elif ext_type == 16 and ext_len >= 3:
+                if offset + 2 <= length:
+                    alpn_list_len = struct.unpack("!H", binary[offset:offset+2])[0]
+                    if ext_len >= 2 + alpn_list_len and offset + 2 + alpn_list_len <= length:
+                        alpn_str_len = binary[offset + 2]
+                        if alpn_list_len >= 1 + alpn_str_len:
+                            alpn_protocol = binary[offset + 3:offset + 3 + alpn_str_len].decode("latin1", errors="ignore")
+            elif ext_type == 43 and ext_len >= 1:
+                if offset + 1 <= length:
+                    versions_len = binary[offset]
+                    for j in range(1, versions_len + 1, 2):
+                        if offset + j + 2 <= length and j + 2 <= ext_len:
+                            supported_versions.append(struct.unpack("!H", binary[offset+j:offset+j+2])[0])
             offset += ext_len
 
         filter_grease = lambda arr: [v for v in arr if v not in TLSClientHelloParser.GREASE_VALUES]
+        clean_ciphers = filter_grease(ciphers)
+        clean_extensions = filter_grease(extensions)
+        clean_curves = filter_grease(curves)
+        clean_points = filter_grease(points)
+        clean_sig_algs = filter_grease(sig_algs)
+        clean_supported_versions = filter_grease(supported_versions)
+
         ssl_version = struct.unpack("!H", binary[9:11])[0]
-        ja3_string = f"{ssl_version},{'-'.join(map(str, filter_grease(ciphers)))},{'-'.join(map(str, filter_grease(extensions)))},{'-'.join(map(str, filter_grease(curves)))},{'-'.join(map(str, filter_grease(points)))}"
-        return {"ja3_string": ja3_string, "ja3_hash": hashlib.md5(ja3_string.encode("utf-8")).hexdigest()}
+        ja3_string = f"{ssl_version},{'-'.join(map(str, clean_ciphers))},{'-'.join(map(str, clean_extensions))},{'-'.join(map(str, clean_curves))},{'-'.join(map(str, clean_points))}"
+        
+        # Calcul natif de JA4
+        highest_version = ssl_version
+        if clean_supported_versions:
+            highest_version = max(clean_supported_versions)
+        
+        ja4_version = "12"
+        if highest_version == 0x0304:
+            ja4_version = "13"
+        elif highest_version == 0x0303:
+            ja4_version = "12"
+        elif highest_version == 0x0302:
+            ja4_version = "11"
+        elif highest_version == 0x0301:
+            ja4_version = "10"
+            
+        sni_status = "d" if has_sni else "i"
+        num_ciphers = min(99, len(clean_ciphers))
+        num_extensions = min(99, len(clean_extensions))
+        
+        ja4_alpn = "00"
+        if alpn_protocol:
+            len_alpn = len(alpn_protocol)
+            if len_alpn == 1:
+                ja4_alpn = alpn_protocol + alpn_protocol
+            else:
+                ja4_alpn = alpn_protocol[0] + alpn_protocol[-1]
+                
+        ja4_a = f"t{ja4_version}{sni_status}{num_ciphers:02d}{num_extensions:02d}{ja4_alpn}"
+        
+        sorted_ciphers = sorted(clean_ciphers)
+        ciphers_hex = [f"{c:04x}" for c in sorted_ciphers]
+        ciphers_str = ",".join(ciphers_hex)
+        ja4_b = hashlib.sha256(ciphers_str.encode("utf-8")).hexdigest()[:12]
+        
+        sorted_extensions = sorted(clean_extensions)
+        extensions_hex = [f"{e:04x}" for e in sorted_extensions]
+        extensions_str = ",".join(extensions_hex)
+        
+        sorted_sig_algs = sorted(clean_sig_algs)
+        sig_algs_hex = [f"{s:04x}" for s in sorted_sig_algs]
+        sig_algs_str = ",".join(sig_algs_hex)
+        
+        ja4_c_input = f"{extensions_str}_{sig_algs_str}"
+        ja4_c = hashlib.sha256(ja4_c_input.encode("utf-8")).hexdigest()[:12]
+        
+        ja4_hash = f"{ja4_a}_{ja4_b}_{ja4_c}"
+
+        return {
+            "ja3_string": ja3_string,
+            "ja3_hash": hashlib.md5(ja3_string.encode("utf-8")).hexdigest(),
+            "ja4_raw": ja4_hash
+        }
 
 
 class FingerprintClient:
@@ -3691,6 +3774,37 @@ class Optimization:
         return math.sqrt(deviation) / 50.0
 
 class OptimizationOperators:
+    @staticmethod
+    def create_tournament_selection(options: Optional[Dict[str, Any]] = None) -> Callable[[List[Dict[str, Any]]], Dict[str, Any]]:
+        """
+        Crée une fonction de sélection par tournoi pour un algorithme génétique.
+        """
+        options = options or {}
+        tournament_size = options.get("size", 5)
+
+        def tournament_selection(population: List[Dict[str, Any]]) -> Dict[str, Any]:
+            best = None
+            pop_len = len(population)
+
+            for _ in range(tournament_size):
+                individual = population[random.randint(0, pop_len - 1)]
+                individual_fitness = individual.get("fitness")
+                if individual_fitness is None:
+                    individual_fitness = sum(individual.get("objectives", [])) if "objectives" in individual else float("inf")
+                
+                if best is None:
+                    best = individual
+                else:
+                    best_fitness = best.get("fitness")
+                    if best_fitness is None:
+                        best_fitness = sum(best.get("objectives", [])) if "objectives" in best else float("inf")
+                    if individual_fitness < best_fitness:
+                        best = individual
+
+            return best if best is not None else population[random.randint(0, pop_len - 1)]
+
+        return tournament_selection
+
     @staticmethod
     def create_full_security_config_evaluator(traffic_data: List[Dict[str, Any]]) -> Callable[[Dict[str, Any]], List[float]]:
         def evaluator(config: Dict[str, Any]) -> List[float]:
