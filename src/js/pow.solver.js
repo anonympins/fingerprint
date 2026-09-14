@@ -269,15 +269,17 @@ export async function solveCpuTarget(message, target) {
  */
 export async function solveMemory(seed, difficulty) {
     const wasmModule = typeof window !== 'undefined' ? (window.wasmModule || (window.ClientLibrary && window.ClientLibrary.wasmModule)) : null;
+    let solution;
+    let useWasm = false;
     if (wasmModule && typeof wasmModule._solve_memory_challenge === 'function') {
         const encoder = new TextEncoder();
         const seedBytes = encoder.encode(seed);
         const ptr = wasmModule._malloc(seedBytes.length + 1);
         wasmModule.HEAPU8.set(seedBytes, ptr);
         wasmModule.HEAPU8[ptr + seedBytes.length] = 0; // Null-terminator
-        const solution = wasmModule._solve_memory_challenge(ptr, difficulty);
+        solution = wasmModule._solve_memory_challenge(ptr, difficulty);
         wasmModule._free(ptr);
-        return solution;
+        useWasm = true;
     }
 
     const size = difficulty * 1024 * 1024;
@@ -325,19 +327,21 @@ export async function solveMemory(seed, difficulty) {
     }
     const merkleRoot = tree[tree.length - 1][0];
 
-    function readBuffer(blocks, addr) {
-        const blockIdx = Math.floor(addr / 1024);
-        const elementIdx = addr % 1024;
-        return blocks[blockIdx][elementIdx];
-    }
+    if (!useWasm) {
+        function readBuffer(blocks, addr) {
+            const blockIdx = Math.floor(addr / 1024);
+            const elementIdx = addr % 1024;
+            return blocks[blockIdx][elementIdx];
+        }
 
-    const totalElements = numBlocks * 1024;
-    let addr = totalElements > 0 ? readBuffer(blocks, 0) % totalElements : 0;
-    let solution = 0;
-    const iterations = 1024;
-    for (let i = 0; i < iterations; i++) {
-        addr = readBuffer(blocks, addr) % totalElements;
-        solution ^= addr;
+        const totalElements = numBlocks * 1024;
+        let addr = totalElements > 0 ? readBuffer(blocks, 0) % totalElements : 0;
+        solution = 0;
+        const iterations = 1024;
+        for (let i = 0; i < iterations; i++) {
+            addr = readBuffer(blocks, addr) % totalElements;
+            solution ^= addr;
+        }
     }
 
     const challengedIndices = [];
