@@ -223,9 +223,12 @@ describe('Proof-of-Work Solvers', () => {
             const seed = 'test-wasm-seed';
             const difficulty = 4; // 4 MB
 
-            const solution = await solveMemory(seed, difficulty);
+            const result = await solveMemory(seed, difficulty);
 
-            expect(solution).toBe(777);
+            expect(result).toBeInstanceOf(Object);
+            expect(result.solution).toBe(777);
+            expect(result.merkleRoot).toBeDefined();
+            expect(result.proofs).toBeDefined();
             expect(mockWasmModule._malloc).toHaveBeenCalledTimes(1);
             expect(mockWasmModule._free).toHaveBeenCalledTimes(1);
             expect(mockWasmModule._solve_memory_challenge).toHaveBeenCalledWith(1234, difficulty);
