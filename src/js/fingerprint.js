@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import {BlockList, isIPv4, isIPv6} from "node:net";
 import * as dns from "node:dns/promises";
+import {Worker} from "node:worker_threads";
 import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
@@ -184,18 +185,29 @@ async function compilePolymorphicJs(mapping) {
         jsCode = jsCode.replace(regex2, `addRaw("${randKey}"`);
     }
 
-    const obfuscationResult = JavaScriptObfuscator.obfuscate(jsCode, {
-        compact: true,
-        controlFlowFlattening: true,
-        deadCodeInjection: true,
-        stringArray: true,
-        stringArrayRotate: true,
-        stringArrayShuffle: true,
-        seed: Math.abs(mapping.wasmConstants.seed),
-        selfDefending: true,
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./obfuscation.worker.js', import.meta.url));
+        worker.on('message', (message) => {
+            if (message.error) {
+                console.error('[Fingerprint] Obfuscation worker error:', message.error, message.stack);
+                reject(new Error('Obfuscation failed in worker.'));
+            } else {
+                resolve(message.obfuscatedCode);
+            }
+            worker.terminate();
+        });
+        worker.on('error', (error) => {
+            console.error('[Fingerprint] Obfuscation worker crashed:', error);
+            reject(error);
+        });
+        worker.on('exit', (code) => {
+            if (code !== 0) {
+                console.error(`[Fingerprint] Obfuscation worker stopped with exit code ${code}`);
+                reject(new Error(`Obfuscation worker stopped with exit code ${code}`));
+            }
+        });
+        worker.postMessage({ jsCode, seed: mapping.wasmConstants.seed });
     });
-
-    return obfuscationResult.getObfuscatedCode();
 }
 
 async function ensureLatestMapping() {
@@ -3034,7 +3046,6 @@ export const getSuspicionVector = async (context, securityConfig) => {
     context._newCookies = context._newCookies || [];
     context._newCookies.push(newCookie);
   }
-  await store.set(`ip-device:${clientIp}`, deviceId, 600); // Link the IP to the device for 10 minutes
 
   // Periodically clean up device data
   if (Date.now() - deviceData.lastUpdate > 10 * 60 * 1000) { // 10 minutes
@@ -3043,48 +3054,56 @@ export const getSuspicionVector = async (context, securityConfig) => {
   }
   deviceData.lastUpdate = Date.now();
 
-  const behavioral = await getBehavioralIndicators(context, deviceData);
-  const { headerAnomalyScore } = getHeaderAnomalies(context);
-  // Calculate the inconsistency score here, separately.
-  let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
-
-  // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
-  if (consistencyScore < 0.7) { // Seuil de rupture
-      inconsistencyScore = 100;
-  }
-
-  const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
-
-  // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
-  const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
-
-  const { tlsSpoofingScore } = await getTlsSpoofingScore(context);
-
-  const { botScore } = getBotScore(context);
-
-  // NOUVEAU: On calcule le score d'incohérence temporelle.
-  const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'), deviceData);
-
-  // NOUVEAU: On calcule le score d'incohérence entre les couches.
-  const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
-
-  // NOUVEAU: On calcule le score de variance des clics.
-  const { clickVarianceScore } = getClickVarianceScore(context);
-
-  // NOUVEAU: On calcule le score d'incohérence des Client-Hints.
-  const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
-
-  // NOUVEAU: On calcule le score de réputation du sous-réseau.
-  // FIX: Pass the deviceId to getSubnetScore
-  const { subnetScore } = await getSubnetScore(context, deviceId);
-
-  const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
-
-  const ipReputationScore = await getIpReputationScore(clientIp);
-
   const stableFp = extractStablePart(currentDeviceHash);
   const stableFpHash = cyrb53(stableFp).toString();
-  const { botnetClusterScore } = await getBotnetClusterScore(context, stableFpHash);
+
+      // Execute non-interdependent asynchronous operations in parallel
+      const [
+        behavioral,
+        { tlsSpoofingScore },
+        { subnetScore },
+        ipReputationScore,
+        { botnetClusterScore },
+        _ // store.set result
+      ] = await Promise.all([
+        getBehavioralIndicators(context, deviceData),
+        getTlsSpoofingScore(context),
+        getSubnetScore(context, deviceId),
+        getIpReputationScore(clientIp),
+        getBotnetClusterScore(context, stableFpHash),
+        store.set(`ip-device:${clientIp}`, deviceId, 600) // Link the IP to the device for 10 minutes
+      ]);
+
+      // Synchronous calculations
+      const { headerAnomalyScore } = getHeaderAnomalies(context);
+      let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
+
+      // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
+      if (consistencyScore < 0.7) { // Seuil de rupture
+          inconsistencyScore = 100;
+      }
+
+      const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
+
+      // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
+      const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
+
+      const { botScore } = getBotScore(context);
+
+      // NOUVEAU: On calcule le score d'incohérence temporelle.
+      const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'), deviceData);
+
+      // NOUVEAU: On calcule le score d'incohérence entre les couches.
+      const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
+
+      // NOUVEAU: On calcule le score de variance des clics.
+      const { clickVarianceScore } = getClickVarianceScore(context);
+
+      // NOUVEAU: On calcule le score d'incohérence des Client-Hints.
+      const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
+
+      const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
+
   const { tcpAnomalyScore } = getTcpAnomalyScore(context);
   const { quicAnomalyScore } = getQuicAnomalyScore(context);
   const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
@@ -5613,6 +5632,8 @@ export const __internal = {
     setLastBestSolution: (val) => { lastBestSolution = val; }, // Expose to test auto-tuning metrics
     verifyZkpProof,
     modPow,
+    generateSessionMapping,
+    compilePolymorphicJs,
     parseTcpSyn, // Expose for testing
     classifyTcpOs, // Expose for testing
     getTcpAnomalyScore, // Expose for testing,
