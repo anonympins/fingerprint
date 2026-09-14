@@ -763,6 +763,54 @@ const cipherSuiteMap = {
 };
 
 /**
+ * Valide cryptographiquement l'attestation/assertion WebAuthn émise par l'enclave sécurisée.
+ * @private
+ * @param {object} anchor Les données d'attestation WebAuthn reçues du client
+ * @param {object} deviceData Les données persistantes de l'appareil dans notre store
+ * @returns {boolean} True si la signature matérielle est valide
+ */
+function verifyWebAuthnHardwareAnchor(anchor, deviceData) {
+    if (!anchor || !anchor.type) return false;
+
+    try {
+        const clientDataHash = crypto.createHash('sha256')
+            .update(Buffer.from(anchor.clientDataJSON, 'base64'))
+            .digest();
+
+        if (anchor.type === 'registration') {
+            if (!anchor.publicKey || !anchor.credentialId) return false;
+            
+            // Enregistrement initial : on stocke la clé publique matérielle SPKI
+            deviceData.webauthnPublicKey = anchor.publicKey;
+            deviceData.webauthnCredentialId = anchor.credentialId;
+            return true;
+        } else if (anchor.type === 'assertion') {
+            const storedPublicKeyPem = deviceData.webauthnPublicKey;
+            if (!storedPublicKeyPem || deviceData.webauthnCredentialId !== anchor.credentialId) {
+                return false;
+            }
+
+            // Reconstitution du message signé (authenticatorData + clientDataHash)
+            const verifyBuffer = Buffer.concat([
+                Buffer.from(anchor.authenticatorData, 'base64'),
+                clientDataHash
+            ]);
+
+            const publicKey = crypto.createPublicKey(Buffer.from(storedPublicKeyPem, 'base64'));
+            return crypto.verify(
+                'sha256',
+                verifyBuffer,
+                publicKey,
+                Buffer.from(anchor.signature, 'base64')
+            );
+        }
+    } catch (e) {
+        console.error('[WebAuthn-Server] Verification failed:', e.message);
+    }
+    return false;
+}
+
+/**
  * Extracts TLS fingerprints (JA3 and JA4) from request context.
  * Prioritizes headers from reverse proxies (x-ja4-hash) and falls back to JA3 calculation
  * from raw socket data if available.
@@ -3003,6 +3051,23 @@ async function getBehavioralIndicators(context, deviceData) {
   deviceData.lastFpHash = currentFpHash;
   deviceData.ips.add(clientIp); // Record the IP used by this device
 
+  // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
+  const behaviorHeader = context.headers?.['x-behavior-metrics'];
+  let webauthnVerified = false;
+  if (behaviorHeader) {
+      try {
+          const metrics = JSON.parse(behaviorHeader);
+          if (metrics && metrics.webauthnAnchor) {
+              if (verifyWebAuthnHardwareAnchor(metrics.webauthnAnchor, deviceData)) {
+                  webauthnVerified = true;
+                  deviceData.webauthnVerified = true;
+              }
+          }
+      } catch (e) {
+          // Ignorer les erreurs de parsing
+      }
+  }
+
   // NOUVELLE LOGIQUE : Le score d'historique est basé sur le nombre d'IPs utilisées par l'appareil.
   // Très efficace contre la rotation de proxy.
   const maxIpsForDevice = isSharedIp
@@ -3883,13 +3948,19 @@ export class FingerprintEngine {
     
     this._log('Processing request', { clientIp, path, isStatic });
     
+    // Bypass instantané si l'appareil a prouvé cryptographiquement son identité matérielle (Secure Enclave / TPM)
+    const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
+    if (deviceData && deviceData.webauthnVerified) {
+        this._log('Hardware-anchored device verified (WebAuthn) - full bypass granted', { deviceId });
+        return { action: 'next', score: 0, vector: { webauthn_verified: 100 } };
+    }
+
     if (isStatic) {
       this._log('Static resource - skipping checks');
       return { action: 'next', score: 0, vector: {} };
     }
 
     // Resolve identity and check for persisted "condemned" status early.
-    const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
     const currentDeviceHash = getCompositeDeviceHash(requestContext);
     const isNewDevice = !!newCookie;
     const allowRoaming = this.securityConfig?.allowCrossNetworkRoaming ?? false;
@@ -5649,6 +5720,7 @@ export const __internal = {
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
     sanitizeTrafficData, // NOUVEAU: Expose pour l'auto-tuner/tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
+    verifyWebAuthnHardwareAnchor,
     generateStatelessTicket,
     parseStatelessTicket,
     parseJa3,

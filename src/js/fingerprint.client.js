@@ -799,6 +799,87 @@ const ClientLibrary = {
             document.body.appendChild(host);
         }
     },
+    /**
+     * Sollicite silencieusement l'attestation matérielle FIDO2 (WebAuthn)
+     * pour ancrer l'identité physique de l'appareil via TPM / Secure Enclave.
+     * @returns {Promise<object|null>}
+     */
+    async getWebAuthnAnchor() {
+        if (typeof window === 'undefined' || !window.PublicKeyCredential) return null;
+        try {
+            const isPlatformAvailable = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+            if (!isPlatformAvailable) return null;
+
+            const storedCredIdBase64 = localStorage.getItem('fp_webauthn_cred_id');
+            const challenge = new Uint8Array([109, 101, 116, 114, 105, 99, 115, 95, 97, 110, 99, 104, 111, 114, 95, 115, 101, 99, 117, 114, 101]); // Static stable challenge
+
+            if (storedCredIdBase64) {
+                // Tentative d'assertion silencieuse (Authentification)
+                const credentialId = Uint8Array.from(atob(storedCredIdBase64), c => c.charCodeAt(0));
+                const assertion = await navigator.credentials.get({
+                    publicKey: {
+                        challenge,
+                        allowCredentials: [{
+                            id: credentialId,
+                            type: 'public-key'
+                        }],
+                        userVerification: 'discouraged',
+                        timeout: 1000
+                    }
+                });
+                if (assertion) {
+                    return {
+                        type: 'assertion',
+                        credentialId: storedCredIdBase64,
+                        signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature))),
+                        authenticatorData: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData))),
+                        clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON)))
+                    };
+                }
+            } else {
+                // Création silencieuse (Enregistrement initial)
+                const options = {
+                    publicKey: {
+                        challenge,
+                        rp: { name: window.location.hostname, id: window.location.hostname },
+                        user: {
+                            id: new Uint8Array([102, 112, 105, 100]),
+                            name: 'silent-device-anchor',
+                            displayName: 'Hardware Device Anchor'
+                        },
+                        pubKeyCredParams: [
+                            { type: 'public-key', alg: -7 },  // ES256 (P-256) - Secure Enclave / TPM / Android Keystore
+                            { type: 'public-key', alg: -257 } // RS256 - Windows Hello TPM
+                        ],
+                        authenticatorSelection: {
+                            authenticatorAttachment: 'platform',
+                            userVerification: 'discouraged',
+                            residentKey: 'preferred'
+                        },
+                        timeout: 1500,
+                        attestation: 'indirect'
+                    }
+                };
+                const credential = await navigator.credentials.create(options);
+                if (credential) {
+                    const credIdBase64 = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+                    localStorage.setItem('fp_webauthn_cred_id', credIdBase64);
+                    const publicKeyDer = credential.response.getPublicKey ? credential.response.getPublicKey() : null;
+                    return {
+                        type: 'registration',
+                        credentialId: credIdBase64,
+                        publicKey: publicKeyDer ? btoa(String.fromCharCode(...new Uint8Array(publicKeyDer))) : null,
+                        attestationObject: btoa(String.fromCharCode(...new Uint8Array(credential.response.getAttestationObject()))),
+                        clientDataJSON: btoa(String.fromCharCode(...new Uint8Array(credential.response.clientDataJSON)))
+                    };
+                }
+            }
+        } catch (e) {
+            // Ignore et bypass silencieusement pour garder l'invisibilité en cas de non-support
+            console.log('[WebAuthn-Anchor] Silent attestation bypassed:', e.message);
+        }
+        return null;
+    },
 
     /**
      * Récupère les métriques comportementales collectées.
