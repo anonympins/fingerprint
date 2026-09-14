@@ -5947,6 +5947,43 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   // Plus le ratio est équilibré et le volume important, plus nous faisons confiance au Front de Pareto.
   const trafficConfidence = Math.min(1.5, Math.max(0.3, highConfidenceRatio * 4));
 
+    // --- VALIDATION POST-CALCUL (Anti-empoisonnement & Validation Croisée) ---
+    const tempConfig = {
+        thresholds: { ...securityConfig.thresholds },
+        weights: { ...securityConfig.weights },
+        patterns: { ...securityConfig.patterns }
+    };
+
+    applyInertialUpdate(tempConfig.thresholds, newConfig.thresholds, 'thresholds', trafficConfidence);
+    applyInertialUpdate(tempConfig.weights, newConfig.weights, 'weights', trafficConfidence);
+    applyInertialUpdate(tempConfig.patterns, newConfig.patterns, 'patterns', trafficConfidence);
+
+    const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator({ trafficData: sanitizedData });
+    const currentObjectives = fitnessFunction(securityConfig);
+    const proposedObjectives = fitnessFunction(tempConfig);
+
+    const currentFPR = currentObjectives[0];
+    const currentFNR = currentObjectives[1];
+    const proposedFPR = proposedObjectives[0];
+    const proposedFNR = proposedObjectives[1];
+
+    const validationTolerance = securityConfig?.autotuning?.validationTolerance ?? tuningOptions?.validationTolerance ?? 0.15;
+
+    if (proposedFPR > currentFPR + validationTolerance || proposedFNR > currentFNR + validationTolerance) {
+        console.error(`[AutoTuning] [SECURITY ALERT] Proposed configuration rejected due to instability/poisoning risk! Proposed FPR: ${proposedFPR.toFixed(4)} (Current: ${currentFPR.toFixed(4)}), Proposed FNR: ${proposedFNR.toFixed(4)} (Current: ${currentFNR.toFixed(4)})`);
+        if (securityConfig.logger && typeof securityConfig.logger === 'function') {
+            securityConfig.logger({
+                type: 'autotuning_instability_alert',
+                proposedFPR,
+                currentFPR,
+                proposedFNR,
+                currentFNR,
+                timestamp: Date.now()
+            });
+        }
+        return; // Rollback automatique : On arrête l'application
+    }
+
   applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds, 'thresholds', trafficConfidence);
   applyInertialUpdate(securityConfig.weights, newConfig.weights, 'weights', trafficConfidence);
   applyInertialUpdate(securityConfig.patterns, newConfig.patterns, 'patterns', trafficConfidence);
