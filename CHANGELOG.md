@@ -1,3 +1,11 @@
+## Version 0.5.4
+
+- **🔒 JA3/JA4 Handshake Parsing Hardening (PHP/Python)**: Fixed ALPN length constraints and untangled nested loops in the binary TLS Client Hello decoder, ensuring native and highly reliable raw JA4 fingerprint calculations directly at the socket layer.
+- **⚡ Dynamic WebAssembly (WASM) & Memory Safety**: Secured heap memory allocation and the dynamic loading of the polymorphic WASM module. Added comprehensive client-side unit tests to validate safe execution and clean memory deallocation.
+- **🛠️ Useful Proof-of-Work (uPoW) & Integration Tests**: Finalized the end-to-end integration and orchestration of uPoW tasks, backed by robust validation tests for multi-objective optimization models (specifically CPC and fraud detection).
+- **🛡️ Store Resilience & CHIPS Cookie Support**: Enhanced fault tolerance for Redis and MongoDB database adapters with seamless, automatic fallback to local in-memory storage during network drops. Standardized CHIPS (`Partitioned`) cookie attributes across secure HTTPS environments.
+- **📁 Deterministic Path Resolution Fixes**: Implemented robust absolute and relative path resolution for loading configuration files (such as `problems.config.json`) uniformly across Node.js, PHP, and Python environments.
+
 ## Version 0.5.3
 
 - **DNS Circuit Breaker with Strict Timeouts**: Protected reverse/forward DNS verification of legitimate crawlers against DNS server degradation or DDoS exhaustion. Integrated a stateful Circuit Breaker (`CLOSED`, `OPEN`, `HALF-OPEN`) with a strict **500 ms timeout** and **5-minute temporary negative caching** on resolution failures.
