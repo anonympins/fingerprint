@@ -124,7 +124,7 @@ const yandexEntries = loadBotWhitelist('yandex.json', [
 ]);
 
 function generateSessionMapping() {
-    const randomStr = (len = 6) => Array.from({ length: len }, () => String.fromCharCode(97 + crypto.randomBytes(1)[0] % 26)).join('');
+    const randomStr = (len = 6) => Array.from({ length: len }, () => String.fromCharCode(crypto.randomInt(97, 123))).join('');
     const randomHeader = () => `X-Sess-${crypto.randomBytes(4).toString('hex')}`;
 
     return {
