@@ -30,6 +30,7 @@ class AutoTuner
     /** @var ?callable */
     private $onCleanup;
     private ?string $savePath;
+    private float $validationTolerance;
 
     /**
      * @var ?array<string, mixed> La dernière meilleure solution trouvée par l'optimiseur.
@@ -51,6 +52,7 @@ class AutoTuner
         $this->clearAfterTuning = $options['clearAfterTuning'] ?? false;
         $this->onCleanup = $options['onCleanup'] ?? null;
         $this->savePath = $options['savePath'] ?? null;
+        $this->validationTolerance = $options['validationTolerance'] ?? 0.15;
     }
 
     /**
@@ -210,6 +212,46 @@ class AutoTuner
                 $currentConfig['block'] = (int)round($block);
             }
         };
+
+        // --- VALIDATION POST-CALCUL (PHP Rollback & Seuil de Tolérance) ---
+        $tempConfig = [
+            'thresholds' => $this->securityConfig['thresholds'],
+            'weights' => $this->securityConfig['weights'],
+            'patterns' => $this->securityConfig['patterns'],
+        ];
+
+        $applyInertialUpdate($tempConfig['thresholds'], $newConfig['thresholds'], 'thresholds', $trafficConfidence);
+        $applyInertialUpdate($tempConfig['weights'], $newConfig['weights'], 'weights', $trafficConfidence);
+        $applyInertialUpdate($tempConfig['patterns'], $newConfig['patterns'], 'patterns', $trafficConfidence);
+
+        $evaluator = OptimizationOperators::createFullSecurityConfigEvaluator(['trafficData' => $sanitizedData]);
+        $currentObjectives = $evaluator($this->securityConfig);
+        $proposedObjectives = $evaluator($tempConfig);
+
+        $currentFPR = $currentObjectives[0];
+        $currentFNR = $currentObjectives[1];
+        $proposedFPR = $proposedObjectives[0];
+        $proposedFNR = $proposedObjectives[1];
+
+        $validationTolerance = $this->securityConfig['autotuning']['validationTolerance'] ?? $this->validationTolerance;
+
+        if ($proposedFPR > $currentFPR + $validationTolerance || $proposedFNR > $currentFNR + $validationTolerance) {
+            error_log(sprintf(
+                "[AutoTuning] [SECURITY ALERT] Proposed configuration rejected due to instability/poisoning risk! Proposed FPR: %.4f (Current: %.4f), Proposed FNR: %.4f (Current: %.4f)",
+                $proposedFPR, $currentFPR, $proposedFNR, $currentFNR
+            ));
+            if (isset($this->securityConfig['logger']) && is_callable($this->securityConfig['logger'])) {
+                call_user_func($this->securityConfig['logger'], [
+                    'type' => 'autotuning_instability_alert',
+                    'proposedFPR' => $proposedFPR,
+                    'currentFPR' => $currentFPR,
+                    'proposedFNR' => $proposedFNR,
+                    'currentFNR' => $currentFNR,
+                    'timestamp' => (int)(microtime(true) * 1000)
+                ]);
+            }
+            return; // Rollback
+        }
 
         $applyInertialUpdate($this->securityConfig['thresholds'], $newConfig['thresholds'], 'thresholds', $trafficConfidence);
         $applyInertialUpdate($this->securityConfig['weights'], $newConfig['weights'], 'weights', $trafficConfidence);

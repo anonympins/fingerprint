@@ -3286,7 +3286,7 @@ class FingerprintEngine:
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
         high_threshold = self.thresholds.get("high", 75)
-        must_rechallenge = score >= high_threshold and has_valid_ticket
+        must_rechallenge = score >= high_threshold and has_valid_ticket and score > 0
         low_threshold = self.thresholds.get("low", 20)
 
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
@@ -4070,6 +4070,7 @@ class AutoTuner:
         self.min_data_points = options.get("minDataPoints", 200)
         self.max_data_points = options.get("maxDataPoints", 10000)
         self.clear_after_tuning = options.get("clearAfterTuning", False)
+        self.validation_tolerance = options.get("validationTolerance", 0.15)
         self.options = options
 
     def prune_traffic_data(self) -> None:
@@ -4219,9 +4220,45 @@ class AutoTuner:
                 current_config["high"] = int(round(high))
                 current_config["block"] = int(round(block))
 
-        apply_inertial_update(self.security_config["thresholds"], new_config["thresholds"], "thresholds", traffic_confidence)
-        apply_inertial_update(self.security_config["weights"], new_config["weights"], "weights", traffic_confidence)
-        apply_inertial_update(self.security_config["patterns"], new_config["patterns"], "patterns", traffic_confidence)
+                # --- VALIDATION POST-CALCUL (Python Security Verification & Rollback) ---
+                evaluator = OptimizationOperators.create_full_security_config_evaluator(sanitized_data)
+
+                temp_config = {
+                    "thresholds": copy.deepcopy(self.security_config.get("thresholds", {})),
+                    "weights": copy.deepcopy(self.security_config.get("weights", {})),
+                    "patterns": copy.deepcopy(self.security_config.get("patterns", {}))
+                }
+
+                apply_inertial_update(temp_config["thresholds"], new_config["thresholds"], "thresholds", traffic_confidence)
+                apply_inertial_update(temp_config["weights"], new_config["weights"], "weights", traffic_confidence)
+                apply_inertial_update(temp_config["patterns"], new_config["patterns"], "patterns", traffic_confidence)
+
+                current_objectives = evaluator(self.security_config)
+                proposed_objectives = evaluator(temp_config)
+
+                current_fpr, current_fnr = current_objectives[0], current_objectives[1]
+                proposed_fpr, proposed_fnr = proposed_objectives[0], proposed_objectives[1]
+
+                validation_tolerance = self.security_config.get("autotuning", {}).get("validationTolerance") or self.validation_tolerance
+
+                if proposed_fpr > current_fpr + validation_tolerance or proposed_fnr > current_fnr + validation_tolerance:
+                    print(f"[AutoTuning] [SECURITY ALERT] Proposed configuration rejected due to instability/poisoning risk! "
+                          f"Proposed FPR: {proposed_fpr:.4f} (Current: {current_fpr:.4f}), Proposed FNR: {proposed_fnr:.4f} (Current: {current_fnr:.4f})")
+                    logger = self.security_config.get("logger")
+                    if logger and callable(logger):
+                        logger({
+                            "type": "autotuning_instability_alert",
+                            "proposedFPR": proposed_fpr,
+                            "currentFPR": current_fpr,
+                            "proposedFNR": proposed_fnr,
+                            "currentFNR": current_fnr,
+                            "timestamp": int(time.time() * 1000)
+                        })
+                    return  # Rollback automatique : On arrête l'application
+
+                apply_inertial_update(self.security_config["thresholds"], new_config["thresholds"], "thresholds", traffic_confidence)
+                apply_inertial_update(self.security_config["weights"], new_config["weights"], "weights", traffic_confidence)
+                apply_inertial_update(self.security_config["patterns"], new_config["patterns"], "patterns", traffic_confidence)
 
         AutoTuner._last_best_solution = best_solution
 

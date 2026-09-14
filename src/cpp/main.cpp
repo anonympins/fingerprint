@@ -30,4 +30,9 @@ int32_t solve_memory_challenge(const char* seed, int difficulty_mb) {
     return Fingerprint::Utils::solve_memory_challenge(seed, difficulty_mb);
 }
 
+EMSCRIPTEN_KEEPALIVE
+void generate_gpu_pow_trajectory(const char* seed, int iterations, float* output) {
+    Fingerprint::Utils::generate_gpu_pow_trajectory(std::string(seed), iterations, output);
+}
+
 } // extern "C"

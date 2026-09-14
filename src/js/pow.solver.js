@@ -9,6 +9,15 @@
 
 'use strict';
 
+function secureRandom() {
+    if (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) {
+        const array = new Uint32Array(1);
+        (window.crypto || window.msCrypto).getRandomValues(array);
+        return array[0] / 0x100000000;
+    }
+    return Math.random();
+}
+
 function cyrb53(str, seed = 0) {
     const safeStr = (typeof str === 'string' ? str : String(str || '')).slice(0, 10000);
     let h1 = 0xdeadbeef ^ seed,
@@ -518,7 +527,7 @@ const ClientOptimizers = {
         for (let i = 0; i < iterations; i++) {
             const newSolution = neighbor(currentSolution);
             const newEnergy = evaluator(newSolution);
-            if (newEnergy < currentEnergy || Math.random() < Math.exp((currentEnergy - newEnergy) / temperature)) {
+            if (newEnergy < currentEnergy || secureRandom() < Math.exp((currentEnergy - newEnergy) / temperature)) {
                 currentSolution = newSolution;
                 currentEnergy = newEnergy;
             }
@@ -537,10 +546,10 @@ const ClientOptimizers = {
             population.sort((a, b) => a.fitness - b.fitness);
             const newPopulation = [population[0]]; // Elitism
             while (newPopulation.length < popSize) {
-                const p1 = population[Math.floor(Math.random() * (popSize / 2))];
-                const p2 = population[Math.floor(Math.random() * (popSize / 2))];
+                const p1 = population[Math.floor(secureRandom() * (popSize / 2))];
+                const p2 = population[Math.floor(secureRandom() * (popSize / 2))];
                 let offspring = crossover(p1.chromosome, p2.chromosome);
-                if (Math.random() < 0.1) offspring = mutate(offspring);
+                if (secureRandom() < 0.1) offspring = mutate(offspring);
                 newPopulation.push({ chromosome: offspring, fitness: fitness(offspring) });
             }
             population = newPopulation;
@@ -561,10 +570,10 @@ const ClientOptimizers = {
         for (let gen = 0; gen < generations; gen++) {
             const offspring = [];
             for (let i = 0; i < populationSize; i++) {
-                const parent1 = population[Math.floor(Math.random() * population.length)];
-                const parent2 = population[Math.floor(Math.random() * population.length)];
+                const parent1 = population[Math.floor(secureRandom() * population.length)];
+                const parent2 = population[Math.floor(secureRandom() * population.length)];
                 let childIndividual = crossover(parent1.individual, parent2.individual);
-                if (Math.random() < mutationRate) {
+                if (secureRandom() < mutationRate) {
                     childIndividual = mutate(childIndividual);
                 }
                 const child = { individual: childIndividual };
@@ -632,9 +641,9 @@ const ClientOptimizers = {
             return [-platformRevenue, -advertiserValue, marketImbalance];
         };
 
-        const createIndividual = () => 0.5 + Math.random() * 4.5;
+        const createIndividual = () => 0.5 + secureRandom() * 4.5;
         const crossover = (cpc1, cpc2) => (cpc1 + cpc2) / 2;
-        const mutate = (cpc) => Math.max(0.1, cpc + (Math.random() - 0.5) * 0.5);
+        const mutate = (cpc) => Math.max(0.1, cpc + (secureRandom() - 0.5) * 0.5);
 
         const gaOptions = {
             generations: 50,
@@ -738,10 +747,10 @@ const ClientOptimizers = {
         };
 
         const createIndividual = () => [
-            100 + Math.random() * 4900,
-            1 + Math.random() * 9999,
-            Math.random() * 0.5,
-            Math.floor(Math.random() * 10)
+            100 + secureRandom() * 4900,
+            1 + secureRandom() * 9999,
+            secureRandom() * 0.5,
+            Math.floor(secureRandom() * 10)
         ];
 
         const crossover = (s1, s2) => [
@@ -755,7 +764,7 @@ const ClientOptimizers = {
             const newSolution = [...solution];
             const i = Math.floor(Math.random() * 4);
             const mutationFactors = [500, 1000, 0.1, 2];
-            newSolution[i] += (Math.random() - 0.5) * mutationFactors[i];
+            newSolution[i] += (secureRandom() - 0.5) * mutationFactors[i];
             return newSolution;
         };
 
@@ -809,16 +818,16 @@ async function solveUsefulWorkTask(task) {
                 };
                 const neighbor = (facilities) => {
                     const newFacilities = facilities.map((f) => ({ ...f }));
-                    const i = Math.floor(Math.random() * numFacilities);
-                    const moveX = (Math.random() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
-                    const moveY = (Math.random() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
+                    const i = Math.floor(secureRandom() * numFacilities);
+                    const moveX = (secureRandom() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
+                    const moveY = (secureRandom() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
                     newFacilities[i].x = Math.max(bounds.minX, Math.min(bounds.maxX, newFacilities[i].x + moveX));
                     newFacilities[i].y = Math.max(bounds.minY, Math.min(bounds.maxY, newFacilities[i].y + moveY));
                     return newFacilities;
                 };
                 const initialSolution = task.initialSolution || Array.from({ length: numFacilities }, () => ({
-                    x: bounds.minX + Math.random() * (bounds.maxX - bounds.minX),
-                    y: bounds.minY + Math.random() * (bounds.maxY - bounds.minY),
+                    x: bounds.minX + secureRandom() * (bounds.maxX - bounds.minX),
+                    y: bounds.minY + secureRandom() * (bounds.maxY - bounds.minY),
                 }));
                 return ClientOptimizers.simulatedAnnealing(initialSolution, evaluator, neighbor, task.iterations, task.payload.options.initialTemperature, task.payload.options.coolingRate);
             }
@@ -833,11 +842,11 @@ async function solveUsefulWorkTask(task) {
             };
             const neighbor = (path) => {
                 const newPath = [...path];
-                const [i, j] = [Math.floor(Math.random() * path.length), Math.floor(Math.random() * path.length)];
+                const [i, j] = [Math.floor(secureRandom() * path.length), Math.floor(secureRandom() * path.length)];
                 [newPath[i], newPath[j]] = [newPath[j], newPath[i]];
                 return newPath;
             };
-            const initialSolution = task.initialSolution || Array.from({ length: cities.length }, (_, i) => i).sort(() => 0.5 - Math.random());
+            const initialSolution = task.initialSolution || Array.from({ length: cities.length }, (_, i) => i).sort(() => 0.5 - secureRandom());
             
             return ClientOptimizers.simulatedAnnealing(initialSolution, evaluator, neighbor, task.iterations, task.payload.options.initialTemperature, task.payload.options.coolingRate);
         }
@@ -853,9 +862,9 @@ async function solveUsefulWorkTask(task) {
                 if (vol > maxVolatility) return 1000 + (vol - maxVolatility);
                 return -ret;
             };
-            const createIndividual = () => Array.from({ length: assets.length }, Math.random);
+            const createIndividual = () => Array.from({ length: assets.length }, secureRandom);
             const crossover = (p1, p2) => p1.map((w, i) => (w + p2[i]) / 2);
-            const mutate = p => { const n = [...p], i = Math.floor(Math.random() * n.length); n[i] += (Math.random() - 0.5) * 0.2; return n.map(v => Math.max(0, v)); };
+            const mutate = p => { const n = [...p], i = Math.floor(secureRandom() * n.length); n[i] += (secureRandom() - 0.5) * 0.2; return n.map(v => Math.max(0, v)); };
             
             // Le client doit recréer la population si elle n'est pas fournie
             const initialPopulation = task.initialPopulation || Array.from({ length: task.payload.options.populationSize }, () => ({ chromosome: createIndividual(), fitness: 0 }));
@@ -907,8 +916,8 @@ export async function solveOptimizationTask(initialPopulation, generations) {
     const crossover = (p1, p2) => p1.map((w, i) => (w + p2[i]) / 2);
     const mutate = (p) => {
         const newP = [...p];
-        const i = Math.floor(Math.random() * newP.length);
-        newP[i] += (Math.random() - 0.5) * 0.2;
+        const i = Math.floor(secureRandom() * newP.length);
+        newP[i] += (secureRandom() - 0.5) * 0.2;
         return newP;
     };
 
@@ -920,10 +929,10 @@ export async function solveOptimizationTask(initialPopulation, generations) {
         const newPopulation = [...parents]; // Élitisme
 
         while (newPopulation.length < population.length) {
-            const parent1 = parents[Math.floor(Math.random() * parents.length)];
-            const parent2 = parents[Math.floor(Math.random() * parents.length)];
+            const parent1 = parents[Math.floor(secureRandom() * parents.length)];
+            const parent2 = parents[Math.floor(secureRandom() * parents.length)];
             let offspring = crossover(parent1.chromosome, parent2.chromosome);
-            if (Math.random() < 0.1) offspring = mutate(offspring);
+            if (secureRandom() < 0.1) offspring = mutate(offspring);
             // La fitness sera recalculée côté serveur pour la vérification.
             newPopulation.push({ chromosome: offspring, fitness: -1 });
         }

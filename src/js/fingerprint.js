@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import {BlockList, isIPv4, isIPv6} from "node:net";
 import * as dns from "node:dns/promises";
+import {Worker} from "node:worker_threads";
 import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
@@ -123,7 +124,7 @@ const yandexEntries = loadBotWhitelist('yandex.json', [
 ]);
 
 function generateSessionMapping() {
-    const randomStr = (len = 6) => crypto.randomBytes(len).toString('hex').replace(/[0-9]/g, 'g').substring(0, len);
+    const randomStr = (len = 6) => Array.from({ length: len }, () => String.fromCharCode(crypto.randomInt(97, 123))).join('');
     const randomHeader = () => `X-Sess-${crypto.randomBytes(4).toString('hex')}`;
 
     return {
@@ -184,18 +185,29 @@ async function compilePolymorphicJs(mapping) {
         jsCode = jsCode.replace(regex2, `addRaw("${randKey}"`);
     }
 
-    const obfuscationResult = JavaScriptObfuscator.obfuscate(jsCode, {
-        compact: true,
-        controlFlowFlattening: true,
-        deadCodeInjection: true,
-        stringArray: true,
-        stringArrayRotate: true,
-        stringArrayShuffle: true,
-        seed: Math.abs(mapping.wasmConstants.seed),
-        selfDefending: true,
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./obfuscation.worker.js', import.meta.url));
+        worker.on('message', (message) => {
+            if (message.error) {
+                console.error('[Fingerprint] Obfuscation worker error:', message.error, message.stack);
+                reject(new Error('Obfuscation failed in worker.'));
+            } else {
+                resolve(message.obfuscatedCode);
+            }
+            worker.terminate();
+        });
+        worker.on('error', (error) => {
+            console.error('[Fingerprint] Obfuscation worker crashed:', error);
+            reject(error);
+        });
+        worker.on('exit', (code) => {
+            if (code !== 0) {
+                console.error(`[Fingerprint] Obfuscation worker stopped with exit code ${code}`);
+                reject(new Error(`Obfuscation worker stopped with exit code ${code}`));
+            }
+        });
+        worker.postMessage({ jsCode, seed: mapping.wasmConstants.seed });
     });
-
-    return obfuscationResult.getObfuscatedCode();
 }
 
 async function ensureLatestMapping() {
@@ -749,6 +761,54 @@ const cipherSuiteMap = {
     'TLS_DHE_RSA_WITH_AES_256_CBC_SHA': 57,
     'TLS_RSA_WITH_3DES_EDE_CBC_SHA': 10,
 };
+
+/**
+ * Valide cryptographiquement l'attestation/assertion WebAuthn émise par l'enclave sécurisée.
+ * @private
+ * @param {object} anchor Les données d'attestation WebAuthn reçues du client
+ * @param {object} deviceData Les données persistantes de l'appareil dans notre store
+ * @returns {boolean} True si la signature matérielle est valide
+ */
+function verifyWebAuthnHardwareAnchor(anchor, deviceData) {
+    if (!anchor || !anchor.type) return false;
+
+    try {
+        const clientDataHash = crypto.createHash('sha256')
+            .update(Buffer.from(anchor.clientDataJSON, 'base64'))
+            .digest();
+
+        if (anchor.type === 'registration') {
+            if (!anchor.publicKey || !anchor.credentialId) return false;
+            
+            // Enregistrement initial : on stocke la clé publique matérielle SPKI
+            deviceData.webauthnPublicKey = anchor.publicKey;
+            deviceData.webauthnCredentialId = anchor.credentialId;
+            return true;
+        } else if (anchor.type === 'assertion') {
+            const storedPublicKeyPem = deviceData.webauthnPublicKey;
+            if (!storedPublicKeyPem || deviceData.webauthnCredentialId !== anchor.credentialId) {
+                return false;
+            }
+
+            // Reconstitution du message signé (authenticatorData + clientDataHash)
+            const verifyBuffer = Buffer.concat([
+                Buffer.from(anchor.authenticatorData, 'base64'),
+                clientDataHash
+            ]);
+
+            const publicKey = crypto.createPublicKey(Buffer.from(storedPublicKeyPem, 'base64'));
+            return crypto.verify(
+                'sha256',
+                verifyBuffer,
+                publicKey,
+                Buffer.from(anchor.signature, 'base64')
+            );
+        }
+    } catch (e) {
+        console.error('[WebAuthn-Server] Verification failed:', e.message);
+    }
+    return false;
+}
 
 /**
  * Extracts TLS fingerprints (JA3 and JA4) from request context.
@@ -1964,9 +2024,28 @@ function getBehaviorScore(context) {
  * @param {object} metrics - Les métriques comportementales parsées depuis le client.
  * @returns {{timeInconsistencyScore: number}}
  */
-function getTimeInconsistencyScore(context, metrics) {
+function getTimeInconsistencyScore(context, metrics, deviceData = null) {
   const REPLAY_THRESHOLD_MS = 5000; // 5 secondes
   let score = 0;
+
+  if (deviceData && deviceData.sessionHmacKey && metrics.signature) {
+    try {
+      const copy = JSON.parse(JSON.stringify(metrics));
+      const clientSig = copy.signature;
+      delete copy.signature;
+      const dataToSign = JSON.stringify(copy);
+      const expectedSig = crypto.createHmac('sha256', Buffer.from(deviceData.sessionHmacKey, 'hex'))
+                                .update(dataToSign)
+                                .digest('hex');
+      if (!crypto.timingSafeEqual(Buffer.from(clientSig, 'hex'), Buffer.from(expectedSig, 'hex'))) {
+        return { timeInconsistencyScore: 100 }; // Replay/tampering detected
+      }
+    } catch (e) {
+      return { timeInconsistencyScore: 100 };
+    }
+  } else if (deviceData && deviceData.sessionHmacKey && !metrics.signature) {
+    return { timeInconsistencyScore: 100 }; // Missing mandatory signature
+  }
 
   if (metrics.clientTimestamp && context.requestTimestamp) {
     const timeDelta = context.requestTimestamp - metrics.clientTimestamp;
@@ -2972,6 +3051,23 @@ async function getBehavioralIndicators(context, deviceData) {
   deviceData.lastFpHash = currentFpHash;
   deviceData.ips.add(clientIp); // Record the IP used by this device
 
+  // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
+  const behaviorHeader = context.headers?.['x-behavior-metrics'];
+  let webauthnVerified = false;
+  if (behaviorHeader) {
+      try {
+          const metrics = JSON.parse(behaviorHeader);
+          if (metrics && metrics.webauthnAnchor) {
+              if (verifyWebAuthnHardwareAnchor(metrics.webauthnAnchor, deviceData)) {
+                  webauthnVerified = true;
+                  deviceData.webauthnVerified = true;
+              }
+          }
+      } catch (e) {
+          // Ignorer les erreurs de parsing
+      }
+  }
+
   // NOUVELLE LOGIQUE : Le score d'historique est basé sur le nombre d'IPs utilisées par l'appareil.
   // Très efficace contre la rotation de proxy.
   const maxIpsForDevice = isSharedIp
@@ -3015,7 +3111,6 @@ export const getSuspicionVector = async (context, securityConfig) => {
     context._newCookies = context._newCookies || [];
     context._newCookies.push(newCookie);
   }
-  await store.set(`ip-device:${clientIp}`, deviceId, 600); // Link the IP to the device for 10 minutes
 
   // Periodically clean up device data
   if (Date.now() - deviceData.lastUpdate > 10 * 60 * 1000) { // 10 minutes
@@ -3024,48 +3119,56 @@ export const getSuspicionVector = async (context, securityConfig) => {
   }
   deviceData.lastUpdate = Date.now();
 
-  const behavioral = await getBehavioralIndicators(context, deviceData);
-  const { headerAnomalyScore } = getHeaderAnomalies(context);
-  // Calculate the inconsistency score here, separately.
-  let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
-
-  // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
-  if (consistencyScore < 0.7) { // Seuil de rupture
-      inconsistencyScore = 100;
-  }
-
-  const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
-
-  // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
-  const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
-
-  const { tlsSpoofingScore } = await getTlsSpoofingScore(context);
-
-  const { botScore } = getBotScore(context);
-
-  // NOUVEAU: On calcule le score d'incohérence temporelle.
-  const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'));
-
-  // NOUVEAU: On calcule le score d'incohérence entre les couches.
-  const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
-
-  // NOUVEAU: On calcule le score de variance des clics.
-  const { clickVarianceScore } = getClickVarianceScore(context);
-
-  // NOUVEAU: On calcule le score d'incohérence des Client-Hints.
-  const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
-
-  // NOUVEAU: On calcule le score de réputation du sous-réseau.
-  // FIX: Pass the deviceId to getSubnetScore
-  const { subnetScore } = await getSubnetScore(context, deviceId);
-
-  const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
-
-  const ipReputationScore = await getIpReputationScore(clientIp);
-
   const stableFp = extractStablePart(currentDeviceHash);
   const stableFpHash = cyrb53(stableFp).toString();
-  const { botnetClusterScore } = await getBotnetClusterScore(context, stableFpHash);
+
+      // Execute non-interdependent asynchronous operations in parallel
+      const [
+        behavioral,
+        { tlsSpoofingScore },
+        { subnetScore },
+        ipReputationScore,
+        { botnetClusterScore },
+        _ // store.set result
+      ] = await Promise.all([
+        getBehavioralIndicators(context, deviceData),
+        getTlsSpoofingScore(context),
+        getSubnetScore(context, deviceId),
+        getIpReputationScore(clientIp),
+        getBotnetClusterScore(context, stableFpHash),
+        store.set(`ip-device:${clientIp}`, deviceId, 600) // Link the IP to the device for 10 minutes
+      ]);
+
+      // Synchronous calculations
+      const { headerAnomalyScore } = getHeaderAnomalies(context);
+      let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
+
+      // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
+      if (consistencyScore < 0.7) { // Seuil de rupture
+          inconsistencyScore = 100;
+      }
+
+      const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
+
+      // On appelle getHoneypotScore ici pour que son résultat soit inclus dans le vecteur.
+      const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
+
+      const { botScore } = getBotScore(context);
+
+      // NOUVEAU: On calcule le score d'incohérence temporelle.
+      const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'), deviceData);
+
+      // NOUVEAU: On calcule le score d'incohérence entre les couches.
+      const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
+
+      // NOUVEAU: On calcule le score de variance des clics.
+      const { clickVarianceScore } = getClickVarianceScore(context);
+
+      // NOUVEAU: On calcule le score d'incohérence des Client-Hints.
+      const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
+
+      const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
+
   const { tcpAnomalyScore } = getTcpAnomalyScore(context);
   const { quicAnomalyScore } = getQuicAnomalyScore(context);
   const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
@@ -3204,7 +3307,40 @@ export function generateCpuTargetChallenge(
   };
 }
 
-const htmlTemplateCache = new Map();
+class SimpleLRUCache {
+    constructor(maxSize = 100) {
+        this.maxSize = maxSize;
+        this.cache = new Map();
+    }
+
+    get(key) {
+        if (!this.cache.has(key)) return undefined;
+        const value = this.cache.get(key);
+        this.cache.delete(key);
+        this.cache.set(key, value);
+        return value;
+    }
+
+    set(key, value) {
+        if (this.cache.has(key)) {
+            this.cache.delete(key);
+        } else if (this.cache.size >= this.maxSize) {
+            const lruKey = this.cache.keys().next().value;
+            this.cache.delete(lruKey);
+        }
+        this.cache.set(key, value);
+    }
+
+    has(key) {
+        return this.cache.has(key);
+    }
+
+    clear() {
+        this.cache.clear();
+    }
+}
+
+const htmlTemplateCache = new SimpleLRUCache(100);
 
 /**
  * Generates the HTML page for the CPU target challenge.
@@ -3812,13 +3948,19 @@ export class FingerprintEngine {
     
     this._log('Processing request', { clientIp, path, isStatic });
     
+    // Bypass instantané si l'appareil a prouvé cryptographiquement son identité matérielle (Secure Enclave / TPM)
+    const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
+    if (deviceData && deviceData.webauthnVerified) {
+        this._log('Hardware-anchored device verified (WebAuthn) - full bypass granted', { deviceId });
+        return { action: 'next', score: 0, vector: { webauthn_verified: 100 } };
+    }
+
     if (isStatic) {
       this._log('Static resource - skipping checks');
       return { action: 'next', score: 0, vector: {} };
     }
 
     // Resolve identity and check for persisted "condemned" status early.
-    const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
     const currentDeviceHash = getCompositeDeviceHash(requestContext);
     const isNewDevice = !!newCookie;
     const allowRoaming = this.securityConfig?.allowCrossNetworkRoaming ?? false;
@@ -4237,17 +4379,22 @@ export class FingerprintEngine {
 
     const isBlocked = finalScore >= blockThreshold;
 
-    const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
+    const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked && finalScore > 0;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
     const isSuspicious = finalScore >= thresholds.low;
     const isVerySuspicious = finalScore >= thresholds.medium; // Seuil pour le challenge d'optimisation
 
     // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
-    const suspicionFactor = isSuspicious
-        ? Math.min(
-            1.5, // On autorise un dépassement pour rendre les challenges très difficiles si le score est très élevé
-            (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
-        )
+    const suspicionFactor = isSuspicious // eslint-disable-line no-nested-ternary
+        ? (() => {
+            const denominator = thresholds.high - thresholds.low;
+            if (denominator === 0) {
+                // If the range is zero, and finalScore is at or above low threshold,
+                // return 0 to avoid NaN.
+                return 0;
+            }
+            return Math.min(1.5, (finalScore - thresholds.low) / denominator);
+        })()
         : 0;
 
     this._log('Suspicion levels evaluated', { 
@@ -5337,7 +5484,7 @@ function getTlsSessionId(context) {
 }
 
 // --- Proof-of-Work Middleware (The Tollbooth) ---
-const staticFileCache = new Map();
+const staticFileCache = new SimpleLRUCache(50);
 
 export const powMiddleware = (securityConfig) => {
   const engine = new FingerprintEngine(securityConfig);
@@ -5369,6 +5516,36 @@ export const powMiddleware = (securityConfig) => {
   }
 
   return async (req, res, next) => {
+      if (req.query && req.query.fp_handshake) {
+          const clientKeyHex = req.headers['x-client-ephemeral-key'];
+          if (clientKeyHex) {
+              try {
+                  const serverECDH = crypto.createECDH('prime256v1');
+                  serverECDH.generateKeys();
+                  const serverPubKeyHex = serverECDH.getKeys('hex');
+                  const sharedSecret = serverECDH.computeSecret(clientKeyHex, 'hex');
+                  const hmacKey = crypto.createHash('sha256').update(sharedSecret).digest('hex');
+
+                  const requestContext = {
+                      clientIp: req.ip || req.socket?.remoteAddress || "unknown",
+                      headers: req.headers,
+                      cookies: req.cookies
+                  };
+                  const { deviceId, deviceData } = await resolveRequestIdentity(requestContext, securityConfig);
+                  if (deviceData) {
+                      deviceData.sessionHmacKey = hmacKey;
+                      await store.set(`device:${deviceId}`, deviceData);
+                  }
+
+                  res.setHeader('x-server-ephemeral-key', serverPubKeyHex);
+                  return res.status(200).json({ status: 'success' });
+              } catch (e) {
+                  return res.status(400).json({ error: 'Handshake failed' });
+              }
+          }
+          return res.status(400).json({ error: 'Missing client key' });
+      }
+
       if (!req.headers_translated) {
           req.headers_translated = true;
           const matchedMapping = getActiveMappingForRequest(req.headers);
@@ -5543,6 +5720,7 @@ export const __internal = {
     getTlsFingerprint, // NOUVEAU: Expose pour les tests
     sanitizeTrafficData, // NOUVEAU: Expose pour l'auto-tuner/tests
     getTlsSpoofingScore, // NOUVEAU: Expose pour les tests
+    verifyWebAuthnHardwareAnchor,
     generateStatelessTicket,
     parseStatelessTicket,
     parseJa3,
@@ -5559,6 +5737,8 @@ export const __internal = {
     setLastBestSolution: (val) => { lastBestSolution = val; }, // Expose to test auto-tuning metrics
     verifyZkpProof,
     modPow,
+    generateSessionMapping,
+    compilePolymorphicJs,
     parseTcpSyn, // Expose for testing
     classifyTcpOs, // Expose for testing
     getTcpAnomalyScore, // Expose for testing,
@@ -5838,6 +6018,43 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   // Calcul du facteur de confiance basé sur la proportion de signaux d'attaques clairs et de volume
   // Plus le ratio est équilibré et le volume important, plus nous faisons confiance au Front de Pareto.
   const trafficConfidence = Math.min(1.5, Math.max(0.3, highConfidenceRatio * 4));
+
+    // --- VALIDATION POST-CALCUL (Anti-empoisonnement & Validation Croisée) ---
+    const tempConfig = {
+        thresholds: { ...securityConfig.thresholds },
+        weights: { ...securityConfig.weights },
+        patterns: { ...securityConfig.patterns }
+    };
+
+    applyInertialUpdate(tempConfig.thresholds, newConfig.thresholds, 'thresholds', trafficConfidence);
+    applyInertialUpdate(tempConfig.weights, newConfig.weights, 'weights', trafficConfidence);
+    applyInertialUpdate(tempConfig.patterns, newConfig.patterns, 'patterns', trafficConfidence);
+
+    const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator({ trafficData: sanitizedData });
+    const currentObjectives = fitnessFunction(securityConfig);
+    const proposedObjectives = fitnessFunction(tempConfig);
+
+    const currentFPR = currentObjectives[0];
+    const currentFNR = currentObjectives[1];
+    const proposedFPR = proposedObjectives[0];
+    const proposedFNR = proposedObjectives[1];
+
+    const validationTolerance = securityConfig?.autotuning?.validationTolerance ?? tuningOptions?.validationTolerance ?? 0.15;
+
+    if (proposedFPR > currentFPR + validationTolerance || proposedFNR > currentFNR + validationTolerance) {
+        console.error(`[AutoTuning] [SECURITY ALERT] Proposed configuration rejected due to instability/poisoning risk! Proposed FPR: ${proposedFPR.toFixed(4)} (Current: ${currentFPR.toFixed(4)}), Proposed FNR: ${proposedFNR.toFixed(4)} (Current: ${currentFNR.toFixed(4)})`);
+        if (securityConfig.logger && typeof securityConfig.logger === 'function') {
+            securityConfig.logger({
+                type: 'autotuning_instability_alert',
+                proposedFPR,
+                currentFPR,
+                proposedFNR,
+                currentFNR,
+                timestamp: Date.now()
+            });
+        }
+        return; // Rollback automatique : On arrête l'application
+    }
 
   applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds, 'thresholds', trafficConfidence);
   applyInertialUpdate(securityConfig.weights, newConfig.weights, 'weights', trafficConfidence);

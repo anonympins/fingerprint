@@ -1,3 +1,12 @@
+## Version 0.5.5
+
+- **🔒 Client Session Handshake & HMAC Metric Signing**: Implemented elliptic-curve Diffie-Hellman (ECDH over curve `P-256`) key exchange protocol during client initialization (`?fp_handshake=1`). Leveraged the negotiated session key to cryptographically sign behavioral metrics (`signMetrics`) on the client using HMAC-SHA256, protecting against replay attacks and telemetry tampering.
+- **🧵 Non-Blocking Polymorphic Obfuscation Worker**: Offloaded CPU-heavy JavaScript obfuscation and parsing pipelines (`compilePolymorphicJs`) to a dedicated Node.js Worker Thread (`obfuscation.worker.js`). This isolates resource-intensive obfuscation tasks from the main event loop, preventing latency spikes on production servers.
+- **💾 Performance Optimizations with SimpleLRUCache**: Added an in-memory `SimpleLRUCache` to eliminate synchronous file system calls (`readFileSync`). Standardized caching of custom HTML challenge pages and static files (`fp.js`/`fp.wasm`).
+- **🛡️ Auto-Tuner Stability Guardrails & Rollbacks**: Implemented post-calculation validation checks with a configurable `validationTolerance` threshold (default `0.15`). Automatically rolls back unstable parameters and triggers an `autotuning_instability_alert` if proposed changes degrade FPR/FNR metrics.
+- **🧬 Strict Multi-Language Cross-Parity**: Aligned 32-bit single-precision floating-point (IEEE 754) calculations for chaotic map trajectories across WebGPU, WebGL, C++ WASM, and PHP environments. Guaranteed bit-to-bit convergence across 1,000 random seeds.
+- **🧮 Fixed Zero Threshold PoW Shift Error**: Patched a potential bitwise shift crash (`1n << shift` with a negative shift) inside `calculateTarget` when the suspicion score dropped to or below zero. Legitimate requests now resolve directly to the maximum target range.
+
 ## Version 0.5.4
 
 - **🔒 JA3/JA4 Handshake Parsing Hardening (PHP/Python)**: Fixed ALPN length constraints and untangled nested loops in the binary TLS Client Hello decoder, ensuring native and highly reliable raw JA4 fingerprint calculations directly at the socket layer.

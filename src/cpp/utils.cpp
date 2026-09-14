@@ -2,6 +2,7 @@
 #include <vector>
 #include <cstring>
 #include <string>
+#include <cmath>
 
 namespace Fingerprint::Utils {
 
@@ -207,6 +208,26 @@ uint64_t cyrb53(const std::string& str, uint32_t seed) {
     result += static_cast<uint32_t>(h1);
 
     return result;
+}
+
+float hash_seed_to_float(const std::string& seed) {
+    int32_t hash = 0;
+    for (char ch : seed) {
+        hash = (hash << 5) - hash + ch;
+    }
+    return static_cast<float>(std::abs(hash % 1000000)) / 1000000.0f;
+}
+
+void generate_gpu_pow_trajectory(const std::string& seed, int iterations, float* output) {
+    float numeric_seed = hash_seed_to_float(seed);
+    float r = 3.9999f;
+    for (int idx = 0; idx < 64; idx++) {
+        float x = numeric_seed + idx * 0.015f;
+        for (int i = 0; i < iterations; i++) {
+            x = r * x * (1.0f - x);
+        }
+        output[idx] = x;
+    }
 }
 
 int32_t solve_cpu_target(const uint8_t* base_block, int base_block_len, const char* target_hex) {
