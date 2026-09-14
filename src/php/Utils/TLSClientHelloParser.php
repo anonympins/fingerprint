@@ -68,6 +68,10 @@ class TLSClientHelloParser
         $extensions = [];
         $curves = [];
         $points = [];
+            $sigAlgs = [];
+            $supportedVersions = [];
+            $hasSni = false;
+            $alpnProtocol = '';
 
         $extLimit = $offset + $extensionsLen;
         while ($offset < $extLimit && $offset + 4 <= $len) {
@@ -79,7 +83,9 @@ class TLSClientHelloParser
 
             $extensions[] = $extType;
 
-            if ($extType === 10) { // Extension Supported Groups (Elliptic Curves)
+                if ($extType === 0) {
+                    $hasSni = true;
+                } elseif ($extType === 10) { // Extension Supported Groups (Elliptic Curves)
                 if ($extLen >= 2) {
                     $curvesLen = unpack('n', substr($binary, $offset, 2))[1];
                     for ($j = 2; $j < $curvesLen + 2; $j += 2) {
@@ -93,6 +99,34 @@ class TLSClientHelloParser
                         $points[] = ord($binary[$offset + $j]);
                     }
                 }
+                } elseif ($extType === 13) { // Signature Algorithms
+                    if ($extLen >= 2 && $offset + 2 <= $len) {
+                        $sigAlgsLen = unpack('n', substr($binary, $offset, 2))[1];
+                        for ($j = 2; $j < $sigAlgsLen + 2; $j += 2) {
+                            if ($offset + $j + 2 <= $len && $j + 2 <= $extLen) {
+                                $sigAlgs[] = unpack('n', substr($binary, $offset + $j, 2))[1];
+                            }
+                        }
+                    }
+                } elseif ($extType === 16) { // ALPN
+                    if ($extLen >= 3 && $offset + 2 <= $len) {
+                        $alpnListLen = unpack('n', substr($binary, $offset, 2))[1];
+                        if ($extLen >= 2 + $alpnListLen && $offset + 2 + $alpnListLen <= $len) {
+                            $alpnStrLen = ord($binary[$offset + 2]);
+                            if ($alpnListLen >= 1 + $alpnStrLen) {
+                                $alpnProtocol = substr($binary, $offset + 3, $alpnStrLen);
+                            }
+                        }
+                    }
+                } elseif ($extType === 43) { // Supported Versions
+                    if ($extLen >= 1 && $offset + 1 <= $len) {
+                        $versionsLen = ord($binary[$offset]);
+                        for ($j = 1; $j < $versionsLen + 1; $j += 2) {
+                            if ($offset + $j + 2 <= $len && $j + 2 <= $extLen) {
+                                $supportedVersions[] = unpack('n', substr($binary, $offset + $j, 2))[1];
+                            }
+                        }
+                    }
             }
             $offset += $extLen;
         }
@@ -100,18 +134,80 @@ class TLSClientHelloParser
         // Nettoyage des valeurs GREASE (RFC 8701) pour la conformité JA3
         $filterGrease = fn(array $arr) => array_values(array_filter($arr, fn($v) => !in_array($v, self::GREASE_VALUES, true)));
 
+            $cleanCiphers = $filterGrease($ciphers);
+            $cleanExtensions = $filterGrease($extensions);
+            $cleanCurves = $filterGrease($curves);
+            $cleanPoints = $filterGrease($points);
+            $cleanSigAlgs = $filterGrease($sigAlgs);
+            $cleanSupportedVersions = $filterGrease($supportedVersions);
+
         $sslVersion = unpack('n', substr($binary, 9, 2))[1];
         $ja3String = implode(',', [
             $sslVersion,
-            implode('-', $filterGrease($ciphers)),
-            implode('-', $filterGrease($extensions)),
-            implode('-', $filterGrease($curves)),
-            implode('-', $filterGrease($points))
+                implode('-', $cleanCiphers),
+                implode('-', $cleanExtensions),
+                implode('-', $cleanCurves),
+                implode('-', $cleanPoints)
         ]);
+
+            // Calcul natif de JA4
+            $highestVersion = $sslVersion;
+            if (!empty($cleanSupportedVersions)) {
+                $highestVersion = max($cleanSupportedVersions);
+            }
+
+            $ja4Version = "12";
+            if ($highestVersion === 0x0304) {
+                $ja4Version = "13";
+            } elseif ($highestVersion === 0x0303) {
+                $ja4Version = "12";
+            } elseif ($highestVersion === 0x0302) {
+                $ja4Version = "11";
+            } elseif ($highestVersion === 0x0301) {
+                $ja4Version = "10";
+            }
+
+            $sniStatus = $hasSni ? "d" : "i";
+            $numCiphers = min(99, count($cleanCiphers));
+            $numExtensions = min(99, count($cleanExtensions));
+
+            $ja4Alpn = "00";
+            if ($alpnProtocol !== '') {
+                $lenAlpn = strlen($alpnProtocol);
+                if ($lenAlpn === 1) {
+                    $ja4Alpn = $alpnProtocol . $alpnProtocol;
+                } else {
+                    $ja4Alpn = $alpnProtocol[0] . $alpnProtocol[$lenAlpn - 1];
+                }
+            }
+
+            $ja4_a = "t" . $ja4Version . $sniStatus . sprintf("%02d", $numCiphers) . sprintf("%02d", $numExtensions) . $ja4Alpn;
+
+            $sortedCiphers = $cleanCiphers;
+            sort($sortedCiphers);
+            $ciphersHex = array_map(fn($c) => sprintf('%04x', $c), $sortedCiphers);
+            $ciphersString = implode(',', $ciphersHex);
+            $ja4_b = substr(hash('sha256', $ciphersString), 0, 12);
+
+            $sortedExtensions = $cleanExtensions;
+            sort($sortedExtensions);
+            $extensionsHex = array_map(fn($e) => sprintf('%04x', $e), $sortedExtensions);
+            $extensionsString = implode(',', $extensionsHex);
+
+            $sortedSigAlgs = $cleanSigAlgs;
+            sort($sortedSigAlgs);
+            $sigAlgsHex = array_map(fn($s) => sprintf('%04x', $s), $sortedSigAlgs);
+            $sigAlgsString = implode(',', $sigAlgsHex);
+
+            $ja4_c_input = $extensionsString . '_' . $sigAlgsString;
+            $ja4_c = substr(hash('sha256', $ja4_c_input), 0, 12);
+
+            $ja4_hash = $ja4_a . "_" . $ja4_b . "_" . $ja4_c;
 
         return [
             'ja3_string' => $ja3String,
-            'ja3_hash'   => md5($ja3String)
+                'ja3_hash'   => md5($ja3String),
+                'ja4_raw'    => $ja4_hash
         ];
     }
 }
