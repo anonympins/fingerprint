@@ -3286,7 +3286,7 @@ class FingerprintEngine:
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
         high_threshold = self.thresholds.get("high", 75)
-        must_rechallenge = score >= high_threshold and has_valid_ticket
+        must_rechallenge = score >= high_threshold and has_valid_ticket and score > 0
         low_threshold = self.thresholds.get("low", 20)
 
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:

@@ -4237,17 +4237,22 @@ export class FingerprintEngine {
 
     const isBlocked = finalScore >= blockThreshold;
 
-    const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked;
+    const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked && finalScore > 0;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
     const isSuspicious = finalScore >= thresholds.low;
     const isVerySuspicious = finalScore >= thresholds.medium; // Seuil pour le challenge d'optimisation
 
     // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
-    const suspicionFactor = isSuspicious
-        ? Math.min(
-            1.5, // On autorise un dépassement pour rendre les challenges très difficiles si le score est très élevé
-            (finalScore - thresholds.low) / (thresholds.high - thresholds.low),
-        )
+    const suspicionFactor = isSuspicious // eslint-disable-line no-nested-ternary
+        ? (() => {
+            const denominator = thresholds.high - thresholds.low;
+            if (denominator === 0) {
+                // If the range is zero, and finalScore is at or above low threshold,
+                // return 0 to avoid NaN.
+                return 0;
+            }
+            return Math.min(1.5, (finalScore - thresholds.low) / denominator);
+        })()
         : 0;
 
     this._log('Suspicion levels evaluated', { 

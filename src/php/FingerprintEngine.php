@@ -1153,7 +1153,7 @@
              }
 
              $highThreshold = $thresholds['high'] ?? 75;
-             $mustReChallenge = $finalScore >= $highThreshold && $hasValidTicket;
+             $mustReChallenge = $finalScore >= $highThreshold && $hasValidTicket && $finalScore > 0;
 
              $lowThreshold = $thresholds['low'] ?? 20;
              if (($finalScore >= $lowThreshold && !$hasValidTicket) || $mustReChallenge) {
