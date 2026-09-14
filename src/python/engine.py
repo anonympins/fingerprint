@@ -2744,6 +2744,12 @@ class FingerprintEngine:
             if pending_device_id and not existing_device_id:
                 cookie_dropping_score = 100.0
             device_id = str(uuid.uuid4())
+            is_https = (
+                 context.headers.get("x-forwarded-proto") == "https" or 
+                 context.headers.get("x-forwarded-ssl") == "on" or 
+                 context.headers.get("x-url-scheme") == "https"
+            )
+            secure_option = is_https or (self.config.get("env") == "production")
             new_cookie = {
                 "name": "device_id",
                 "value": device_id,
@@ -2751,6 +2757,8 @@ class FingerprintEngine:
                     "httponly": True,
                     "samesite": "Strict",
                     "path": "/",
+                     "secure": secure_option,
+                     **({"partitioned": True} if secure_option else {})
                 }
             }
             context.cookies["device_id"] = device_id
@@ -3033,13 +3041,25 @@ class FingerprintEngine:
                     ticket = str(uuid.uuid4())
                     await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
                     MetricsManager.increment_counter("challenges_solved_total")
+                    is_https = (
+                        context.headers.get("x-forwarded-proto") == "https" or 
+                        context.headers.get("x-forwarded-ssl") == "on" or 
+                        context.headers.get("x-url-scheme") == "https"
+                    )
+                    secure_option = is_https or (self.config.get("env") == "production")
                     return {
                         "action": "redirect",
                         "path": context.path,
                         "cookie": {
                             "name": "pow_clearance",
                             "value": ticket,
-                            "options": {"httponly": True, "max_age": 3600, "path": "/"}
+                            "options": {
+                                "httponly": True, 
+                                "secure": secure_option,
+                                "max_age": 3600, 
+                                "path": "/",
+                                **({"partitioned": True} if secure_option else {})
+                            }
                         }
                     }
                 except Exception as e:
@@ -3064,13 +3084,25 @@ class FingerprintEngine:
                     MetricsManager.increment_counter("challenges_solved_total")
                     
                     clean_path = RequestUtils.clean_url_from_pow_params(context.path, context.query_params)
+                    is_https = (
+                        context.headers.get("x-forwarded-proto") == "https" or 
+                        context.headers.get("x-forwarded-ssl") == "on" or 
+                        context.headers.get("x-url-scheme") == "https"
+                    )
+                    secure_option = is_https or (self.config.get("env") == "production")
                     return {
                         "action": "redirect",
                         "path": clean_path,
                         "cookie": {
                             "name": "pow_clearance",
                             "value": ticket,
-                            "options": {"httponly": True, "max_age": 3600, "path": "/"}
+                            "options": {
+                                "httponly": True, 
+                                "secure": secure_option,
+                                "max_age": 3600, 
+                                "path": "/",
+                                **({"partitioned": True} if secure_option else {})
+                            }
                         }
                     }
                 else:
@@ -3101,13 +3133,25 @@ class FingerprintEngine:
                     ticket = str(uuid.uuid4())
                     await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
                     MetricsManager.increment_counter("challenges_solved_total")
+                    is_https = (
+                        context.headers.get("x-forwarded-proto") == "https" or 
+                        context.headers.get("x-forwarded-ssl") == "on" or 
+                        context.headers.get("x-url-scheme") == "https"
+                    )
+                    secure_option = is_https or (self.config.get("env") == "production")
                     return {
                         "action": "redirect",
                         "path": context.path,
                         "cookie": {
                             "name": "pow_clearance",
                             "value": ticket,
-                            "options": {"httponly": True, "max_age": 3600, "path": "/"}
+                            "options": {
+                                "httponly": True, 
+                                "secure": secure_option,
+                                "max_age": 3600, 
+                                "path": "/",
+                                **({"partitioned": True} if secure_option else {})
+                            }
                         }
                     }
                 else:
@@ -4188,6 +4232,8 @@ class ASGIFingerprintMiddleware:
                     cookie_val += "; HttpOnly"
                 if c["options"].get("secure"):
                     cookie_val += "; Secure"
+                if c["options"].get("partitioned"):
+                    cookie_val += "; Partitioned"
                 if "max_age" in c["options"]:
                     cookie_val += f"; Max-Age={c['options']['max_age']}"
                 res_headers.append((b"set-cookie", cookie_val.encode("utf-8")))
@@ -4207,6 +4253,8 @@ class ASGIFingerprintMiddleware:
                         cookie_val += "; HttpOnly"
                     if c["options"].get("secure"):
                         cookie_val += "; Secure"
+                    if c["options"].get("partitioned"):
+                        cookie_val += "; Partitioned"
                     if "max_age" in c["options"]:
                         cookie_val += f"; Max-Age={c['options']['max_age']}"
                     event["headers"].append((b"set-cookie", cookie_val.encode("utf-8")))
@@ -4325,6 +4373,8 @@ class WSGIFingerprintMiddleware:
                     cookie_val += "; HttpOnly"
                 if c["options"].get("secure"):
                     cookie_val += "; Secure"
+                if c["options"].get("partitioned"):
+                    cookie_val += "; Partitioned"
                 if "max_age" in c["options"]:
                     cookie_val += f"; Max-Age={c['options']['max_age']}"
                 res_headers.append(("Set-Cookie", cookie_val))
@@ -4342,6 +4392,8 @@ class WSGIFingerprintMiddleware:
                     cookie_val += "; HttpOnly"
                 if c["options"].get("secure"):
                     cookie_val += "; Secure"
+                if c["options"].get("partitioned"):
+                    cookie_val += "; Partitioned"
                 if "max_age" in c["options"]:
                     cookie_val += f"; Max-Age={c['options']['max_age']}"
                 response_headers.append(("Set-Cookie", cookie_val))

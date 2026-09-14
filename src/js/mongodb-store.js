@@ -23,58 +23,144 @@ export function createMongoDbStore(db, collectionName = 'fingerprint_store') {
   const replacer = (k, v) => (v instanceof Set ? Array.from(v) : v);
   const reviver = (k, v) => (k === 'ips' && Array.isArray(v) ? new Set(v) : v);
 
+  const localStore = new Map();
+  const localTimeouts = new Map();
+  let isDown = false;
+  let reconnecting = false;
+
+  const triggerFallback = () => {
+    if (!isDown) {
+      isDown = true;
+      attemptReconnection();
+    }
+  };
+
+  const attemptReconnection = () => {
+    if (reconnecting) return;
+    reconnecting = true;
+    const interval = setInterval(async () => {
+      try {
+        if (db.admin) {
+          await db.admin().ping();
+        } else {
+          await collection.findOne({}, { projection: { _id: 1 } });
+        }
+        isDown = false;
+        reconnecting = false;
+        clearInterval(interval);
+      } catch (err) {
+        // Toujours déconnecté
+      }
+    }, 5000);
+    if (interval.unref) interval.unref();
+  };
+
+  const setLocal = (key, value, ttl) => {
+    localStore.set(key, value);
+    if (localTimeouts.has(key)) {
+      clearTimeout(localTimeouts.get(key));
+    }
+    if (ttl && ttl > 0) {
+      const timeout = setTimeout(() => {
+        localStore.delete(key);
+        localTimeouts.delete(key);
+      }, ttl * 1000);
+      if (timeout.unref) timeout.unref();
+      localTimeouts.set(key, timeout);
+    }
+  };
+
   return {
     async get(key) {
-      const doc = await collection.findOne({ _id: key });
-      if (!doc) return null;
-
-      // Active expiration check to bypass eventual consistency of MongoDB's 60s TTL cleanup daemon
-      if (doc.expiresAt && new Date(doc.expiresAt) < new Date()) {
-        await this.delete(key);
-        return null;
+      if (isDown) {
+        return localStore.get(key) || null;
       }
-
       try {
-        return JSON.parse(doc.value, reviver);
+        const doc = await collection.findOne({ _id: key });
+        if (!doc) return null;
+
+        // Active expiration check to bypass eventual consistency of MongoDB's 60s TTL cleanup daemon
+        if (doc.expiresAt && new Date(doc.expiresAt) < new Date()) {
+          await this.delete(key);
+          return null;
+        }
+
+        try {
+          return JSON.parse(doc.value, reviver);
+        } catch (e) {
+          // Fallback for legacy un-serialized raw values
+          return doc.value;
+        }
       } catch (e) {
-        // Fallback for legacy un-serialized raw values
-        return doc.value;
+        triggerFallback();
+        return localStore.get(key) || null;
       }
     },
     async set(key, value, ttl) {
-      const stringValue = JSON.stringify(value, replacer);
-      const doc = {
-        _id: key,
-        value: stringValue,
-      };
-
-      if (ttl && ttl > 0) {
-        // Set the expiration date for the TTL index.
-        doc.expiresAt = new Date(Date.now() + ttl * 1000);
+      if (isDown) {
+        setLocal(key, value, ttl);
+        return;
       }
+      try {
+        const stringValue = JSON.stringify(value, replacer);
+        const doc = {
+          _id: key,
+          value: stringValue,
+        };
 
-      await collection.updateOne(
-        { _id: key },
-        { $set: doc },
-        { upsert: true }
-      );
+        if (ttl && ttl > 0) {
+          // Set the expiration date for the TTL index.
+          doc.expiresAt = new Date(Date.now() + ttl * 1000);
+        }
+
+        await collection.updateOne(
+          { _id: key },
+          { $set: doc },
+          { upsert: true }
+        );
+      } catch (e) {
+        triggerFallback();
+        setLocal(key, value, ttl);
+      }
     },
     async has(key) {
-      const doc = await collection.findOne({ _id: key }, { projection: { expiresAt: 1 } });
-      if (!doc) return false;
-
-      if (doc.expiresAt && new Date(doc.expiresAt) < new Date()) {
-        await this.delete(key);
-        return false;
+      if (isDown) {
+        return localStore.has(key);
       }
-      return true;
+      try {
+        const doc = await collection.findOne({ _id: key }, { projection: { expiresAt: 1 } });
+        if (!doc) return false;
+
+        if (doc.expiresAt && new Date(doc.expiresAt) < new Date()) {
+          await this.delete(key);
+          return false;
+        }
+        return true;
+      } catch (e) {
+        triggerFallback();
+        return localStore.has(key);
+      }
     },
     async delete(key) {
-      await collection.deleteOne({ _id: key });
+      if (localTimeouts.has(key)) {
+        clearTimeout(localTimeouts.get(key));
+        localTimeouts.delete(key);
+      }
+      localStore.delete(key);
+      if (isDown) return;
+      try {
+        await collection.deleteOne({ _id: key });
+      } catch (e) {
+        triggerFallback();
+      }
     },
     async init() {
-      // Automates index configuration
-      await collection.createIndex({ "expiresAt": 1 }, { expireAfterSeconds: 0 });
+      try {
+        // Automates index configuration
+        await collection.createIndex({ "expiresAt": 1 }, { expireAfterSeconds: 0 });
+      } catch (e) {
+        triggerFallback();
+      }
     }
   };
 }

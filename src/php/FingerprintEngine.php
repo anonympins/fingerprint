@@ -518,13 +518,19 @@
 
              $deviceId = bin2hex(random_bytes(16)); // UUID-like
 
+             $isHttps = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
+                 (isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ||
+                 ($context->getHeader('x-forwarded-proto') === 'https');
+             $secureOption = $isHttps || $this->isProduction;
+
              // Préparer le cookie à envoyer
              $newCookie = [
                  'name' => 'device_id',
                  'value' => $deviceId,
                  'options' => [
                      'httponly' => true,
-                     'secure' => $this->isProduction,
+                     'secure' => $secureOption,
+                     'partitioned' => $secureOption,
                      'samesite' => 'Strict',
                      'path' => '/',
                  ]
@@ -1002,15 +1008,31 @@
                  if ($isValid) {
                      $store->delete("secret:{$powNonce}");
                      $ticketTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000;
-                    MetricsManager::incrementCounter('challenges_solved_total');
+                     MetricsManager::incrementCounter('challenges_solved_total');
                      $this->log('Challenge solution valid - issuing ticket', ['ticketMaxAge' => $ticketTtl]);
- 
+
+                     $isHttps = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
+                         (isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ||
+                         ($context->getHeader('x-forwarded-proto') === 'https');
+                     $secureOption = $isHttps || $this->isProduction;
+
                      return [
                          'action' => 'redirect',
                          'path' => RequestUtils::cleanUrlFromPowParams($challengeContext['originalPath'] ?? '/', $context->query),
                          'score' => 0.0,
                          'vector' => ['challenge_solved' => 100],
-                         'cookie' => ['name' => 'pow_clearance', 'value' => $ticket, 'options' => ['httponly' => true, 'secure' => $this->isProduction, 'expires' => time() + ($ticketTtl / 1000), 'path' => '/']]
+                         'cookie' => [
+                             'name' => 'pow_clearance',
+                             'value' => $ticket,
+                             'options' => [
+                                 'httponly' => true,
+                                 'secure' => $secureOption,
+                                 'samesite' => 'Strict',
+                                 'expires' => time() + ($ticketTtl / 1000),
+                                 'path' => '/',
+                                 'partitioned' => $secureOption,
+                             ]
+                         ]
                      ];
                  }
              }
@@ -1019,7 +1041,7 @@
              $this->log('Challenge solution invalid or context expired', ['nonce' => $powNonce], 'warn');
              $suspicionVector['honeypotScore'] = 100.0;
          }
- 
+
          // 3. Vérifier un ticket existant
          $hasValidTicket = false;
          $powCookie = $context->cookies['pow_clearance'] ?? null;
@@ -1034,7 +1056,7 @@
              // $this->log('Valid clearance ticket found');
              // return ['action' => 'next', 'score' => 0.0, 'vector' => ['ticket_valid' => 100]];
          }
- 
+
          // 4. Calculer le vecteur et le score de suspicion
          // Résoudre l'identité et vérifier le statut "condamné"
          $store = StoreManager::getStore();
@@ -1065,7 +1087,7 @@
             RequestUtils::updateSubnetMetrics($context, $deviceId, $finalScore);
             MetricsManager::observeValue('suspicion_score', $finalScore, ['action' => 'high_score_subnet_update']);
          }
- 
+
          // Logique pour challenger les nouveaux appareils (déplacée ici pour avoir le score final)
          $isNewDevice = $identity['newCookie'] !== null;
          if ($isNewDevice && ($this->securityConfig['challengeNewDevices'] ?? false) && $finalScore < $thresholds['low']) {
@@ -1075,7 +1097,7 @@
              ]);
              $finalScore = (float)$thresholds['low'];
          }
- 
+
          // Vérifier les URL pièges (après calcul du score)
          $lastNonce = $deviceData['lastChallengeNonce'] ?? null;
          if ($lastNonce && ChallengeUtils::verifyTrapUrl($context->path, $context->query['sig'] ?? '', $lastNonce)) {
@@ -1094,7 +1116,7 @@
              }
              return $decision;
          }
- 
+
          // 5. Prendre une décision basée sur le score - Vérifier le blocage d'abord.
          $blockThreshold = $thresholds['block'] ?? 95;
          if ($finalScore >= $blockThreshold) {
@@ -1132,13 +1154,13 @@
 
              $highThreshold = $thresholds['high'] ?? 75;
              $mustReChallenge = $finalScore >= $highThreshold && $hasValidTicket;
- 
+
              $lowThreshold = $thresholds['low'] ?? 20;
              if (($finalScore >= $lowThreshold && !$hasValidTicket) || $mustReChallenge) {
                  if ($mustReChallenge) {
                      $this->log('High suspicion score detected - overriding valid ticket to re-issue challenge', ['finalScore' => $finalScore, 'deviceId' => $deviceId]);
                  }
- 
+
                  // --- AJOUT: Limiteur de débit (Token Bucket) ---
                  $rateLimitPassed = ChallengeUtils::checkChallengeRateLimit($context->clientIp);
                  if (!$rateLimitPassed) {
@@ -1158,9 +1180,9 @@
                      }
                      return $decision;
                  }
- 
+
                  $decision = ['action' => 'challenge', 'score' => $finalScore, 'vector' => $suspicionVector, 'status' => 403];
- 
+
                  if ($this->dryRun) {
                     MetricsManager::incrementCounter('requests_total', ['status' => 'dry_run_challenge']);
                      $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
@@ -1169,10 +1191,10 @@
                      unset($decision['status']);
                      return $decision;
                  }
- 
+
                 MetricsManager::incrementCounter('requests_total', ['status' => 'challenged']);
                  $this->log('Suspicious request - selecting challenge type', ['finalScore' => $finalScore]);
- 
+
                  $nonce = bin2hex(random_bytes(16));
                  $clientSecret = bin2hex(random_bytes(16));
                  $highThreshold = $thresholds['high'] ?? 75;
@@ -1274,10 +1296,10 @@
                  // Alignement linéaire parfait du ratio d'effort CPU/Mémoire
                  $memActivationFactor = $suspicionFactor;
                  $memDifficulty = (int)round($memActivationFactor * 48); // 0 à 48MB
- 
+
                  $originalFingerprint = RequestUtils::getCompositeDeviceHash($context);
                  $baseBlock = ChallengeUtils::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint);
- 
+
                  $challengeContext = [
                      'clientSecret' => $clientSecret,
                      'cpuTarget' => $cpuChallengeDetails['target'],
@@ -1287,22 +1309,22 @@
                      'baseBlock' => $baseBlock,
                      'originalPath' => $context->path,
                  ];
- 
+
                  $store->set("secret:{$nonce}", $challengeContext, $this->securityConfig['challengeTtl'] ?? 300);
- 
+
                  // Associer le nonce au device pour la vérification des URL pièges
                  if ($deviceData) {
                      $deviceData['lastChallengeNonce'] = $nonce;
                      $store->set("device:{$deviceId}", $deviceData); // @phpstan-ignore-line
                  }
- 
+
                  $trapUrls = [ChallengeUtils::generateTrapUrl($nonce), ChallengeUtils::generateTrapUrl($nonce)];
                  $this->log('Challenge issued', ['nonce' => $nonce, 'ttl' => $this->securityConfig['challengeTtl'] ?? 300]);
- 
+
                  if ($this->logger) {
                      $this->logger->log('info', 'challenge_issued', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
                  }
- 
+
                  // Pour les API, retourner un challenge JSON
                  if ($isApiRequest) {
                      $challengePayload = [
@@ -1319,7 +1341,7 @@
                  } else {
                      // Pour les navigateurs, retourner une page HTML
                      $pageBody = ChallengeUtils::generateCombinedPoWChallengePage(
-                         $cpuChallengeDetails, $memDifficulty, $clientSecret, 
+                         $cpuChallengeDetails, $memDifficulty, $clientSecret,
                          $this->securityConfig, $trapUrls, $originalFingerprint
                      );
                      $decision['body'] = $pageBody;
@@ -1341,12 +1363,12 @@
                  $response = ['action' => 'next', 'score' => $finalScore, 'vector' => $suspicionVector, 'intendedAction' => 'next'];
              }
          }
- 
+
          // Si un nouveau cookie d'identification a été généré, on l'ajoute à la réponse.
          if (isset($context->newCookieForResponse)) {
              $response['newCookieForResponse'] = $context->newCookieForResponse;
          }
- 
+
          return $response;
      }
 
@@ -1358,7 +1380,7 @@
          if (empty($operationType) || empty($operationName)) {
              return false;
          }
- 
+
          $whitelistRules = $this->securityConfig['whitelist'] ?? [];
          $graphqlRule = null;
          foreach ($whitelistRules as $rule) {
@@ -1367,23 +1389,23 @@
                  break;
              }
          }
- 
+
          if (empty($graphqlRule['entries'])) {
              return false;
          }
- 
+
          foreach ($graphqlRule['entries'] as $entry) {
              [$entryType, $entryName] = explode(':', $entry, 2);
              if ($entryType !== $operationType) continue;
- 
+
              if ($entryName === $operationName || $entryName === '*') return true;
- 
+
              if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) return true;
          }
- 
+
          return false;
      }
- 
+
      /**
       * Vérifie si une requête provient d'un bot légitime et whitelisté (ex: Googlebot)
       * en utilisant des recherches DNS inversées et directes. Le résultat est mis en cache.
@@ -1445,7 +1467,7 @@
                  $store->set($cacheKey, 'failed', 300); // 5 min negative caching
                  return false;
              }
- 
+
              // 2. Forward DNS lookup with strict 500ms timeout
              $ips = [];
              $resolvedA = self::dnsResolveUdp($validHostname, 'A', 0.5);
@@ -1463,7 +1485,7 @@
                  return false;
              }
              $ips = array_merge($ips, $resolvedAaaa);
- 
+
              if (in_array($context->client_ip, $ips, true)) {
                  self::recordDnsSuccess();
                  $store->set($cacheKey, 'verified', 86400);

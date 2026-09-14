@@ -2887,12 +2887,19 @@ async function resolveRequestIdentity(context, securityConfig = {}) {
     // Case 2: New user or lost/invalid cookie.
     deviceId = crypto.randomUUID(); // Generate a new "passport".
 
+    const isHttps = context.headers?.['x-forwarded-proto'] === 'https' || 
+                    context.rawReq?.secure || 
+                    context.rawReq?.protocol === 'https' ||
+                    context.rawReq?.connection?.encrypted;
+    const secureOption = isHttps || process.env.NODE_ENV === "production";
+
     // Return the intention to set a cookie.
     newCookie = {
       name: "device_id",
       value: deviceId,
       options: {
-        httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict",
+        httpOnly: true, secure: secureOption, sameSite: "strict",
+        ...(secureOption && { partitioned: true }),
         // Le maxAge est maintenant configurable. Par défaut, c'est un cookie de session.
         ...(securityConfig.deviceIdCookieMaxAge && { maxAge: securityConfig.deviceIdCookieMaxAge }),
       }
@@ -4081,6 +4088,11 @@ export class FingerprintEngine {
             const finalQueryString = finalSearchParams.toString();
             const finalRedirectPath = finalQueryString ? `${originalUrl.pathname}?${finalQueryString}` : originalUrl.pathname;
             this._log('Redirecting to clean path', { finalRedirectPath, cookieMaxAge: finalTtl });
+            const isHttps = requestContext.headers?.['x-forwarded-proto'] === 'https' || 
+                            requestContext.rawReq?.secure || 
+                            requestContext.rawReq?.protocol === 'https' ||
+                            requestContext.rawReq?.connection?.encrypted;
+            const secureOption = isHttps || this.isProduction;
             return {
               action: 'redirect',
               path: finalRedirectPath,
@@ -4089,7 +4101,13 @@ export class FingerprintEngine {
               cookie: {
                 name: 'pow_clearance',
                 value: ticket, // The ticket itself
-                options: { httpOnly: true, secure: this.isProduction, maxAge: finalTtl } // Options for setting the cookie
+                options: { 
+                  httpOnly: true, 
+                  secure: secureOption, 
+                  sameSite: 'strict',
+                  ...(secureOption && { partitioned: true }),
+                  maxAge: finalTtl 
+                } // Options for setting the cookie
               }
             };
         } else {
