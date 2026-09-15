@@ -70,7 +70,7 @@ Collaborate with external security entities and decentralize bot detection.
 * **Configuration**: Integrating trusted peers such as `primals.net` in PHP, Node.js, and Python.
 * **Evaluation & Privacy**: How peer trust weights translate to suspicion scores with strict data anonymization.
 
-### 10. Ed25519 Key Setup and Configuration
+### 10. [Ed25519 Key Setup and Configuration](ed25519_keys)
 
 
 ---
