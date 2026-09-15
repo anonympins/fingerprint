@@ -32,6 +32,9 @@ public class FingerprintProperties {
     private Autotuning autotuning = new Autotuning();
     private List<WhitelistRule> whitelist = new ArrayList<>();
     private boolean allowCrossNetworkRoaming = false;
+    private boolean useAsymmetricTickets = true;
+    private String ed25519PrivateKey;
+    private String ed25519PublicKey;
 
     public boolean isEnabled() {
         return enabled;
@@ -201,6 +204,30 @@ public class FingerprintProperties {
         this.allowCrossNetworkRoaming = allowCrossNetworkRoaming;
     }
 
+    public boolean isUseAsymmetricTickets() {
+        return useAsymmetricTickets;
+    }
+
+    public void setUseAsymmetricTickets(boolean useAsymmetricTickets) {
+        this.useAsymmetricTickets = useAsymmetricTickets;
+    }
+
+    public String getEd25519PrivateKey() {
+        return ed25519PrivateKey;
+    }
+
+    public void setEd25519PrivateKey(String ed25519PrivateKey) {
+        this.ed25519PrivateKey = ed25519PrivateKey;
+    }
+
+    public String getEd25519PublicKey() {
+        return ed25519PublicKey;
+    }
+
+    public void setEd25519PublicKey(String ed25519PublicKey) {
+        this.ed25519PublicKey = ed25519PublicKey;
+    }
+
 
     // --- SOUS-CLASSES DE PROPRIETES TYPÉES ---
 
@@ -276,8 +303,6 @@ public class FingerprintProperties {
         public void setBotScore(double botScore) { this.botScore = botScore; }
         public double getCookieDroppingScore() { return cookieDroppingScore; }
         public void setCookieDroppingScore(double cookieDroppingScore) { this.cookieDroppingScore = cookieDroppingScore; }
-        public double getThreatIntelScore() { return threatIntelScore; }
-        public void setThreatIntelScore(double threatIntelScore) { this.threatIntelScore = threatIntelScore; }
         public double getClientHintsInconsistencyScore() { return clientHintsInconsistencyScore; }
         public void setClientHintsInconsistencyScore(double clientHintsInconsistencyScore) { this.clientHintsInconsistencyScore = clientHintsInconsistencyScore; }
         public double getClickVarianceScore() { return clickVarianceScore; }
@@ -294,6 +319,8 @@ public class FingerprintProperties {
         public void setRenderingAnomalyScore(double renderingAnomalyScore) { this.renderingAnomalyScore = renderingAnomalyScore; }
         public double getIpReputationScore() { return ipReputationScore; }
         public void setIpReputationScore(double ipReputationScore) { this.ipReputationScore = ipReputationScore; }
+        public double getThreatIntelScore() { return threatIntelScore; }
+        public void setThreatIntelScore(double threatIntelScore) { this.threatIntelScore = threatIntelScore; }
 
         public Map<String, Object> toMap() {
             Map<String, Object> map = new HashMap<>();
@@ -316,6 +343,7 @@ public class FingerprintProperties {
             map.put("botnetClusterScore", botnetClusterScore);
             map.put("tcpAnomalyScore", tcpAnomalyScore);
             map.put("quicAnomalyScore", quicAnomalyScore);
+            map.put("threatIntelScore", threatIntelScore);
             map.put("renderingAnomalyScore", renderingAnomalyScore);
             map.put("ipReputationScore", ipReputationScore);
             return map;

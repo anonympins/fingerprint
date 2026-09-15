@@ -1,4 +1,4 @@
-package com.anonympins.fingerprint;
+package com.anonympins.fingerprint.utils;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -7,8 +7,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.net.InetAddress;
 import java.security.NoSuchAlgorithmException;
-import java.util.stream.Collectors;
 import java.net.UnknownHostException;
+
+import com.anonympins.fingerprint.FingerprintBuilder;
+import com.anonympins.fingerprint.IStore;
+import com.anonympins.fingerprint.RequestContext;
 
 public class RequestUtils {
 
@@ -940,6 +943,14 @@ public class RequestUtils {
         return result;
     }
 
+    public static Map<String, Double> getThreatIntelScore(IStore store, String zkpY) {
+        Map<String, Double> result = new HashMap<>();
+        result.put("threatIntelScore", 0.0);
+        if (zkpY != null && store.has("banned-zkp-y:" + zkpY)) {
+            result.put("threatIntelScore", 100.0);
+        }
+        return result;
+    }
     public static String getIpSubnet(String ip, int ipv4Prefix, int ipv6Prefix) {
         try {
             InetAddress addr = InetAddress.getByName(ip);

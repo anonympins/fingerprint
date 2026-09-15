@@ -18,6 +18,7 @@ public class RequestContext {
     public String http2Fingerprint = null;
     public String tcpFingerprint = null;
     public String quicFingerprint = null;
+    public String zkpY = null;
 
     public RequestContext(String clientIp, String path, Map<String, String> headers,
                           Map<String, Object> queryParams, Map<String, Object> body,
@@ -44,6 +45,10 @@ public class RequestContext {
         this.tcpFingerprint = this.headers.get("x-tcp-fingerprint");
         this.quicFingerprint = this.headers.get("x-quic-fp");
         this.tlsSessionId = this.headers.getOrDefault("x-tls-session-id", this.headers.get("x-ssl-session-id"));
+        String zkpProof = this.headers.get("x-zkp-proof");
+        if (zkpProof != null && !zkpProof.isEmpty()) {
+            this.zkpY = zkpProof.split(":")[0];
+        }
     }
 
     public String getHeader(String name) {

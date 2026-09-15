@@ -51,6 +51,13 @@ public class FingerprintAutoConfiguration {
         config.put("pospace", properties.getPospace());
         config.put("whitelist", properties.getWhitelist());
         config.put("allowCrossNetworkRoaming", properties.isAllowCrossNetworkRoaming());
+        config.put("useAsymmetricTickets", properties.isUseAsymmetricTickets());
+        if (properties.getEd25519PrivateKey() != null) {
+            config.put("ed25519_private_key", properties.getEd25519PrivateKey());
+        }
+        if (properties.getEd25519PublicKey() != null) {
+            config.put("ed25519_public_key", properties.getEd25519PublicKey());
+        }
         return new FingerprintEngine(config, store);
     }
 

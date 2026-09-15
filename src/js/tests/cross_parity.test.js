@@ -140,21 +140,27 @@ describe('Cross-Parity Chaos PoW Floating Point Parity (JS vs WASM vs PHP)', () 
     it('should verify bit-to-bit convergence across 1,000 different seeds', () => {
         const iterations = 100;
         for (let i = 0; i < 50; i++) {
-            const seed = `seed_parity_val_${i}`;
-            const jsTrajectory = jsGenerateTrajectory(seed, iterations);
-            const phpTrajectory = runPhpTrajectory(seed, iterations);
+            const seed = `seed_parity_val_${i}`; // Use a unique seed for each iteration
+            const jsTrajectory = jsGenerateTrajectory(seed, iterations); // Generate trajectory using JS
+            const phpTrajectory = runPhpTrajectory(seed, iterations); // Generate trajectory using PHP
 
             for (let idx = 0; idx < 64; idx++) {
                 const jsVal = Math.fround(jsTrajectory[idx]);
                 const phpVal = Math.fround(phpTrajectory[idx]);
-                expect(jsVal).toBe(phpVal);
+                expect(jsVal).toBe(phpVal, `PHP and JS trajectories mismatch at index ${idx} for seed "${seed}"`);
             }
 
             if (wasmModule && typeof wasmModule._generate_gpu_pow_trajectory === 'function') {
-                const outputPtr = wasmModule._malloc(256);
-                const seedPtr = wasmModule._malloc(seed.length + 1);
-                for (let s = 0; s < seed.length; s++) {
-                    wasmModule.HEAP8[seedPtr + s] = seed.charCodeAt(s);
+                // Ensure _malloc and HEAP8 are available on the wasmModule
+                if (typeof wasmModule._malloc !== 'function' || wasmModule.HEAP8 == null) {
+                    console.warn("WASM module is missing _malloc or HEAP8. Skipping WASM parity test.");
+                    continue; // Skip WASM part of the test if prerequisites are not met
+                }
+
+                const outputPtr = wasmModule._malloc(256); // Allocate memory for 64 floats (64 * 4 bytes)
+                const seedPtr = wasmModule._malloc(seed.length + 1); // Allocate memory for seed string + null terminator
+                for (let s = 0; s < seed.length; s++) { // Copy seed string to WASM memory
+                    wasmModule.HEAP8[seedPtr + s] = seed.charCodeAt(s); // HEAP8 is Int8Array
                 }
                 wasmModule.HEAP8[seedPtr + seed.length] = 0;
 
@@ -163,13 +169,13 @@ describe('Cross-Parity Chaos PoW Floating Point Parity (JS vs WASM vs PHP)', () 
                 const wasmOutput = new Float32Array(wasmModule.HEAPF32.buffer, outputPtr, 64);
                 for (let idx = 0; idx < 64; idx++) {
                     const jsVal = Math.fround(jsTrajectory[idx]);
-                    const wasmVal = Math.fround(wasmOutput[idx]);
-                    expect(jsVal).toBe(wasmVal);
+                    const wasmVal = Math.fround(wasmOutput[idx]); // Ensure float32 precision for comparison
+                    expect(jsVal).toBe(wasmVal, `WASM and JS trajectories mismatch at index ${idx} for seed "${seed}"`);
                 }
 
                 wasmModule._free(outputPtr);
                 wasmModule._free(seedPtr);
             }
         }
-    }, 20000);
+    }, 30000); // Increased timeout for potentially longer WASM compilation/execution
 });

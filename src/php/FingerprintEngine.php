@@ -662,13 +662,13 @@
                  }
 
                  // Check 4: La stagnation (Lack of Entropy / Genericity)
-                 if ($uaParts['browser']) {
+                 if (is_string($uaParts['browser'])) {
                      $ja4Key = "ja4-browsers:{$ja4}";
                      $seenBrowsers = $store->get($ja4Key) ?: [];
                      if (!is_array($seenBrowsers)) {
                          $seenBrowsers = [];
                      }
-                     $browserFamily = explode('/', $uaParts['browser'])[0] ?? null;
+                     $browserFamily = explode('/', (string)$uaParts['browser'])[0] ?? null;
                      if ($browserFamily && !in_array($browserFamily, $seenBrowsers, true)) {
                          $seenBrowsers[] = $browserFamily;
                          $store->set($ja4Key, $seenBrowsers, 86400);
@@ -874,7 +874,7 @@
         
          $coopOp = $context->query['coop_op'] ?? null;
          if ($coopOp) {
-             $result = ChallengeUtils::handleCooperativeRequest($context->query);
+             $result = ChallengeUtils::handleCooperativeRequest($context->query, $context->clientIp, $this->securityConfig);
              return [
                  'action' => 'challenge',
                  'status' => 200,
@@ -1125,6 +1125,24 @@
                 MetricsManager::incrementCounter('requests_total', ['status' => 'blocked']);
                  $this->logger->log('info', 'request_blocked', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
              }
+
+             // Federated Threat Intelligence & ZKP Synchronization
+             $zkpProof = $context->getHeader('x-zkp-proof') ?? $context->query['pow_zkp'] ?? '';
+             $parts = explode(':', $zkpProof);
+             if (count($parts) === 3) {
+                 $zkpY = $parts[0];
+                 $zkpT = $parts[1];
+                 $zkpS = $parts[2];
+                 // 1. Valider cryptographiquement la preuve avant de bannir/diffuser
+                 if (ChallengeUtils::verifyZkpProof($zkpY, $zkpT, $zkpS)) {
+                     // 2. Dédoublonner : Ne diffuser que si la clé n'est pas déjà bannie
+                     if (!$store->has("banned-zkp-y:{$zkpY}")) {
+                         $store->set("banned-zkp-y:{$zkpY}", true, 86400 * 30);
+                         $this->broadcastBannedZkp($zkpY);
+                     }
+                 }
+             }
+
              $decision = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => $finalScore, 'vector' => $suspicionVector];
              if ($this->dryRun) {
                  $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
@@ -1405,6 +1423,84 @@
          }
 
          return false;
+     }
+
+
+     private function broadcastBannedZkp(string $zkpY): void
+     {
+         $peers = $this->securityConfig['federatedPeers'] ?? [];
+         if (empty($peers)) return;
+
+         $timestamp = (int)(microtime(true) * 1000);
+         $msg = "{$timestamp}:{$zkpY}";
+         
+         $signature = '';
+         $isAsymmetric = false;
+         
+         $privateKey = $_ENV['ED25519_PRIVATE_KEY'] ?? getenv('ED25519_PRIVATE_KEY');
+         if ($privateKey) {
+             try {
+                 $cleanKey = str_replace('\n', "\n", $privateKey);
+                 $pkeyObj = openssl_pkey_get_private($cleanKey);
+                 if ($pkeyObj && openssl_sign($msg, $sigBytes, $pkeyObj, null)) {
+                     $signature = bin2hex($sigBytes);
+                     $isAsymmetric = true;
+                 }
+             } catch (\Throwable $e) {
+                 error_log('[Fingerprint] Asymmetric broadcast signing failed: ' . $e->getMessage());
+             }
+         }
+
+         if (!$isAsymmetric) {
+             $secret = $this->securityConfig['federationSecret'] ?? ChallengeUtils::getPowSecret();
+             $signature = hash_hmac('sha256', $msg, $secret);
+         }
+
+         foreach ($peers as $peerUrl) {
+             $this->asyncPost($peerUrl . '?coop_op=share_threat_intel', [
+                 'zkpY' => $zkpY,
+                 'signature' => $isAsymmetric ? '' : $signature,
+                 'signature_ed25519' => $isAsymmetric ? $signature : '',
+                 'timestamp' => $timestamp
+             ]);
+         }
+     }
+
+     private function asyncPost(string $url, array $params): void
+     {
+         $parts = parse_url($url);
+         if ($parts === false) return;
+
+         $host = $parts['host'];
+         $port = $parts['port'] ?? ($parts['scheme'] === 'https' ? 443 : 80);
+         $path = ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '');
+         $scheme = $parts['scheme'] === 'https' ? 'ssl://' : '';
+
+         $postData = json_encode($params);
+
+         $fp = @stream_socket_client(
+             "{$scheme}{$host}:{$port}",
+             $errno,
+             $errstr,
+             0.5,
+             STREAM_CLIENT_CONNECT | STREAM_CLIENT_ASYNC_CONNECT
+         );
+
+         if ($fp) {
+             stream_set_blocking($fp, false);
+             $out = "POST {$path} HTTP/1.1\r\n";
+             $out .= "Host: {$host}\r\n";
+             $out .= "Content-Type: application/json\r\n";
+             $out .= "Content-Length: " . strlen($postData) . "\r\n";
+             $out .= "X-Federation-Signature: " . ($params['signature'] ?? '') . "\r\n";
+             $out .= "X-Federation-Signature-Ed25519: " . ($params['signature_ed25519'] ?? '') . "\r\n";
+             $out .= "X-Federation-Timestamp: " . ($params['timestamp'] ?? '') . "\r\n";
+             $out .= "Connection: Close\r\n\r\n";
+             $out .= $postData;
+
+             @fwrite($fp, $out);
+             @fclose($fp);
+         }
      }
 
      /**

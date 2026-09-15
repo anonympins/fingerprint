@@ -741,10 +741,39 @@ class ChallengeUtils:
         return random.choice(active_peers)
 
     @staticmethod
-    async def handle_cooperative_request(store, params: Dict[str, Any], client_ip: str = '127.0.0.1') -> Optional[Dict[str, Any]]:
+    async def handle_cooperative_request(store, params: Dict[str, Any], client_ip: str = '127.0.0.1', headers: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
         op = params.get("coop_op")
         if not op:
             return None
+
+        if op == "share_threat_intel":
+            zkp_y = params.get("zkpY") or ""
+            hdrs = headers or {}
+            signature = params.get("signature") or hdrs.get("x-federation-signature") or ""
+            timestamp_str = params.get("timestamp") or hdrs.get("x-federation-timestamp") or "0"
+            try:
+                timestamp = int(timestamp_str)
+            except ValueError:
+                timestamp = 0
+
+            if not zkp_y or not signature or not timestamp:
+                return {"error": "Missing threat intel parameters"}
+
+            # Anti-replay (5 minutes safety window)
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - timestamp) > 300000:
+                return {"error": "Message expired or clock skew too high"}
+
+            secret = params.get("federationSecret") or os.environ.get("POW_SECRET") or "fallback-dev-secret-32-chars-minimum"
+            msg = f"{timestamp}:{zkp_y}"
+            expected_sig = hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+            if not hmac.compare_digest(expected_sig, signature):
+                return {"error": "Invalid federation signature"}
+
+            # Ban the ZKP public key for 30 days
+            await store.set(f"banned-zkp-y:{zkp_y}", True, 86400 * 30)
+            return {"status": "synchronized"}
 
         node_id = params.get("node_id") or ""
         if not node_id:
@@ -2495,6 +2524,36 @@ class FingerprintEngine:
             config (Dict[str, Any]): The security configuration dictionary.
             store (InMemoryStore): An instance of a data store (e.g., InMemoryStore, RedisStore).
         """
+        # Bind Ed25519 keys if passed via config
+        if config.get("ed25519_private_key"):
+            os.environ["ED25519_PRIVATE_KEY"] = config["ed25519_private_key"]
+        if config.get("ed25519_public_key"):
+            os.environ["ED25519_PUBLIC_KEY"] = config["ed25519_public_key"]
+
+        # Auto-generate Ed25519 key pair on load if indicated and keys are not set
+        if (config.get("useAsymmetricTickets") or config.get("ed25519") == "auto") and not os.environ.get("ED25519_PRIVATE_KEY"):
+            try:
+                from cryptography.hazmat.primitives.asymmetric import ed25519
+                from cryptography.hazmat.primitives import serialization
+
+                private_key = ed25519.Ed25519PrivateKey.generate()
+                private_pem = private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption()
+                ).decode("utf-8")
+
+                public_key = private_key.public_key()
+                public_pem = public_key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                ).decode("utf-8")
+
+                os.environ["ED25519_PRIVATE_KEY"] = private_pem
+                os.environ["ED25519_PUBLIC_KEY"] = public_pem
+            except Exception as e:
+                print(f"[Fingerprint] Native Ed25519 key generation failed: {e}")
+
         self.config = config
         self.store = store
         self.thresholds = config.get("thresholds", {"low": 20, "high": 75, "block": 95})
@@ -3022,6 +3081,61 @@ class FingerprintEngine:
         for key, weight in weights.items():
             score += suspicion_vector.get(key, 0.0) * weight
         return min(100.0, score)
+
+    async def broadcast_banned_zkp(self, zkp_y: str) -> None:
+        peers = self.config.get("federatedPeers") or []
+        secret = self.config.get("federationSecret") or os.environ.get("POW_SECRET") or "fallback-dev-secret-32-chars-minimum"
+        if not peers:
+            return
+
+        timestamp = int(time.time() * 1000)
+        msg = f"{timestamp}:{zkp_y}"
+        signature = hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        import urllib.parse
+        import asyncio
+        import json
+
+        # Semaphore to cap maximum concurrent sockets and scale gracefully
+        semaphore = asyncio.Semaphore(10)
+
+        async def send_one(peer_url):
+            try:
+                async with semaphore:
+                    try:
+                        parsed = urllib.parse.urlparse(peer_url)
+                        host = parsed.hostname
+                        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                        path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+                        connector = "?" if "?" not in path else "&"
+                        path = f"{path}{connector}coop_op=share_threat_intel"
+
+                        reader, writer = await asyncio.wait_for(
+                            asyncio.open_connection(host, port, ssl=(parsed.scheme == "https")),
+                            timeout=0.5
+                        )
+
+                        post_data = json.dumps({"zkpY": zkp_y})
+                        request = (
+                            f"POST {path} HTTP/1.1\r\n"
+                            f"Host: {host}\r\n"
+                            f"Content-Type: application/json\r\n"
+                            f"Content-Length: {len(post_data)}\r\n"
+                            f"X-Federation-Signature: {signature}\r\n"
+                            f"X-Federation-Timestamp: {timestamp}\r\n"
+                            f"Connection: close\r\n\r\n"
+                            f"{post_data}"
+                        )
+                        writer.write(request.encode("utf-8"))
+                        await writer.drain()
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        await asyncio.gather(*(send_one(peer) for peer in peers), return_exceptions=True)
 
     async def get_suspicion_score(self, context: RequestContext) -> float:
         await self.translate_polymorphic_headers(context)

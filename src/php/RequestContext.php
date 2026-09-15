@@ -40,6 +40,7 @@ class RequestContext
     public ?string $http2Fingerprint = null;
     public ?string $quicFingerprint = null;
     public ?string $tcpFingerprint = null;
+    public ?string $zkpY = null; // NOUVEAU: Clé publique ZKP du client
 
     /**
      * @param string $clientIp
@@ -79,6 +80,7 @@ class RequestContext
         $this->http2Fingerprint = $this->headers['x-http2-fingerprint'] ?? null;
         $this->tcpFingerprint = $this->headers['x-tcp-fingerprint'] ?? null;
         $this->quicFingerprint = $this->headers['x-quic-fp'] ?? null;
+        $this->zkpY = isset($this->headers['x-zkp-proof']) ? explode(':', $this->headers['x-zkp-proof'])[0] : null;
         $this->tlsSessionId = $this->headers['x-tls-session-id'] ?? $this->headers['x-ssl-session-id'] ?? null;
     }
     /**

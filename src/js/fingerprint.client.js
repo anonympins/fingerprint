@@ -921,9 +921,11 @@ const ClientLibrary = {
     async protectedFetch(resource, options = {}) {
         const fp = this.getDeviceFingerprint();
         const rawBehavior = this.getClientBehaviorMetrics();
+        const zkpProof = await this.generateZkpProof(fp); // Generate ZKP proof
         const behavior = await signMetrics(rawBehavior);
 
         const headers = new Headers(options.headers || {});
+        headers.set('X-ZKP-Proof', zkpProof); // Add ZKP proof to headers
         headers.set('X-Device-Fingerprint', fp);
         headers.set('X-Behavior-Metrics', JSON.stringify(behavior));
 

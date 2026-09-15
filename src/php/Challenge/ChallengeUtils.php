@@ -138,7 +138,7 @@ class ChallengeUtils
         return $activePeers[array_rand($activePeers)];
     }
 
-    public static function handleCooperativeRequest(array $params): ?array
+    public static function handleCooperativeRequest(array $params, string $clientIp = '127.0.0.1', array $config = []): ?array
     {
         $op = $params['coop_op'] ?? null;
         if (!$op) {
@@ -146,6 +146,67 @@ class ChallengeUtils
         }
 
         $store = StoreManager::getStore();
+
+
+        if ($op === 'share_threat_intel') {
+            $peers = $config['federatedPeers'] ?? [];
+            if (!empty($peers)) {
+                $allowedHosts = array_map(function ($url) {
+                    $host = parse_url($url, PHP_URL_HOST);
+                    return !empty($host) ? $host : $url;
+                }, $peers);
+
+                if (!in_array($clientIp, $allowedHosts, true)) {
+                    return ['error' => 'Unauthorized federation sender IP'];
+                }
+            }
+            $zkpY = $params['zkpY'] ?? '';
+            $headers = function_exists('getallheaders') ? array_change_key_case(getallheaders(), CASE_LOWER) : [];
+            $sigEd25519 = $params['signature_ed25519'] ?? $headers['x-federation-signature-ed25519'] ?? $_SERVER['HTTP_X_FEDERATION_SIGNATURE_ED25519'] ?? '';
+            $sigHmac = $params['signature'] ?? $headers['x-federation-signature'] ?? $_SERVER['HTTP_X_FEDERATION_SIGNATURE'] ?? '';
+            $timestamp = (int)($params['timestamp'] ?? $headers['x-federation-timestamp'] ?? $_SERVER['HTTP_X_FEDERATION_TIMESTAMP'] ?? 0);
+
+            if (empty($zkpY) || empty($timestamp)) {
+                return ['error' => 'Missing threat intel parameters'];
+            }
+
+            // Time window check (5 minutes anti-replay)
+            $now = (int)(microtime(true) * 1000);
+            if (abs($now - $timestamp) > 300000) {
+                return ['error' => 'Message expired or clock skew too high'];
+            }
+
+            $msg = "{$timestamp}:{$zkpY}";
+
+            if (!empty($sigEd25519)) {
+                $publicKey = $config['ed25519_public_key'] ?? $_ENV['ED25519_PUBLIC_KEY'] ?? getenv('ED25519_PUBLIC_KEY');
+                if (!$publicKey) {
+                    return ['error' => 'Missing public key for asymmetric verification'];
+                }
+                try {
+                    $cleanKey = str_replace('\n', "\n", $publicKey);
+                    $pubKeyObj = openssl_pkey_get_public($cleanKey);
+                    if (!$pubKeyObj || openssl_verify($msg, hex2bin($sigEd25519), $pubKeyObj, null) !== 1) {
+                        return ['error' => 'Invalid asymmetric federation signature'];
+                    }
+                } catch (\Throwable $e) {
+                    return ['error' => 'Asymmetric signature verification failed'];
+                }
+            } elseif (!empty($sigHmac)) {
+                $secret = $params['federationSecret'] ?? $config['federationSecret'] ?? self::getPowSecret();
+                $expectedSig = hash_hmac('sha256', $msg, $secret);
+                if (!hash_equals($expectedSig, $sigHmac)) {
+                    return ['error' => 'Invalid federation signature'];
+                }
+            } else {
+                return ['error' => 'Missing signature'];
+            }
+
+            // Ban the ZKP public key for 30 days
+            $store->set("banned-zkp-y:{$zkpY}", true, 86400 * 30);
+            return ['status' => 'synchronized'];
+        }
+
         $nodeId = $params['node_id'] ?? '';
         if (empty($nodeId)) {
             return ['error' => 'Missing node_id'];
@@ -334,7 +395,7 @@ class ChallengeUtils
     /**
      * Récupère la clé secrète pour les PoW depuis les variables d'environnement.
      */
-    private static function getPowSecret(): string
+    public static function getPowSecret(): string
     {
         $secret = $_ENV['POW_SECRET'] ?? getenv('POW_SECRET');
         if (!$secret && ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production') {
