@@ -66,6 +66,30 @@ $securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
 
 ---
 
+## Community Trusted Peer Lists
+
+You can connect to community-maintained trusted peers to instantly benefit from shared global threat intelligence. Below is a list of recommended community bootstrap nodes:
+
+*   `primals.net` (Main coordination node)
+*   `web.primals.net` (Web application reputation)
+*   `ici.primals.net` (Regional integration endpoint)
+*   `data.primals.net` (Shared threat intelligence database)
+*   `games.primals.net` (High-interaction environment pool)
+
+Example setup with community peers:
+
+```javascript
+federatedPeers: [
+    'https://primals.net/',
+    'https://web.primals.net/',
+    'https://ici.primals.net/',
+    'https://data.primals.net/',
+    'https://games.primals.net/'
+]
+```
+
+---
+
 ## Communication Protocol (Technical Specifications)
 
 Threat information is exchanged via an HTTP POST request containing the following parameters:
@@ -90,10 +114,10 @@ Threat information is exchanged via an HTTP POST request containing the followin
 
 To prevent a compromised node or an external attacker from injecting false alerts (poisoning) to block legitimate users, the engine applies several safeguards:
 
-* **Sender IP Validation**: The receiving node resolves the hostname of each URL in its own `federatedPeers` list. If the synchronization POST request comes from an IP address not resolved by that list, it is instantly rejected.
-* **Strict Cryptographic Signature**: The Ed25519 asymmetric signature prevents any tampering. Because the engine generates high-entropy key pairs automatically on startup if missing, each node has a unique, secure identity out-of-the-box.
-* **Clock Skew Control**: The absolute difference between the receiver's system timestamp and the emitted `X-Federation-Timestamp` must not exceed 5 minutes (300,000 ms). Beyond that, the request is rejected to prevent replay attacks.
-* **ZKP Cryptographic Validation**: Before being propagated or accepted, the Zero-Knowledge Proof of the banned terminal is mathematically validated by both the sender and the receiver to guarantee that the terminal actually generated this identity and that it is not a randomly forged identifier.
+*   **Sender IP Validation**: The receiving node resolves the hostname of each URL in its own `federatedPeers` list. If the synchronization POST request comes from an IP address not resolved by that list, it is instantly rejected.
+*   **Strict Cryptographic Signature**: The Ed25519 asymmetric signature prevents any tampering. Because the engine generates high-entropy key pairs automatically on startup if missing, each node has a unique, secure identity out-of-the-box.
+*   **Clock Skew Control**: The absolute difference between the receiver's system timestamp and the emitted `X-Federation-Timestamp` must not exceed 5 minutes (300,000 ms). Beyond that, the request is rejected to prevent replay attacks.
+*   **ZKP Cryptographic Validation**: Before being propagated or accepted, the Zero-Knowledge Proof of the banned terminal is mathematically validated by both the sender and the receiver to guarantee that the terminal actually generated this identity and that it is not a randomly forged identifier.
 
 ---
 
