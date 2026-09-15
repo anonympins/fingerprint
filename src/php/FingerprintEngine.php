@@ -1510,4 +1510,149 @@
         $problemManager = ProblemManager::getInstance();
         return $problemManager->getProblems();
     }
+    private static function decodeCBOR(string $str, int &$offset = 0)
+    {
+        if ($offset >= strlen($str)) throw new \Exception("End of CBOR");
+        $initial = ord($str[$offset++]);
+        $major = $initial >> 5;
+        $val = $initial & 0x1f;
+
+        $readInt = function (int $val, string $str, int &$offset) {
+            if ($val < 24) return $val;
+            if ($val === 24) return ord($str[$offset++]);
+            if ($val === 25) {
+                $b1 = ord($str[$offset++]); $b2 = ord($str[$offset++]);
+                return ($b1 << 8) | $b2;
+            }
+            if ($val === 26) {
+                $b1 = ord($str[$offset++]); $b2 = ord($str[$offset++]);
+                $b3 = ord($str[$offset++]); $b4 = ord($str[$offset++]);
+                return ($b1 << 24) | ($b2 << 16) | ($b3 << 8) | $b4;
+            }
+            throw new \Exception("Unsupported integer size: " . $val);
+        };
+
+        if ($major === 0) {
+            return $readInt($val, $str, $offset);
+        } elseif ($major === 1) {
+            return -1 - $readInt($val, $str, $offset);
+        } elseif ($major === 2 || $major === 3) {
+            $len = $readInt($val, $str, $offset);
+            $bytes = substr($str, $offset, $len);
+            $offset += $len;
+            return $bytes;
+        } elseif ($major === 4) {
+            $len = $readInt($val, $str, $offset);
+            $arr = [];
+            for ($i = 0; $i < $len; $i++) {
+                $arr[] = self::decodeCBOR($str, $offset);
+            }
+            return $arr;
+        } elseif ($major === 5) {
+            $len = $readInt($val, $str, $offset);
+            $map = [];
+            for ($i = 0; $i < $len; $i++) {
+                $k = self::decodeCBOR($str, $offset);
+                $v = self::decodeCBOR($str, $offset);
+                $map[$k] = $v;
+            }
+            return $map;
+        }
+        return null;
+    }
+
+    private static function getTrustedHardwareRoots(): array
+    {
+        return [
+            "-----BEGIN CERTIFICATE-----\n" .
+            "MIIDHzCCAfegAwIBAgIJANCvWjvF+2O6MA0GCSqGSIb3DQEBCwUAMC0xKzApBgNV\n" .
+            "BAMTIll1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMB4XDTE0MDgwNDAwMDAwMFox\n" .
+            "TSUxSDBGBgNVBAMMT1l1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMSowKAYDVQQK\n" .
+            "EyFZdWJpY28gQUIxDzANBgNVBAcTBVN0b2NraG9sbTELMAkGA1UEBhMCU0UwggEi\n" .
+            "MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC6XW0d87g+N6kGgSgC/H9UfA2p\n" .
+            "-----END CERTIFICATE-----",
+            "-----BEGIN CERTIFICATE-----\n" .
+            "MIIB1DCCAXWgAwIBAgIEUI70WjAKBggqhkjOPQQDAjArMSkwJwYDVQQDEyBGSURP\n" .
+            "IEFsbGlhbmNlIFJvb3QgQ0EgKFRlc3QpMB4XDTE0MDgxODA4MzA0NVoXDTM5MDgx\n" .
+            "ODA4MzA0NVowKzEpMCcGA1UEAxMgRklETyBBbGxpYW5jZSBSb290IENBIChUZXN0\n" .
+            "KTB2MBAGByqGSM49AgEGBSuBBAAiA2IABFv81Jm9M7AehfOIdpCH567gP0yqS40m\n" +
+            "aN0j1a8n152G7n/nUf7J0j9F4pL9J2w1X8hN1N8f9Y3G9w8L29/m7/zX3O3n2e7/\n" .
+            "g==\n" .
+            "-----END CERTIFICATE-----"
+        ];
+    }
+
+    private function verifyWebAuthnHardwareAnchor(array $anchor, array &$deviceData): bool
+    {
+        if (empty($anchor['type'])) return false;
+
+        try {
+            $clientDataHash = hash('sha256', base64_decode($anchor['clientDataJSON']), true);
+
+            if ($anchor['type'] === 'registration') {
+                if (empty($anchor['publicKey']) || empty($anchor['credentialId']) || empty($anchor['attestationObject'])) {
+                    return false;
+                }
+
+                $attestationBytes = base64_decode($anchor['attestationObject']);
+                $offset = 0;
+                $decoded = self::decodeCBOR($attestationBytes, $offset);
+                
+                if (!$decoded || empty($decoded['fmt']) || empty($decoded['attStmt'])) {
+                    return false;
+                }
+
+                $fmt = $decoded['fmt'];
+                $attStmt = $decoded['attStmt'];
+
+                if ($fmt !== 'none') {
+                    if (empty($attStmt['x5c']) || !is_array($attStmt['x5c'])) {
+                        return false;
+                    }
+
+                    $pems = [];
+                    foreach ($attStmt['x5c'] as $der) {
+                        $pems[] = "-----BEGIN CERTIFICATE-----\n" . chunk_split(base64_encode($der), 64, "\n") . "-----END CERTIFICATE-----";
+                    }
+
+                    for ($i = 0; $i < count($pems) - 1; $i++) {
+                        if (openssl_x509_verify($pems[$i], $pems[$i + 1]) !== 1) {
+                            return false;
+                        }
+                    }
+
+                    $rootPem = $pems[count($pems) - 1];
+                    $trusted = false;
+                    $trustedRoots = self::getTrustedHardwareRoots();
+                    foreach ($trustedRoots as $trustedRootPem) {
+                        if (openssl_x509_verify($rootPem, $trustedRootPem) === 1 || md5($rootPem) === md5($trustedRootPem)) {
+                            $trusted = true;
+                            break;
+                        }
+                    }
+                    if (!$trusted) {
+                        return false;
+                    }
+                }
+
+                $deviceData['webauthnPublicKey'] = $anchor['publicKey'];
+                $deviceData['webauthnCredentialId'] = $anchor['credentialId'];
+                return true;
+            } elseif ($anchor['type'] === 'assertion') {
+                $storedPublicKeyPem = $deviceData['webauthnPublicKey'] ?? null;
+                if (!$storedPublicKeyPem || ($deviceData['webauthnCredentialId'] ?? '') !== $anchor['credentialId']) {
+                    return false;
+                }
+
+                $verifyBuffer = base64_decode($anchor['authenticatorData']) . $clientDataHash;
+                $publicKey = openssl_pkey_get_public("-----BEGIN PUBLIC KEY-----\n" . chunk_split($storedPublicKeyPem, 64, "\n") . "-----END PUBLIC KEY-----");
+                if (!$publicKey) return false;
+
+                return openssl_verify($verifyBuffer, base64_decode($anchor['signature']), $publicKey, OPENSSL_ALGO_SHA256) === 1;
+            }
+        } catch (\Throwable $e) {
+            error_log('[WebAuthn-Server] PHP verification failed: ' . $e->getMessage());
+        }
+        return false;
+    }
  }

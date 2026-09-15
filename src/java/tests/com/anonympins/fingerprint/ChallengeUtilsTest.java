@@ -146,14 +146,78 @@ public class ChallengeUtilsTest {
     }
 
     @Test
-    public void testPlaceholderMethods() {
-        // Validation du placeholder de validation de Proof of Space
-        assertTrue(ChallengeUtils.verifySpacePoW("nonce", "sol", new ArrayList<>(), "seed", "secret"));
+    public void testVerifyGpuPowSuccess() {
+        String seed = "gpu-test-seed-xyz";
+        int difficulty = 8; // requiert que le premier octet soit égal à 0x00
 
-        // Validation du placeholder de validation de GPU PoW
-        assertTrue(ChallengeUtils.verifyGpuPow("seed", 100, "sol"));
+        // Brute-force rapide d'une solution valide pour le test
+        String validSolution = null;
+        for (int i = 0; i < 10000; i++) {
+            String candidate = "sol-" + i;
+            if (ChallengeUtils.verifyGpuPow(seed, difficulty, candidate)) {
+                validSolution = candidate;
+                break;
+            }
+        }
 
-        // Validation du rate limiter
-        assertTrue(ChallengeUtils.checkChallengeRateLimit("127.0.0.1"));
+        assertNotNull(validSolution, "Une solution aurait dû être trouvée avec une difficulté de 8 en moins de 10k itérations");
+        assertTrue(ChallengeUtils.verifyGpuPow(seed, difficulty, validSolution));
+    }
+
+    @Test
+    public void testVerifyGpuPowFailure() {
+        String seed = "gpu-test-seed-xyz";
+        // On teste une fausse solution
+        assertFalse(ChallengeUtils.verifyGpuPow(seed, 8, "wrong-solution-unlikely-to-have-8-leading-zeros"));
+    }
+
+    @Test
+    public void testVerifySpacePoWSuccess() {
+        String nonce = "space-challenge-nonce";
+        String seed = "space-test-seed";
+        String secret = "space-test-secret";
+        int k = 4; // Nombre minimal de preuves requis
+        int spaceSize = 8192;
+
+        // Simulation de la génération de preuves côté client
+        List<String> proofs = new ArrayList<>();
+        for (int i = 0; i < k; i++) {
+            String challengeKey = nonce + ":" + i;
+            long hashVal = Long.parseUnsignedLong(FingerprintBuilder.cyrb53(challengeKey, 0)) & 0xFFFFFFFFL;
+            int challengedIndex = (int) (hashVal % spaceSize);
+            proofs.add(FingerprintBuilder.cyrb53(seed + ":" + secret + ":" + challengedIndex, 0));
+        }
+
+        // Génération de la solution attendue
+        String combined = String.join("|", proofs);
+        String validSolution = FingerprintBuilder.cyrb53(combined + ":" + secret, 0);
+
+        assertTrue(ChallengeUtils.verifySpacePoW(nonce, validSolution, proofs, seed, secret));
+    }
+
+    @Test
+    public void testVerifySpacePoWFailure() {
+        String nonce = "space-challenge-nonce";
+        String seed = "space-test-seed";
+        String secret = "space-test-secret";
+        List<String> invalidProofs = Arrays.asList("p1", "p2", "p3", "p4");
+
+        assertFalse(ChallengeUtils.verifySpacePoW(nonce, "bad-solution", invalidProofs, seed, secret));
+    }
+
+    @Test
+    public void testCheckChallengeRateLimit() {
+        String ip = "192.168.1.100";
+
+        // 10 premières demandes autorisées
+        for (int i = 0; i < 10; i++) {
+            assertTrue(ChallengeUtils.checkChallengeRateLimit(ip));
+        }
+
+        // La 11e demande doit échouer (limite atteinte)
+        assertFalse(ChallengeUtils.checkChallengeRateLimit(ip));
+
+        // Une autre IP doit être indépendante et réussir
+        assertTrue(ChallengeUtils.checkChallengeRateLimit("192.168.1.101"));
     }
 }

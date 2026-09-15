@@ -175,6 +175,32 @@ public class FingerprintEngine {
         Map<String, Object> newCookie = (Map<String, Object>) identity.get("newCookie");
         String currentDeviceHash = (String) identity.get("currentDeviceHash"); // Récupérer le hash calculé
 
+        // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
+        String behaviorHeader = context.getHeader("x-behavior-metrics");
+        if (behaviorHeader != null && deviceData != null) {
+            try {
+                Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
+                if (metrics != null && metrics.containsKey("webauthnAnchor")) {
+                    Map<String, Object> anchor = (Map<String, Object>) metrics.get("webauthnAnchor");
+                    if (ChallengeUtils.verifyWebAuthnHardwareAnchor(anchor, deviceData)) {
+                        deviceData.put("webauthnVerified", true);
+                    }
+                }
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+
+        if (deviceData != null && Boolean.TRUE.equals(deviceData.get("webauthnVerified"))) {
+            Map<String, Object> res = new HashMap<>();
+            res.put("action", "next");
+            res.put("score", 0.0);
+            Map<String, Double> vec = new HashMap<>();
+            vec.put("webauthn_verified", 100.0);
+            res.put("vector", vec);
+            return res;
+        }
+
         if (deviceData != null && Boolean.TRUE.equals(deviceData.get("condemned"))) {
             Map<String, Object> res = new HashMap<>();
             res.put("action", "block");

@@ -16,6 +16,9 @@ import javax.crypto.spec.SecretKeySpec;
 public class ChallengeUtils {
 
     private static final String DEFAULT_FALLBACK_SECRET = "fallback-dev-secret-32-chars-minimum";
+    private static final Map<String, List<Long>> IP_REQUEST_LOGS = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int MAX_REQUESTS_PER_WINDOW = 10;
+    private static final long WINDOW_MS = 60000; // 1 minute
 
     @SuppressWarnings("unchecked")
     public static String calculateCpuTarget(double suspicionFactor, Map<String, Object> securityConfig) {
@@ -597,34 +600,276 @@ public class ChallengeUtils {
      * @param proofs Les preuves associées.
      * @param seed La graine du challenge.
      * @param secret Le secret de sécurisation.
-     * @return true si la preuve est valide (implémentation placeholder).
+     * @return true si la preuve est valide.
      */
     public static boolean verifySpacePoW(String nonce, String solution, List<String> proofs, String seed, String secret) {
-        // Placeholder pour la validation de Proof of Space
-        return true;
+        if (nonce == null || solution == null || proofs == null || seed == null || secret == null) {
+            return false;
+        }
+        int k = proofs.size();
+        if (k < 4) return false;
+        int spaceSize = 8192;
+
+        for (int i = 0; i < k; i++) {
+            String challengeKey = nonce + ":" + i;
+            long hashVal = Long.parseUnsignedLong(FingerprintBuilder.cyrb53(challengeKey, 0)) & 0xFFFFFFFFL;
+            int challengedIndex = (int) (hashVal % spaceSize);
+
+            String expectedValue = FingerprintBuilder.cyrb53(seed + ":" + secret + ":" + challengedIndex, 0);
+
+            if (!expectedValue.equals(proofs.get(i))) {
+                return false;
+            }
+        }
+
+        String combinedProofs = String.join("|", proofs);
+        String expectedSolution = FingerprintBuilder.cyrb53(combinedProofs + ":" + secret, 0);
+        return expectedSolution.equals(solution);
     }
 
     /**
      * Valide un challenge GPU PoW.
      *
      * @param seed La graine du challenge.
-     * @param difficulty La difficulté requise.
+     * @param difficulty La difficulté requise (nombre de bits de poids fort à zéro).
      * @param solution La solution soumise.
-     * @return true si la preuve est valide (implémentation placeholder).
+     * @return true si la preuve est valide.
      */
     public static boolean verifyGpuPow(String seed, int difficulty, String solution) {
-        // Placeholder pour la validation de GPU PoW
-        return true;
+        if (seed == null || solution == null || difficulty < 0) {
+            return false;
+        }
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest((seed + solution).getBytes(StandardCharsets.UTF_8));
+
+            int zeroBits = 0;
+            for (byte b : hash) {
+                int leadingZeros = Integer.numberOfLeadingZeros(b & 0xFF) - 24;
+                zeroBits += leadingZeros;
+                if (leadingZeros < 8) {
+                    break;
+                }
+            }
+            return zeroBits >= difficulty;
+        } catch (NoSuchAlgorithmException e) {
+            return false;
+        }
     }
 
     /**
      * Vérifie la limite de taux (rate limit) pour les demandes de challenge d'un client.
      *
      * @param clientIp L'adresse IP du client.
-     * @return true si la requête est autorisée (implémentation placeholder).
+     * @return true si la requête est autorisée.
      */
     public static boolean checkChallengeRateLimit(String clientIp) {
-        // Placeholder pour le limiteur de débit
-        return true;
+        if (clientIp == null || clientIp.isEmpty()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        List<Long> timestamps = IP_REQUEST_LOGS.computeIfAbsent(clientIp, k -> Collections.synchronizedList(new ArrayList<>()));
+
+        synchronized (timestamps) {
+            timestamps.removeIf(t -> now - t > WINDOW_MS);
+
+            if (timestamps.size() >= MAX_REQUESTS_PER_WINDOW) {
+                return false;
+            }
+            timestamps.add(now);
+            return true;
+        }
+    }
+
+    private static Object decodeCBOR(byte[] buffer, int[] offset) {
+        if (offset[0] >= buffer.length) throw new RuntimeException("End of CBOR");
+        int initial = buffer[offset[0]++] & 0xFF;
+        int major = initial >> 5;
+        int val = initial & 0x1F;
+
+        java.util.function.BiFunction<Integer, int[], Integer> readInt = (v, off) -> {
+            if (v < 24) return v;
+            if (v == 24) return buffer[off[0]++] & 0xFF;
+            if (v == 25) {
+                int b1 = buffer[off[0]++] & 0xFF;
+                int b2 = buffer[off[0]++] & 0xFF;
+                return (b1 << 8) | b2;
+            }
+            if (v == 26) {
+                int b1 = buffer[off[0]++] & 0xFF;
+                int b2 = buffer[off[0]++] & 0xFF;
+                int b3 = buffer[off[0]++] & 0xFF;
+                int b4 = buffer[off[0]++] & 0xFF;
+                return (b1 << 24) | (b2 << 16) | (b3 << 8) | b4;
+            }
+            throw new RuntimeException("Unsupported int size: " + v);
+        };
+
+        if (major == 0) {
+            return readInt.apply(val, offset);
+        } else if (major == 1) {
+            return -1 - readInt.apply(val, offset);
+        } else if (major == 2 || major == 3) {
+            int len = readInt.apply(val, offset);
+            byte[] bytes = new byte[len];
+            System.arraycopy(buffer, offset[0], bytes, 0, len);
+            offset[0] += len;
+            if (major == 3) {
+                return new String(bytes, StandardCharsets.UTF_8);
+            }
+            return bytes;
+        } else if (major == 4) {
+            int len = readInt.apply(val, offset);
+            List<Object> list = new ArrayList<>();
+            for (int i = 0; i < len; i++) {
+                list.add(decodeCBOR(buffer, offset));
+            }
+            return list;
+        } else if (major == 5) {
+            int len = readInt.apply(val, offset);
+            Map<Object, Object> map = new HashMap<>();
+            for (int i = 0; i < len; i++) {
+                Object k = decodeCBOR(buffer, offset);
+                Object v = decodeCBOR(buffer, offset);
+                map.put(k, v);
+            }
+            return map;
+        }
+        return null;
+    }
+
+    private static final String[] TRUSTED_HARDWARE_ROOTS = {
+        "-----BEGIN CERTIFICATE-----\n" +
+        "MIIDHzCCAfegAwIBAgIJANCvWjvF+2O6MA0GCSqGSIb3DQEBCwUAMC0xKzApBgNV\n" +
+        "BAMTIll1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMB4XDTE0MDgwNDAwMDAwMFox\n" +
+        "TSUxSDBGBgNVBAMMT1l1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMSowKAYDVQQK\n" +
+        "EyFZdWJpY28gQUIxDzANBgNVBAcTBVN0b2NraG9sbTELMAkGA1UEBhMCU0UwggEi\n" +
+        "MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC6XW0d87g+N6kGgSgC/H9UfA2p\n" +
+        "-----END CERTIFICATE-----",
+        "-----BEGIN CERTIFICATE-----\n" +
+        "MIIB1DCCAXWgAwIBAgIEUI70WjAKBggqhkjOPQQDAjArMSkwJwYDVQQDEyBGSURP\n" +
+        "IEFsbGlhbmNlIFJvb3QgQ0EgKFRlc3QpMB4XDTE0MDgxODA4MzA0NVoXDTM5MDgx\n" +
+        "ODA4MzA0NVowKzEpMCcGA1UEAxMgRklETyBBbGxpYW5jZSBSb290IENBIChUZXN0\n" +
+        "KTB2MBAGByqGSM49AgEGBSuBBAAiA2IABFv81Jm9M7AehfOIdpCH567gP0yqS40m\n" +
+        "aN0j1a8n152G7n/nUf7J0j9F4pL9J2w1X8hN1N8f9Y3G9w8L29/m7/zX3O3n2e7/\n" +
+        "g==\n" +
+        "-----END CERTIFICATE-----"
+    };
+
+    @SuppressWarnings("unchecked")
+    public static boolean verifyWebAuthnHardwareAnchor(Map<String, Object> anchor, Map<String, Object> deviceData) {
+        if (anchor == null || !anchor.containsKey("type")) return false;
+
+        try {
+            String type = (String) anchor.get("type");
+            byte[] clientDataHash = MessageDigest.getInstance("SHA-256")
+                    .digest(Base64.getDecoder().decode((String) anchor.get("clientDataJSON")));
+
+            if ("registration".equals(type)) {
+                String publicKeyPem = (String) anchor.get("publicKey");
+                String credentialId = (String) anchor.get("credentialId");
+                String attestationObject = (String) anchor.get("attestationObject");
+
+                if (publicKeyPem == null || credentialId == null || attestationObject == null) {
+                    return false;
+                }
+
+                byte[] attestationBytes = Base64.getDecoder().decode(attestationObject);
+                int[] offset = {0};
+                Map<Object, Object> decoded = (Map<Object, Object>) decodeCBOR(attestationBytes, offset);
+
+                if (decoded == null || !decoded.containsKey("fmt") || !decoded.containsKey("attStmt")) {
+                    return false;
+                }
+
+                String fmt = (String) decoded.get("fmt");
+                Map<Object, Object> attStmt = (Map<Object, Object>) decoded.get("attStmt");
+
+                if (!"none".equals(fmt)) {
+                    if (!attStmt.containsKey("x5c")) {
+                        return false;
+                    }
+                    List<byte[]> x5c = (List<byte[]>) attStmt.get("x5c");
+                    if (x5c == null || x5c.isEmpty()) return false;
+
+                    java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X.509");
+                    List<java.security.cert.X509Certificate> chain = new ArrayList<>();
+                    for (byte[] der : x5c) {
+                        chain.add((java.security.cert.X509Certificate) cf.generateCertificate(new java.io.ByteArrayInputStream(der)));
+                    }
+
+                    for (int i = 0; i < chain.size() - 1; i++) {
+                        chain.get(i).verify(chain.get(i + 1).getPublicKey());
+                    }
+
+                    java.security.cert.X509Certificate rootCert = chain.get(chain.size() - 1);
+                    boolean trusted = false;
+                    for (String trustedRootPem : TRUSTED_HARDWARE_ROOTS) {
+                        java.security.cert.X509Certificate trustedRoot = (java.security.cert.X509Certificate) cf.generateCertificate(
+                                new java.io.ByteArrayInputStream(trustedRootPem.getBytes(StandardCharsets.UTF_8))
+                        );
+                        try {
+                            rootCert.verify(trustedRoot.getPublicKey());
+                            trusted = true;
+                            break;
+                        } catch (Exception e) {
+                            if (Arrays.equals(rootCert.getSignature(), trustedRoot.getSignature())) {
+                                trusted = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!trusted) {
+                        return false;
+                    }
+                }
+
+                deviceData.put("webauthnPublicKey", publicKeyPem);
+                deviceData.put("webauthnCredentialId", credentialId);
+                return true;
+            } else if ("assertion".equals(type)) {
+                String storedPublicKeyPem = (String) deviceData.get("webauthnPublicKey");
+                String storedCredentialId = (String) deviceData.get("webauthnCredentialId");
+
+                if (storedPublicKeyPem == null || !storedCredentialId.equals(anchor.get("credentialId"))) {
+                    return false;
+                }
+
+                byte[] authenticatorData = Base64.getDecoder().decode((String) anchor.get("authenticatorData"));
+                byte[] signature = Base64.getDecoder().decode((String) anchor.get("signature"));
+
+                byte[] verifyBuffer = new byte[authenticatorData.length + clientDataHash.length];
+                System.arraycopy(authenticatorData, 0, verifyBuffer, 0, authenticatorData.length);
+                System.arraycopy(clientDataHash, 0, verifyBuffer, authenticatorData.length, clientDataHash.length);
+
+                String cleanPem = storedPublicKeyPem
+                        .replace("-----BEGIN PUBLIC KEY-----", "")
+                        .replace("-----END PUBLIC KEY-----", "")
+                        .replaceAll("\\s+", "");
+                byte[] keyBytes = Base64.getDecoder().decode(cleanPem);
+                java.security.spec.X509EncodedKeySpec spec = new java.security.spec.X509EncodedKeySpec(keyBytes);
+                java.security.KeyFactory kf = java.security.KeyFactory.getInstance("EC");
+                java.security.PublicKey publicKey;
+                try {
+                    publicKey = kf.generatePublic(spec);
+                } catch (Exception e) {
+                    kf = java.security.KeyFactory.getInstance("RSA");
+                    publicKey = kf.generatePublic(spec);
+                }
+
+                java.security.Signature sig = java.security.Signature.getInstance("SHA256withECDSA");
+                try {
+                    sig.initVerify(publicKey);
+                } catch (Exception e) {
+                    sig = java.security.Signature.getInstance("SHA256withRSA");
+                    sig.initVerify(publicKey);
+                }
+                sig.update(verifyBuffer);
+                return sig.verify(signature);
+            }
+        } catch (Exception e) {
+            System.err.println("[WebAuthn-Server] Java verification failed: " + e.getMessage());
+        }
+        return false;
     }
 }

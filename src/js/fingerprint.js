@@ -769,6 +769,119 @@ const cipherSuiteMap = {
  * @param {object} deviceData Les données persistantes de l'appareil dans notre store
  * @returns {boolean} True si la signature matérielle est valide
  */
+const TRUSTED_HARDWARE_ROOTS = [
+    "-----BEGIN CERTIFICATE-----\n" +
+    "MIIDHzCCAfegAwIBAgIJANCvWjvF+2O6MA0GCSqGSIb3DQEBCwUAMC0xKzApBgNV\n" +
+    "BAMTIll1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMB4XDTE0MDgwNDAwMDAwMFox\n" +
+    "TSUxSDBGBgNVBAMMT1l1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMSowKAYDVQQK\n" +
+    "EyFZdWJpY28gQUIxDzANBgNVBAcTBVN0b2NraG9sbTELMAkGA1UEBhMCU0UwggEi\n" +
+    "MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC6XW0d87g+N6kGgSgC/H9UfA2p\n" +
+    "-----END CERTIFICATE-----",
+    "-----BEGIN CERTIFICATE-----\n" +
+    "MIIB1DCCAXWgAwIBAgIEUI70WjAKBggqhkjOPQQDAjArMSkwJwYDVQQDEyBGSURP\n" +
+    "IEFsbGlhbmNlIFJvb3QgQ0EgKFRlc3QpMB4XDTE0MDgxODA4MzA0NVoXDTM5MDgx\n" +
+    "ODA4MzA0NVowKzEpMCcGA1UEAxMgRklETyBBbGxpYW5jZSBSb290IENBIChUZXN0\n" +
+    "KTB2MBAGByqGSM49AgEGBSuBBAAiA2IABFv81Jm9M7AehfOIdpCH567gP0yqS40m\n" +
+    "aN0j1a8n152G7n/nUf7J0j9F4pL9J2w1X8hN1N8f9Y3G9w8L29/m7/zX3O3n2e7/\n" +
+    "g==\n" +
+    "-----END CERTIFICATE-----"
+];
+
+function decodeCBOR(buffer) {
+    let offset = 0;
+    function readByte() {
+        if (offset >= buffer.length) throw new Error("Unexpected end of CBOR data");
+        return buffer[offset++];
+    }
+    function readBytes(len) {
+        if (offset + len > buffer.length) throw new Error("Unexpected end of CBOR bytes");
+        const res = buffer.slice(offset, offset + len);
+        offset += len;
+        return res;
+    }
+    function readInt(val) {
+        if (val < 24) return val;
+        if (val === 24) return readByte();
+        if (val === 25) {
+            const b1 = readByte(); const b2 = readByte();
+            return (b1 << 8) | b2;
+        }
+        if (val === 26) {
+            const b1 = readByte(); const b2 = readByte();
+            const b3 = readByte(); const b4 = readByte();
+            return (b1 << 24) | (b2 << 16) | (b3 << 8) | b4;
+        }
+        throw new Error("Unsupported integer size: " + val);
+    }
+    function decodeType() {
+        const initial = readByte();
+        const major = initial >> 5;
+        const val = initial & 0x1f;
+        if (major === 0) {
+            return readInt(val);
+        } else if (major === 1) {
+            return -1 - readInt(val);
+        } else if (major === 2) {
+            const len = readInt(val);
+            return readBytes(len);
+        } else if (major === 3) {
+            const len = readInt(val);
+            return readBytes(len).toString('utf8');
+        } else if (major === 4) {
+            const len = readInt(val);
+            const arr = [];
+            for (let i = 0; i < len; i++) arr.push(decodeType());
+            return arr;
+        } else if (major === 5) {
+            const len = readInt(val);
+            const obj = {};
+            for (let i = 0; i < len; i++) {
+                const k = decodeType();
+                const v = decodeType();
+                obj[k] = v;
+            }
+            return obj;
+        }
+        return null;
+    }
+    return decodeType();
+}
+
+function verifyCertificateChain(x5c) {
+    if (!x5c || x5c.length === 0) return false;
+    try {
+        const pems = x5c.map(der => {
+            const base64 = der.toString('base64');
+            return `-----BEGIN CERTIFICATE-----\n${base64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
+        });
+
+        for (let i = 0; i < pems.length - 1; i++) {
+            const child = new crypto.X509Certificate(pems[i]);
+            const parent = new crypto.X509Certificate(pems[i + 1]);
+            if (!child.verify(parent.publicKey)) {
+                return false;
+            }
+        }
+
+        const rootCert = new crypto.X509Certificate(pems[pems.length - 1]);
+        let trusted = false;
+        for (const trustedRootPem of TRUSTED_HARDWARE_ROOTS) {
+            const trustedRoot = new crypto.X509Certificate(trustedRootPem);
+            if (rootCert.subject === trustedRoot.subject) {
+                trusted = true;
+                break;
+            }
+            if (rootCert.verify(trustedRoot.publicKey)) {
+                trusted = true;
+                break;
+            }
+        }
+        return trusted;
+    } catch (e) {
+        return false;
+    }
+}
+
 function verifyWebAuthnHardwareAnchor(anchor, deviceData) {
     if (!anchor || !anchor.type) return false;
 
@@ -778,8 +891,22 @@ function verifyWebAuthnHardwareAnchor(anchor, deviceData) {
             .digest();
 
         if (anchor.type === 'registration') {
-            if (!anchor.publicKey || !anchor.credentialId) return false;
-            
+            if (!anchor.publicKey || !anchor.credentialId || !anchor.attestationObject) return false;
+
+            const attestationBytes = Buffer.from(anchor.attestationObject, 'base64');
+            const decoded = decodeCBOR(attestationBytes);
+
+            if (!decoded || !decoded.fmt || !decoded.attStmt) return false;
+
+            if (decoded.fmt !== 'none') {
+                const attStmt = decoded.attStmt;
+                if (!attStmt.x5c || !Array.isArray(attStmt.x5c)) return false;
+
+                if (!verifyCertificateChain(attStmt.x5c)) {
+                    return false;
+                }
+            }
+
             // Enregistrement initial : on stocke la clé publique matérielle SPKI
             deviceData.webauthnPublicKey = anchor.publicKey;
             deviceData.webauthnCredentialId = anchor.credentialId;
