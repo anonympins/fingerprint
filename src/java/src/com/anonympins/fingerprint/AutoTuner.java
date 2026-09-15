@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit;
 public class AutoTuner {
     private final FingerprintEngine engine;
     private final IStore store;
-    private final Map<String, Object> config;
+    private final FingerprintProperties.Autotuning config;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     private final int minDataPoints;
@@ -23,10 +23,10 @@ public class AutoTuner {
         this.store = store;
         this.config = properties.getAutotuning();
 
-        this.minDataPoints = ((Number) config.getOrDefault("minDataPoints", 200)).intValue();
-        this.maxDataPoints = ((Number) config.getOrDefault("maxDataPoints", 10000)).intValue();
-        this.validationTolerance = ((Number) config.getOrDefault("validationTolerance", 0.15)).doubleValue();
-        this.intervalMinutes = ((Number) config.getOrDefault("interval", 30)).longValue();
+        this.minDataPoints = config.getMinDataPoints();
+        this.maxDataPoints = config.getMaxDataPoints();
+        this.validationTolerance = config.getValidationTolerance();
+        this.intervalMinutes = config.getInterval();
     }
 
     public void start() {

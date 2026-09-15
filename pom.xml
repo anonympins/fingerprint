@@ -51,9 +51,23 @@
             <artifactId>reactor-core</artifactId>
             <version>3.6.0</version>
         </dependency>
+        <!-- JUnit Jupiter API (JUnit 5) -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
-        <sourceDirectory>src/java</sourceDirectory>
+        <sourceDirectory>src/java/src</sourceDirectory>
+        <testSourceDirectory>src/java/tests</testSourceDirectory>
     </build>
 </project>

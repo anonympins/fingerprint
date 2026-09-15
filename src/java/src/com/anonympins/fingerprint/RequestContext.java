@@ -15,8 +15,6 @@ public class RequestContext {
     public String ja3 = null;
     public String ja4 = null;
     public String ja3Raw = null; // Raw ClientHello for server-side JA3 calculation
-    public String ja3 = null;
-    public String ja4 = null;
     public String http2Fingerprint = null;
     public String tcpFingerprint = null;
     public String quicFingerprint = null;

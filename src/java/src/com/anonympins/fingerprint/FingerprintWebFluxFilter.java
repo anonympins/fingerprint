@@ -17,6 +17,21 @@ import reactor.netty.Connection;
 @Component
 public class FingerprintWebFluxFilter implements WebFilter {
 
+    private final FingerprintEngine engine;
+
+    public FingerprintWebFluxFilter(FingerprintEngine engine) {
+        this.engine = engine;
+    }
+
+    /**
+     * Permet d'accéder à l'instance actuelle de l'engine utilisée par ce middleware.
+     *
+     * @return L'instance active de FingerprintEngine.
+     */
+    public FingerprintEngine getEngine() {
+        return this.engine;
+    }
+
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         return Mono.deferContextual(contextView -> {

@@ -1,0 +1,29 @@
+fingerprint:
+  enabled: true
+  verbose: true
+  thresholds:
+    low: 20
+    medium: 45
+    high: 75
+    block: 95
+
+  # Configuration typée de la Whitelist pour exclure des hosts/urls de l'analyse
+  whitelist:
+    # Option 1: Exclure un host complet pour un chemin particulier (ex: api publique d'un domaine précis)
+    #- type: "host_path_allowlist"
+    #  entries:
+    #    - "api.mon-domaine.com/v1/public/*"
+    #    - "payment.mon-domaine.com/webhook/callback"
+
+    # Option 2: Exclure des chemins globaux (indépendamment du host)
+    #- type: "path_allowlist"
+    #  entries:
+    #    - "/assets/*"
+    #    - "/favicon.ico"
+    #    - "/static/images/*"
+
+    # Option 3: Exclure des IP ou sous-réseaux (CIDR) spécifiques
+    #- type: "allowlist"
+    #  entries:
+    #    - "192.168.1.100"
+    #    - "10.0.0.0/16"

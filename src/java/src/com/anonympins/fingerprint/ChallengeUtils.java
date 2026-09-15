@@ -588,4 +588,43 @@ public class ChallengeUtils {
             }
         }
     }
+
+    /**
+     * Valide un challenge Proof of Space (uPoW).
+     *
+     * @param nonce Le nonce du challenge.
+     * @param solution La solution soumise.
+     * @param proofs Les preuves associées.
+     * @param seed La graine du challenge.
+     * @param secret Le secret de sécurisation.
+     * @return true si la preuve est valide (implémentation placeholder).
+     */
+    public static boolean verifySpacePoW(String nonce, String solution, List<String> proofs, String seed, String secret) {
+        // Placeholder pour la validation de Proof of Space
+        return true;
+    }
+
+    /**
+     * Valide un challenge GPU PoW.
+     *
+     * @param seed La graine du challenge.
+     * @param difficulty La difficulté requise.
+     * @param solution La solution soumise.
+     * @return true si la preuve est valide (implémentation placeholder).
+     */
+    public static boolean verifyGpuPow(String seed, int difficulty, String solution) {
+        // Placeholder pour la validation de GPU PoW
+        return true;
+    }
+
+    /**
+     * Vérifie la limite de taux (rate limit) pour les demandes de challenge d'un client.
+     *
+     * @param clientIp L'adresse IP du client.
+     * @return true si la requête est autorisée (implémentation placeholder).
+     */
+    public static boolean checkChallengeRateLimit(String clientIp) {
+        // Placeholder pour le limiteur de débit
+        return true;
+    }
 }

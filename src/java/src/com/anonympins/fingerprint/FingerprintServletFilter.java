@@ -20,6 +20,15 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
         this.engine = engine;
     }
 
+    /**
+     * Permet d'accéder à l'instance actuelle de l'engine utilisée par ce middleware.
+     *
+     * @return L'instance active de FingerprintEngine.
+     */
+    public FingerprintEngine getEngine() {
+        return this.engine;
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
