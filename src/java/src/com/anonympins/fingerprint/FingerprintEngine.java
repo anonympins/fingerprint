@@ -23,6 +23,38 @@ public class FingerprintEngine {
         this.verbose = Boolean.TRUE.equals(this.config.get("verbose"));
         this.dryRun = Boolean.TRUE.equals(this.config.get("dryRun"));
         this.allowlist = buildAllowlist();
+
+        // Bind Ed25519 keys if passed via config
+        if (this.config.containsKey("ed25519_private_key")) {
+            System.setProperty("ED25519_PRIVATE_KEY", (String) this.config.get("ed25519_private_key"));
+        }
+        if (this.config.containsKey("ed25519_public_key")) {
+            System.setProperty("ED25519_PUBLIC_KEY", (String) this.config.get("ed25519_public_key"));
+        }
+
+        // Auto-generate Ed25519 key pair on load if indicated and keys are not set
+        boolean useAsymmetric = Boolean.TRUE.equals(this.config.get("useAsymmetricTickets")) 
+                || "auto".equals(this.config.get("ed25519"));
+        String envPrivate = System.getenv("ED25519_PRIVATE_KEY");
+        String propPrivate = System.getProperty("ED25519_PRIVATE_KEY");
+        if (useAsymmetric && (envPrivate == null || envPrivate.isEmpty()) && (propPrivate == null || propPrivate.isEmpty())) {
+            try {
+                java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("Ed25519");
+                java.security.KeyPair kp = kpg.generateKeyPair();
+                String privPem = "-----BEGIN PRIVATE KEY-----\n" +
+                        Base64.getMimeEncoder().encodeToString(kp.getPrivate().getEncoded()) +
+                        "\n-----END PRIVATE KEY-----";
+                String pubPem = "-----BEGIN PUBLIC KEY-----\n" +
+                        Base64.getMimeEncoder().encodeToString(kp.getPublic().getEncoded()) +
+                        "\n-----END PUBLIC KEY-----";
+                System.setProperty("ED25519_PRIVATE_KEY", privPem);
+                System.setProperty("ED25519_PUBLIC_KEY", pubPem);
+            } catch (Exception e) {
+                if (verbose) {
+                    System.err.println("[Fingerprint] Native Ed25519 key generation failed: " + e.getMessage());
+                }
+            }
+        }
     }
 
     public Map<String, Object> getThresholds() {
@@ -180,8 +212,22 @@ public class FingerprintEngine {
                     stringParams.put(k, v.toString());
                 }
             });
+            if (context.body != null) {
+                context.body.forEach((k, v) -> {
+                    if (v instanceof String) {
+                        stringParams.put(k, (String) v);
+                    } else if (v instanceof List && !((List<?>) v).isEmpty()) {
+                        stringParams.put(k, ((List<?>) v).get(0).toString());
+                    } else if (v != null) {
+                        stringParams.put(k, v.toString());
+                    }
+                });
+            }
             if (!stringParams.containsKey("signature") && context.getHeader("x-federation-signature") != null) {
                 stringParams.put("signature", context.getHeader("x-federation-signature"));
+            }
+            if (!stringParams.containsKey("signature_ed25519") && context.getHeader("x-federation-signature-ed25519") != null) {
+                stringParams.put("signature_ed25519", context.getHeader("x-federation-signature-ed25519"));
             }
             if (!stringParams.containsKey("timestamp") && context.getHeader("x-federation-timestamp") != null) {
                 stringParams.put("timestamp", context.getHeader("x-federation-timestamp"));
@@ -397,22 +443,55 @@ public class FingerprintEngine {
     @SuppressWarnings("unchecked")
     private void broadcastBannedZkp(String zkpY) {
         List<String> peers = (List<String>) config.get("federatedPeers");
-        String secret = (String) config.get("federationSecret");
-        if (secret == null) {
-            secret = ChallengeUtils.getPowSecret();
-        }
         if (peers == null || peers.isEmpty()) return;
 
         long timestamp = System.currentTimeMillis();
         String msg = timestamp + ":" + zkpY;
-        String signature = RequestUtils.hmacSha256(msg, secret);
+        
+        String signature = "";
+        boolean isAsymmetric = false;
+        
+        String privateKeyPem = System.getenv("ED25519_PRIVATE_KEY");
+        if (privateKeyPem == null || privateKeyPem.isEmpty()) {
+            privateKeyPem = System.getProperty("ED25519_PRIVATE_KEY");
+        }
+        if (privateKeyPem != null && !privateKeyPem.isEmpty()) {
+            try {
+                String cleanKey = privateKeyPem.replace("\\n", "\n")
+                                               .replace("-----BEGIN PRIVATE KEY-----", "")
+                                               .replace("-----END PRIVATE KEY-----", "")
+                                               .replaceAll("\\s+", "");
+                byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
+                java.security.spec.PKCS8EncodedKeySpec spec = new java.security.spec.PKCS8EncodedKeySpec(keyBytes);
+                java.security.KeyFactory kf = java.security.KeyFactory.getInstance("Ed25519");
+                java.security.PrivateKey privateKey = kf.generatePrivate(spec);
+                
+                java.security.Signature sig = java.security.Signature.getInstance("Ed25519");
+                sig.initSign(privateKey);
+                sig.update(msg.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                signature = HexFormat.of().formatHex(sig.sign());
+                isAsymmetric = true;
+            } catch (Exception e) {
+                if (verbose) {
+                    System.err.println("[Fingerprint] Asymmetric broadcast signing failed: " + e.getMessage());
+                }
+            }
+        }
+
+        if (!isAsymmetric) {
+            String secret = (String) config.get("federationSecret");
+            if (secret == null) {
+                secret = ChallengeUtils.getPowSecret();
+            }
+            signature = RequestUtils.hmacSha256(msg, secret);
+        }
 
         for (String peerUrl : peers) {
-            asyncPost(peerUrl + "?coop_op=share_threat_intel", zkpY, signature, timestamp);
+            asyncPost(peerUrl + "?coop_op=share_threat_intel", zkpY, isAsymmetric ? "" : signature, isAsymmetric ? signature : "", timestamp);
         }
     }
 
-    private void asyncPost(String urlStr, String zkpY, String signature, long timestamp) {
+    private void asyncPost(String urlStr, String zkpY, String signature, String signatureEd25519, long timestamp) {
         new Thread(() -> {
             try {
                 java.net.URL url = new java.net.URL(urlStr);
@@ -420,6 +499,7 @@ public class FingerprintEngine {
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "application/json");
                 conn.setRequestProperty("X-Federation-Signature", signature);
+                conn.setRequestProperty("X-Federation-Signature-Ed25519", signatureEd25519);
                 conn.setRequestProperty("X-Federation-Timestamp", String.valueOf(timestamp));
                 conn.setDoOutput(true);
                 conn.setConnectTimeout(500);

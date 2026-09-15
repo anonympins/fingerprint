@@ -162,10 +162,11 @@ class ChallengeUtils
             }
             $zkpY = $params['zkpY'] ?? '';
             $headers = function_exists('getallheaders') ? array_change_key_case(getallheaders(), CASE_LOWER) : [];
-            $signature = $params['signature'] ?? $headers['x-federation-signature'] ?? $_SERVER['HTTP_X_FEDERATION_SIGNATURE'] ?? '';
+            $sigEd25519 = $params['signature_ed25519'] ?? $headers['x-federation-signature-ed25519'] ?? $_SERVER['HTTP_X_FEDERATION_SIGNATURE_ED25519'] ?? '';
+            $sigHmac = $params['signature'] ?? $headers['x-federation-signature'] ?? $_SERVER['HTTP_X_FEDERATION_SIGNATURE'] ?? '';
             $timestamp = (int)($params['timestamp'] ?? $headers['x-federation-timestamp'] ?? $_SERVER['HTTP_X_FEDERATION_TIMESTAMP'] ?? 0);
 
-            if (empty($zkpY) || empty($signature) || empty($timestamp)) {
+            if (empty($zkpY) || empty($timestamp)) {
                 return ['error' => 'Missing threat intel parameters'];
             }
 
@@ -175,11 +176,30 @@ class ChallengeUtils
                 return ['error' => 'Message expired or clock skew too high'];
             }
 
-            $secret = $params['federationSecret'] ?? self::getPowSecret();
-            $expectedSig = hash_hmac('sha256', "{$timestamp}:{$zkpY}", $secret);
+            $msg = "{$timestamp}:{$zkpY}";
 
-            if (!hash_equals($expectedSig, $signature)) {
-                return ['error' => 'Invalid federation signature'];
+            if (!empty($sigEd25519)) {
+                $publicKey = $config['ed25519_public_key'] ?? $_ENV['ED25519_PUBLIC_KEY'] ?? getenv('ED25519_PUBLIC_KEY');
+                if (!$publicKey) {
+                    return ['error' => 'Missing public key for asymmetric verification'];
+                }
+                try {
+                    $cleanKey = str_replace('\n', "\n", $publicKey);
+                    $pubKeyObj = openssl_pkey_get_public($cleanKey);
+                    if (!$pubKeyObj || openssl_verify($msg, hex2bin($sigEd25519), $pubKeyObj, null) !== 1) {
+                        return ['error' => 'Invalid asymmetric federation signature'];
+                    }
+                } catch (\Throwable $e) {
+                    return ['error' => 'Asymmetric signature verification failed'];
+                }
+            } elseif (!empty($sigHmac)) {
+                $secret = $params['federationSecret'] ?? $config['federationSecret'] ?? self::getPowSecret();
+                $expectedSig = hash_hmac('sha256', $msg, $secret);
+                if (!hash_equals($expectedSig, $sigHmac)) {
+                    return ['error' => 'Invalid federation signature'];
+                }
+            } else {
+                return ['error' => 'Missing signature'];
             }
 
             // Ban the ZKP public key for 30 days

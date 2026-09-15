@@ -103,6 +103,32 @@ public class ChallengeUtils {
     }
 
     public static String generateStatelessTicket(Map<String, Object> payload, String secret) {
+        String privateKeyPem = System.getenv("ED25519_PRIVATE_KEY");
+        if (privateKeyPem == null || privateKeyPem.isEmpty()) {
+            privateKeyPem = System.getProperty("ED25519_PRIVATE_KEY");
+        }
+        if (privateKeyPem != null && !privateKeyPem.isEmpty()) {
+            try {
+                String cleanKey = privateKeyPem.replace("\\n", "\n")
+                                               .replace("-----BEGIN PRIVATE KEY-----", "")
+                                               .replace("-----END PRIVATE KEY-----", "")
+                                               .replaceAll("\\s+", "");
+                byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
+                java.security.spec.PKCS8EncodedKeySpec spec = new java.security.spec.PKCS8EncodedKeySpec(keyBytes);
+                java.security.KeyFactory kf = java.security.KeyFactory.getInstance("Ed25519");
+                java.security.PrivateKey privateKey = kf.generatePrivate(spec);
+                
+                String json = simpleJsonStringify(payload);
+                byte[] serialized = json.getBytes(StandardCharsets.UTF_8);
+                java.security.Signature sig = java.security.Signature.getInstance("Ed25519");
+                sig.initSign(privateKey);
+                sig.update(serialized);
+                byte[] signatureBytes = sig.sign();
+                return "ed25519." + base64UrlEncode(serialized) + "." + base64UrlEncode(signatureBytes);
+            } catch (Exception e) {
+                System.err.println("[ChallengeUtils] Ed25519 signing failed: " + e.getMessage());
+            }
+        }
         try {
             String json = simpleJsonStringify(payload);
             byte[] keyBytes = MessageDigest.getInstance("SHA-256").digest(secret.getBytes(StandardCharsets.UTF_8));
@@ -132,6 +158,44 @@ public class ChallengeUtils {
     public static Map<String, Object> parseStatelessTicket(String ticket, String secret) {
         if (ticket == null || !ticket.contains(".")) {
             return null;
+        }
+        if (ticket.startsWith("ed25519.")) {
+            String[] parts = ticket.split("\\.");
+            if (parts.length != 3) {
+                return null;
+            }
+            try {
+                byte[] payloadBytes = base64UrlDecode(parts[1]);
+                byte[] signature = base64UrlDecode(parts[2]);
+                
+                String ed25519PubKey = System.getenv("ED25519_PUBLIC_KEY");
+                if (ed25519PubKey == null || ed25519PubKey.isEmpty()) {
+                    ed25519PubKey = System.getProperty("ED25519_PUBLIC_KEY");
+                }
+                if (ed25519PubKey == null || ed25519PubKey.isEmpty()) {
+                    System.err.println("[ChallengeUtils] ED25519_PUBLIC_KEY is not defined in environment.");
+                    return null;
+                }
+                String cleanKey = ed25519PubKey.replace("\\n", "\n")
+                                               .replace("-----BEGIN PUBLIC KEY-----", "")
+                                               .replace("-----END PUBLIC KEY-----", "")
+                                               .replaceAll("\\s+", "");
+                byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
+                java.security.spec.X509EncodedKeySpec spec = new java.security.spec.X509EncodedKeySpec(keyBytes);
+                java.security.KeyFactory kf = java.security.KeyFactory.getInstance("Ed25519");
+                java.security.PublicKey publicKey = kf.generatePublic(spec);
+                
+                java.security.Signature sig = java.security.Signature.getInstance("Ed25519");
+                sig.initVerify(publicKey);
+                sig.update(payloadBytes);
+                if (sig.verify(signature)) {
+                    return simpleJsonParse(new String(payloadBytes, StandardCharsets.UTF_8));
+                }
+                return null;
+            } catch (Exception e) {
+                System.err.println("[ChallengeUtils] Ed25519 verification failed: " + e.getMessage());
+                return null;
+            }
         }
         String[] parts = ticket.split("\\.");
         if (parts.length != 3) {
@@ -703,20 +767,24 @@ public class ChallengeUtils {
             }
 
             String zkpY = params.getOrDefault("zkpY", "");
-            String signature = params.get("signature");
+            String sigHmac = params.get("signature");
+            String sigEd25519 = params.get("signature_ed25519");
             String timestampStr = params.get("timestamp");
             long timestamp = 0;
             if (timestampStr != null) {
                 try {
                     timestamp = Long.parseLong(timestampStr);
                 } catch (NumberFormatException e) {
-                    // ignore
+                    System.err.println("[ChallengeUtils] Failed to parse timestamp: " + timestampStr);
                 }
             }
 
-            if (zkpY.isEmpty() || signature == null || timestamp == 0) {
+            System.out.println("[ChallengeUtils] share_threat_intel request: zkpY=" + zkpY + ", timestamp=" + timestamp + ", sigHmac=" + sigHmac + ", sigEd25519=" + sigEd25519);
+
+            if (zkpY.isEmpty() || timestamp == 0 || (sigHmac == null && sigEd25519 == null)) {
                 Map<String, Object> err = new HashMap<>();
                 err.put("error", "Missing threat intel parameters");
+                System.err.println("[ChallengeUtils] Missing threat intel parameters (zkpY, timestamp or signature).");
                 return err;
             }
 
@@ -724,21 +792,68 @@ public class ChallengeUtils {
             if (Math.abs(now - timestamp) > 300000) {
                 Map<String, Object> err = new HashMap<>();
                 err.put("error", "Message expired or clock skew too high");
+                System.err.println("[ChallengeUtils] Message expired or clock skew too high. now=" + now + ", timestamp=" + timestamp);
                 return err;
             }
 
-            String secret = params.get("federationSecret");
-            if (secret == null) {
-                secret = (String) config.get("federationSecret");
-            }
-            if (secret == null) {
-                secret = getPowSecret();
-            }
-            String expectedSig = RequestUtils.hmacSha256(timestamp + ":" + zkpY, secret);
+            String msg = timestamp + ":" + zkpY;
+            boolean verified = false;
 
-            if (!signature.equals(expectedSig)) {
+            if (sigEd25519 != null && !sigEd25519.isEmpty()) {
+                String publicKeyPem = (String) config.get("ed25519_public_key");
+                if (publicKeyPem == null) {
+                    publicKeyPem = System.getenv("ED25519_PUBLIC_KEY");
+                }
+                if (publicKeyPem == null) {
+                    publicKeyPem = System.getProperty("ED25519_PUBLIC_KEY");
+                }
+
+                if (publicKeyPem != null && !publicKeyPem.isEmpty()) {
+                    try {
+                        String cleanKey = publicKeyPem.replace("\\n", "\n")
+                                                       .replace("-----BEGIN PUBLIC KEY-----", "")
+                                                       .replace("-----END PUBLIC KEY-----", "")
+                                                       .replaceAll("\\s+", "");
+                        byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
+                        java.security.spec.X509EncodedKeySpec spec = new java.security.spec.X509EncodedKeySpec(keyBytes);
+                        java.security.KeyFactory kf = java.security.KeyFactory.getInstance("Ed25519");
+                        java.security.PublicKey publicKey = kf.generatePublic(spec);
+                        
+                        java.security.Signature sig = java.security.Signature.getInstance("Ed25519");
+                        sig.initVerify(publicKey);
+                        sig.update(msg.getBytes(StandardCharsets.UTF_8));
+                        if (sig.verify(HexFormat.of().parseHex(sigEd25519))) {
+                            verified = true;
+                            System.out.println("[ChallengeUtils] Ed25519 signature verified successfully.");
+                        } else {
+                            System.err.println("[ChallengeUtils] Ed25519 signature verification failed.");
+                        }
+                    } catch (Exception e) {
+                        System.err.println("[ChallengeUtils] Ed25519 key loading/verification failed: " + e.getMessage());
+                    }
+                } else {
+                    System.err.println("[ChallengeUtils] Missing Ed25519 public key.");
+                }
+            } else if (sigHmac != null) {
+                String secret = params.get("federationSecret");
+                if (secret == null) {
+                    secret = (String) config.get("federationSecret");
+                }
+                if (secret == null) {
+                    secret = getPowSecret();
+                }
+                String expectedSig = RequestUtils.hmacSha256(msg, secret);
+                if (sigHmac.equals(expectedSig)) {
+                    verified = true;
+                } else {
+                    System.err.println("[ChallengeUtils] HMAC signature mismatch. expected=" + expectedSig + ", got=" + sigHmac);
+                }
+            }
+
+            if (!verified) {
                 Map<String, Object> err = new HashMap<>();
                 err.put("error", "Invalid federation signature");
+                System.err.println("[ChallengeUtils] Federation signature verification failed.");
                 return err;
             }
 

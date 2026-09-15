@@ -1429,17 +1429,38 @@
      private function broadcastBannedZkp(string $zkpY): void
      {
          $peers = $this->securityConfig['federatedPeers'] ?? [];
-         $secret = $this->securityConfig['federationSecret'] ?? ChallengeUtils::getPowSecret();
          if (empty($peers)) return;
 
          $timestamp = (int)(microtime(true) * 1000);
          $msg = "{$timestamp}:{$zkpY}";
-         $signature = hash_hmac('sha256', $msg, $secret);
+         
+         $signature = '';
+         $isAsymmetric = false;
+         
+         $privateKey = $_ENV['ED25519_PRIVATE_KEY'] ?? getenv('ED25519_PRIVATE_KEY');
+         if ($privateKey) {
+             try {
+                 $cleanKey = str_replace('\n', "\n", $privateKey);
+                 $pkeyObj = openssl_pkey_get_private($cleanKey);
+                 if ($pkeyObj && openssl_sign($msg, $sigBytes, $pkeyObj, null)) {
+                     $signature = bin2hex($sigBytes);
+                     $isAsymmetric = true;
+                 }
+             } catch (\Throwable $e) {
+                 error_log('[Fingerprint] Asymmetric broadcast signing failed: ' . $e->getMessage());
+             }
+         }
+
+         if (!$isAsymmetric) {
+             $secret = $this->securityConfig['federationSecret'] ?? ChallengeUtils::getPowSecret();
+             $signature = hash_hmac('sha256', $msg, $secret);
+         }
 
          foreach ($peers as $peerUrl) {
              $this->asyncPost($peerUrl . '?coop_op=share_threat_intel', [
                  'zkpY' => $zkpY,
-                 'signature' => $signature,
+                 'signature' => $isAsymmetric ? '' : $signature,
+                 'signature_ed25519' => $isAsymmetric ? $signature : '',
                  'timestamp' => $timestamp
              ]);
          }
@@ -1472,6 +1493,7 @@
              $out .= "Content-Type: application/json\r\n";
              $out .= "Content-Length: " . strlen($postData) . "\r\n";
              $out .= "X-Federation-Signature: " . ($params['signature'] ?? '') . "\r\n";
+             $out .= "X-Federation-Signature-Ed25519: " . ($params['signature_ed25519'] ?? '') . "\r\n";
              $out .= "X-Federation-Timestamp: " . ($params['timestamp'] ?? '') . "\r\n";
              $out .= "Connection: Close\r\n\r\n";
              $out .= $postData;

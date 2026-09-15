@@ -160,6 +160,23 @@ if __name__ == "__main__":
 
 ---
 
+## Automatic Ed25519 Key Generation
+
+You can enable automatic, zero-dependency, on-load key generation if no pre-generated keys are configured in your environment.
+
+To activate this, set `useAsymmetricTickets` to `True` in your `security_config`:
+
+```python
+security_config = {
+    "useAsymmetricTickets": True,
+    # ... other settings
+}
+```
+
+The engine will automatically generate a highly secure ephemeral Ed25519 key pair on load using the standard `cryptography` package, storing them in `os.environ["ED25519_PRIVATE_KEY"]` and `os.environ["ED25519_PUBLIC_KEY"]` transparently.
+
+---
+
 ## Configuration Options
 
 The `security_config` dictionary passed to the middleware constructors is identical in structure to the Node.js and PHP configurations. Refer to the Full Configuration Options for a comprehensive list of available properties.

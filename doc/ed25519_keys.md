@@ -65,6 +65,22 @@ echo "--- PUBLIC KEY (ED25519_PUBLIC_KEY) ---\n" . $publicKeyPem . "\n";
 
 ---
 
+## 1.5. Automatic On-Load Generation (Zero-Dependency)
+
+If you do not want to pre-generate and manage your keys using external software (like OpenSSL), you can let the engine generate a fresh ephemeral Ed25519 key pair automatically on startup.
+
+To activate this, simply specify `useAsymmetricTickets: true` or `ed25519: "auto"` in your security configuration:
+
+```javascript
+const config = createSecurityProfile('balanced', {
+    useAsymmetricTickets: true // Automatically generates key pair if process.env.ED25519_PRIVATE_KEY is empty
+});
+```
+
+This generates high-entropy cryptographic keys directly using the Node.js native `crypto` module during loading, eliminating any external tooling requirements.
+
+---
+
 ## 2. Environment Configuration
 
 For the engine to detect and use the keys, you must declare two environment variables.

@@ -71,19 +71,41 @@ function canAttemptDns() {
  */
 async function broadcastBannedZkp(zkpY, config) {
     const peers = config.federatedPeers || [];
-    const secret = config.federationSecret || getPowSecret();
     if (peers.length === 0) return;
 
     const timestamp = Date.now();
     const msg = `${timestamp}:${zkpY}`;
-    const signature = crypto.createHmac('sha256', secret).update(msg).digest('hex');
+    
+    let signature = '';
+    let isAsymmetric = false;
+
+    if (process.env.ED25519_PRIVATE_KEY) {
+        try {
+            const cleanKey = process.env.ED25519_PRIVATE_KEY.replace(/\\n/g, '\n');
+            const signBuffer = crypto.sign(null, Buffer.from(msg), {
+                key: cleanKey,
+                format: 'pem',
+                type: 'pkcs8'
+            });
+            signature = signBuffer.toString('hex');
+            isAsymmetric = true;
+        } catch (e) {
+            console.error('[Fingerprint] Asymmetric broadcast signing failed, falling back to HMAC:', e.message);
+        }
+    }
+
+    if (!isAsymmetric) {
+        const secret = config.federationSecret || getPowSecret();
+        signature = crypto.createHmac('sha256', secret).update(msg).digest('hex');
+    }
 
     peers.forEach(peerUrl => {
         fetch(peerUrl + '?coop_op=share_threat_intel', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-Federation-Signature': signature,
+                'X-Federation-Signature': isAsymmetric ? '' : signature,
+                'X-Federation-Signature-Ed25519': isAsymmetric ? signature : '',
                 'X-Federation-Timestamp': String(timestamp)
             },
             body: JSON.stringify({ zkpY })
@@ -542,6 +564,7 @@ const securityProfiles = {
         },
         allowCrossNetworkRoaming: true, // Profil balancé : tolérant par défaut
     wasm: true,
+        useAsymmetricTickets: true,
     },
     /**
      * @summary **Strict Profile**
@@ -581,6 +604,7 @@ const securityProfiles = {
         challengeNewDevices: true, // Challenge all new devices
         allowCrossNetworkRoaming: false, // Strict : interdiction de changer complètement de réseau sans re-challenge
     wasm: true,
+        useAsymmetricTickets: true,
     },
     /**
      * @summary **API Profile**
@@ -620,6 +644,7 @@ const securityProfiles = {
         isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
         allowCrossNetworkRoaming: false, // Les API ne doivent pas subir de roaming inter-IP suspect
     wasm: true,
+        useAsymmetricTickets: true,
     }
     ,
     /**
@@ -661,6 +686,7 @@ const securityProfiles = {
         },
         allowCrossNetworkRoaming: true,
     wasm: true,
+        useAsymmetricTickets: true,
     },
     /**
      * @summary **E-commerce Profile**
@@ -704,6 +730,7 @@ const securityProfiles = {
         isApiRequest: (req) => req.path.startsWith('/api/cart') || req.path.startsWith('/api/stock') || req.path.startsWith('/api/checkout'),
         allowCrossNetworkRoaming: false, // E-commerce : interdiction de changer de réseau sans re-challenge
     wasm: true,
+        useAsymmetricTickets: true,
     }
 };
 
@@ -3796,6 +3823,20 @@ export class FingerprintEngine {
       process.env.ED25519_PUBLIC_KEY = securityConfig.ed25519_public_key;
     }
 
+        // Auto-generate Ed25519 key pair on load if indicated and keys are not set
+        if (securityConfig && (securityConfig.useAsymmetricTickets || securityConfig.ed25519 === 'auto') && !process.env.ED25519_PRIVATE_KEY) {
+          try {
+            const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519', {
+              privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
+              publicKeyEncoding: { format: 'pem', type: 'spki' }
+            });
+            process.env.ED25519_PRIVATE_KEY = privateKey;
+            process.env.ED25519_PUBLIC_KEY = publicKey;
+          } catch (e) {
+            console.error('[Fingerprint] Native Ed25519 key generation failed:', e.message);
+          }
+        }
+
     let finalConfig = securityConfig;
     if (securityConfig && securityConfig.autotuning && securityConfig.autotuning.savePath) {
       const sPath = securityConfig.autotuning.savePath;
@@ -4166,7 +4207,13 @@ export class FingerprintEngine {
       const { clientIp = "unknown", path, cookies = {}, query = {}, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
 
       if (query.coop_op) {
-          const result = await handleCooperativeRequest(query, clientIp, this.securityConfig);
+          const coopParams = {
+              ...query,
+              signature: requestContext.headers?.['x-federation-signature'] || query.signature,
+              signature_ed25519: requestContext.headers?.['x-federation-signature-ed25519'] || query.signature_ed25519,
+              timestamp: requestContext.headers?.['x-federation-timestamp'] || query.timestamp
+          };
+          const result = await handleCooperativeRequest(coopParams, clientIp, this.securityConfig);
           return {
               action: 'challenge',
               status: 200,
@@ -5060,10 +5107,9 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
             }
         }
         const zkpY = params.zkpY || '';
-        const signature = params.signature || '';
         const timestamp = Number(params.timestamp || 0);
 
-        if (!zkpY || !signature || !timestamp) {
+        if (!zkpY || !timestamp) {
             return { error: 'Missing threat intel parameters' };
         }
 
@@ -5072,19 +5118,45 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
             return { error: 'Message expired or clock skew too high' };
         }
 
-        const secret = params.federationSecret || getPowSecret();
-        const expectedSig = crypto.createHmac('sha256', secret).update(`${timestamp}:${zkpY}`).digest('hex');
+        const msg = `${timestamp}:${zkpY}`;
+        const sigEd25519 = params.signature_ed25519 || '';
+        const sigHmac = params.signature || '';
 
-        try {
-            const isSigValid = crypto.timingSafeEqual(
-                Buffer.from(signature, 'hex'),
-                Buffer.from(expectedSig, 'hex')
-            );
-            if (!isSigValid) {
-                return { error: 'Invalid federation signature' };
+        if (sigEd25519) {
+            const publicKey = config.ed25519_public_key || process.env.ED25519_PUBLIC_KEY;
+            if (!publicKey) {
+                return { error: 'Missing public key for asymmetric verification' };
             }
-        } catch (e) {
-            return { error: 'Invalid signature verification' };
+            try {
+                const cleanKey = publicKey.replace(/\\n/g, '\n');
+                const isVerified = crypto.verify(
+                    null,
+                    Buffer.from(msg),
+                    { key: cleanKey, format: 'pem', type: 'spki' },
+                    Buffer.from(sigEd25519, 'hex')
+                );
+                if (!isVerified) {
+                    return { error: 'Invalid asymmetric federation signature' };
+                }
+            } catch (e) {
+                return { error: 'Asymmetric signature verification failed' };
+            }
+        } else if (sigHmac) {
+            const secret = config.federationSecret || getPowSecret();
+            const expectedSig = crypto.createHmac('sha256', secret).update(msg).digest('hex');
+            try {
+                const isSigValid = crypto.timingSafeEqual(
+                    Buffer.from(sigHmac, 'hex'),
+                    Buffer.from(expectedSig, 'hex')
+                );
+                if (!isSigValid) {
+                    return { error: 'Invalid federation signature' };
+                }
+            } catch (e) {
+                return { error: 'Invalid signature verification' };
+            }
+        } else {
+            return { error: 'Missing signature' };
         }
 
         await store.set(`banned-zkp-y:${zkpY}`, true, 86400 * 30); // 30 jours

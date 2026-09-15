@@ -32,6 +32,9 @@ public class FingerprintProperties {
     private Autotuning autotuning = new Autotuning();
     private List<WhitelistRule> whitelist = new ArrayList<>();
     private boolean allowCrossNetworkRoaming = false;
+    private boolean useAsymmetricTickets = true;
+    private String ed25519PrivateKey;
+    private String ed25519PublicKey;
 
     public boolean isEnabled() {
         return enabled;
@@ -199,6 +202,30 @@ public class FingerprintProperties {
 
     public void setAllowCrossNetworkRoaming(boolean allowCrossNetworkRoaming) {
         this.allowCrossNetworkRoaming = allowCrossNetworkRoaming;
+    }
+
+    public boolean isUseAsymmetricTickets() {
+        return useAsymmetricTickets;
+    }
+
+    public void setUseAsymmetricTickets(boolean useAsymmetricTickets) {
+        this.useAsymmetricTickets = useAsymmetricTickets;
+    }
+
+    public String getEd25519PrivateKey() {
+        return ed25519PrivateKey;
+    }
+
+    public void setEd25519PrivateKey(String ed25519PrivateKey) {
+        this.ed25519PrivateKey = ed25519PrivateKey;
+    }
+
+    public String getEd25519PublicKey() {
+        return ed25519PublicKey;
+    }
+
+    public void setEd25519PublicKey(String ed25519PublicKey) {
+        this.ed25519PublicKey = ed25519PublicKey;
     }
 
 

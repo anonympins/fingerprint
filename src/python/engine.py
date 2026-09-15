@@ -2524,6 +2524,36 @@ class FingerprintEngine:
             config (Dict[str, Any]): The security configuration dictionary.
             store (InMemoryStore): An instance of a data store (e.g., InMemoryStore, RedisStore).
         """
+        # Bind Ed25519 keys if passed via config
+        if config.get("ed25519_private_key"):
+            os.environ["ED25519_PRIVATE_KEY"] = config["ed25519_private_key"]
+        if config.get("ed25519_public_key"):
+            os.environ["ED25519_PUBLIC_KEY"] = config["ed25519_public_key"]
+
+        # Auto-generate Ed25519 key pair on load if indicated and keys are not set
+        if (config.get("useAsymmetricTickets") or config.get("ed25519") == "auto") and not os.environ.get("ED25519_PRIVATE_KEY"):
+            try:
+                from cryptography.hazmat.primitives.asymmetric import ed25519
+                from cryptography.hazmat.primitives import serialization
+
+                private_key = ed25519.Ed25519PrivateKey.generate()
+                private_pem = private_key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption()
+                ).decode("utf-8")
+
+                public_key = private_key.public_key()
+                public_pem = public_key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo
+                ).decode("utf-8")
+
+                os.environ["ED25519_PRIVATE_KEY"] = private_pem
+                os.environ["ED25519_PUBLIC_KEY"] = public_pem
+            except Exception as e:
+                print(f"[Fingerprint] Native Ed25519 key generation failed: {e}")
+
         self.config = config
         self.store = store
         self.thresholds = config.get("thresholds", {"low": 20, "high": 75, "block": 95})
