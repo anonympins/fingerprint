@@ -10,7 +10,7 @@ When a client is blocked by the detection engine (suspicion score greater than o
 
 Federated sharing relies on the following principles:
 1. **Total Anonymity**: Only the public key $y$ (a mathematical hash derived from the Schnorr zero-knowledge proof) is propagated. IP addresses and browsing history never leave the origin server.
-2. **Non-repudiation and Integrity**: All communications between peers are cryptographically signed using a shared federation secret key (`federationSecret`).
+2. **Non-repudiation and Integrity**: All communications between peers are cryptographically signed using Ed25519 asymmetric key pairs (which are generated automatically on-load by default). This eliminates the need to manually sync or share symmetric secrets across nodes.
 3. **Replay Resistance**: Each synchronization message includes a timestamp in milliseconds combined with a strict clock drift verification (max. 5 minutes).
 
 ---
@@ -36,7 +36,7 @@ Federated sharing relies on the following principles:
 
 ## Federation Configuration
 
-To enable federated Threat Intelligence, you must configure the list of peers and the shared signing secret in your configuration file or environment variables.
+Thanks to the **automatic on-load Ed25519 key generation**, setting up federated threat sharing is extremely simplified. You don't need to manually distribute or coordinate symmetric secrets.
 
 ### Node.js / Express
 ```javascript
@@ -47,7 +47,7 @@ const config = createSecurityProfile('balanced', {
         'https://node-b.legit-network.net/api/security',
         'https://node-c.legit-network.net/api/security'
     ],
-    federationSecret: 'your_shared_hmac_secret_key_between_nodes'
+    useAsymmetricTickets: true // Automatically generates/uses Ed25519 keys for signing
 });
 ```
 
@@ -60,7 +60,7 @@ $securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
         'https://node-b.legit-network.net/api/security',
         'https://node-c.legit-network.net/api/security'
     ],
-    'federationSecret' => 'your_shared_hmac_secret_key_between_nodes'
+    'useAsymmetricTickets' => true // Uses default auto-generated keys
 ]);
 ```
 
@@ -74,7 +74,7 @@ Threat information is exchanged via an HTTP POST request containing the followin
 * `coop_op=share_threat_intel`: Tells the receiving endpoint that this is a threat synchronization.
 
 ### Required HTTP Headers
-* `X-Federation-Signature`: HMAC-SHA256 signature calculated over the string `"{timestamp}:{zkpY}"` using the `federationSecret` secret key.
+* `X-Federation-Signature`: Ed25519 signature of the payload, verified using the sender's public key (automatically resolved or shared).
 * `X-Federation-Timestamp`: Sender's system timestamp in milliseconds when the request was sent.
 
 ### Request Body (JSON)
@@ -91,7 +91,7 @@ Threat information is exchanged via an HTTP POST request containing the followin
 To prevent a compromised node or an external attacker from injecting false alerts (poisoning) to block legitimate users, the engine applies several safeguards:
 
 * **Sender IP Validation**: The receiving node resolves the hostname of each URL in its own `federatedPeers` list. If the synchronization POST request comes from an IP address not resolved by that list, it is instantly rejected.
-* **Strict Cryptographic Signature**: The HMAC-SHA256 signature uses a constant-time comparison function (`timingSafeEqual` in JS / `hash_equals` in PHP) to prevent timing attacks.
+* **Strict Cryptographic Signature**: The Ed25519 asymmetric signature prevents any tampering. Because the engine generates high-entropy key pairs automatically on startup if missing, each node has a unique, secure identity out-of-the-box.
 * **Clock Skew Control**: The absolute difference between the receiver's system timestamp and the emitted `X-Federation-Timestamp` must not exceed 5 minutes (300,000 ms). Beyond that, the request is rejected to prevent replay attacks.
 * **ZKP Cryptographic Validation**: Before being propagated or accepted, the Zero-Knowledge Proof of the banned terminal is mathematically validated by both the sender and the receiver to guarantee that the terminal actually generated this identity and that it is not a randomly forged identifier.
 
