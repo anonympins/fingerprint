@@ -7,11 +7,11 @@ NodeJS tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci
 [![https://github.com/anonympins/fingerprint/commits/main](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/commits/main)
 [![https://github.com/anonympins/fingerprint](https://img.shields.io/github/repo-size/anonympins/fingerprint)](https://github.com/anonympins/fingerprint)
 
-A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Python** and **PHP** environments. 
+A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Java**, **Python** and **PHP** environments. 
 
 It leverages multi-layer hardware fingerprinting, real-time behavioral analysis, passive network/TLS tracking, and adaptive/useful proof-of-work challenges to dynamically detect and mitigate scraping, scalping, account takeover (ATO), and sophisticated automated threats.
 
-Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, and **Python (>=3.8)**.
+Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, Java (>=17), and **Python (>=3.8)**.
 
 ![illustration](https://i.ibb.co/fV1QT6Mf/image-c6e10859baae53bb595112ec08fc9e27.png)
 
