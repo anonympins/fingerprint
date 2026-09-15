@@ -63,6 +63,36 @@ function canAttemptDns() {
   return true; // HALF-OPEN
 }
 
+/**
+ * Diffuse un ZKP banni aux pairs fédérés de manière asynchrone (non-bloquante).
+ * @private
+ * @param {string} zkpY - La clé publique ZKP du terminal banni.
+ * @param {object} config - La configuration de sécurité.
+ */
+async function broadcastBannedZkp(zkpY, config) {
+    const peers = config.federatedPeers || [];
+    const secret = config.federationSecret || getPowSecret();
+    if (peers.length === 0) return;
+
+    const timestamp = Date.now();
+    const msg = `${timestamp}:${zkpY}`;
+    const signature = crypto.createHmac('sha256', secret).update(msg).digest('hex');
+
+    peers.forEach(peerUrl => {
+        fetch(peerUrl + '?coop_op=share_threat_intel', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Federation-Signature': signature,
+                'X-Federation-Timestamp': String(timestamp)
+            },
+            body: JSON.stringify({ zkpY })
+        }).catch(() => {
+            // Échec de propagation silencieux pour ne pas perturber le thread principal
+        });
+    });
+}
+
 const withTimeout = (promise, ms) => {
   let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
@@ -494,7 +524,8 @@ const securityProfiles = {
             botnetClusterScore: 0.6, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
             quicAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie QUIC
-            renderingAnomalyScore: 0.8 // NOUVEAU: Poids pour l'anomalie de rendu
+            renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
+            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -531,7 +562,8 @@ const securityProfiles = {
             subnetScore: 0.5,
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.8, // NOUVEAU: Poids pour le clustering botnet
-            renderingAnomalyScore: 1.0 // NOUVEAU: Poids pour l'anomalie de rendu
+            renderingAnomalyScore: 1.0, // NOUVEAU: Poids pour l'anomalie de rendu
+            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -611,7 +643,8 @@ const securityProfiles = {
             botnetClusterScore: 0.5, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.5, // NEW: Anomalie de pile TCP/IP
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
-            renderingAnomalyScore: 0.5 // NOUVEAU: Poids pour l'anomalie de rendu
+            renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
+            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -651,7 +684,8 @@ const securityProfiles = {
             botnetClusterScore: 0.9, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.9, // NEW: Anomalie de pile TCP/IP
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
-            renderingAnomalyScore: 0.9 // NOUVEAU: Poids pour l'anomalie de rendu
+            renderingAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie de rendu,threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
+            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -3294,15 +3328,20 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const stableFpHash = cyrb53(stableFp).toString();
 
       // Execute non-interdependent asynchronous operations in parallel
-      const [
+    const zkpProof = (context.getHeader ? context.getHeader('x-zkp-proof') : null) || (context.headers ? context.headers['x-zkp-proof'] : null) || (context.query ? context.query['pow_zkp'] : null) || (context.queryParams ? context.queryParams['pow_zkp'] : null) || '';
+    const zkpY = zkpProof ? zkpProof.split(":")[0] : null;
+
+    const [
         behavioral,
+        { threatIntelScore },
         { tlsSpoofingScore },
         { subnetScore },
         ipReputationScore,
         { botnetClusterScore },
         _ // store.set result
       ] = await Promise.all([
-        getBehavioralIndicators(context, deviceData),
+        getBehavioralIndicators(context, deviceData), // This modifies deviceData, so it must be done before saving deviceData
+        getThreatIntelScore(zkpY), // NOUVEAU: Score de Threat Intelligence Fédéré
         getTlsSpoofingScore(context),
         getSubnetScore(context, deviceId),
         getIpReputationScore(clientIp),
@@ -3354,7 +3393,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, quicAnomalyScore, renderingAnomalyScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -3729,6 +3768,22 @@ function parseGraphQLQuery(body) {
     }
     return null;
 }
+
+/**
+ * Calculates a score based on whether the client's ZKP public key (y) is found in a banned list.
+ * @param {string} zkpY - The 'y' component of the ZKP proof (public key).
+ * @returns {Promise<{threatIntelScore: number}>}
+ */
+async function getThreatIntelScore(zkpY) {
+    if (!zkpY) return { threatIntelScore: 0 };
+
+    const isBanned = await store.has(`banned-zkp-y:${zkpY}`);
+    if (isBanned) {
+        return { threatIntelScore: 100 };
+    }
+    return { threatIntelScore: 0 };
+}
+
 export class FingerprintEngine {
   constructor(securityConfig) {
     const isProduction = process.env.NODE_ENV === 'production';
@@ -3839,10 +3894,13 @@ export class FingerprintEngine {
             (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
             (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
             (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
+            (suspicionVector.threatIntelScore || 0) * (weights.threatIntelScore || 0) + // NOUVEAU: QUIC Anomaly
             (suspicionVector.renderingAnomalyScore || 0) * (weights.renderingAnomalyScore || 0); // NOUVEAU: Rendering Anomaly
 
         return Math.min(100, score);
     }
+
+
   /**
    * Checks if an IP address is in the static allowlist (IPs or CIDR ranges).
    * This is the fastest check and should be performed first.
@@ -4107,7 +4165,7 @@ export class FingerprintEngine {
       const { clientIp = "unknown", path, cookies = {}, query = {}, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
 
       if (query.coop_op) {
-          const result = await handleCooperativeRequest(query, clientIp);
+          const result = await handleCooperativeRequest(query, clientIp, this.securityConfig);
           return {
               action: 'challenge',
               status: 200,
@@ -4550,6 +4608,22 @@ export class FingerprintEngine {
 
     const isBlocked = finalScore >= blockThreshold;
 
+// NOUVEAU: Si l'action est de bloquer, on enregistre le ZKP du client dans la liste des bannis.
+      if (isBlocked) {
+          const zkpProof = requestContext.headers['x-zkp-proof'] || requestContext.query.pow_zkp || '';
+          const parts = zkpProof.split(':');
+          if (parts.length === 3) {
+              const [zkpY, zkpT, zkpS] = parts;
+              // 1. Valider cryptographiquement la preuve avant de bannir/diffuser
+              if (verifyZkpProof(zkpY, zkpT, zkpS)) {
+                  // 2. Dédoublonner : Ne diffuser que si la clé n'est pas déjà connue comme bannie
+                  if (!(await store.has(`banned-zkp-y:${zkpY}`))) {
+                      await store.set(`banned-zkp-y:${zkpY}`, true, 86400 * 30); // Banni pour 30 jours
+                      broadcastBannedZkp(zkpY, this.securityConfig).catch(() => {});
+                  }
+              }
+          }
+      }
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked && finalScore > 0;
     const isSuspiciousMedium = finalScore >= thresholds.medium;
     const isSuspicious = finalScore >= thresholds.low;
@@ -4970,9 +5044,51 @@ export async function findPeerInSubnet(clientIp, excludeNodeId) {
     return activePeers[randomIndex];
 }
 
-export async function handleCooperativeRequest(params, clientIp = '127.0.0.1') {
+export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', config = {}) {
     const op = params.coop_op;
     if (!op) return null;
+
+    if (op === 'share_threat_intel') {
+        const peers = config.federatedPeers || [];
+        if (peers.length > 0) {
+            const allowedIPsAndHosts = peers.map(url => {
+                try { return new URL(url).hostname; } catch(e) { return url; }
+            });
+            if (!allowedIPsAndHosts.includes(clientIp)) {
+                return { error: 'Unauthorized federation sender IP' };
+            }
+        }
+        const zkpY = params.zkpY || '';
+        const signature = params.signature || '';
+        const timestamp = Number(params.timestamp || 0);
+
+        if (!zkpY || !signature || !timestamp) {
+            return { error: 'Missing threat intel parameters' };
+        }
+
+        // Vérification de la fraîcheur du message pour éviter les attaques par rejeu
+        if (Math.abs(Date.now() - timestamp) > 300000) { // 5 minutes max skew
+            return { error: 'Message expired or clock skew too high' };
+        }
+
+        const secret = params.federationSecret || getPowSecret();
+        const expectedSig = crypto.createHmac('sha256', secret).update(`${timestamp}:${zkpY}`).digest('hex');
+
+        try {
+            const isSigValid = crypto.timingSafeEqual(
+                Buffer.from(signature, 'hex'),
+                Buffer.from(expectedSig, 'hex')
+            );
+            if (!isSigValid) {
+                return { error: 'Invalid federation signature' };
+            }
+        } catch (e) {
+            return { error: 'Invalid signature verification' };
+        }
+
+        await store.set(`banned-zkp-y:${zkpY}`, true, 86400 * 30); // 30 jours
+        return { status: 'synchronized' };
+    }
 
     const nodeId = params.node_id || '';
     if (!nodeId) {
@@ -5916,7 +6032,8 @@ export const __internal = {
     canAttemptDns,
     registerCooperativeNode,
     findPeerInSubnet,
-    handleCooperativeRequest
+    handleCooperativeRequest,
+    broadcastBannedZkp
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---

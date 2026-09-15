@@ -157,6 +157,39 @@ public class FingerprintEngine {
     @SuppressWarnings("unchecked")
     public Map<String, Object> processRequest(RequestContext context) {
         Map<String, Double> suspicionVector = new HashMap<>();
+
+        String coopOp = null;
+        Object rawCoopOp = context.queryParams.get("coop_op");
+        if (rawCoopOp instanceof String) {
+            coopOp = (String) rawCoopOp;
+        } else if (rawCoopOp instanceof List && !((List<?>) rawCoopOp).isEmpty()) {
+            coopOp = ((List<?>) rawCoopOp).get(0).toString();
+        }
+
+        if (coopOp != null) {
+            Map<String, String> stringParams = new HashMap<>();
+            context.queryParams.forEach((k, v) -> {
+                if (v instanceof String) {
+                    stringParams.put(k, (String) v);
+                } else if (v instanceof List && !((List<?>) v).isEmpty()) {
+                    stringParams.put(k, ((List<?>) v).get(0).toString());
+                } else if (v != null) {
+                    stringParams.put(k, v.toString());
+                }
+            });
+            if (!stringParams.containsKey("signature") && context.getHeader("x-federation-signature") != null) {
+                stringParams.put("signature", context.getHeader("x-federation-signature"));
+            }
+            if (!stringParams.containsKey("timestamp") && context.getHeader("x-federation-timestamp") != null) {
+                stringParams.put("timestamp", context.getHeader("x-federation-timestamp"));
+            }
+            Map<String, Object> result = ChallengeUtils.handleCooperativeRequest(stringParams, context.clientIp, config);
+            Map<String, Object> res = new HashMap<>();
+            res.put("action", "challenge");
+            res.put("status", 200);
+            res.put("body", result);
+            return res;
+        }
         
         // Check allowlists
         if (allowlist.check(context.clientIp)) {
@@ -255,7 +288,9 @@ public class FingerprintEngine {
         double quicAnomalyScore = RequestUtils.getQuicAnomalyScore(context).getOrDefault("quicAnomalyScore", 0.0);
         double renderingAnomalyScore = RequestUtils.getRenderingAnomalyScore(context).getOrDefault("renderingAnomalyScore", 0.0);
         double ipReputationScore = RequestUtils.getIpReputationScore(store, context.clientIp);
+        double threatIntelScore = RequestUtils.getThreatIntelScore(store, context.zkpY).getOrDefault("threatIntelScore", 0.0);
 
+        suspicionVector.put("threatIntelScore", threatIntelScore);
         suspicionVector.put("inconsistencyScore", inconsistencyScore);
         suspicionVector.put("historyScore", historyScore);
         suspicionVector.put("rotationScore", rotationScore);
@@ -312,6 +347,33 @@ public class FingerprintEngine {
         if ("block".equals(action)) {
             response.put("status", 403);
             response.put("body", "Forbidden");
+
+            // Federated Threat Intelligence & ZKP Synchronization
+            String zkpProof = context.getHeader("x-zkp-proof");
+            if (zkpProof == null || zkpProof.isEmpty()) {
+                Object rawZkp = context.queryParams.get("pow_zkp");
+                if (rawZkp instanceof String) {
+                    zkpProof = (String) rawZkp;
+                } else if (rawZkp instanceof List && !((List<?>) rawZkp).isEmpty()) {
+                    zkpProof = ((List<?>) rawZkp).get(0).toString();
+                }
+            }
+            if (zkpProof != null && !zkpProof.isEmpty()) {
+                String[] parts = zkpProof.split(":");
+                if (parts.length == 3) {
+                    String zkpY = parts[0];
+                    String zkpT = parts[1];
+                    String zkpS = parts[2];
+                    // 1. Valider cryptographiquement la preuve avant de bannir/diffuser
+                    if (ChallengeUtils.verifyZkpProof(zkpY, zkpT, zkpS)) {
+                        // 2. Dédoublonner : Ne diffuser que si la clé n'est pas déjà bannie
+                        if (!store.has("banned-zkp-y:" + zkpY)) {
+                            store.set("banned-zkp-y:" + zkpY, true, 86400 * 30);
+                            broadcastBannedZkp(zkpY);
+                        }
+                    }
+                }
+            }
         }
 
         if (dryRun) {
@@ -329,6 +391,48 @@ public class FingerprintEngine {
     }
 
 
+    @SuppressWarnings("unchecked")
+    private void broadcastBannedZkp(String zkpY) {
+        List<String> peers = (List<String>) config.get("federatedPeers");
+        String secret = (String) config.get("federationSecret");
+        if (secret == null) {
+            secret = ChallengeUtils.getPowSecret();
+        }
+        if (peers == null || peers.isEmpty()) return;
+
+        long timestamp = System.currentTimeMillis();
+        String msg = timestamp + ":" + zkpY;
+        String signature = RequestUtils.hmacSha256(msg, secret);
+
+        for (String peerUrl : peers) {
+            asyncPost(peerUrl + "?coop_op=share_threat_intel", zkpY, signature, timestamp);
+        }
+    }
+
+    private void asyncPost(String urlStr, String zkpY, String signature, long timestamp) {
+        new Thread(() -> {
+            try {
+                java.net.URL url = new java.net.URL(urlStr);
+                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("X-Federation-Signature", signature);
+                conn.setRequestProperty("X-Federation-Timestamp", String.valueOf(timestamp));
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(500);
+                conn.setReadTimeout(500);
+                String json = "{\"zkpY\":\"" + zkpY + "\"}";
+                try (java.io.OutputStream os = conn.getOutputStream()) {
+                    os.write(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                conn.getResponseCode();
+                conn.disconnect();
+            } catch (Exception e) {
+                // Échec silencieux
+            }
+        }).start();
+    }
+    
     @SuppressWarnings("unchecked")
     private void recordTrafficLog(RequestContext context, double score, Map<String, Double> vector) {
         try {

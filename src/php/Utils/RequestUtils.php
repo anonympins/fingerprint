@@ -1025,7 +1025,13 @@ class RequestUtils
 
     public static function getThreatIntelScore(RequestContext $context, array $threatIntelConfig): array
     {
-        return ['threatIntelScore' => 0.0];
+        $zkpY = $context->zkpY;
+        if (empty($zkpY)) {
+            return ['threatIntelScore' => 0.0];
+        }
+        $store = StoreManager::getStore();
+        $isBanned = $store->has("banned-zkp-y:{$zkpY}");
+        return ['threatIntelScore' => $isBanned ? 100.0 : 0.0];
     }
 
     /**

@@ -673,10 +673,75 @@ public class ChallengeUtils {
     }
 
     @SuppressWarnings("unchecked")
-    public static Map<String, Object> handleCooperativeRequest(Map<String, String> params) {
+    public static Map<String, Object> handleCooperativeRequest(Map<String, String> params, String clientIp, Map<String, Object> config) {
         String op = params.get("coop_op");
         if (op == null) {
             return null;
+        }
+
+        if ("share_threat_intel".equals(op)) {
+            List<String> peers = (List<String>) config.get("federatedPeers");
+            if (peers != null && !peers.isEmpty()) {
+                List<String> allowedHosts = new ArrayList<>();
+                for (String url : peers) {
+                    try {
+                        java.net.URL parsedUrl = new java.net.URL(url);
+                        allowedHosts.add(parsedUrl.getHost());
+                    } catch (Exception e) {
+                        allowedHosts.add(url);
+                    }
+                }
+                if (!allowedHosts.contains(clientIp)) {
+                    Map<String, Object> err = new HashMap<>();
+                    err.put("error", "Unauthorized federation sender IP");
+                    return err;
+                }
+            }
+
+            String zkpY = params.getOrDefault("zkpY", "");
+            String signature = params.get("signature");
+            String timestampStr = params.get("timestamp");
+            long timestamp = 0;
+            if (timestampStr != null) {
+                try {
+                    timestamp = Long.parseLong(timestampStr);
+                } catch (NumberFormatException e) {
+                    // ignore
+                }
+            }
+
+            if (zkpY.isEmpty() || signature == null || timestamp == 0) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "Missing threat intel parameters");
+                return err;
+            }
+
+            long now = System.currentTimeMillis();
+            if (Math.abs(now - timestamp) > 300000) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "Message expired or clock skew too high");
+                return err;
+            }
+
+            String secret = params.get("federationSecret");
+            if (secret == null) {
+                secret = (String) config.get("federationSecret");
+            }
+            if (secret == null) {
+                secret = getPowSecret();
+            }
+            String expectedSig = RequestUtils.hmacSha256(timestamp + ":" + zkpY, secret);
+
+            if (!signature.equals(expectedSig)) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "Invalid federation signature");
+                return err;
+            }
+
+            store.set("banned-zkp-y:" + zkpY, true, 86400 * 30);
+            Map<String, Object> res = new HashMap<>();
+            res.put("status", "synchronized");
+            return res;
         }
 
         String nodeId = params.getOrDefault("node_id", "");
@@ -729,7 +794,6 @@ public class ChallengeUtils {
         Map<String, Object> res = new HashMap<>();
         switch (op) {
             case "register":
-                String clientIp = "127.0.0.1";
                 String seed = params.getOrDefault("seed", "");
                 registerCooperativeNode(clientIp, nodeId, seed);
                 res.put("status", "registered");
