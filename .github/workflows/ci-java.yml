@@ -1,0 +1,40 @@
+name: Java CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        java-version: [17, 21, 25, 26]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK ${{ matrix.java-version }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ matrix.java-version }}
+        distribution: 'temurin'
+        cache: 'maven'
+
+    - name: Run tests with Maven
+      run: |
+        if [ -f "./mvnw" ]; then
+          ./mvnw clean test
+        else
+          mvn clean test
+        fi
+      env:
+        POW_SECRET: a-super-secret-key-for-testing-in-ci-that-is-long-enough

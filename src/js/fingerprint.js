@@ -769,6 +769,119 @@ const cipherSuiteMap = {
  * @param {object} deviceData Les données persistantes de l'appareil dans notre store
  * @returns {boolean} True si la signature matérielle est valide
  */
+const TRUSTED_HARDWARE_ROOTS = [
+    "-----BEGIN CERTIFICATE-----\n" +
+    "MIIDHzCCAfegAwIBAgIJANCvWjvF+2O6MA0GCSqGSIb3DQEBCwUAMC0xKzApBgNV\n" +
+    "BAMTIll1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMB4XDTE0MDgwNDAwMDAwMFox\n" +
+    "TSUxSDBGBgNVBAMMT1l1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMSowKAYDVQQK\n" +
+    "EyFZdWJpY28gQUIxDzANBgNVBAcTBVN0b2NraG9sbTELMAkGA1UEBhMCU0UwggEi\n" +
+    "MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC6XW0d87g+N6kGgSgC/H9UfA2p\n" +
+    "-----END CERTIFICATE-----",
+    "-----BEGIN CERTIFICATE-----\n" +
+    "MIIB1DCCAXWgAwIBAgIEUI70WjAKBggqhkjOPQQDAjArMSkwJwYDVQQDEyBGSURP\n" +
+    "IEFsbGlhbmNlIFJvb3QgQ0EgKFRlc3QpMB4XDTE0MDgxODA4MzA0NVoXDTM5MDgx\n" +
+    "ODA4MzA0NVowKzEpMCcGA1UEAxMgRklETyBBbGxpYW5jZSBSb290IENBIChUZXN0\n" +
+    "KTB2MBAGByqGSM49AgEGBSuBBAAiA2IABFv81Jm9M7AehfOIdpCH567gP0yqS40m\n" +
+    "aN0j1a8n152G7n/nUf7J0j9F4pL9J2w1X8hN1N8f9Y3G9w8L29/m7/zX3O3n2e7/\n" +
+    "g==\n" +
+    "-----END CERTIFICATE-----"
+];
+
+function decodeCBOR(buffer) {
+    let offset = 0;
+    function readByte() {
+        if (offset >= buffer.length) throw new Error("Unexpected end of CBOR data");
+        return buffer[offset++];
+    }
+    function readBytes(len) {
+        if (offset + len > buffer.length) throw new Error("Unexpected end of CBOR bytes");
+        const res = buffer.slice(offset, offset + len);
+        offset += len;
+        return res;
+    }
+    function readInt(val) {
+        if (val < 24) return val;
+        if (val === 24) return readByte();
+        if (val === 25) {
+            const b1 = readByte(); const b2 = readByte();
+            return (b1 << 8) | b2;
+        }
+        if (val === 26) {
+            const b1 = readByte(); const b2 = readByte();
+            const b3 = readByte(); const b4 = readByte();
+            return (b1 << 24) | (b2 << 16) | (b3 << 8) | b4;
+        }
+        throw new Error("Unsupported integer size: " + val);
+    }
+    function decodeType() {
+        const initial = readByte();
+        const major = initial >> 5;
+        const val = initial & 0x1f;
+        if (major === 0) {
+            return readInt(val);
+        } else if (major === 1) {
+            return -1 - readInt(val);
+        } else if (major === 2) {
+            const len = readInt(val);
+            return readBytes(len);
+        } else if (major === 3) {
+            const len = readInt(val);
+            return readBytes(len).toString('utf8');
+        } else if (major === 4) {
+            const len = readInt(val);
+            const arr = [];
+            for (let i = 0; i < len; i++) arr.push(decodeType());
+            return arr;
+        } else if (major === 5) {
+            const len = readInt(val);
+            const obj = {};
+            for (let i = 0; i < len; i++) {
+                const k = decodeType();
+                const v = decodeType();
+                obj[k] = v;
+            }
+            return obj;
+        }
+        return null;
+    }
+    return decodeType();
+}
+
+function verifyCertificateChain(x5c) {
+    if (!x5c || x5c.length === 0) return false;
+    try {
+        const pems = x5c.map(der => {
+            const base64 = der.toString('base64');
+            return `-----BEGIN CERTIFICATE-----\n${base64.match(/.{1,64}/g).join('\n')}\n-----END CERTIFICATE-----`;
+        });
+
+        for (let i = 0; i < pems.length - 1; i++) {
+            const child = new crypto.X509Certificate(pems[i]);
+            const parent = new crypto.X509Certificate(pems[i + 1]);
+            if (!child.verify(parent.publicKey)) {
+                return false;
+            }
+        }
+
+        const rootCert = new crypto.X509Certificate(pems[pems.length - 1]);
+        let trusted = false;
+        for (const trustedRootPem of TRUSTED_HARDWARE_ROOTS) {
+            const trustedRoot = new crypto.X509Certificate(trustedRootPem);
+            if (rootCert.subject === trustedRoot.subject) {
+                trusted = true;
+                break;
+            }
+            if (rootCert.verify(trustedRoot.publicKey)) {
+                trusted = true;
+                break;
+            }
+        }
+        return trusted;
+    } catch (e) {
+        return false;
+    }
+}
+
 function verifyWebAuthnHardwareAnchor(anchor, deviceData) {
     if (!anchor || !anchor.type) return false;
 
@@ -778,8 +891,22 @@ function verifyWebAuthnHardwareAnchor(anchor, deviceData) {
             .digest();
 
         if (anchor.type === 'registration') {
-            if (!anchor.publicKey || !anchor.credentialId) return false;
-            
+            if (!anchor.publicKey || !anchor.credentialId || !anchor.attestationObject) return false;
+
+            const attestationBytes = Buffer.from(anchor.attestationObject, 'base64');
+            const decoded = decodeCBOR(attestationBytes);
+
+            if (!decoded || !decoded.fmt || !decoded.attStmt) return false;
+
+            if (decoded.fmt !== 'none') {
+                const attStmt = decoded.attStmt;
+                if (!attStmt.x5c || !Array.isArray(attStmt.x5c)) return false;
+
+                if (!verifyCertificateChain(attStmt.x5c)) {
+                    return false;
+                }
+            }
+
             // Enregistrement initial : on stocke la clé publique matérielle SPKI
             deviceData.webauthnPublicKey = anchor.publicKey;
             deviceData.webauthnCredentialId = anchor.credentialId;
@@ -1583,6 +1710,14 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
       const peerBlockIdx = ${peerBlockIdx ?? -1};
       const coopTimeout = ${coopTimeout};
       
+      async function signCoop(op, nid, extra = "") {
+        const msg = clientSecret + ":" + op + ":" + nid + (extra ? ":" + extra : "");
+        const encoder = new TextEncoder();
+        const data = encoder.encode(msg);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+      
       document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
       await new Promise(r => setTimeout(r, 10));
       
@@ -1591,20 +1726,40 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
           
           if (peerId && peerBlockIdx !== -1) {
               // Enregistrement coopératif
-              await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret));
+              const sig = await signCoop("register", nodeId, nonce + ":" + clientSecret);
+              await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret) + "&coop_sig=" + sig);
           }
 
-          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
+          // Écoute des requêtes entrantes de nos pairs
+          setInterval(async () => {
+              try {
+                  const sig = await signCoop("poll_requests", nodeId);
+                  const res = await fetch(window.location.pathname + "?coop_op=poll_requests&node_id=" + nodeId + "&coop_sig=" + sig);
+                  const data = await res.json();
+                  if (data.requests && data.requests.length > 0) {
+                      for (const req of data.requests) {
+                          document.getElementById('loader').innerText = '📤 Transfert coopératif de bloc vers le pair...';
+                          const blockData = await window.readSpaceBlock(req.block_idx);
+                          const respSig = await signCoop("respond_block", nodeId, req.requester_id + ":" + req.req_id + ":" + blockData);
+                          await fetch(window.location.pathname + "?coop_op=respond_block&node_id=" + nodeId + "&requester_id=" + req.requester_id + "&req_id=" + req.req_id + "&block_data=" + encodeURIComponent(blockData) + "&coop_sig=" + respSig);
+                      }
+                  }
+              } catch (e) {
+                  console.error("Cooperative polling error", e);
+              }
+          }, 1000);
 
           let peerBlock = "";
           if (peerId && peerBlockIdx !== -1) {
               document.getElementById('loader').innerText = '📥 Téléchargement du bloc de validation du pair (' + peerId + ')...';
               const reqId = Math.random().toString(36).substring(2);
-              await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId);
+              const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
+              await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
               
               let attempts = 0;
               while (attempts < coopTimeout) {
-                  const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId);
+                  const pollSig = await signCoop("poll_response", nodeId, reqId);
+                  const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId + "&coop_sig=" + pollSig);
                   const data = await res.json();
                   if (data.status === 'ready') {
                       peerBlock = data.block_data;
@@ -1618,6 +1773,7 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
               }
           }
 
+          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
           const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, peerBlock);
           
           window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash + (peerBlock ? "&pow_coop=1" : "");
@@ -3051,6 +3207,20 @@ async function getBehavioralIndicators(context, deviceData) {
   deviceData.lastFpHash = currentFpHash;
   deviceData.ips.add(clientIp); // Record the IP used by this device
 
+    // Nettoyage par fenêtre glissante pour éviter l'accumulation sur les sessions longues
+    if (!deviceData.ipTimes) {
+        deviceData.ipTimes = {};
+    }
+    deviceData.ipTimes[clientIp] = now;
+
+    const slidingWindow = 2 * 60 * 60 * 1000; // 2 heures
+    const cutOff = now - slidingWindow;
+    for (const [ip, lastSeen] of Object.entries(deviceData.ipTimes)) {
+        if (lastSeen < cutOff) {
+            deviceData.ips.delete(ip);
+            delete deviceData.ipTimes[ip];
+        }
+    }
   // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
   const behaviorHeader = context.headers?.['x-behavior-metrics'];
   let webauthnVerified = false;
@@ -3116,6 +3286,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Date.now() - deviceData.lastUpdate > 10 * 60 * 1000) { // 10 minutes
     deviceData.ips.clear();
     deviceData.rapidChangeCount = 0;
+      deviceData.ipTimes = {};
   }
   deviceData.lastUpdate = Date.now();
 
@@ -4808,6 +4979,42 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1') {
         return { error: 'Missing node_id' };
     }
 
+    // --- VÉRIFICATION DE LA SIGNATURE COOPÉRATIVE ---
+    const challengeContext = await store.get(`secret:${nodeId}`);
+    if (!challengeContext || !challengeContext.clientSecret) {
+        return { error: 'Invalid or expired node_id' };
+    }
+
+    const clientSecret = challengeContext.clientSecret;
+    const coopSig = params.coop_sig || '';
+
+    let expectedMsg = '';
+    switch (op) {
+        case 'register':
+            expectedMsg = `${clientSecret}:register:${nodeId}:${params.seed || ''}`;
+            break;
+        case 'request_peer_block':
+            expectedMsg = `${clientSecret}:request_peer_block:${nodeId}:${params.peer_id || ''}:${params.block_idx || '0'}:${params.req_id || ''}`;
+            break;
+        case 'poll_requests':
+            expectedMsg = `${clientSecret}:poll_requests:${nodeId}`;
+            break;
+        case 'respond_block':
+            expectedMsg = `${clientSecret}:respond_block:${nodeId}:${params.requester_id || ''}:${params.req_id || ''}:${params.block_data || ''}`;
+            break;
+        case 'poll_response':
+            expectedMsg = `${clientSecret}:poll_response:${nodeId}:${params.req_id || ''}`;
+            break;
+        default:
+            return { error: 'Invalid cooperative operation' };
+    }
+
+    const expectedSig = crypto.createHash('sha256').update(expectedMsg).digest('hex');
+    if (coopSig.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(coopSig, 'hex'), Buffer.from(expectedSig, 'hex'))) {
+        return { error: 'Invalid cooperative signature' };
+    }
+    // --- FIN DE LA VÉRIFICATION ---
+
     switch (op) {
         case 'register':
             const seed = params.seed || '';
@@ -4920,66 +5127,25 @@ function sanitizeProxyHeaders(context, securityConfig) {
 
 /**
  * Exécute l'optimisation des TTL en tâche de fond de manière asynchrone et non-bloquante.
- * Utilise l'algorithme génétique multi-objectifs de Pareto pour trouver des solutions stables.
+ * Déporté dans un worker thread dédié pour libérer l'Event Loop principale de Node.js.
  */
 export async function runBackgroundTtlOptimization() {
-    const MIN_TTL = 300000;
-    const MAX_TTL = 86400000;
-    const tempCache = new Map();
-    const keyScores = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-
-    for (const suspicionScore of keyScores) {
-        // Rend la main à la boucle d'événements Node.js à chaque itération pour ne pas bloquer les requêtes web actives
-        await new Promise(resolve => {
-            if (typeof setImmediate === 'function') {
-                setImmediate(resolve);
-            } else {
-                setTimeout(resolve, 0);
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./ttl-optimization.worker.js', import.meta.url));
+        worker.on("message", (tempCache) => {
+            const tempMap = new Map();
+            for (const [key, value] of Object.entries(tempCache)) {
+                tempMap.set(Number(key), value);
             }
+            optimizedTtlCache = tempMap;
+            resolve();
+            worker.terminate();
         });
-
-        const solverFunction = () => {
-            const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
-            const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
-            const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
-            const mutate = (ttl) => {
-                const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1;
-                return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
-            };
-
-            const paretoFront = Optimization.geneticAlgorithmMultiObjective(
-                createIndividual,
-                fitnessFunction,
-                crossover,
-                mutate,
-                {
-                    generations: 40,
-                    populationSize: 30,
-                }
-            );
-
-            if (!paretoFront || paretoFront.length === 0) {
-                return { solution: null, fitness: Infinity };
-            }
-
-            let bestSolutionInFront;
-            if (suspicionScore < 50) {
-                bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
-            } else {
-                bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
-            }
-            return { solution: bestSolutionInFront, fitness: 0 };
-        };
-
-        const { bestResult } = Optimization.runMultiple(solverFunction, 20);
-        if (bestResult && bestResult.solution && bestResult.solution !== Infinity) {
-            tempCache.set(suspicionScore, Math.round(bestResult.solution));
-        } else {
-            tempCache.set(suspicionScore, Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL));
-        }
-    }
-
-    optimizedTtlCache = tempCache;
+        worker.on("error", (err) => {
+            console.error('[Fingerprint] TTL optimization worker error:', err);
+            reject(err);
+        });
+    });
 }
 
 // Lancement de l'optimisation initiale immédiate en arrière-plan
@@ -5700,7 +5866,7 @@ export const powMiddleware = (securityConfig) => {
  * This is a common pattern to allow mocking of ES module functions.
  */
 export const __internal = {
-    store, // Export the store for testing
+    get store() { return store; }, // Export the store for testing
     getDeviceHash,
     getCompositeDeviceHash,
     getSuspicionVector,

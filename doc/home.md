@@ -36,7 +36,13 @@ Integrate protection into your Python applications (ASGI & WSGI).
 * **WSGI Middleware**: Traditional sync integration with Flask and Django.
 * **Custom Storage**: Persisting sessions and fingerprint states.
 
-### 5. [Full Configuration Options](full_options)
+### 5. [Java Integration Guide](java_integration)
+Protect your Java/Spring Boot applications with native servlet or reactive filters.
+* **Prerequisites**: Spring Boot 3.x, Servlet or WebFlux stack.
+* **Auto-Configuration**: Out-of-the-box modular setup with `FingerprintAutoConfiguration`.
+* **TlsHandshakeInterceptor**: Deep Netty-level inspection of TLS ClientHello packets for robust JA3/JA4 extraction.
+
+### 6. [Full Configuration Options](full_options)
 Find the comprehensive list of all available configuration properties to fine-tune your security.
 * **Complete PHP configuration example** (associative array).
 * **Complete Node.js configuration example** (JS object).
@@ -47,18 +53,18 @@ Find the comprehensive list of all available configuration properties to fine-tu
 * `blog`: Human-friendly; protects against spam and content scraping.
 * `ecommerce`: Protects against account takeover and scalper bots.
 
-### 6. [API Reference](api_reference)
+### 7. [API Reference](api_reference)
 Review public method signatures and persistent storage system configurations.
 * **Node.js Public API**: `powMiddleware`, `identifyRequest`, `createSecurityProfile`, and `FingerprintBuilder`.
 * **PHP Public API**: `DirectFingerprint`, `SecurityProfiles`, and `StoreManager`.
 * **Datastore Configuration**: Replacing in-memory storage with external databases (examples using **MongoDB** and **Redis**).
 
-### 7. [Prometheus Metrics](prometheus_metrics)
+### 8. [Prometheus Metrics](prometheus_metrics)
 Expose and secure Prometheus-compatible metrics for real-time monitoring and observability.
 * **Exposed Metrics**: Track request decisions, challenges (solved/failed), and auto-tuning performance.
 * **Integration and Security**: Best practices for securing the `/metrics` endpoint in PHP and Node.js.
 
-### 8. [Ed25519 Key Setup and Configuration](ed25519_keys)
+### 89. [Ed25519 Key Setup and Configuration](ed25519_keys)
 
 
 ---

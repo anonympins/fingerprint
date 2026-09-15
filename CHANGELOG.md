@@ -1,3 +1,10 @@
+## Version 0.6.0
+
+- **🛡️ Cooperative Challenge Better Security**: Hardened cooperative Proof-of-Space and challenge routing mechanics within subnet peers, preventing rogue registrations and ensuring high-fidelity security validation on decentralized networks (Contributed by @anonympins).
+- **⚡ Math Optimizations & TTL Worker**: Optimized performance for 64-bit integers and the `cyrb53` hashing implementation on PHP 7+, reducing CPU overhead. Integrated automated background TTL optimization worker execution (Contributed by @anonympins).
+- **🧹 IP Pruning**: Standardized and optimized IP pruning and rate-limiting data lifecycles to prevent memory exhaustion and leaks during high-concurrency scraping attempts (Contributed by @anonympins).
+- Java integration (see README and wiki)
+
 ## Version 0.5.5
 
 - **🔒 Client Session Handshake & HMAC Metric Signing**: Implemented elliptic-curve Diffie-Hellman (ECDH over curve `P-256`) key exchange protocol during client initialization (`?fp_handshake=1`). Leveraged the negotiated session key to cryptographically sign behavioral metrics (`signMetrics`) on the client using HMAC-SHA256, protecting against replay attacks and telemetry tampering.

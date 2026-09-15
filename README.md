@@ -1,17 +1,17 @@
 # Fingerprint anti-bot protection
 
-NodeJS tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-nodejs.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml) / PHP tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-php.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml) / Python tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-php.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml)
+NodeJS tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-nodejs.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml) / PHP tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-php.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml) / Python tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-python.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml) / Java tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-java.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-java.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-java.yml)
 
 [![https://github.com/anonympins/fingerprint/releases/tag/fingerprint-0.5.0](https://img.shields.io/github/v/release/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/releases)
 [![https://raw.githubusercontent.com/anonympins/fingerprint/refs/heads/main/LICENSE](https://img.shields.io/github/license/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/blob/main/LICENSE)
 [![https://github.com/anonympins/fingerprint/commits/main](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/commits/main)
 [![https://github.com/anonympins/fingerprint](https://img.shields.io/github/repo-size/anonympins/fingerprint)](https://github.com/anonympins/fingerprint)
 
-A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Python** and **PHP** environments. 
+A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Java**, **Python** and **PHP** environments. 
 
 It leverages multi-layer hardware fingerprinting, real-time behavioral analysis, passive network/TLS tracking, and adaptive/useful proof-of-work challenges to dynamically detect and mitigate scraping, scalping, account takeover (ATO), and sophisticated automated threats.
 
-Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, and **Python (>=3.8)**.
+Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, Java (>=17), and **Python (>=3.8)**.
 
 ![illustration](https://i.ibb.co/fV1QT6Mf/image-c6e10859baae53bb595112ec08fc9e27.png)
 
@@ -85,9 +85,10 @@ To prevent documentation drift, all detailed guides and reference materials are 
 1. **[Key Concepts & Suspicion Vectors](https://github.com/anonympins/fingerprint/wiki/concepts)**: Learn how the engine calculates suspicion scores across the 15 distinct vectors and manages the Proof-of-Work mitigation layers.
 2. **[Node.js Integration Guide](https://github.com/anonympins/fingerprint/wiki/nodejs_integration)**: Step-by-step instructions for Express.js middleware and raw HTTP server integrations.
 3. **[PHP Integration Guide](https://github.com/anonympins/fingerprint/wiki/php_integration)**: Configuration details for direct PHP integration, TLS fingerprinting forwarding via Nginx/Apache, and securing Prometheus metrics.
-3. **[Python Integration Guide](https://github.com/anonympins/fingerprint/wiki/python_integration)**: Python middleware for ASGI and WSGI integration.
-4. **[Full Configuration Options](https://github.com/anonympins/fingerprint/wiki/full_options)**: Complete parameter list for fine-tuning weights, custom honeypots, and security profile overrides.
-5. **[API Reference](https://github.com/anonympins/fingerprint/wiki/api_reference)**: Public API signatures and guides on substituting the in-memory datastore with Redis or MongoDB.
+4. **[Python Integration Guide](https://github.com/anonympins/fingerprint/wiki/python_integration)**: Python middleware for ASGI and WSGI integration.
+5. **[Java Integration Guide](https://github.com/anonympins/fingerprint/wiki/java_integration)**: Java library (Servlet, Spring WebFlux)
+6. **[Full Configuration Options](https://github.com/anonympins/fingerprint/wiki/full_options)**: Complete parameter list for fine-tuning weights, custom honeypots, and security profile overrides.
+7. **[API Reference](https://github.com/anonympins/fingerprint/wiki/api_reference)**: Public API signatures and guides on substituting the in-memory datastore with Redis or MongoDB.
 
 Start with the **[Documentation Portal](https://github.com/anonympins/fingerprint/wiki/home)** for a complete index.
 

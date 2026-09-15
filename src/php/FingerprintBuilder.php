@@ -158,8 +158,16 @@ class FingerprintBuilder
         $h1 = self::imul($h1 ^ ($h1 >> 16), 2246822507) ^ self::imul($h2 ^ ($h2 >> 13), 3266489909);
         $h2 = self::imul($h2 ^ ($h2 >> 16), 2246822507) ^ self::imul($h1 ^ ($h1 >> 13), 3266489909);
 
-        // En PHP, les opérations sur les grands nombres peuvent être délicates.
-        // On utilise bcmath pour une arithmétique de précision arbitraire, garantissant le même résultat que JS.
+        // Sur les architectures 64 bits (standard en production), PHP gère nativement les entiers 64 bits signés.
+        // Nous pouvons éviter bcmath en effectuant des décalages binaires natifs pour un gain drastique de performances.
+        if (PHP_INT_SIZE === 8) {
+            $h1_u = $h1 & 0xffffffff;
+            $h2_u = $h2 & 0xffffffff;
+            $val_h2 = ((2097151 & $h2_u) << 32) | $h1_u;
+            return (string)$val_h2;
+        }
+
+        // Fallback bcmath uniquement sur l'architecture obsolète 32 bits.
         $val_h2 = bcadd(bcmul((string)(2097151 & $h2), '4294967296'), (string)($h1 >= 0 ? $h1 : $h1 + 4294967296));
         return $val_h2;
     }

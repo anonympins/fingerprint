@@ -341,6 +341,18 @@ class ProblemManager {
                         console.error(`[ProblemManager] Propriété 'solution' manquante dans solutionData pour ${problemId}.`);
                         return;
                     }
+            // DoS mitigation: validate solution size and structure
+            if (Array.isArray(solutionData.solution) && solutionData.solution.length > 500) {
+                console.error(`[ProblemManager] Solution array too large for ${problemId} verification.`);
+                return;
+            }
+            try {
+                const serializedSolution = JSON.stringify(solutionData.solution);
+                if (serializedSolution && serializedSolution.length > 65536) {
+                    console.error(`[ProblemManager] Solution payload size exceeds safe limit for ${problemId}.`);
+                    return;
+                }
+            } catch (e) {}
                     // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
                     const scoreFunction = problem.workUnit.scoreFunction;
                     if (!scoreFunction) {
@@ -368,6 +380,16 @@ class ProblemManager {
                         return; // Ne rien faire si la vérification est impossible.
                     }
 
+            if (solutionData.population.length > 150) {
+                console.error(`[ProblemManager] Population size exceeds safe limit for ${problemId}.`);
+                return;
+            }
+            for (const individual of solutionData.population) {
+                if (individual && individual.chromosome && Array.isArray(individual.chromosome) && individual.chromosome.length > 100) {
+                    console.error(`[ProblemManager] Chromosome size too large for ${problemId}.`);
+                    return;
+                }
+            }
                     // 1. On choisit un petit échantillon aléatoire de la population soumise.
                     const sampleSize = Math.min(5, solutionData.population.length);
                     const sampleIndices = new Set();

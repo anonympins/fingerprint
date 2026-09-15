@@ -2887,6 +2887,19 @@ class FingerprintEngine:
         elif isinstance(device_data["ips"], list):
             device_data["ips"] = set(device_data["ips"])
         device_data["ips"].add(client_ip)
+
+        # Active sliding window pruning (2 hours)
+        if "ipTimes" not in device_data:
+            device_data["ipTimes"] = {}
+        device_data["ipTimes"][client_ip] = now
+
+        sliding_window = 2 * 3600 * 1000  # 2 hours in milliseconds
+        cutoff = now - sliding_window
+        expired_ips = [ip for ip, last_seen in device_data["ipTimes"].items() if last_seen < cutoff]
+        for ip in expired_ips:
+            device_data["ips"].discard(ip)
+            device_data["ipTimes"].pop(ip, None)
+
         max_ips, free_ips = 15, 3
         history_score = min(100.0, (max(0, len(device_data["ips"]) - free_ips) / max_ips) * 100.0)
         rotation_score = min(100.0, (device_data.get("rapidChangeCount", 0) / 3.0) * 100.0)

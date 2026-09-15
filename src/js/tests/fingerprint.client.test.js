@@ -24,6 +24,8 @@ describe('ClientLibrary WASM Integration', () => {
         // 1. Simuler un module WASM fonctionnel
         const mockWasmModule = {
             _hash_string: vi.fn((str) => 99999), // Un mock qui retourne une valeur distincte
+            _malloc: vi.fn().mockReturnValue(0),
+            HEAPU8: new Uint8Array(4096)
         };
 
         // 2. Simuler le chargement du script et l'initialisation du module
@@ -43,7 +45,7 @@ describe('ClientLibrary WASM Integration', () => {
         // 4. Vérifier que le hasher a été remplacé
         const wasmHash = ClientLibrary._hasher("test");
         expect(wasmHash).toBe(99999);
-        expect(mockWasmModule._hash_string).toHaveBeenCalledWith("test");
+        expect(mockWasmModule._hash_string).toHaveBeenCalledWith(0);
         expect(console.log).toHaveBeenCalledWith(expect.stringContaining('WASM module loaded successfully'));
     });
 

@@ -827,6 +827,25 @@ class RequestUtils
             $deviceData['ips'][] = $clientIp;
         }
 
+        // Pruning par fenêtre glissante temporelle
+        if (!isset($deviceData['ipTimes'])) {
+            $deviceData['ipTimes'] = [];
+        }
+        $deviceData['ipTimes'][$clientIp] = $now;
+
+        $slidingWindow = 2 * 3600 * 1000; // 2 heures
+        $cutOff = $now - $slidingWindow;
+        foreach ($deviceData['ipTimes'] as $ip => $lastSeen) {
+            if ($lastSeen < $cutOff) {
+                $ipKey = array_search($ip, $deviceData['ips'], true);
+                if ($ipKey !== false) {
+                    unset($deviceData['ips'][$ipKey]);
+                }
+                unset($deviceData['ipTimes'][$ip]);
+            }
+        }
+        $deviceData['ips'] = array_values($deviceData['ips']);
+
         // Score d'historique basé sur le nombre d'IPs utilisées (rotation de proxy)
         $maxIpsPerDevice = 15;
         $freeIpChanges = 3;
