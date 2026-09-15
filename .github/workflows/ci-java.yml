@@ -16,7 +16,7 @@ jobs:
 
     strategy:
       matrix:
-        java-version: [17, 21, latest]
+        java-version: [17, 21, 25, 26]
 
     steps:
     - name: Checkout repository
