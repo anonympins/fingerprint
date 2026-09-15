@@ -201,6 +201,16 @@ class ProblemManager
                         error_log("[ProblemManager] Aucune fonction de score définie pour {$problemId}.");
                         return;
                     }
+                // DoS mitigation: validate solution size and structure
+                if (is_array($solutionData['solution']) && count($solutionData['solution']) > 500) {
+                    error_log("[ProblemManager] Solution array too large for {$problemId} verification.");
+                    return;
+                }
+                $serializedSolution = json_encode($solutionData['solution']);
+                if ($serializedSolution !== false && strlen($serializedSolution) > 65536) {
+                    error_log("[ProblemManager] Solution payload size exceeds safe limit for {$problemId}.");
+                    return;
+                }
                     // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
                     $recalculatedEnergy = $scoreFunction($solutionData['solution'], $problem['payload'] ?? []);
 
@@ -218,6 +228,16 @@ class ProblemManager
                 break;
             case 'genetic_algorithm_generations':
                 if (isset($solutionData['population']) && is_array($solutionData['population'])) {
+                if (count($solutionData['population']) > 150) {
+                    error_log("[ProblemManager] Population size exceeds safe limit for {$problemId}.");
+                    return;
+                }
+                foreach ($solutionData['population'] as $ind) {
+                    if (isset($ind['chromosome']) && is_array($ind['chromosome']) && count($ind['chromosome']) > 100) {
+                        error_log("[ProblemManager] Chromosome size too large for {$problemId}.");
+                        return;
+                    }
+                }
                     $problem['state']['population'] = $solutionData['population'];
                     $problem['state']['lastUpdate'] = (new \DateTime())->format(\DateTime::ATOM);
                     $stateChanged = true;

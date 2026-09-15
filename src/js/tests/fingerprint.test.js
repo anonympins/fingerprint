@@ -2643,6 +2643,11 @@ describe('Ed25519 Asymmetric Tickets', () => {
         const nodeIdA = 'node-a';
         const seedA = 'seed-a';
 
+        // Configurer les secrets dans le store pour passer la validation de signature
+        const store = __internal.store;
+        await store.set('secret:node-a', { clientSecret: 'secret-a' });
+        await store.set('secret:node-b', { clientSecret: 'secret-b' });
+
         // 1. Enregistrement du nœud A (pair)
         await __internal.registerCooperativeNode(clientIp, nodeIdA, seedA);
 
@@ -2652,21 +2657,31 @@ describe('Ed25519 Asymmetric Tickets', () => {
         expect(peer.nodeId).toBe(nodeIdA);
         expect(peer.seed).toBe(seedA);
 
+        const sigReq = createHash('sha256')
+            .update('secret-b:request_peer_block:node-b:node-a:42:req-123')
+            .digest('hex');
+
         // 3. Demande de bloc du nœud B vers le nœud A
         const paramsReq = {
             coop_op: 'request_peer_block',
             node_id: 'node-b',
             peer_id: 'node-a',
             block_idx: '42',
-            req_id: 'req-123'
+            req_id: 'req-123',
+            coop_sig: sigReq
         };
         const resReq = await __internal.handleCooperativeRequest(paramsReq, clientIp);
         expect(resReq.status).toBe('queued');
 
+        const sigPoll = createHash('sha256')
+            .update('secret-a:poll_requests:node-a')
+            .digest('hex');
+
         // 4. Récupération de la demande par le nœud A
         const paramsPoll = {
             coop_op: 'poll_requests',
-            node_id: 'node-a'
+            node_id: 'node-a',
+            coop_sig: sigPoll
         };
         const resPoll = await __internal.handleCooperativeRequest(paramsPoll, clientIp);
         expect(resPoll.requests.length).toBe(1);

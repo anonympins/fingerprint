@@ -7,14 +7,21 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.*;
 
 public class ChallengeUtilsTest {
 
     private final String secret = "my-secret-key-32-chars-long-minimum-for-testing";
 
+    private InMemoryStore store;
+
     @BeforeEach
     public void setUp() {
+
+
+        store = new InMemoryStore();
+
         System.setProperty("POW_SECRET", secret);
     }
 
@@ -219,5 +226,152 @@ public class ChallengeUtilsTest {
 
         // Une autre IP doit être indépendante et réussir
         assertTrue(ChallengeUtils.checkChallengeRateLimit("192.168.1.101"));
+    }
+
+
+    // Helper to generate valid signatures (mimics client-side logic)
+    private String generateCoopSig(String op, String nodeId, String clientSecret, String... extraParams) {
+        StringBuilder msg = new StringBuilder(clientSecret + ":" + op + ":" + nodeId);
+        for (String param : extraParams) {
+            msg.append(":").append(param);
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(msg.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Test
+    void testCooperativeRequestHandlingWithSignatures() {
+        // 1. Setup: Define test data
+        String nodeIdA = "node-alpha";
+        String nodeIdB = "node-beta";
+        String clientSecretA = "secret-alpha-for-node-a";
+        String clientSecretB = "secret-beta-for-node-b";
+        String seedA = "seed-for-alpha";
+        String seedB = "seed-for-beta";
+        int blockIdx = 42;
+        String reqId = "req-12345";
+        String blockData = "0102030405060708090a0b0c0d0e0f"; // Hex string representing block data
+
+        // Store challenge contexts for both nodes (crucial for signature verification)
+        store.set("secret:" + nodeIdA, new HashMap<String, Object>() {{ put("clientSecret", clientSecretA); }}, 300);
+        store.set("secret:" + nodeIdB, new HashMap<String, Object>() {{ put("clientSecret", clientSecretB); }}, 300);
+
+        // --- Test 1: Successful Registration (Node A) ---
+        String sigA_register = generateCoopSig("register", nodeIdA, clientSecretA, seedA);
+        Map<String, String> paramsRegisterA = new HashMap<String, String>() {{
+            put("coop_op", "register"); put("node_id", nodeIdA); put("seed", seedA); put("coop_sig", sigA_register);
+        }};
+        Map<String, Object> resRegisterA = ChallengeUtils.handleCooperativeRequest(paramsRegisterA);
+        assertEquals("registered", resRegisterA.get("status"), "Node A should register successfully.");
+
+        // --- Test 2: Successful Registration (Node B) ---
+        String sigB_register = generateCoopSig("register", nodeIdB, clientSecretB, seedB);
+        Map<String, String> paramsRegisterB = new HashMap<String, String>() {{
+            put("coop_op", "register"); put("node_id", nodeIdB); put("seed", seedB); put("coop_sig", sigB_register);
+        }};
+        Map<String, Object> resRegisterB = ChallengeUtils.handleCooperativeRequest(paramsRegisterB);
+        assertEquals("registered", resRegisterB.get("status"), "Node B should register successfully.");
+
+        // --- Test 3: Failed Registration (Invalid Signature) ---
+        Map<String, String> paramsInvalidSig = new HashMap<>(paramsRegisterA);
+        paramsInvalidSig.put("coop_sig", "invalid-signature");
+        Map<String, Object> resInvalidSig = ChallengeUtils.handleCooperativeRequest(paramsInvalidSig);
+        assertEquals("Invalid cooperative signature", resInvalidSig.get("error"), "Registration with invalid signature should fail.");
+
+        // --- Test 4: Successful Block Request (Node A requests from Node B) ---
+        String sigA_requestBlock = generateCoopSig("request_peer_block", nodeIdA, clientSecretA, nodeIdB, String.valueOf(blockIdx), reqId);
+        Map<String, String> paramsRequestBlock = new HashMap<String, String>() {{
+            put("coop_op", "request_peer_block"); put("node_id", nodeIdA); put("peer_id", nodeIdB);
+            put("block_idx", String.valueOf(blockIdx)); put("req_id", reqId); put("coop_sig", sigA_requestBlock);
+        }};
+        Map<String, Object> resRequestBlock = ChallengeUtils.handleCooperativeRequest(paramsRequestBlock);
+        assertEquals("queued", resRequestBlock.get("status"), "Block request should be queued.");
+
+        // --- Test 5: Failed Block Request (Invalid Signature) ---
+        paramsInvalidSig = new HashMap<>(paramsRequestBlock);
+        paramsInvalidSig.put("coop_sig", "invalid-signature");
+        resInvalidSig = ChallengeUtils.handleCooperativeRequest(paramsInvalidSig);
+        assertEquals("Invalid cooperative signature", resInvalidSig.get("error"), "Block request with invalid signature should fail.");
+
+        // --- Test 6: Successful Poll Requests (Node B polls for requests) ---
+        String sigB_pollRequests = generateCoopSig("poll_requests", nodeIdB, clientSecretB);
+        Map<String, String> paramsPollRequests = new HashMap<String, String>() {{
+            put("coop_op", "poll_requests"); put("node_id", nodeIdB); put("coop_sig", sigB_pollRequests);
+        }};
+        Map<String, Object> resPollRequests = ChallengeUtils.handleCooperativeRequest(paramsPollRequests);
+        List<Map<String, Object>> requests = (List<Map<String, Object>>) resPollRequests.get("requests");
+        assertNotNull(requests);
+        assertEquals(1, requests.size(), "Node B should receive 1 request.");
+        assertEquals(reqId, requests.get(0).get("req_id"));
+        assertEquals(nodeIdA, requests.get(0).get("requester_id"));
+        assertEquals(blockIdx, requests.get(0).get("block_idx"));
+
+        // --- Test 7: Failed Poll Requests (Invalid Signature) ---
+        paramsInvalidSig = new HashMap<>(paramsPollRequests);
+        paramsInvalidSig.put("coop_sig", "invalid-signature");
+        resInvalidSig = ChallengeUtils.handleCooperativeRequest(paramsInvalidSig);
+        assertEquals("Invalid cooperative signature", resInvalidSig.get("error"), "Poll requests with invalid signature should fail.");
+
+        // --- Test 8: Successful Respond Block (Node B responds to Node A) ---
+        String sigB_respondBlock = generateCoopSig("respond_block", nodeIdB, clientSecretB, nodeIdA, reqId, blockData);
+        Map<String, String> paramsRespondBlock = new HashMap<String, String>() {{
+            put("coop_op", "respond_block"); put("node_id", nodeIdB); put("requester_id", nodeIdA);
+            put("req_id", reqId); put("block_data", blockData); put("coop_sig", sigB_respondBlock);
+        }};
+        Map<String, Object> resRespondBlock = ChallengeUtils.handleCooperativeRequest(paramsRespondBlock);
+        assertEquals("delivered", resRespondBlock.get("status"), "Block response should be delivered.");
+
+        // --- Test 9: Failed Respond Block (Invalid Signature) ---
+        paramsInvalidSig = new HashMap<>(paramsRespondBlock);
+        paramsInvalidSig.put("coop_sig", "invalid-signature");
+        resInvalidSig = ChallengeUtils.handleCooperativeRequest(paramsInvalidSig);
+        assertEquals("Invalid cooperative signature", resInvalidSig.get("error"), "Respond block with invalid signature should fail.");
+
+        // --- Test 10: Successful Poll Response (Node A polls for response) ---
+        String sigA_pollResponse = generateCoopSig("poll_response", nodeIdA, clientSecretA, reqId);
+        Map<String, String> paramsPollResponse = new HashMap<String, String>() {{
+            put("coop_op", "poll_response"); put("node_id", nodeIdA); put("req_id", reqId); put("coop_sig", sigA_pollResponse);
+        }};
+        Map<String, Object> resPollResponse = ChallengeUtils.handleCooperativeRequest(paramsPollResponse);
+        assertEquals("ready", resPollResponse.get("status"), "Node A should receive the block data.");
+        assertEquals(blockData, resPollResponse.get("block_data"));
+
+        // --- Test 11: Failed Poll Response (Invalid Signature) ---
+        paramsInvalidSig = new HashMap<>(paramsPollResponse);
+        paramsInvalidSig.put("coop_sig", "invalid-signature");
+        resInvalidSig = ChallengeUtils.handleCooperativeRequest(paramsInvalidSig);
+        assertEquals("Invalid cooperative signature", resInvalidSig.get("error"), "Poll response with invalid signature should fail.");
+
+        // --- Test 12: Invalid/Expired node_id ---
+        Map<String, String> paramsExpiredNode = new HashMap<String, String>() {{
+            put("coop_op", "register"); put("node_id", "non-existent-node"); put("coop_sig", "any-sig");
+        }};
+        Map<String, Object> resExpiredNode = ChallengeUtils.handleCooperativeRequest(paramsExpiredNode);
+        assertEquals("Invalid or expired node_id", resExpiredNode.get("error"), "Request with non-existent node_id should fail.");
+
+        // --- Test 13: Missing node_id ---
+        Map<String, String> paramsMissingNodeId = new HashMap<String, String>() {{
+            put("coop_op", "register"); put("coop_sig", "any-sig");
+        }};
+        Map<String, Object> resMissingNodeId = ChallengeUtils.handleCooperativeRequest(paramsMissingNodeId);
+        assertEquals("Missing node_id", resMissingNodeId.get("error"), "Request without node_id should fail.");
+
+        // --- Test 14: Invalid cooperative operation ---
+        Map<String, String> paramsInvalidOp = new HashMap<String, String>() {{
+            put("coop_op", "unknown_op"); put("node_id", nodeIdA); put("coop_sig", "any-sig");
+        }};
+        Map<String, Object> resInvalidOp = ChallengeUtils.handleCooperativeRequest(paramsInvalidOp);
+        assertEquals("Invalid cooperative operation", resInvalidOp.get("error"), "Request with unknown operation should fail.");
     }
 }

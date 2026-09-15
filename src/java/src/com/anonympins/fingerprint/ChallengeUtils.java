@@ -19,6 +19,11 @@ public class ChallengeUtils {
     private static final Map<String, List<Long>> IP_REQUEST_LOGS = new java.util.concurrent.ConcurrentHashMap<>();
     private static final int MAX_REQUESTS_PER_WINDOW = 10;
     private static final long WINDOW_MS = 60000; // 1 minute
+    private static IStore store = new InMemoryStore();
+
+    public static void setStore(IStore externalStore) {
+        store = externalStore;
+    }
 
     @SuppressWarnings("unchecked")
     public static String calculateCpuTarget(double suspicionFactor, Map<String, Object> securityConfig) {
@@ -590,6 +595,209 @@ public class ChallengeUtils {
                 return valStr;
             }
         }
+    }
+
+    private static String sha256(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hashBytes) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void registerCooperativeNode(String clientIp, String nodeId, String seed) {
+        String subnet = RequestUtils.getIpSubnet(clientIp, 24, 48);
+        if (subnet == null) {
+            return;
+        }
+        String key = "coop-pospace:subnet:" + subnet;
+        Map<String, Map<String, Object>> nodes = (Map<String, Map<String, Object>>) store.get(key);
+        if (nodes == null) {
+            nodes = new HashMap<>();
+        }
+        long now = System.currentTimeMillis() / 1000L;
+
+        Map<String, Map<String, Object>> cleanedNodes = new HashMap<>();
+        for (Map.Entry<String, Map<String, Object>> entry : nodes.entrySet()) {
+            Map<String, Object> node = entry.getValue();
+            long timestamp = ((Number) node.get("timestamp")).longValue();
+            if (now - timestamp < 120) {
+                cleanedNodes.put(entry.getKey(), node);
+            }
+        }
+
+        Map<String, Object> nodeData = new HashMap<>();
+        nodeData.put("nodeId", nodeId);
+        nodeData.put("seed", seed);
+        nodeData.put("timestamp", now);
+        cleanedNodes.put(nodeId, nodeData);
+
+        store.set(key, cleanedNodes, 120);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> findPeerInSubnet(String clientIp, String excludeNodeId) {
+        String subnet = RequestUtils.getIpSubnet(clientIp, 24, 48);
+        if (subnet == null) {
+            return null;
+        }
+        String key = "coop-pospace:subnet:" + subnet;
+        Map<String, Map<String, Object>> nodes = (Map<String, Map<String, Object>>) store.get(key);
+        if (nodes == null) {
+            return null;
+        }
+        long now = System.currentTimeMillis() / 1000L;
+        List<Map<String, Object>> activePeers = new ArrayList<>();
+        for (Map.Entry<String, Map<String, Object>> entry : nodes.entrySet()) {
+            String id = entry.getKey();
+            Map<String, Object> node = entry.getValue();
+            long timestamp = ((Number) node.get("timestamp")).longValue();
+            if (!id.equals(excludeNodeId) && (now - timestamp) < 120) {
+                activePeers.add(node);
+            }
+        }
+        if (activePeers.isEmpty()) {
+            return null;
+        }
+        int randomIndex = new Random().nextInt(activePeers.size());
+        return activePeers.get(randomIndex);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> handleCooperativeRequest(Map<String, String> params) {
+        String op = params.get("coop_op");
+        if (op == null) {
+            return null;
+        }
+
+        String nodeId = params.getOrDefault("node_id", "");
+        if (nodeId.isEmpty()) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "Missing node_id");
+            return err;
+        }
+
+        Map<String, Object> challengeContext = (Map<String, Object>) store.get("secret:" + nodeId);
+        if (challengeContext == null || challengeContext.get("clientSecret") == null) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "Invalid or expired node_id");
+            return err;
+        }
+
+        String clientSecret = (String) challengeContext.get("clientSecret");
+        String coopSig = params.getOrDefault("coop_sig", "");
+
+        String expectedMsg = "";
+        switch (op) {
+            case "register":
+                expectedMsg = clientSecret + ":register:" + nodeId + ":" + params.getOrDefault("seed", "");
+                break;
+            case "request_peer_block":
+                expectedMsg = clientSecret + ":request_peer_block:" + nodeId + ":" + params.getOrDefault("peer_id", "") + ":" + params.getOrDefault("block_idx", "0") + ":" + params.getOrDefault("req_id", "");
+                break;
+            case "poll_requests":
+                expectedMsg = clientSecret + ":poll_requests:" + nodeId;
+                break;
+            case "respond_block":
+                expectedMsg = clientSecret + ":respond_block:" + nodeId + ":" + params.getOrDefault("requester_id", "") + ":" + params.getOrDefault("req_id", "") + ":" + params.getOrDefault("block_data", "");
+                break;
+            case "poll_response":
+                expectedMsg = clientSecret + ":poll_response:" + nodeId + ":" + params.getOrDefault("req_id", "");
+                break;
+            default:
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "Invalid cooperative operation");
+                return err;
+        }
+
+        String expectedSig = sha256(expectedMsg);
+        if (expectedSig == null || !MessageDigest.isEqual(coopSig.getBytes(StandardCharsets.UTF_8), expectedSig.getBytes(StandardCharsets.UTF_8))) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "Invalid cooperative signature");
+            return err;
+        }
+
+        Map<String, Object> res = new HashMap<>();
+        switch (op) {
+            case "register":
+                String clientIp = "127.0.0.1";
+                String seed = params.getOrDefault("seed", "");
+                registerCooperativeNode(clientIp, nodeId, seed);
+                res.put("status", "registered");
+                return res;
+
+            case "request_peer_block":
+                String peerId = params.getOrDefault("peer_id", "");
+                int blockIdx = Integer.parseInt(params.getOrDefault("block_idx", "0"));
+                String requestId = params.getOrDefault("req_id", "");
+                if (peerId.isEmpty() || requestId.isEmpty()) {
+                    res.put("error", "Invalid parameters");
+                    return res;
+                }
+
+                String queueKey = "coop-mailbox:queue:" + peerId;
+                List<Map<String, Object>> requests = (List<Map<String, Object>>) store.get(queueKey);
+                if (requests == null) {
+                    requests = new ArrayList<>();
+                }
+                Map<String, Object> requestItem = new HashMap<>();
+                requestItem.put("req_id", requestId);
+                requestItem.put("requester_id", nodeId);
+                requestItem.put("block_idx", blockIdx);
+                requests.add(requestItem);
+                store.set(queueKey, requests, 30);
+                res.put("status", "queued");
+                return res;
+
+            case "poll_requests":
+                String pollQueueKey = "coop-mailbox:queue:" + nodeId;
+                List<Map<String, Object>> polledRequests = (List<Map<String, Object>>) store.get(pollQueueKey);
+                if (polledRequests == null) {
+                    polledRequests = new ArrayList<>();
+                }
+                store.delete(pollQueueKey);
+                res.put("requests", polledRequests);
+                return res;
+
+            case "respond_block":
+                String requesterId = params.getOrDefault("requester_id", "");
+                String respondRequestId = params.getOrDefault("req_id", "");
+                String blockData = params.getOrDefault("block_data", "");
+                if (requesterId.isEmpty() || respondRequestId.isEmpty()) {
+                    res.put("error", "Invalid parameters");
+                    return res;
+                }
+
+                String responseKey = "coop-mailbox:res:" + requesterId + ":" + respondRequestId;
+                Map<String, Object> responseData = new HashMap<>();
+                responseData.put("block_data", blockData);
+                store.set(responseKey, responseData, 30);
+                res.put("status", "delivered");
+                return res;
+
+            case "poll_response":
+                String pollResponseRequestId = params.getOrDefault("req_id", "");
+                String pollResponseKey = "coop-mailbox:res:" + nodeId + ":" + pollResponseRequestId;
+                Map<String, Object> data = (Map<String, Object>) store.get(pollResponseKey);
+                if (data != null) {
+                    store.delete(pollResponseKey);
+                    res.put("status", "ready");
+                    res.put("block_data", data.get("block_data"));
+                    return res;
+                }
+                res.put("status", "pending");
+                return res;
+        }
+        return null;
     }
 
     /**

@@ -20,6 +20,10 @@ public class InMemoryStore implements IStore {
 
     private final Map<String, StoreItem> data = new ConcurrentHashMap<>();
 
+    public InMemoryStore() {
+        ChallengeUtils.setStore(this);
+    }
+
     @Override
     public Object get(String key) {
         StoreItem item = data.get(key);

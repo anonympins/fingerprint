@@ -1710,6 +1710,14 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
       const peerBlockIdx = ${peerBlockIdx ?? -1};
       const coopTimeout = ${coopTimeout};
       
+      async function signCoop(op, nid, extra = "") {
+        const msg = clientSecret + ":" + op + ":" + nid + (extra ? ":" + extra : "");
+        const encoder = new TextEncoder();
+        const data = encoder.encode(msg);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+      
       document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
       await new Promise(r => setTimeout(r, 10));
       
@@ -1718,20 +1726,40 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
           
           if (peerId && peerBlockIdx !== -1) {
               // Enregistrement coopératif
-              await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret));
+              const sig = await signCoop("register", nodeId, nonce + ":" + clientSecret);
+              await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret) + "&coop_sig=" + sig);
           }
 
-          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
+          // Écoute des requêtes entrantes de nos pairs
+          setInterval(async () => {
+              try {
+                  const sig = await signCoop("poll_requests", nodeId);
+                  const res = await fetch(window.location.pathname + "?coop_op=poll_requests&node_id=" + nodeId + "&coop_sig=" + sig);
+                  const data = await res.json();
+                  if (data.requests && data.requests.length > 0) {
+                      for (const req of data.requests) {
+                          document.getElementById('loader').innerText = '📤 Transfert coopératif de bloc vers le pair...';
+                          const blockData = await window.readSpaceBlock(req.block_idx);
+                          const respSig = await signCoop("respond_block", nodeId, req.requester_id + ":" + req.req_id + ":" + blockData);
+                          await fetch(window.location.pathname + "?coop_op=respond_block&node_id=" + nodeId + "&requester_id=" + req.requester_id + "&req_id=" + req.req_id + "&block_data=" + encodeURIComponent(blockData) + "&coop_sig=" + respSig);
+                      }
+                  }
+              } catch (e) {
+                  console.error("Cooperative polling error", e);
+              }
+          }, 1000);
 
           let peerBlock = "";
           if (peerId && peerBlockIdx !== -1) {
               document.getElementById('loader').innerText = '📥 Téléchargement du bloc de validation du pair (' + peerId + ')...';
               const reqId = Math.random().toString(36).substring(2);
-              await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId);
+              const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
+              await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
               
               let attempts = 0;
               while (attempts < coopTimeout) {
-                  const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId);
+                  const pollSig = await signCoop("poll_response", nodeId, reqId);
+                  const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId + "&coop_sig=" + pollSig);
                   const data = await res.json();
                   if (data.status === 'ready') {
                       peerBlock = data.block_data;
@@ -1745,6 +1773,7 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
               }
           }
 
+          document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
           const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, peerBlock);
           
           window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash + (peerBlock ? "&pow_coop=1" : "");
@@ -4950,6 +4979,42 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1') {
         return { error: 'Missing node_id' };
     }
 
+    // --- VÉRIFICATION DE LA SIGNATURE COOPÉRATIVE ---
+    const challengeContext = await store.get(`secret:${nodeId}`);
+    if (!challengeContext || !challengeContext.clientSecret) {
+        return { error: 'Invalid or expired node_id' };
+    }
+
+    const clientSecret = challengeContext.clientSecret;
+    const coopSig = params.coop_sig || '';
+
+    let expectedMsg = '';
+    switch (op) {
+        case 'register':
+            expectedMsg = `${clientSecret}:register:${nodeId}:${params.seed || ''}`;
+            break;
+        case 'request_peer_block':
+            expectedMsg = `${clientSecret}:request_peer_block:${nodeId}:${params.peer_id || ''}:${params.block_idx || '0'}:${params.req_id || ''}`;
+            break;
+        case 'poll_requests':
+            expectedMsg = `${clientSecret}:poll_requests:${nodeId}`;
+            break;
+        case 'respond_block':
+            expectedMsg = `${clientSecret}:respond_block:${nodeId}:${params.requester_id || ''}:${params.req_id || ''}:${params.block_data || ''}`;
+            break;
+        case 'poll_response':
+            expectedMsg = `${clientSecret}:poll_response:${nodeId}:${params.req_id || ''}`;
+            break;
+        default:
+            return { error: 'Invalid cooperative operation' };
+    }
+
+    const expectedSig = crypto.createHash('sha256').update(expectedMsg).digest('hex');
+    if (coopSig.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(coopSig, 'hex'), Buffer.from(expectedSig, 'hex'))) {
+        return { error: 'Invalid cooperative signature' };
+    }
+    // --- FIN DE LA VÉRIFICATION ---
+
     switch (op) {
         case 'register':
             const seed = params.seed || '';
@@ -5801,7 +5866,7 @@ export const powMiddleware = (securityConfig) => {
  * This is a common pattern to allow mocking of ES module functions.
  */
 export const __internal = {
-    store, // Export the store for testing
+    get store() { return store; }, // Export the store for testing
     getDeviceHash,
     getCompositeDeviceHash,
     getSuspicionVector,
