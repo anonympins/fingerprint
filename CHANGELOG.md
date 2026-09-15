@@ -1,5 +1,7 @@
 ## Version 0.6.1
 
+- **🔑 Asymmetric Keys by Default**: Promoted Ed25519 asymmetric key binding to be active by default for validating stateless challenge tickets and cooperative signatures. This ensures secure, zero-trust validation chains out-of-the-box, preventing client-side decryption or tampering of authorization claims.
+- **🛡️ Cooperative Peers Threat List Sharing**: Expanded the decentralized gossip protocol to support real-time sharing and synchronization of local threat intelligence (such as poisoned hardware signatures and banned ZKP public values `y`) directly between federated nodes (Contributed by @anonympins).
 - **🌐 Federated Peers & Decentralized Trust Validation**: Introduced federated peer networking to secure highly distributed deployments. This allows autonomous validation nodes to collaborate, share threat metrics, and establish consensus on suspicious device signatures without relying on a central bottleneck (Contributed by @anonympins).
   - **How it works**:
     1. **Peer Discovery & Secure Handshake**: Nodes register and establish cryptographically signed, peer-to-peer secure handshakes with adjacent trust boundaries.
@@ -8,6 +10,7 @@
     4. **Symmetric Trust Verification**: Prevents rogue peers from falsely whitelisting botnets through a multi-signature validation mechanism.
 - **⚡ Low-Latency Peer Synchronization**: Optimized cross-peer synchronization with non-blocking async network event loops, reducing cross-lookup overhead to less than 12ms per transaction.
 - **🧹 Active Peer Table Pruning**: Standardized and automated the garbage collection of offline or unresponsive federated nodes to protect local memory structures from exhaustion.
+- **📖 Extensive Federated Configuration Documentation**: Added exhaustive guides and reference schemas for configuring the `federatedPeers` setup, setting up symmetric/asymmetric public key exchanges, and handling node validation.
 
 ## Version 0.6.0
 

@@ -122,6 +122,7 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
                 cookie.setMaxAge((int) ((expires - System.currentTimeMillis()) / 1000));
             }
         }
+        cookie.setSecure(true);
         response.addCookie(cookie);
     }
 }

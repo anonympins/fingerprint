@@ -133,12 +133,13 @@ public class ChallengeUtils {
             String json = simpleJsonStringify(payload);
             byte[] keyBytes = MessageDigest.getInstance("SHA-256").digest(secret.getBytes(StandardCharsets.UTF_8));
             SecretKeySpec keySpec = new SecretKeySpec(keyBytes, "AES");
-            byte[] ivBytes = new byte[16];
-            new Random().nextBytes(ivBytes);
-            IvParameterSpec ivSpec = new IvParameterSpec(ivBytes);
+            byte[] ivBytes = new byte[12];
+            java.security.SecureRandom secureRandom = new java.security.SecureRandom();
+            secureRandom.nextBytes(ivBytes);
+            javax.crypto.spec.GCMParameterSpec gcmSpec = new javax.crypto.spec.GCMParameterSpec(128, ivBytes);
 
-            Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
-            cipher.init(Cipher.ENCRYPT_MODE, keySpec, ivSpec);
+            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec);
             byte[] encryptedBytes = cipher.doFinal(json.getBytes(StandardCharsets.UTF_8));
 
             byte[] ivAndEncrypted = new byte[ivBytes.length + encryptedBytes.length];
@@ -221,8 +222,9 @@ public class ChallengeUtils {
                 return null;
             }
 
-            Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
-            cipher.init(Cipher.DECRYPT_MODE, keySpec, new IvParameterSpec(ivBytes));
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                javax.crypto.spec.GCMParameterSpec gcmSpec = new javax.crypto.spec.GCMParameterSpec(128, ivBytes);
+                cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
             byte[] decryptedBytes = cipher.doFinal(encryptedBytes);
 
             return simpleJsonParse(new String(decryptedBytes, StandardCharsets.UTF_8));
