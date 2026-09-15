@@ -64,7 +64,13 @@ Expose and secure Prometheus-compatible metrics for real-time monitoring and obs
 * **Exposed Metrics**: Track request decisions, challenges (solved/failed), and auto-tuning performance.
 * **Integration and Security**: Best practices for securing the `/metrics` endpoint in PHP and Node.js.
 
-### 89. [Ed25519 Key Setup and Configuration](ed25519_keys)
+### 9. [Peer Threat Lists Integration](peer_threatslists)
+Collaborate with external security entities and decentralize bot detection.
+* **Concepts**: Decoupled threat intelligence sharing & peer reputation scores.
+* **Configuration**: Integrating trusted peers such as `primals.net` in PHP, Node.js, and Python.
+* **Evaluation & Privacy**: How peer trust weights translate to suspicion scores with strict data anonymization.
+
+### 10. Ed25519 Key Setup and Configuration
 
 
 ---

@@ -3847,7 +3847,8 @@ export class FingerprintEngine {
       'trustedProxies',
       'wasm',
       'similarityThreshold',
-      'ed25519_private_key', 'ed25519_public_key'
+      'ed25519_private_key', 'ed25519_public_key',
+      'federatedPeers', 'federationSecret'
     ]);
 
     // 1. Check for essential keys
