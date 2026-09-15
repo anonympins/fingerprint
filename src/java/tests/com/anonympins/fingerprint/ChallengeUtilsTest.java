@@ -1,5 +1,7 @@
 package com.anonympins.fingerprint;
 
+import com.anonympins.fingerprint.utils.ChallengeUtils;
+import com.anonympins.fingerprint.utils.RequestUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;

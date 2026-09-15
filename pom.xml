@@ -6,7 +6,7 @@
 
     <groupId>com.anonympins</groupId>
     <artifactId>fingerprint-engine</artifactId>
-    <version>0.6.0</version>
+    <version>0.6.1</version>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>

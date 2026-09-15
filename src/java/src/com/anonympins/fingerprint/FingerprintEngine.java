@@ -1,5 +1,8 @@
 package com.anonympins.fingerprint;
 
+import com.anonympins.fingerprint.utils.ChallengeUtils;
+import com.anonympins.fingerprint.utils.RequestUtils;
+
 import java.util.*;
 
 public class FingerprintEngine {

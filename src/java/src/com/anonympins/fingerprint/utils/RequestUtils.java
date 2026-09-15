@@ -1,4 +1,4 @@
-package com.anonympins.fingerprint;
+package com.anonympins.fingerprint.utils;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -7,9 +7,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.net.InetAddress;
 import java.security.NoSuchAlgorithmException;
-import java.util.stream.Collectors;
 import java.net.UnknownHostException;
+
+import com.anonympins.fingerprint.FingerprintBuilder;
 import com.anonympins.fingerprint.IStore;
+import com.anonympins.fingerprint.RequestContext;
 
 public class RequestUtils {
 

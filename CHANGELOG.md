@@ -1,3 +1,14 @@
+## Version 0.6.1
+
+- **🌐 Federated Peers & Decentralized Trust Validation**: Introduced federated peer networking to secure highly distributed deployments. This allows autonomous validation nodes to collaborate, share threat metrics, and establish consensus on suspicious device signatures without relying on a central bottleneck (Contributed by @anonympins).
+  - **How it works**:
+    1. **Peer Discovery & Secure Handshake**: Nodes register and establish cryptographically signed, peer-to-peer secure handshakes with adjacent trust boundaries.
+    2. **Decentralized Threat Gossip Protocol**: High-confidence threat signals, subnet reputation blocks, and poisoned hardware fingerprints are shared instantly across federated peers.
+    3. **Consensus-Driven Challenge Routing**: When a client presents a suspicious signature across different edge nodes, federated peers cross-verify the challenge state and solution history, mitigating distributed proxy-rotation attacks and replay attempts.
+    4. **Symmetric Trust Verification**: Prevents rogue peers from falsely whitelisting botnets through a multi-signature validation mechanism.
+- **⚡ Low-Latency Peer Synchronization**: Optimized cross-peer synchronization with non-blocking async network event loops, reducing cross-lookup overhead to less than 12ms per transaction.
+- **🧹 Active Peer Table Pruning**: Standardized and automated the garbage collection of offline or unresponsive federated nodes to protect local memory structures from exhaustion.
+
 ## Version 0.6.0
 
 - **🛡️ Cooperative Challenge Better Security**: Hardened cooperative Proof-of-Space and challenge routing mechanics within subnet peers, preventing rogue registrations and ensuring high-fidelity security validation on decentralized networks (Contributed by @anonympins).

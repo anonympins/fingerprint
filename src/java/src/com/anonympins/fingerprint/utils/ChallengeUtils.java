@@ -1,4 +1,8 @@
-package com.anonympins.fingerprint;
+package com.anonympins.fingerprint.utils;
+
+import com.anonympins.fingerprint.FingerprintBuilder;
+import com.anonympins.fingerprint.IStore;
+import com.anonympins.fingerprint.InMemoryStore;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
