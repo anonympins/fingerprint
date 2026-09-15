@@ -217,10 +217,247 @@ public class RequestUtils {
         return result;
     }
 
+    public static double benfordTest(List<? extends Number> numbers) {
+        if (numbers == null || numbers.size() < 10) {
+            return 0.0;
+        }
+        int[] counts = new int[10];
+        int validCount = 0;
+        for (Number num : numbers) {
+            if (num == null) continue;
+            double val = Math.abs(num.doubleValue());
+            if (val == 0.0) continue;
+            double log = Math.log10(val);
+            double factor = Math.pow(10, Math.floor(log));
+            int digit = (int) Math.floor(val / factor);
+            if (digit >= 1 && digit <= 9) {
+                counts[digit]++;
+                validCount++;
+            }
+        }
+        if (validCount < 10) {
+            return 0.0;
+        }
+        double[] benfordDistribution = {0, 30.1, 17.6, 12.5, 9.7, 7.9, 6.7, 5.8, 5.1, 4.6};
+        double totalDeviation = 0.0;
+        for (int i = 1; i <= 9; i++) {
+            double observedFrequency = ((double) counts[i] / validCount) * 100.0;
+            double expectedFrequency = benfordDistribution[i];
+            totalDeviation += Math.pow(observedFrequency - expectedFrequency, 2);
+        }
+        return Math.sqrt(totalDeviation) / 50.0;
+    }
+
+    private static Map<String, Object> analyzeMouseMovements(List<Map<String, Object>> history) {
+        Map<String, Object> result = new HashMap<>();
+        if (history == null || history.size() < 3) {
+            result.put("avgSpeed", 0.0);
+            result.put("avgAcceleration", 0.0);
+            result.put("straightness", 1.0);
+            result.put("pauses", 0);
+            result.put("segments", new ArrayList<Double>());
+            return result;
+        }
+        List<Map<String, Object>> segments = new ArrayList<>();
+        double totalDistance = 0.0;
+        int pauses = 0;
+        for (int i = 1; i < history.size(); i++) {
+            Map<String, Object> p1 = history.get(i - 1);
+            Map<String, Object> p2 = history.get(i);
+            double dx = ((Number) p2.get("x")).doubleValue() - ((Number) p1.get("x")).doubleValue();
+            double dy = ((Number) p2.get("y")).doubleValue() - ((Number) p1.get("y")).doubleValue();
+            double dt = ((Number) p2.get("t")).doubleValue() - ((Number) p1.get("t")).doubleValue();
+            double distance = Math.sqrt(dx * dx + dy * dy);
+            if (dt > 0) {
+                double speed = distance / dt;
+                Map<String, Object> segment = new HashMap<>();
+                segment.put("distance", distance);
+                segment.put("dt", dt);
+                segment.put("speed", speed);
+                segments.add(segment);
+                totalDistance += distance;
+            }
+            if (dt > 100 && distance < 5) {
+                pauses++;
+            }
+        }
+        if (segments.size() < 2) {
+            result.put("avgSpeed", 0.0);
+            result.put("avgAcceleration", 0.0);
+            result.put("straightness", 1.0);
+            result.put("pauses", pauses);
+            result.put("segments", new ArrayList<Double>());
+            return result;
+        }
+        double totalTime = ((Number) history.get(history.size() - 1).get("t")).doubleValue() - ((Number) history.get(0).get("t")).doubleValue();
+        double avgSpeed = 0.0;
+        if (totalTime > 0) {
+            double speedSum = 0.0;
+            for (Map<String, Object> seg : segments) {
+                speedSum += (Double) seg.get("speed");
+            }
+            avgSpeed = speedSum / segments.size();
+        }
+        double totalAbsAcceleration = 0.0;
+        for (int i = 1; i < segments.size(); i++) {
+            Map<String, Object> s1 = segments.get(i - 1);
+            Map<String, Object> s2 = segments.get(i);
+            double s2Dt = (Double) s2.get("dt");
+            if (s2Dt > 0) {
+                double acceleration = ((Double) s2.get("speed") - (Double) s1.get("speed")) / s2Dt;
+                totalAbsAcceleration += Math.abs(acceleration);
+            }
+        }
+        double avgAcceleration = totalAbsAcceleration / (segments.size() - 1);
+        Map<String, Object> startPoint = history.get(0);
+        Map<String, Object> endPoint = history.get(history.size() - 1);
+        double straightDistance = Math.sqrt(Math.pow(((Number) endPoint.get("x")).doubleValue() - ((Number) startPoint.get("x")).doubleValue(), 2) +
+                                            Math.pow(((Number) endPoint.get("y")).doubleValue() - ((Number) startPoint.get("y")).doubleValue(), 2));
+        double straightness = totalDistance > 0 ? straightDistance / totalDistance : 1.0;
+        List<Double> segmentDistances = new ArrayList<>();
+        for (Map<String, Object> seg : segments) {
+            segmentDistances.add((Double) seg.get("distance"));
+        }
+        result.put("avgSpeed", avgSpeed);
+        result.put("avgAcceleration", avgAcceleration);
+        result.put("straightness", straightness);
+        result.put("pauses", pauses);
+        result.put("segments", segmentDistances);
+        return result;
+    }
+
+    private static Map<String, Object> analyzeTouchMovements(List<Map<String, Object>> history) {
+        Map<String, Object> result = new HashMap<>();
+        if (history == null || history.size() < 3) {
+            result.put("avgSpeed", 0.0);
+            result.put("avgAcceleration", 0.0);
+            result.put("straightness", 1.0);
+            result.put("pauses", 0);
+            result.put("segments", new ArrayList<Double>());
+            result.put("avgPressure", 0.0);
+            result.put("avgRadius", 0.0);
+            result.put("pressureVariance", 0.0);
+            result.put("radiusVariance", 0.0);
+            result.put("maxTouches", 1);
+            return result;
+        }
+        List<Map<String, Object>> segments = new ArrayList<>();
+        double totalDistance = 0.0;
+        int pauses = 0;
+        double totalPressure = 0.0;
+        double totalRadius = 0.0;
+        int maxTouches = 1;
+
+        for (int i = 1; i < history.size(); i++) {
+            Map<String, Object> p1 = history.get(i - 1);
+            Map<String, Object> p2 = history.get(i);
+            double dx = ((Number) p2.get("x")).doubleValue() - ((Number) p1.get("x")).doubleValue();
+            double dy = ((Number) p2.get("y")).doubleValue() - ((Number) p1.get("y")).doubleValue();
+            double dt = ((Number) p2.get("t")).doubleValue() - ((Number) p1.get("t")).doubleValue();
+            double distance = Math.sqrt(dx * dx + dy * dy);
+
+            totalPressure += p2.get("p") != null ? ((Number) p2.get("p")).doubleValue() : 0.0;
+            totalRadius += p2.get("r") != null ? ((Number) p2.get("r")).doubleValue() : 0.0;
+            if (p2.get("num") != null) {
+                int num = ((Number) p2.get("num")).intValue();
+                if (num > maxTouches) {
+                    maxTouches = num;
+                }
+            }
+
+            if (dt > 0) {
+                double speed = distance / dt;
+                Map<String, Object> segment = new HashMap<>();
+                segment.put("distance", distance);
+                segment.put("dt", dt);
+                segment.put("speed", speed);
+                segments.add(segment);
+                totalDistance += distance;
+            }
+            if (dt > 100 && distance < 5) {
+                pauses++;
+            }
+        }
+
+        totalPressure += history.get(0).get("p") != null ? ((Number) history.get(0).get("p")).doubleValue() : 0.0;
+        totalRadius += history.get(0).get("r") != null ? ((Number) history.get(0).get("r")).doubleValue() : 0.0;
+
+        double avgPressure = totalPressure / history.size();
+        double avgRadius = totalRadius / history.size();
+
+        double sqDiffPressureSum = 0.0;
+        double sqDiffRadiusSum = 0.0;
+        for (Map<String, Object> pt : history) {
+            double p = pt.get("p") != null ? ((Number) pt.get("p")).doubleValue() : 0.0;
+            double r = pt.get("r") != null ? ((Number) pt.get("r")).doubleValue() : 0.0;
+            sqDiffPressureSum += Math.pow(p - avgPressure, 2);
+            sqDiffRadiusSum += Math.pow(r - avgRadius, 2);
+        }
+        double pressureVariance = sqDiffPressureSum / history.size();
+        double radiusVariance = sqDiffRadiusSum / history.size();
+
+        if (segments.size() < 2) {
+            result.put("avgSpeed", 0.0);
+            result.put("avgAcceleration", 0.0);
+            result.put("straightness", 1.0);
+            result.put("pauses", pauses);
+            result.put("segments", new ArrayList<Double>());
+            result.put("avgPressure", avgPressure);
+            result.put("avgRadius", avgRadius);
+            result.put("pressureVariance", pressureVariance);
+            result.put("radiusVariance", radiusVariance);
+            result.put("maxTouches", maxTouches);
+            return result;
+        }
+
+        double totalTime = ((Number) history.get(history.size() - 1).get("t")).doubleValue() - ((Number) history.get(0).get("t")).doubleValue();
+        double avgSpeed = 0.0;
+        if (totalTime > 0) {
+            double speedSum = 0.0;
+            for (Map<String, Object> seg : segments) {
+                speedSum += (Double) seg.get("speed");
+            }
+            avgSpeed = speedSum / segments.size();
+        }
+
+        double speedDtSum = 0.0;
+        for (Map<String, Object> seg : segments) {
+            double dt = (Double) seg.get("dt");
+            if (dt > 0) {
+                speedDtSum += ((Double) seg.get("speed") / dt);
+            }
+        }
+        double avgAcceleration = speedDtSum / segments.size();
+
+        Map<String, Object> startPoint = history.get(0);
+        Map<String, Object> endPoint = history.get(history.size() - 1);
+        double straightDistance = Math.sqrt(Math.pow(((Number) endPoint.get("x")).doubleValue() - ((Number) startPoint.get("x")).doubleValue(), 2) +
+                                            Math.pow(((Number) endPoint.get("y")).doubleValue() - ((Number) startPoint.get("y")).doubleValue(), 2));
+        double straightness = totalDistance > 0 ? straightDistance / totalDistance : 1.0;
+
+        List<Double> segmentDistances = new ArrayList<>();
+        for (Map<String, Object> seg : segments) {
+            segmentDistances.add((Double) seg.get("distance"));
+        }
+
+        result.put("avgSpeed", avgSpeed);
+        result.put("avgAcceleration", avgAcceleration);
+        result.put("straightness", straightness);
+        result.put("pauses", pauses);
+        result.put("segments", segmentDistances);
+        result.put("avgPressure", avgPressure);
+        result.put("avgRadius", avgRadius);
+        result.put("pressureVariance", pressureVariance);
+        result.put("radiusVariance", radiusVariance);
+        result.put("maxTouches", maxTouches);
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
     public static Map<String, Double> getBehaviorScore(RequestContext context) {
         Map<String, Double> result = new HashMap<>();
         double score = 0.0;
-        // Détection de frameworks d'automatisation (Playwright, Puppeteer, Selenium, etc.)
+
         if (context.getHeader("x-automation-test") != null) {
             score += 90.0;
         }
@@ -230,6 +467,121 @@ public class RequestUtils {
         if (context.getHeader("accept-encoding") == null) {
             score += 20.0;
         }
+
+        String behaviorHeader = context.getHeader("x-behavior-metrics");
+        if (behaviorHeader != null) {
+            try {
+                Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
+                if (metrics != null) {
+                    if (Boolean.TRUE.equals(metrics.get("honeypotInteraction"))) {
+                        result.put("behaviorScore", 100.0);
+                        return result;
+                    }
+
+                    List<Map<String, Object>> mouseHistory = (List<Map<String, Object>>) metrics.get("mouseMovementsHistory");
+                    List<Map<String, Object>> touchHistory = (List<Map<String, Object>>) metrics.get("touchMovementsHistory");
+
+                    Map<String, Object> mouseAnalysis = analyzeMouseMovements(mouseHistory);
+                    Map<String, Object> touchAnalysis = analyzeTouchMovements(touchHistory);
+
+                    double mouseAvgSpeed = (Double) mouseAnalysis.get("avgSpeed");
+                    double touchAvgSpeed = (Double) touchAnalysis.get("avgSpeed");
+                    double keystrokeLatency = metrics.get("keystrokeLatency") != null ? ((Number) metrics.get("keystrokeLatency")).doubleValue() : 0.0;
+
+                    if (metrics.containsKey("historyLength")) {
+                        int historyLength = ((Number) metrics.get("historyLength")).intValue();
+                        if (historyLength == 1) score += 15;
+                        else if (historyLength >= 5) score -= 20;
+                        else if (historyLength >= 2) score -= 10;
+                    } else {
+                        if (mouseAvgSpeed == 0.0 && touchAvgSpeed == 0.0 && keystrokeLatency == 0.0) {
+                            score += 40.0;
+                        }
+                    }
+
+                    if (mouseAvgSpeed > 0) {
+                        if (mouseAvgSpeed > 3.0) score += 25;
+                        if ((Double) mouseAnalysis.get("avgAcceleration") > 0.5) score += 20;
+                        if ((Double) mouseAnalysis.get("straightness") > 0.95) score += 30;
+                        if (((Integer) mouseAnalysis.get("pauses")) == 0 && ((List<?>) mouseAnalysis.get("segments")).size() > 20) score += 15;
+                    }
+
+                    if (keystrokeLatency > 0.0 && keystrokeLatency < 40.0) score += 25;
+                    if (keystrokeLatency > 1000.0) score += 15;
+
+                    // Digraphie/trigraphie (dwell & flight times)
+                    List<Object> dwellTimesObj = (List<Object>) metrics.get("keystrokeDwellTimes");
+                    List<Object> flightTimesObj = (List<Object>) metrics.get("keystrokeFlightTimes");
+
+                    if (dwellTimesObj != null && dwellTimesObj.size() >= 5) {
+                        List<Double> dwellTimes = new ArrayList<>();
+                        for (Object o : dwellTimesObj) {
+                            if (o instanceof Number) dwellTimes.add(((Number) o).doubleValue());
+                        }
+                        if (dwellTimes.size() >= 5) {
+                            double meanDwell = dwellTimes.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+                            double varDwell = 0.0;
+                            for (double d : dwellTimes) {
+                                varDwell += Math.pow(d - meanDwell, 2);
+                            }
+                            varDwell /= dwellTimes.size();
+                            double stdDevDwell = Math.sqrt(varDwell);
+
+                            if (stdDevDwell < 2.0) {
+                                score += 35.0;
+                            }
+                            if (meanDwell < 15.0) {
+                                score += 25.0;
+                            }
+                        }
+                    }
+
+                    if (flightTimesObj != null && flightTimesObj.size() >= 5) {
+                        List<Double> flightTimes = new ArrayList<>();
+                        for (Object o : flightTimesObj) {
+                            if (o instanceof Map) {
+                                Map<String, Object> map = (Map<String, Object>) o;
+                                if (map.containsKey("time")) {
+                                    flightTimes.add(((Number) map.get("time")).doubleValue());
+                                }
+                            }
+                        }
+                        if (flightTimes.size() >= 5) {
+                            double meanFlight = flightTimes.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+                            double varFlight = 0.0;
+                            for (double f : flightTimes) {
+                                varFlight += Math.pow(f - meanFlight, 2);
+                            }
+                            varFlight /= flightTimes.size();
+                            double stdDevFlight = Math.sqrt(varFlight);
+
+                            if (stdDevFlight < 3.0) {
+                                score += 35.0;
+                            }
+                            if (meanFlight < 25.0) {
+                                score += 25.0;
+                            }
+                            double benfordDev = benfordTest(flightTimes);
+                            if (benfordDev > 0.18) {
+                                score += 30.0;
+                            }
+                        }
+                    }
+
+                    // Benford test on mouse segments
+                    List<Double> mouseSegments = (List<Double>) mouseAnalysis.get("segments");
+                    if (mouseSegments != null && mouseSegments.size() > 10) {
+                        double benfordDeviation = benfordTest(mouseSegments);
+                        if (benfordDeviation > 0.18) {
+                            score += 35.0;
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                score += 10.0; // Malformed header
+            }
+        }
+
         result.put("behaviorScore", Math.min(100.0, score));
         return result;
     }
@@ -284,15 +636,301 @@ public class RequestUtils {
         return result;
     }
 
+    public static Map<String, Object> parseTcpSyn(byte[] binary) {
+        if (binary == null || binary.length < 40) return null;
+        int ttl = 64;
+        int tcpOffset = 20;
+        int version = (binary[0] & 0xFF) >> 4;
+
+        if (version == 4) {
+            ttl = binary[8] & 0xFF;
+            int ihl = binary[0] & 0x0F;
+            tcpOffset = ihl * 4;
+        } else if (version == 6) {
+            ttl = binary[7] & 0xFF;
+            tcpOffset = 40;
+        } else {
+            tcpOffset = 0;
+            ttl = 64;
+        }
+
+        if (binary.length < tcpOffset + 20) return null;
+
+        int windowSize = ((binary[tcpOffset + 14] & 0xFF) << 8) | (binary[tcpOffset + 15] & 0xFF);
+        int dataOffset = ((binary[tcpOffset + 12] & 0xFF) >> 4) * 4;
+        int optionsEnd = tcpOffset + dataOffset;
+
+        Integer mss = null;
+        Integer ws = null;
+        boolean sack = false;
+
+        int i = tcpOffset + 20;
+        while (i < optionsEnd && i < binary.length) {
+            int optType = binary[i] & 0xFF;
+            if (optType == 0) break;
+            if (optType == 1) {
+                i++;
+                continue;
+            }
+            if (i + 1 >= binary.length) break;
+            int optLen = binary[i + 1] & 0xFF;
+            if (optLen < 2 || i + optLen > binary.length) break;
+
+            if (optType == 2 && optLen == 4) {
+                mss = ((binary[i + 2] & 0xFF) << 8) | (binary[i + 3] & 0xFF);
+            } else if (optType == 3 && optLen == 3) {
+                ws = binary[i + 2] & 0xFF;
+            } else if (optType == 4 && optLen == 2) {
+                sack = true;
+            }
+            i += optLen;
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("ttl", ttl);
+        result.put("windowSize", windowSize);
+        result.put("mss", mss);
+        result.put("ws", ws);
+        result.put("sack", sack);
+        return result;
+    }
+
+    public static String classifyTcpOs(Map<String, Object> fingerprint) {
+        if (fingerprint == null) return "unknown";
+        int ttl = fingerprint.get("ttl") != null ? (Integer) fingerprint.get("ttl") : 64;
+        int windowSize = fingerprint.get("windowSize") != null ? (Integer) fingerprint.get("windowSize") : 0;
+        Integer ws = (Integer) fingerprint.get("ws");
+
+        if (ttl > 64 && ttl <= 128) {
+            return "Windows";
+        }
+        if (ttl > 32 && ttl <= 64) {
+            if (windowSize == 29200 || windowSize == 14600 || windowSize == 5840) {
+                return "Linux";
+            }
+            return "Linux";
+        }
+        if (ttl <= 64) {
+            if (windowSize == 65535 && (ws != null && (ws == 6 || ws == 8 || ws == 5))) {
+                return "macOS/iOS";
+            }
+        }
+        if (ttl > 64) return "Windows";
+        if (ttl > 0) return "Linux";
+        return "unknown";
+    }
+
+    private static byte[] hexToBytes(String s) {
+        int len = s.length();
+        byte[] data = new byte[len / 2];
+        for (int i = 0; i < len; i += 2) {
+            data[i / 2] = (byte) ((Character.digit(s.charAt(i), 16) << 4)
+                                 + Character.digit(s.charAt(i+1), 16));
+        }
+        return data;
+    }
+
+    private static Map<String, String> parseUserAgent(String ua) {
+        Map<String, String> result = new HashMap<>();
+        if (ua == null) {
+            ua = "";
+        }
+        if (ua.contains("Chrome") && !ua.contains("Edg")) {
+            result.put("browser", "Chrome");
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Chrome/(\\d+)");
+            java.util.regex.Matcher matcher = pattern.matcher(ua);
+            if (matcher.find()) {
+                result.put("browser", "Chrome/" + matcher.group(1));
+            }
+        } else if (ua.contains("Firefox")) {
+            result.put("browser", "Firefox");
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Firefox/(\\d+)");
+            java.util.regex.Matcher matcher = pattern.matcher(ua);
+            if (matcher.find()) {
+                result.put("browser", "Firefox/" + matcher.group(1));
+            }
+        } else if (ua.contains("Safari") && !ua.contains("Chrome")) {
+            result.put("browser", "Safari");
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Version/(\\d+)");
+            java.util.regex.Matcher matcher = pattern.matcher(ua);
+            if (matcher.find()) {
+                result.put("browser", "Safari/" + matcher.group(1));
+            }
+        } else if (ua.contains("Edg")) {
+            result.put("browser", "Edge");
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Edg/(\\d+)");
+            java.util.regex.Matcher matcher = pattern.matcher(ua);
+            if (matcher.find()) {
+                result.put("browser", "Edge/" + matcher.group(1));
+            }
+        }
+        if (ua.contains("Windows NT 10.0")) result.put("os", "Windows 10");
+        else if (ua.contains("Windows NT 6.1")) result.put("os", "Windows 7");
+        else if (ua.contains("Mac OS X")) result.put("os", "macOS");
+        else if (ua.contains("Linux") && !ua.contains("Android")) result.put("os", "Linux");
+        else if (ua.contains("Android")) result.put("os", "Android");
+        else if (ua.contains("iPhone") || ua.contains("iPad")) result.put("os", "iOS");
+        return result;
+    }
+
     public static Map<String, Double> getTcpAnomalyScore(RequestContext context) {
         Map<String, Double> result = new HashMap<>();
         result.put("tcpAnomalyScore", 0.0);
+
+        Map<String, Object> fp = null;
+        String rawTcpBinary = context.getHeader("x-raw-tcp-binary");
+        if (rawTcpBinary != null) {
+            try {
+                byte[] binary = hexToBytes(rawTcpBinary);
+                fp = parseTcpSyn(binary);
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+
+        if (fp == null) {
+            String tcpHeader = context.getHeader("x-tcp-fingerprint");
+            if (tcpHeader == null) {
+                tcpHeader = context.tcpFingerprint;
+            }
+            if (tcpHeader != null && !tcpHeader.isEmpty()) {
+                String[] parts = tcpHeader.split(":");
+                if (parts.length >= 2) {
+                    try {
+                        fp = new HashMap<>();
+                        fp.put("ttl", Integer.parseInt(parts[0]));
+                        fp.put("windowSize", Integer.parseInt(parts[1]));
+                        fp.put("mss", parts.length > 2 && !parts[2].isEmpty() ? Integer.parseInt(parts[2]) : null);
+                        fp.put("ws", parts.length > 3 && !parts[3].isEmpty() ? Integer.parseInt(parts[3]) : null);
+                        fp.put("sack", parts.length > 4 && ("1".equals(parts[4]) || "true".equalsIgnoreCase(parts[4])));
+                    } catch (Exception e) {
+                        fp = null;
+                    }
+                }
+            }
+        }
+
+        if (fp != null) {
+            String tcpOs = classifyTcpOs(fp);
+            String ua = context.getHeader("user-agent");
+            if (ua == null) {
+                ua = "";
+            }
+            Map<String, String> uaParts = parseUserAgent(ua);
+            String uaOs = uaParts.get("os");
+
+            if (uaOs != null && !"unknown".equals(tcpOs)) {
+                String mappedOs = null;
+                if (uaOs.startsWith("Windows")) mappedOs = "Windows";
+                else if (uaOs.startsWith("Mac") || uaOs.startsWith("macOS")) mappedOs = "macOS";
+                else if (uaOs.startsWith("iOS")) mappedOs = "iOS";
+                else if (uaOs.startsWith("Linux")) mappedOs = "Linux";
+
+                if (mappedOs != null) {
+                    Map<String, Map<String, Object>> osExpectedTcp = new HashMap<>();
+                    
+                    Map<String, Object> winExpected = new HashMap<>();
+                    winExpected.put("ttl", 128); winExpected.put("windowSize", 64240); winExpected.put("ws", 8); winExpected.put("mss", 1460); winExpected.put("sack", true);
+                    osExpectedTcp.put("Windows", winExpected);
+
+                    Map<String, Object> linuxExpected = new HashMap<>();
+                    linuxExpected.put("ttl", 64); linuxExpected.put("windowSize", 29200); linuxExpected.put("ws", 7); linuxExpected.put("mss", 1460); linuxExpected.put("sack", true);
+                    osExpectedTcp.put("Linux", linuxExpected);
+
+                    Map<String, Object> macExpected = new HashMap<>();
+                    macExpected.put("ttl", 64); macExpected.put("windowSize", 65535); macExpected.put("ws", 6); macExpected.put("mss", 1460); macExpected.put("sack", true);
+                    osExpectedTcp.put("macOS", macExpected);
+
+                    Map<String, Object> iosExpected = new HashMap<>();
+                    iosExpected.put("ttl", 64); iosExpected.put("windowSize", 65535); iosExpected.put("ws", 6); iosExpected.put("mss", 1460); iosExpected.put("sack", true);
+                    osExpectedTcp.put("iOS", iosExpected);
+
+                    Map<String, Object> expected = osExpectedTcp.get(mappedOs);
+                    
+                    double ttlDiff = Math.abs(((Integer) fp.get("ttl")) - (Integer) expected.get("ttl")) / ((Integer) expected.get("ttl")).doubleValue();
+                    double winDiff = Math.abs(((Integer) fp.get("windowSize")) - (Integer) expected.get("windowSize")) / ((Integer) expected.get("windowSize")).doubleValue();
+                    
+                    double wsDiff = 0.0;
+                    if (expected.get("ws") != null && fp.get("ws") != null) {
+                        wsDiff = Math.abs(((Integer) fp.get("ws")) - (Integer) expected.get("ws")) / ((Integer) expected.get("ws")).doubleValue();
+                    }
+                    
+                    double mssDiff = 0.0;
+                    if (expected.get("mss") != null && fp.get("mss") != null) {
+                        mssDiff = Math.abs(((Integer) fp.get("mss")) - (Integer) expected.get("mss")) / ((Integer) expected.get("mss")).doubleValue();
+                    }
+
+                    boolean fpSack = fp.get("sack") == null || (Boolean) fp.get("sack");
+                    boolean expSack = expected.get("sack") == null || (Boolean) expected.get("sack");
+                    double sackDiff = fpSack == expSack ? 0.0 : 1.0;
+
+                    double deviation = (
+                        Math.min(1.0, ttlDiff) * 0.50 +
+                        Math.min(1.0, winDiff) * 0.25 +
+                        Math.min(1.0, wsDiff) * 0.15 +
+                        Math.min(1.0, mssDiff) * 0.05 +
+                        sackDiff * 0.05
+                    );
+
+                    double tcpAnomalyScore = 0.0;
+                    if (!tcpOs.equals(mappedOs) && !"unknown".equals(tcpOs)) {
+                        double baseAnomaly = "Windows".equals(mappedOs) ? 80.0 :
+                                            (("macOS".equals(mappedOs) || "iOS".equals(mappedOs)) ? 85.0 : 75.0);
+                        tcpAnomalyScore = baseAnomaly + (deviation - 0.4) * 10.0;
+                    } else {
+                        tcpAnomalyScore = deviation * 40.0;
+                    }
+
+                    result.put("tcpAnomalyScore", Math.max(0.0, Math.min(100.0, Math.round(tcpAnomalyScore * 10.0) / 10.0)));
+                }
+            }
+        }
         return result;
     }
 
     public static Map<String, Double> getQuicAnomalyScore(RequestContext context) {
         Map<String, Double> result = new HashMap<>();
         result.put("quicAnomalyScore", 0.0);
+
+        String quicFp = context.getHeader("x-quic-fp");
+        if (quicFp == null) {
+            quicFp = context.quicFingerprint;
+        }
+        if (quicFp != null && !quicFp.isEmpty()) {
+            String[] parts = quicFp.split(";");
+            if (parts.length >= 2) {
+                Map<String, String> params = new HashMap<>();
+                for (String p : parts[1].split(",")) {
+                    String[] kv = p.split("=", 2);
+                    if (kv.length == 2) {
+                        params.put(kv[0], kv[1]);
+                    }
+                }
+                String priorityOrder = parts.length > 2 ? parts[2] : "";
+
+                String ua = context.getHeader("user-agent");
+                if (ua == null) {
+                    ua = "";
+                }
+                Map<String, String> uaParts = parseUserAgent(ua);
+                String browser = uaParts.get("browser");
+
+                if (browser != null && !browser.isEmpty()) {
+                    double anomaly = 0.0;
+                    if (browser.startsWith("Chrome") || browser.startsWith("Edge")) {
+                        int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
+                        int maxStreams = params.containsKey("4") ? Integer.parseInt(params.get("4")) : 0;
+                        if (maxData > 0 && maxData < 1048576) anomaly += 40.0;
+                        if (maxStreams > 0 && maxStreams != 100) anomaly += 30.0;
+                        if (!priorityOrder.isEmpty() && !priorityOrder.contains("u=")) anomaly += 30.0;
+                    } else if (browser.startsWith("Firefox")) {
+                        int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
+                        if (maxData > 0 && maxData > 5000000) anomaly += 40.0;
+                    }
+                    result.put("quicAnomalyScore", Math.max(0.0, Math.min(100.0, anomaly)));
+                }
+            }
+        }
         return result;
     }
 

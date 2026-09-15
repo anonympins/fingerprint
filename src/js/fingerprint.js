@@ -4935,66 +4935,25 @@ function sanitizeProxyHeaders(context, securityConfig) {
 
 /**
  * Exécute l'optimisation des TTL en tâche de fond de manière asynchrone et non-bloquante.
- * Utilise l'algorithme génétique multi-objectifs de Pareto pour trouver des solutions stables.
+ * Déporté dans un worker thread dédié pour libérer l'Event Loop principale de Node.js.
  */
 export async function runBackgroundTtlOptimization() {
-    const MIN_TTL = 300000;
-    const MAX_TTL = 86400000;
-    const tempCache = new Map();
-    const keyScores = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-
-    for (const suspicionScore of keyScores) {
-        // Rend la main à la boucle d'événements Node.js à chaque itération pour ne pas bloquer les requêtes web actives
-        await new Promise(resolve => {
-            if (typeof setImmediate === 'function') {
-                setImmediate(resolve);
-            } else {
-                setTimeout(resolve, 0);
+    return new Promise((resolve, reject) => {
+        const worker = new Worker(new URL('./ttl-optimization.worker.js', import.meta.url));
+        worker.on("message", (tempCache) => {
+            const tempMap = new Map();
+            for (const [key, value] of Object.entries(tempCache)) {
+                tempMap.set(Number(key), value);
             }
+            optimizedTtlCache = tempMap;
+            resolve();
+            worker.terminate();
         });
-
-        const solverFunction = () => {
-            const fitnessFunction = Optimization.Operators.createOptimalTtlEvaluator({ suspicionScore });
-            const createIndividual = () => MIN_TTL + Math.random() * (MAX_TTL - MIN_TTL);
-            const crossover = (ttl1, ttl2) => (ttl1 + ttl2) / 2;
-            const mutate = (ttl) => {
-                const newTtl = ttl + (Math.random() - 0.5) * (MAX_TTL - MIN_TTL) * 0.1;
-                return Math.max(MIN_TTL, Math.min(MAX_TTL, newTtl));
-            };
-
-            const paretoFront = Optimization.geneticAlgorithmMultiObjective(
-                createIndividual,
-                fitnessFunction,
-                crossover,
-                mutate,
-                {
-                    generations: 40,
-                    populationSize: 30,
-                }
-            );
-
-            if (!paretoFront || paretoFront.length === 0) {
-                return { solution: null, fitness: Infinity };
-            }
-
-            let bestSolutionInFront;
-            if (suspicionScore < 50) {
-                bestSolutionInFront = paretoFront.reduce((max, p) => Math.max(max, p.solution), 0);
-            } else {
-                bestSolutionInFront = paretoFront.reduce((min, p) => Math.min(min, p.solution), Infinity);
-            }
-            return { solution: bestSolutionInFront, fitness: 0 };
-        };
-
-        const { bestResult } = Optimization.runMultiple(solverFunction, 20);
-        if (bestResult && bestResult.solution && bestResult.solution !== Infinity) {
-            tempCache.set(suspicionScore, Math.round(bestResult.solution));
-        } else {
-            tempCache.set(suspicionScore, Math.max(MIN_TTL, MAX_TTL - (suspicionScore / 100) * MAX_TTL));
-        }
-    }
-
-    optimizedTtlCache = tempCache;
+        worker.on("error", (err) => {
+            console.error('[Fingerprint] TTL optimization worker error:', err);
+            reject(err);
+        });
+    });
 }
 
 // Lancement de l'optimisation initiale immédiate en arrière-plan

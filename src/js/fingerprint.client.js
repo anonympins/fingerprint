@@ -1340,11 +1340,23 @@ const ClientLibrary = {
         window.wasmModule = wasmModule;
         ClientLibrary.wasmModule = wasmModule;
 
-            // 4. Remplacer la fonction de hachage par la version WASM
-            activeCyrb53 = (str) => {
-                // La fonction C++ attend un pointeur, Emscripten gère la conversion
-                return wasmModule._hash_string(str);
-            };
+        // Pooling de mémoire statique : pré-allocation d'un buffer réutilisable de 4 Ko
+        // Évite d'allouer/libérer de la mémoire sur le tas Emscripten lors des frappes clavier/mouvements souris rapides
+        const staticBufferSize = 4096;
+        const staticBufferPtr = wasmModule._malloc(staticBufferSize);
+        const encoder = new TextEncoder();
+
+        // 4. Remplacer la fonction de hachage par la version WASM optimisée via le buffer statique
+        activeCyrb53 = (str) => {
+            const bytes = encoder.encode(str);
+            if (bytes.length < staticBufferSize) {
+                wasmModule.HEAPU8.set(bytes, staticBufferPtr);
+                wasmModule.HEAPU8[staticBufferPtr + bytes.length] = 0; // null-terminator
+                return wasmModule._hash_string(staticBufferPtr);
+            }
+            // Fallback dynamique sécurisé si la chaîne dépasse la taille du buffer statique
+            return wasmModule._hash_string(str);
+        };
 
             console.log('[Fingerprint] WASM module loaded successfully. Using fast hashing.');
             // NOUVEAU: Ajoute un indicateur à l'empreinte pour que le serveur sache que le WASM est actif.
