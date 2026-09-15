@@ -77,6 +77,16 @@ Here is a complete representation of a custom security configuration containing 
   "pospace": {
     "sizeMb": 100,
     "numQueries": 10
+  },
+  "federatedPeers": [
+    "https://peer1.example.com",
+    "https://peer2.example.com"
+  ],
+  "asymmetricKeys": {
+    "publicKeyPath": "/etc/fingerprint/public_key.pem",
+    "privateKeyPath": "/etc/fingerprint/private_key.pem",
+    "algorithm": "RSA-OAEP",
+    "keyId": "v1"
   }
 }
 ```
@@ -116,41 +126,50 @@ The following table details the role of each weight in the `weights` object. The
 ## Core Engine Controls
 
 ### Global Controls
-* **`verbose`** *(bool, default: `false`)*: Enables deep server-side log output.
-* **`dryRun`** *(bool, default: `false`)*: Intended block and challenge actions are logged, but requests are always allowed to pass through (`next`). Useful for evaluating auto-tuner impact in production safely.
-* **`challengeNewDevices`** *(bool, default: `false`)*: Forces a proof-of-work challenge on all new devices by setting their initial score to the `low` threshold.
-* **`allowCrossNetworkRoaming`** *(bool, default: `true`)*: If `true`, a user can switch networks (e.g., from Home Wi-Fi to 4G) without being re-challenged, provided their hardware-based fingerprint remains absolutely identical.
-* **`similarityThreshold`** *(float, default: `0.70`)*: The similarity coefficient (0 to 1) required to consider two composite fingerprints a match.
+*   **`verbose`** *(bool, default: `false`)*: Enables deep server-side log output.
+*   **`dryRun`** *(bool, default: `false`)*: Intended block and challenge actions are logged, but requests are always allowed to pass through (`next`). Useful for evaluating auto-tuner impact in production safely.
+*   **`challengeNewDevices`** *(bool, default: `false`)*: Forces a proof-of-work challenge on all new devices by setting their initial score to the `low` threshold.
+*   **`allowCrossNetworkRoaming`** *(bool, default: `true`)*: If `true`, a user can switch networks (e.g., from Home Wi-Fi to 4G) without being re-challenged, provided their hardware-based fingerprint remains absolutely identical.
+*   **`similarityThreshold`** *(float, default: `0.70`)*: The similarity coefficient (0 to 1) required to consider two composite fingerprints a match.
 
 ### Timings & Expirations
-* **`ticketMaxAge`** *(int, default: `3600000`)*: Maximum lifespan of a clearance ticket (PoW resolution cookie) in milliseconds (default: 1 hour).
-* **`challengeTtl`** *(int, default: `300`)*: Lifespan of a generated challenge session in seconds (default: 5 minutes).
-* **`deviceIdCookieMaxAge`** *(int, default: `2592000000`)*: Lifespan of the `device_id` cookie in milliseconds (default: 30 days).
+*   **`ticketMaxAge`** *(int, default: `3600000`)*: Maximum lifespan of a clearance ticket (PoW resolution cookie) in milliseconds (default: 1 hour).
+*   **`challengeTtl`** *(int, default: `300`)*: Lifespan of a generated challenge session in seconds (default: 5 minutes).
+*   **`deviceIdCookieMaxAge`** *(int, default: `2592000000`)*: Lifespan of the `device_id` cookie in milliseconds (default: 30 days).
 
 ---
 
 ## Subsystems Configuration
 
 ### `patterns` (Request Sequences Analysis)
-* **`velocityThreshold`**: High-frequency interval threshold (ms).
-* **`burstThreshold`**: Fast retry trigger threshold (ms).
-* **`scrapeThreshold`**: Absolute crawl limit interval (ms).
-* **`historySize`**: The size of the request sliding window.
-* **`minSamples`**: Minimum timing intervals required before executing Benford and regularity checks.
-* **`decayFactor`**: Rate at which suspicion scores decay during inactivity.
+*   **`velocityThreshold`**: High-frequency interval threshold (ms).
+*   **`burstThreshold`**: Fast retry trigger threshold (ms).
+*   **`scrapeThreshold`**: Absolute crawl limit interval (ms).
+*   **`historySize`**: The size of the request sliding window.
+*   **`minSamples`**: Minimum timing intervals required before executing Benford and regularity checks.
+*   **`decayFactor`**: Rate at which suspicion scores decay during inactivity.
 
 ### `honeypot` (Form and URL Traps)
-* **`fields`**: List of hidden inputs to inject into HTML shadow forms.
-* **`trapUrls`**: Hidden asset paths that normal users never crawl.
-* **`detectInjections`** *(bool/array)*: Enables SQLi, XSS, RCE, and path traversal detection.
+*   **`fields`**: List of hidden inputs to inject into HTML shadow forms.
+*   **`trapUrls`**: Hidden asset paths that normal users never crawl.
+*   **`detectInjections`** *(bool/array)*: Enables SQLi, XSS, RCE, and path traversal detection.
 
 ### `cpu` (Target CPU PoW)
-* **`minDifficultyBits`**: Minimum zero-bit difficulty for low suspicion requests.
-* **`maxDifficultyBits`**: Maximum zero-bit difficulty for highly suspicious requests.
+*   **`minDifficultyBits`**: Minimum zero-bit difficulty for low suspicion requests.
+*   **`maxDifficultyBits`**: Maximum zero-bit difficulty for highly suspicious requests.
 
 ### `pospace` (Proof of Space)
-* **`sizeMb`**: Size of the indexed storage space to generate locally (MB).
-* **`numQueries`**: Number of block read queries generated by the server.
+*   **`sizeMb`**: Size of the indexed storage space to generate locally (MB).
+*   **`numQueries`**: Number of block read queries generated by the server.
+
+### `federatedPeers` (Federated Threat Intelligence)
+*   **`federatedPeers`** *(array of strings, default: `[]`)*: A list of URLs or identifiers of trusted peer nodes in a federated network. These peers can be used for sharing threat intelligence, device reputation scores, or challenge responses in a distributed manner.
+
+### `asymmetricKeys` (Cryptographic Key Management)
+*   **`publicKeyPath`** *(string, optional)*: Absolute path to the PEM-encoded public key file. Used for verifying signatures from peers or encrypting data for them.
+*   **`privateKeyPath`** *(string, optional)*: Absolute path to the PEM-encoded private key file. Used for signing messages to peers or decrypting data from them.
+*   **`algorithm`** *(string, default: `"RSA-OAEP"`)*: The cryptographic algorithm to use for encryption/decryption or signing/verification (e.g., "RSA-OAEP", "ECIES", "EdDSA").
+*   **`keyId`** *(string, optional)*: An identifier for the key pair, useful for key rotation strategies.
 
 ---
 
@@ -159,7 +178,7 @@ The following table details the role of each weight in the `weights` object. The
 For quick starts without manually defining everything, use pre-made profiles:
 
 | Profile Name | Target / Use-case |
- | :--- | :--- |
+| :--- | :--- |
 | `balanced` | Standard websites, balanced UX & security. |
 | `strict` | High security / sensitive dashboards. All new devices are challenged. |
 | `api` | Focused heavily on rate limit patterns and API scrapers. |
@@ -279,8 +298,8 @@ To prevent unbounded memory growth, the engine features an integrated **Traffic 
 
 ### Example of Background Tuning Optimization Flow
 
-1. **Accumulation**: The engine collects telemetry metadata across requests, populating `trafficData`.
-2. **Pruning**: Periodic tasks run to compare data timestamps against `maxAgeMs` to remove expired data.
-3. **Evaluation**: Once `interval` is reached and data size exceeds `minDataPoints`, the genetic tuner initiates.
-4. **Optimization**: It executes a multi-objective optimization (Pareto front) to find the best configuration that would have separated the historical benign traffic from anomalous scores.
-5. **Persistence & Hot-Reload**: The optimized config is saved to `savePath` and seamlessly applied in memory.
+1.  **Accumulation**: The engine collects telemetry metadata across requests, populating `trafficData`.
+2.  **Pruning**: Periodic tasks run to compare data timestamps against `maxAgeMs` to remove expired data.
+3.  **Evaluation**: Once `interval` is reached and data size exceeds `minDataPoints`, the genetic tuner initiates.
+4.  **Optimization**: It executes a multi-objective optimization (Pareto front) to find the best configuration that would have separated the historical benign traffic from anomalous scores.
+5.  **Persistence & Hot-Reload**: The optimized config is saved to `savePath` and seamlessly applied in memory.
