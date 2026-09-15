@@ -596,6 +596,7 @@
          if ((time() * 1000) - ($deviceData['lastUpdate'] ?? 0) > 10 * 60 * 1000) { // 10 minutes
              $deviceData['ips'] = [];
              $deviceData['rapidChangeCount'] = 0;
+             $deviceData['ipTimes'] = [];
          }
          $deviceData['lastUpdate'] = time() * 1000;
  

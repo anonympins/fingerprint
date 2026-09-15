@@ -3051,6 +3051,20 @@ async function getBehavioralIndicators(context, deviceData) {
   deviceData.lastFpHash = currentFpHash;
   deviceData.ips.add(clientIp); // Record the IP used by this device
 
+    // Nettoyage par fenêtre glissante pour éviter l'accumulation sur les sessions longues
+    if (!deviceData.ipTimes) {
+        deviceData.ipTimes = {};
+    }
+    deviceData.ipTimes[clientIp] = now;
+
+    const slidingWindow = 2 * 60 * 60 * 1000; // 2 heures
+    const cutOff = now - slidingWindow;
+    for (const [ip, lastSeen] of Object.entries(deviceData.ipTimes)) {
+        if (lastSeen < cutOff) {
+            deviceData.ips.delete(ip);
+            delete deviceData.ipTimes[ip];
+        }
+    }
   // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
   const behaviorHeader = context.headers?.['x-behavior-metrics'];
   let webauthnVerified = false;
@@ -3116,6 +3130,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Date.now() - deviceData.lastUpdate > 10 * 60 * 1000) { // 10 minutes
     deviceData.ips.clear();
     deviceData.rapidChangeCount = 0;
+      deviceData.ipTimes = {};
   }
   deviceData.lastUpdate = Date.now();
 

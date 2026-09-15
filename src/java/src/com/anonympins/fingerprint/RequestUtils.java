@@ -12,24 +12,76 @@ import java.net.UnknownHostException;
 
 public class RequestUtils {
 
+    @SuppressWarnings("unchecked")
     public static Map<String, Double> getBehavioralIndicators(RequestContext context, Map<String, Object> deviceData) {
         Map<String, Double> result = new HashMap<>();
         double historyScore = 0.0;
         double rotationScore = 0.0;
 
         if (deviceData != null) {
-            @SuppressWarnings("unchecked")
-            Set<String> ips = (Set<String>) deviceData.get("ips");
-            if (ips != null && ips.size() > 5) {
-                rotationScore = Math.min(100.0, (ips.size() - 5) * 15.0);
+            long now = System.currentTimeMillis();
+            String clientIp = context.clientIp;
+            String currentFpHash = getCompositeDeviceHash(context);
+
+            long rapidChangeThresholdMs = 2000L;
+            int maxRapidChanges = 3;
+
+            String lastFpHash = (String) deviceData.get("lastFpHash");
+            int rapidChangeCount = ((Number) deviceData.getOrDefault("rapidChangeCount", 0)).intValue();
+            long lastChangeTimestamp = ((Number) deviceData.getOrDefault("lastChangeTimestamp", 0L)).longValue();
+
+            if (lastFpHash != null && !currentFpHash.equals(lastFpHash)) {
+                String stable1 = extractStablePart(lastFpHash);
+                String stable2 = extractStablePart(currentFpHash);
+
+                long timeSinceLastChange = now - lastChangeTimestamp;
+
+                if (!stable1.equals(stable2)) {
+                    if (timeSinceLastChange < rapidChangeThresholdMs) {
+                        rapidChangeCount++;
+                    } else {
+                        rapidChangeCount = Math.max(0, rapidChangeCount - 1);
+                    }
+                    lastChangeTimestamp = now;
+                }
+            } else if (lastFpHash == null) {
+                lastChangeTimestamp = now;
             }
 
-            @SuppressWarnings("unchecked")
-            List<Map<String, Object>> history = (List<Map<String, Object>>) deviceData.get("requestHistory");
-            if (history != null && history.size() > 50) {
-                historyScore = 50.0;
+            deviceData.put("rapidChangeCount", rapidChangeCount);
+            deviceData.put("lastChangeTimestamp", lastChangeTimestamp);
+            deviceData.put("lastFpHash", currentFpHash);
+
+            Set<String> ips = (Set<String>) deviceData.get("ips");
+            if (ips == null) {
+                ips = new HashSet<>();
+                deviceData.put("ips", ips);
             }
+            ips.add(clientIp);
+
+            Map<String, Long> ipTimes = (Map<String, Long>) deviceData.get("ipTimes");
+            if (ipTimes == null) {
+                ipTimes = new HashMap<>();
+                deviceData.put("ipTimes", ipTimes);
+            }
+            ipTimes.put(clientIp, now);
+
+            long slidingWindow = 2L * 3600L * 1000L; // 2 heures
+            long cutOff = now - slidingWindow;
+
+            Iterator<Map.Entry<String, Long>> iterator = ipTimes.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, Long> entry = iterator.next();
+                if (entry.getValue() < cutOff) {
+                    ips.remove(entry.getKey());
+                    iterator.remove();
+                }
+            }
+
+            historyScore = Math.min(100.0, (Math.max(0, ips.size() - 3) / 15.0) * 100.0);
+            rotationScore = Math.min(100.0, (rapidChangeCount / (double) maxRapidChanges) * 100.0);
         }
+
         result.put("historyScore", historyScore);
         result.put("rotationScore", rotationScore);
         return result;
