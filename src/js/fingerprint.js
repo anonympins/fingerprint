@@ -6106,7 +6106,10 @@ export const __internal = {
     registerCooperativeNode,
     findPeerInSubnet,
     handleCooperativeRequest,
-    broadcastBannedZkp
+    broadcastBannedZkp,
+    getMetric,
+    incrementCounter,
+    observeValue
 };
 
 // --- THRESHOLD AUTO-TUNING SECTION ---
@@ -6523,36 +6526,156 @@ class RequestContext {
   }
 }
 
+const dynamicCounters = new Map();
+const dynamicObservations = new Map();
+
+export function incrementCounter(name, labels = {}) {
+    const sortedLabels = Object.keys(labels).sort().reduce((acc, key) => {
+        acc[key] = labels[key];
+        return acc;
+    }, {});
+    const labelsKey = JSON.stringify(sortedLabels);
+    const queryName = name.startsWith('fingerprint_') ? name : `fingerprint_${name}`;
+    const fullKey = `${queryName}:${labelsKey}`;
+
+    if (!dynamicCounters.has(fullKey)) {
+        dynamicCounters.set(fullKey, { name: queryName, labels: sortedLabels, value: 0 });
+    }
+    dynamicCounters.get(fullKey).value++;
+}
+
+export function observeValue(name, value, labels = {}) {
+    const sortedLabels = Object.keys(labels).sort().reduce((acc, key) => {
+        acc[key] = labels[key];
+        return acc;
+    }, {});
+    const labelsKey = JSON.stringify(sortedLabels);
+    const queryName = name.startsWith('fingerprint_') ? name : `fingerprint_${name}`;
+    const fullKey = `${queryName}:${labelsKey}`;
+    dynamicObservations.set(fullKey, { name: queryName, labels: sortedLabels, value });
+}
+
+export function getMetric(name, securityConfig = {}) {
+    const result = new Map();
+    const queryName = name.startsWith('fingerprint_') ? name : `fingerprint_${name}`;
+
+    if (queryName === 'fingerprint_security_weight') {
+        const weights = securityConfig.weights || {};
+        for (const [indicator, weight] of Object.entries(weights)) {
+            if (typeof weight === 'number') {
+                result.set(indicator, weight);
+            }
+        }
+    } else if (queryName === 'fingerprint_security_threshold') {
+        const thresholds = securityConfig.thresholds || {};
+        for (const [level, threshold] of Object.entries(thresholds)) {
+            if (typeof threshold === 'number') {
+                result.set(level, threshold);
+            }
+        }
+    } else if (queryName === 'fingerprint_autotuning_false_positive_rate') {
+        if (lastBestSolution && lastBestSolution.objectives) {
+            result.set('fpr', lastBestSolution.objectives[0]);
+        }
+    } else if (queryName === 'fingerprint_autotuning_false_negative_rate') {
+        if (lastBestSolution && lastBestSolution.objectives) {
+            result.set('fnr', lastBestSolution.objectives[1]);
+        }
+    } else {
+        // Search dynamic counters
+        for (const counter of dynamicCounters.values()) {
+            if (counter.name === queryName || counter.name === name) {
+                const labelPairs = Object.entries(counter.labels)
+                    .map(([k, v]) => `${k}="${v}"`)
+                    .join(',');
+                result.set(labelPairs || 'value', counter.value);
+            }
+        }
+
+        // Search dynamic observations
+        for (const obs of dynamicObservations.values()) {
+            if (obs.name === queryName || obs.name === name) {
+                const labelPairs = Object.entries(obs.labels)
+                    .map(([k, v]) => `${k}="${v}"`)
+                    .join(',');
+                result.set(labelPairs || 'value', obs.value);
+            }
+        }
+    }
+    return result;
+}
+
 const MetricsManager = {
-  getPrometheusMetrics(securityConfig = {}) {
-    let metrics = `# HELP fingerprint_requests_total Total requests processed.\n# TYPE fingerprint_requests_total counter\nfingerprint_requests_total{status="passed"} 1\n`;
+    getPrometheusMetrics(securityConfig = {}) {
+        let metrics = '';
 
-    if (securityConfig.weights) {
-      metrics += `\n# HELP fingerprint_security_weight Active weight for each suspicion indicator.\n# TYPE fingerprint_security_weight gauge\n`;
-      for (const [indicator, weight] of Object.entries(securityConfig.weights)) {
-        if (typeof weight === 'number') {
-          metrics += `fingerprint_security_weight{indicator="${indicator}"} ${weight}\n`;
+        if (dynamicCounters.size === 0) {
+            metrics += `# HELP fingerprint_requests_total Total requests processed.\n# TYPE fingerprint_requests_total counter\nfingerprint_requests_total{status="passed"} 1\n`;
+        } else {
+            const grouped = {};
+            for (const counter of dynamicCounters.values()) {
+                if (!grouped[counter.name]) {
+                    grouped[counter.name] = [];
+                }
+                grouped[counter.name].push(counter);
+            }
+            for (const [name, instances] of Object.entries(grouped)) {
+                metrics += `# HELP ${name} Total requests processed.\n# TYPE ${name} counter\n`;
+                for (const inst of instances) {
+                    const labelPairs = Object.entries(inst.labels)
+                        .map(([k, v]) => `${k}="${v}"`)
+                        .join(',');
+                    const labelStr = labelPairs ? `{${labelPairs}}` : '';
+                    metrics += `${name}${labelStr} ${inst.value}\n`;
+                }
+            }
         }
-      }
-    }
 
-    if (securityConfig.thresholds) {
-      metrics += `\n# HELP fingerprint_security_threshold Active score threshold for each enforcement action level.\n# TYPE fingerprint_security_threshold gauge\n`;
-      for (const [level, threshold] of Object.entries(securityConfig.thresholds)) {
-        if (typeof threshold === 'number') {
-          metrics += `fingerprint_security_threshold{level="${level}"} ${threshold}\n`;
+        if (dynamicObservations.size > 0) {
+            const grouped = {};
+            for (const obs of dynamicObservations.values()) {
+                if (!grouped[obs.name]) {
+                    grouped[obs.name] = [];
+                }
+                grouped[obs.name].push(obs);
+            }
+            for (const [name, instances] of Object.entries(grouped)) {
+                metrics += `\n# HELP ${name} Value observation.\n# TYPE ${name} gauge\n`;
+                for (const inst of instances) {
+                    const labelPairs = Object.entries(inst.labels)
+                        .map(([k, v]) => `${k}="${v}"`)
+                        .join(',');
+                    const labelStr = labelPairs ? `{${labelPairs}}` : '';
+                    metrics += `${name}${labelStr} ${inst.value}\n`;
+                }
+            }
         }
-      }
-    }
 
-    // Include auto-tuning objectives metrics if the auto-tuner has run
-    if (lastBestSolution && lastBestSolution.objectives) {
-      metrics += `\n# HELP fingerprint_autotuning_false_positive_rate Current false positive rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_positive_rate gauge\nfingerprint_autotuning_false_positive_rate ${lastBestSolution.objectives[0]}\n`;
-      metrics += `\n# HELP fingerprint_autotuning_false_negative_rate Current false negative rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_negative_rate gauge\nfingerprint_autotuning_false_negative_rate ${lastBestSolution.objectives[1]}\n`;
-    }
+        if (securityConfig.weights) {
+            metrics += `\n# HELP fingerprint_security_weight Active weight for each suspicion indicator.\n# TYPE fingerprint_security_weight gauge\n`;
+            for (const [indicator, weight] of Object.entries(securityConfig.weights)) {
+                if (typeof weight === 'number') {
+                    metrics += `fingerprint_security_weight{indicator="${indicator}"} ${weight}\n`;
+                }
+            }
+        }
 
-    return metrics;
-  }
+        if (securityConfig.thresholds) {
+            metrics += `\n# HELP fingerprint_security_threshold Active score threshold for each enforcement action level.\n# TYPE fingerprint_security_threshold gauge\n`;
+            for (const [level, threshold] of Object.entries(securityConfig.thresholds)) {
+                if (typeof threshold === 'number') {
+                    metrics += `fingerprint_security_threshold{level="${level}"} ${threshold}\n`;
+                }
+            }
+        }
+
+        if (lastBestSolution && lastBestSolution.objectives) {
+            metrics += `\n# HELP fingerprint_autotuning_false_positive_rate Current false positive rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_positive_rate gauge\nfingerprint_autotuning_false_positive_rate ${lastBestSolution.objectives[0]}\n`;
+            metrics += `\n# HELP fingerprint_autotuning_false_negative_rate Current false negative rate calculated by the auto-tuner.\n# TYPE fingerprint_autotuning_false_negative_rate gauge\nfingerprint_autotuning_false_negative_rate ${lastBestSolution.objectives[1]}\n`;
+        }
+
+        return metrics;
+    }
 };
 
 /**

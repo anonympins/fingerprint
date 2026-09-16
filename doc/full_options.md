@@ -1,86 +1,92 @@
 # Configuration Options Reference
 
 This document provides a comprehensive reference for all configuration options available in the `fingerprint` protection engine, with a specific focus on the **21 score weights** used to compute the final suspicion score.
-
+ 
 ---
 
 ## Complete Configuration Template (JSON)
 
 Here is a complete representation of a custom security configuration containing all available suspicion weights, thresholds, and detection subsystem parameters:
 
-```json
-{
-  "verbose": false,
-  "dryRun": false,
-  "challengeNewDevices": false,
-  "allowCrossNetworkRoaming": true,
-  "similarityThreshold": 0.70,
-  "ticketMaxAge": 3600000,
-  "challengeTtl": 300,
-  "deviceIdCookieMaxAge": 2592000000,
-  "thresholds": {
-    "low": 20,
-    "medium": 45,
-    "high": 75,
-    "block": 95
-  },
-  "weights": {
-    "historyScore": 0.30,
-    "rotationScore": 0.50,
-    "headerAnomalyScore": 0.10,
-    "requestPatternScore": 0.60,
-    "inconsistencyScore": 0.80,
-    "behaviorScore": 0.70,
-    "honeypotScore": 1.00,
-    "crossLayerInconsistencyScore": 0.40,
-    "timeInconsistencyScore": 0.90,
-    "tlsSpoofingScore": 0.80,
-    "botScore": 1.00,
-    "cookieDroppingScore": 0.90,
-    "threatIntelScore": 0.40,
-    "clientHintsInconsistencyScore": 0.70,
-    "clickVarianceScore": 0.60,
-    "subnetScore": 0.50,
-    "botnetClusterScore": 0.60,
-    "tcpAnomalyScore": 0.80,
-    "quicAnomalyScore": 0.80,
-    "renderingAnomalyScore": 0.80,
-    "ipReputationScore": 0.50
-  },
-  "patterns": {
-    "velocityThreshold": 800,
-    "burstThreshold": 1500,
-    "scrapeThreshold": 1000,
-    "historySize": 10,
-    "minSamples": 5,
-    "regularityThreshold": 50,
-    "benfordThreshold": 0.15,
-    "patternWeight": 80,
-    "decayFactor": 0.90,
-    "inactivityReset": 5000,
-    "regularityRatio": 0.40,
-    "benfordRatio": 0.30,
-    "enumerationRatio": 0.30
-  },
-  "honeypot": {
-    "fields": ["email_confirm", "admin_login_bypass"],
-    "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
-    "detectInjections": true
-  },
-  "threatIntel": {
-    "knownIps": []
-  },
-  "cpu": {
-    "minDifficultyBits": 8,
-    "maxDifficultyBits": 16
-  },
-  "pospace": {
-    "sizeMb": 100,
-    "numQueries": 10
-  }
-}
-```
-
+ ```json
+ {
+   "verbose": false,
+   "dryRun": false,
+   "challengeNewDevices": false,
+   "allowCrossNetworkRoaming": true,
+   "similarityThreshold": 0.70,
+   "ticketMaxAge": 3600000,
+   "challengeTtl": 300,
+   "deviceIdCookieMaxAge": 2592000000,
+   "thresholds": {
+     "low": 20,
+     "medium": 45,
+     "high": 75,
+     "block": 95
+   },
+   "weights": {
+     "historyScore": 0.30,
+     "rotationScore": 0.50,
+     "headerAnomalyScore": 0.10,
+     "requestPatternScore": 0.60,
+     "inconsistencyScore": 0.80,
+     "behaviorScore": 0.70,
+     "honeypotScore": 1.00,
+     "crossLayerInconsistencyScore": 0.40,
+     "timeInconsistencyScore": 0.90,
+     "tlsSpoofingScore": 0.80,
+     "botScore": 1.00,
+     "cookieDroppingScore": 0.90,
+     "threatIntelScore": 0.40,
+     "clientHintsInconsistencyScore": 0.70,
+     "clickVarianceScore": 0.60,
+     "subnetScore": 0.50,
+     "botnetClusterScore": 0.60,
+     "tcpAnomalyScore": 0.80,
+     "quicAnomalyScore": 0.80,
+     "renderingAnomalyScore": 0.80,
+     "ipReputationScore": 0.50
+   },
+   "patterns": {
+     "velocityThreshold": 800,
+     "burstThreshold": 1500,
+     "scrapeThreshold": 1000,
+     "historySize": 10,
+     "minSamples": 5,
+     "regularityThreshold": 50,
+     "benfordThreshold": 0.15,
+     "patternWeight": 80,
+     "decayFactor": 0.90,
+     "inactivityReset": 5000,
+     "regularityRatio": 0.40,
+     "benfordRatio": 0.30,
+     "enumerationRatio": 0.30
+   },
+   "honeypot": {
+     "fields": ["email_confirm", "admin_login_bypass"],
+     "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
+     "detectInjections": true
+   },
+   "threatIntel": {
+     "knownIps": []
+   },
+   "cpu": {
+     "minDifficultyBits": 8,
+     "maxDifficultyBits": 16
+   },
+   "pospace": {
+     "sizeMb": 100,
+     "numQueries": 10
+   },
+   "federatedPeers": [
+     "https://peer1.example.com",
+     "https://peer2.example.com"
+   ],
+   "useAsymmetricTickets": true,
+   "ed25519": "auto"
+ }
+ ```
+ 
 ---
 
 ## Detailed Score Weights Reference (The 21 Invariants)
@@ -88,7 +94,7 @@ Here is a complete representation of a custom security configuration containing 
 The following table details the role of each weight in the `weights` object. These weights determine how heavily each suspicion indicator influences the final score (calculated dynamically out of 100).
 
 | Weight Name | Default (`balanced`) | Impact & Role |
-| :--- | :---: | :--- |
+ | :--- | :---: | :--- |
 | **`botScore`** | `1.00` | **Extreme**. Triggers when client-side environment checks explicitly detect browser automation frameworks (e.g., Selenium, Puppeteer). |
 | **`honeypotScore`** | `1.00` | **Extreme**. Triggers when a client visits hidden/forbidden trap URLs or enters data in hidden inputs (honeypots). |
 | **`timeInconsistencyScore`** | `0.90` | **Very High**. Penalizes requests where client and server clocks drastically differ, detecting replayed behavioral telemetry. |
@@ -110,49 +116,56 @@ The following table details the role of each weight in the `weights` object. The
 | **`rotationScore`** | `0.50` | **Medium**. Flags devices changing hardware-based fingerprints rapidly over a short time. |
 | **`historyScore`** | `0.30` | **Low**. Monitors the total number of distinct IPs associated with a single device ID cookie. |
 | **`headerAnomalyScore`** | `0.10` | **Low**. Simple parsing checks on headers (e.g., missing basic browser headers). |
-
+ 
 ---
 
 ## Core Engine Controls
 
 ### Global Controls
-* **`verbose`** *(bool, default: `false`)*: Enables deep server-side log output.
-* **`dryRun`** *(bool, default: `false`)*: Intended block and challenge actions are logged, but requests are always allowed to pass through (`next`). Useful for evaluating auto-tuner impact in production safely.
-* **`challengeNewDevices`** *(bool, default: `false`)*: Forces a proof-of-work challenge on all new devices by setting their initial score to the `low` threshold.
-* **`allowCrossNetworkRoaming`** *(bool, default: `true`)*: If `true`, a user can switch networks (e.g., from Home Wi-Fi to 4G) without being re-challenged, provided their hardware-based fingerprint remains absolutely identical.
-* **`similarityThreshold`** *(float, default: `0.70`)*: The similarity coefficient (0 to 1) required to consider two composite fingerprints a match.
+*   **`verbose`** *(bool, default: `false`)*: Enables deep server-side log output.
+*   **`dryRun`** *(bool, default: `false`)*: Intended block and challenge actions are logged, but requests are always allowed to pass through (`next`). Useful for evaluating auto-tuner impact in production safely.
+*   **`challengeNewDevices`** *(bool, default: `false`)*: Forces a proof-of-work challenge on all new devices by setting their initial score to the `low` threshold.
+*   **`allowCrossNetworkRoaming`** *(bool, default: `true`)*: If `true`, a user can switch networks (e.g., from Home Wi-Fi to 4G) without being re-challenged, provided their hardware-based fingerprint remains absolutely identical.
+*   **`similarityThreshold`** *(float, default: `0.70`)*: The similarity coefficient (0 to 1) required to consider two composite fingerprints a match.
 
 ### Timings & Expirations
-* **`ticketMaxAge`** *(int, default: `3600000`)*: Maximum lifespan of a clearance ticket (PoW resolution cookie) in milliseconds (default: 1 hour).
-* **`challengeTtl`** *(int, default: `300`)*: Lifespan of a generated challenge session in seconds (default: 5 minutes).
-* **`deviceIdCookieMaxAge`** *(int, default: `2592000000`)*: Lifespan of the `device_id` cookie in milliseconds (default: 30 days).
+*   **`ticketMaxAge`** *(int, default: `3600000`)*: Maximum lifespan of a clearance ticket (PoW resolution cookie) in milliseconds (default: 1 hour).
+*   **`challengeTtl`** *(int, default: `300`)*: Lifespan of a generated challenge session in seconds (default: 5 minutes).
+*   **`deviceIdCookieMaxAge`** *(int, default: `2592000000`)*: Lifespan of the `device_id` cookie in milliseconds (default: 30 days).
 
----
+ ---
 
 ## Subsystems Configuration
 
 ### `patterns` (Request Sequences Analysis)
-* **`velocityThreshold`**: High-frequency interval threshold (ms).
-* **`burstThreshold`**: Fast retry trigger threshold (ms).
-* **`scrapeThreshold`**: Absolute crawl limit interval (ms).
-* **`historySize`**: The size of the request sliding window.
-* **`minSamples`**: Minimum timing intervals required before executing Benford and regularity checks.
-* **`decayFactor`**: Rate at which suspicion scores decay during inactivity.
+*   **`velocityThreshold`**: High-frequency interval threshold (ms).
+*   **`burstThreshold`**: Fast retry trigger threshold (ms).
+*   **`scrapeThreshold`**: Absolute crawl limit interval (ms).
+*   **`historySize`**: The size of the request sliding window.
+*   **`minSamples`**: Minimum timing intervals required before executing Benford and regularity checks.
+*   **`decayFactor`**: Rate at which suspicion scores decay during inactivity.
 
 ### `honeypot` (Form and URL Traps)
-* **`fields`**: List of hidden inputs to inject into HTML shadow forms.
-* **`trapUrls`**: Hidden asset paths that normal users never crawl.
-* **`detectInjections`** *(bool/array)*: Enables SQLi, XSS, RCE, and path traversal detection.
+*   **`fields`**: List of hidden inputs to inject into HTML shadow forms.
+*   **`trapUrls`**: Hidden asset paths that normal users never crawl.
+*   **`detectInjections`** *(bool/array)*: Enables SQLi, XSS, RCE, and path traversal detection.
 
 ### `cpu` (Target CPU PoW)
-* **`minDifficultyBits`**: Minimum zero-bit difficulty for low suspicion requests.
-* **`maxDifficultyBits`**: Maximum zero-bit difficulty for highly suspicious requests.
+*   **`minDifficultyBits`**: Minimum zero-bit difficulty for low suspicion requests.
+*   **`maxDifficultyBits`**: Maximum zero-bit difficulty for highly suspicious requests.
 
 ### `pospace` (Proof of Space)
-* **`sizeMb`**: Size of the indexed storage space to generate locally (MB).
-* **`numQueries`**: Number of block read queries generated by the server.
+*   **`sizeMb`**: Size of the indexed storage space to generate locally (MB).
+*   **`numQueries`**: Number of block read queries generated by the server.
 
----
+### `federatedPeers` (Federated Threat Intelligence)
+*   **`federatedPeers`** *(array of strings, default: `[]`)*: A list of URLs or identifiers of trusted peer nodes in a federated network. These peers can be used for sharing threat intelligence, device reputation scores, or challenge responses in a distributed manner.
+
+### Asymmetric Cryptographic Keys & Tickets (Ed25519)
+*   **`useAsymmetricTickets`** *(bool, default: `false`)*: If `true`, the engine signs and validates stateless tickets asymmetrically using Ed25519 instead of symmetrically using AES-256-CBC.
+*   **`ed25519`** *(string/bool, optional)*: Set to `"auto"` to enable automatic, zero-dependency, on-load key generation if no pre-generated keys are detected in the environment variables (`ED25519_PRIVATE_KEY` & `ED25519_PUBLIC_KEY`).
+
+ ---
 
 ## Profiles
 
@@ -169,96 +182,96 @@ For quick starts without manually defining everything, use pre-made profiles:
 ### Profile Usage
 
 **Node.js**:
- ```javascript
- import { createSecurityProfile } from '@anonympins/fingerprint';
+  ```javascript
+  import { createSecurityProfile } from '@anonympins/fingerprint';
  
- const config = createSecurityProfile('ecommerce', {
-     verbose: true
-     // overrides here...
- });
-
-```
+  const config = createSecurityProfile('ecommerce', {
+      verbose: true
+      // overrides here...
+  });
+  ```
 
 **PHP**
-```php
-<?php
-
-declare(strict_types=1);
-
-require_once __DIR__ . '/vendor/autoload.php';
-
-use Anonympins\Fingerprint\Config\SecurityProfiles;
-use Anonympins\Fingerprint\DirectFingerprint;
-
-// Création du profil avec surcharges
+ ```php
+ <?php
+ 
+ declare(strict_types=1);
+ 
+ require_once __DIR__ . '/vendor/autoload.php';
+ 
+ use Anonympins\Fingerprint\Config\SecurityProfiles;
+ use Anonympins\Fingerprint\DirectFingerprint;
+ 
+ // Création du profil avec surcharges
 $securityConfig = SecurityProfiles::createSecurityProfile('ecommerce', [
-    'verbose' => true, 
-]);
-
-// Initialisation du protecteur avec la configuration
+     'verbose' => true, 
+ ]);
+ 
+ // Initialisation du protecteur avec la configuration
 $protector = new DirectFingerprint($securityConfig);
-
-// Analyse et protection de la requête (bloque ou lance un challenge si suspect)
+ 
+ // Analyse et protection de la requête (bloque ou lance un challenge si suspect)
 $fingerprint = $protector->protect();
-
-// Si le script continue, la requête est légitime
-echo "Welcome on the secured page !";
-```
-
-**Python**
-```python
-import asyncio
-from fingerprint.engine import FingerprintEngine, InMemoryStore, RequestContext
-
-# 1. Choose a security profile and customize it if necessary.
-#    For Python, you typically define the configuration dictionary directly,
-#    mimicking a predefined profile like 'ecommerce' and applying overrides.
-security_config = {
- "verbose": True,  # Enable verbose mode for development
- "thresholds": {"low": 15, "medium": 40, "high": 70, "block": 90},
- "weights": {
-     "inconsistencyScore": 1.0,
-     "requestPatternScore": 0.9,
-     "honeypotScore": 1.0,
-     "behaviorScore": 0.8,
-     "tlsSpoofingScore": 0.9,
-     "botScore": 1.0,
-     "cookieDroppingScore": 1.0,
-     "ipReputationScore": 0.6,
-     "subnetScore": 0.9,
-     "botnetClusterScore": 0.9,
-     "tcpAnomalyScore": 0.9,
-     "quicAnomalyScore": 0.9,
-     "renderingAnomalyScore": 0.9,
- },
- "honeypot": {
-     "fields": ["email_confirm", "admin_login_bypass"],
-     "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
-     "detectInjections": True
- },
- "challengeNewDevices": True,
- "allowCrossNetworkRoaming": False,
-}
-
-# 2. Initialize the store (use InMemoryStore for development, replace with Redis/MongoDB for production)
-fingerprint_store = InMemoryStore()
-
-# 3. Create an instance of the FingerprintEngine.
-protector = FingerprintEngine(security_config, fingerprint_store)
-
-# 4. In an actual application, you would then process an incoming request:
-#    (e.g., in an ASGI/WSGI middleware or a direct HTTP handler)
-#    # context = RequestContext(...) # Construct your request context
-#    # decision = await protector.process_request(context)
-#    # if decision["action"] == "next":
-#    #     print("Welcome on the secured page!")
-#    # else:
-#    #     # Handle blocking, challenging, or redirecting
-#    #     print(f"Request {decision['action']}!")
-
+ 
+ // Si le script continue, la requête est légitime
+ echo "Welcome on the secured page !";
  ```
 
-# Auto-Tuning & Traffic Data Pruning Options
+**Python**
+ ```python
+ import asyncio
+ from fingerprint.engine import FingerprintEngine, InMemoryStore, RequestContext
+ 
+ # 1. Choose a security profile and customize it if necessary.
+ #    For Python, you typically define the configuration dictionary directly,
+ #    mimicking a predefined profile like 'ecommerce' and applying overrides.
+ security_config = {
+  "verbose": True,  # Enable verbose mode for development
+  "thresholds": {"low": 15, "medium": 40, "high": 70, "block": 90},
+  "weights": {
+      "inconsistencyScore": 1.0,
+      "requestPatternScore": 0.9,
+      "honeypotScore": 1.0,
+      "behaviorScore": 0.8,
+      "tlsSpoofingScore": 0.9,
+      "botScore": 1.0,
+      "cookieDroppingScore": 1.0,
+      "ipReputationScore": 0.6,
+      "subnetScore": 0.9,
+      "botnetClusterScore": 0.9,
+      "tcpAnomalyScore": 0.9,
+      "quicAnomalyScore": 0.9,
+      "renderingAnomalyScore": 0.9,
+  },
+  "honeypot": {
+      "fields": ["email_confirm", "admin_login_bypass"],
+      "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
+      "detectInjections": True
+  },
+  "challengeNewDevices": True,
+  "allowCrossNetworkRoaming": False,
+ }
+ 
+ # 2. Initialize the store (use InMemoryStore for development, replace with Redis/MongoDB for production)
+ fingerprint_store = InMemoryStore()
+ 
+ # 3. Create an instance of the FingerprintEngine.
+ protector = FingerprintEngine(security_config, fingerprint_store)
+ 
+ # 4. In an actual application, you would then process an incoming request:
+ #    (e.g., in an ASGI/WSGI middleware or a direct HTTP handler)
+ #    # context = RequestContext(...) # Construct your request context
+ #    # decision = await protector.process_request(context)
+ #    # if decision["action"] == "next":
+ #    #     print("Welcome on the secured page!")
+ #    # else:
+ #    #     # Handle blocking, challenging, or redirecting
+ #    #     print(f"Request {decision['action']}!")
+ ```
+ 
+---
+
+## Auto-Tuning & Traffic Data Pruning Options
 
 The `autotuning` engine dynamically adjusts your thresholds and weights using a background genetic algorithm. It profiles real-world traffic to find the optimal trade-off between user experience (minimizing false-positive challenges for human users) and strict security (maximizing bot detection).
 
@@ -267,7 +280,7 @@ To prevent unbounded memory growth, the engine features an integrated **Traffic 
 ### Configuration Details
 
 | Property | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
+ | :--- | :--- | :--- | :--- |
 | `trafficData` | `Array` | `[]` | In-memory storage array that accumulates incoming request telemetry vectors for analysis. |
 | `interval` | `number` | `1800000` | The frequency (in milliseconds) at which the genetic algorithm runs (e.g., 30 minutes). |
 | `minDataPoints` | `number` | `200` | Minimum number of recorded requests needed before the tuning algorithm can execute. |
@@ -279,8 +292,8 @@ To prevent unbounded memory growth, the engine features an integrated **Traffic 
 
 ### Example of Background Tuning Optimization Flow
 
-1. **Accumulation**: The engine collects telemetry metadata across requests, populating `trafficData`.
-2. **Pruning**: Periodic tasks run to compare data timestamps against `maxAgeMs` to remove expired data.
-3. **Evaluation**: Once `interval` is reached and data size exceeds `minDataPoints`, the genetic tuner initiates.
-4. **Optimization**: It executes a multi-objective optimization (Pareto front) to find the best configuration that would have separated the historical benign traffic from anomalous scores.
-5. **Persistence & Hot-Reload**: The optimized config is saved to `savePath` and seamlessly applied in memory.
+1.  **Accumulation**: The engine collects telemetry metadata across requests, populating `trafficData`.
+2.  **Pruning**: Periodic tasks run to compare data timestamps against `maxAgeMs` to remove expired data.
+3.  **Evaluation**: Once `interval` is reached and data size exceeds `minDataPoints`, the genetic tuner initiates.
+4.  **Optimization**: It executes a multi-objective optimization (Pareto front) to find the best configuration that would have separated the historical benign traffic from anomalous scores.
+5.  **Persistence & Hot-Reload**: The optimized config is saved to `savePath` and seamlessly applied in memory.
