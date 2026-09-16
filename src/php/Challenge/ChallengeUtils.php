@@ -8,6 +8,7 @@ use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\FingerprintBuilder;
 use Anonympins\Fingerprint\Utils\BigInt;
 use Anonympins\Fingerprint\Utils\RequestUtils;
+ use Anonympins\Fingerprint\Utils\Env;
 
 /**
  * Classe utilitaire pour la génération et la vérification des challenges Proof-of-Work.
@@ -397,8 +398,9 @@ class ChallengeUtils
      */
     public static function getPowSecret(): string
     {
-        $secret = $_ENV['POW_SECRET'] ?? getenv('POW_SECRET');
-        if (!$secret && ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production') {
+        $secret = Env::get('POW_SECRET');
+        $appEnv = Env::get('APP_ENV');
+        if (!$secret && $appEnv === 'production') {
             throw new \RuntimeException('POW_SECRET environment variable is not set. This is required for production.');
         }
         return $secret ?: "fallback-dev-secret-32-chars-minimum";
@@ -411,7 +413,7 @@ class ChallengeUtils
      */
     public static function generateStatelessTicket(array $payload): string
     {
-        $ed25519Key = $_ENV['ED25519_PRIVATE_KEY'] ?? getenv('ED25519_PRIVATE_KEY');
+        $ed25519Key = Env::get('ED25519_PRIVATE_KEY');
         if ($ed25519Key) {
             try {
                 $serialized = json_encode($payload);
@@ -457,7 +459,7 @@ class ChallengeUtils
                 $payloadJson = $base64UrlDecode($parts[1]);
                 $signature = $base64UrlDecode($parts[2]);
                 
-                $ed25519PubKey = $_ENV['ED25519_PUBLIC_KEY'] ?? getenv('ED25519_PUBLIC_KEY');
+                $ed25519PubKey = Env::get('ED25519_PUBLIC_KEY');
                 if (!$ed25519PubKey) {
                     error_log("[ChallengeUtils] ED25519_PUBLIC_KEY is not defined in environment.");
                     return null;

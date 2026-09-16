@@ -2874,4 +2874,41 @@ describe('IP Registration and Filtering', () => {
         expect(storedData.ips.has(ip1)).toBe(true);
         expect(storedData.ips.has(ip2)).toBe(true);
     });
+
+    describe('Ed25519 Key Generation & Reopening', () => {
+        beforeEach(() => {
+            delete process.env.ED25519_PRIVATE_KEY;
+            delete process.env.ED25519_PUBLIC_KEY;
+            vi.restoreAllMocks();
+        });
+
+        it('should generate new keys and save to disk if not present', async () => {
+            const fs = await import('node:fs');
+            const existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+            const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+
+            const config = { ed25519: 'auto', weights: {}, thresholds: {} };
+            new FingerprintEngine(config);
+
+            expect(process.env.ED25519_PRIVATE_KEY).toBeDefined();
+            expect(process.env.ED25519_PUBLIC_KEY).toBeDefined();
+            expect(writeSpy).toHaveBeenCalled();
+        });
+
+        it('should load keys from disk if they already exist', async () => {
+            const fs = await import('node:fs');
+            const dummyKeys = {
+                privateKey: '-----BEGIN PRIVATE KEY-----\ndummy-private-key\n-----END PRIVATE KEY-----',
+                publicKey: '-----BEGIN PUBLIC KEY-----\ndummy-public-key\n-----END PUBLIC KEY-----'
+            };
+            const existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+            const readSpy = vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify(dummyKeys));
+
+            const config = { ed25519: 'auto', weights: {}, thresholds: {} };
+            new FingerprintEngine(config);
+
+            expect(process.env.ED25519_PRIVATE_KEY).toBe(dummyKeys.privateKey);
+            expect(process.env.ED25519_PUBLIC_KEY).toBe(dummyKeys.publicKey);
+        });
+    });
 });

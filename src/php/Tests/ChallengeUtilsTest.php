@@ -8,6 +8,7 @@ use Anonympins\Fingerprint\Challenge\ChallengeUtils;
 use Anonympins\Fingerprint\Store\InMemoryStore;
 use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\Utils\BigInt;
+ use Anonympins\Fingerprint\Utils\Env;
 use PHPUnit\Framework\TestCase;
 
 class ChallengeUtilsTest extends TestCase
@@ -94,7 +95,7 @@ class ChallengeUtilsTest extends TestCase
         // Définir une clé secrète pour les tests
         $store = new InMemoryStore();
         StoreManager::configureStore($store);
-        $_ENV['POW_SECRET'] = 'test-secret-key-that-is-long-enough-for-hmac';
+        Env::set('POW_SECRET', 'test-secret-key-that-is-long-enough-for-hmac');
     }
 
     public function testZkpProofValidation(): void
@@ -219,8 +220,8 @@ class ChallengeUtilsTest extends TestCase
             $this->markTestSkipped('Ed25519 signing is not supported due to PHP 8.0.0 openssl_sign() null algorithm bug.');
         }
 
-        $_ENV['ED25519_PRIVATE_KEY'] = $privateKeyPem;
-        $_ENV['ED25519_PUBLIC_KEY'] = $publicKeyPem;
+        Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
+        Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
 
         $ip = '127.0.0.1';
         $expiry = (int)floor(microtime(true) * 1000) + 3600000;
@@ -237,7 +238,8 @@ class ChallengeUtilsTest extends TestCase
         $this->assertTrue(ChallengeUtils::isTicketValid($ip, $ticket, 'device-123', 'hash-abc'));
         $this->assertFalse(ChallengeUtils::isTicketValid('192.168.1.1', $ticket, 'device-123', 'hash-abc'));
 
-        unset($_ENV['ED25519_PRIVATE_KEY'], $_ENV['ED25519_PUBLIC_KEY']);
+        Env::clear('ED25519_PRIVATE_KEY');
+        Env::clear('ED25519_PUBLIC_KEY');
     }
 
     public function testCooperativePoSpaceWorkflow(): void

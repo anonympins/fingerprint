@@ -11,6 +11,7 @@ use Anonympins\Fingerprint\RequestContext;
 use Anonympins\Fingerprint\Store\InMemoryStore;
 use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\Challenge\ChallengeUtils;
+ use Anonympins\Fingerprint\Utils\Env;
 use PHPUnit\Framework\TestCase;
 
 class FingerprintEngineTest extends TestCase
@@ -28,6 +29,8 @@ class FingerprintEngineTest extends TestCase
         // 1. Utiliser un store en mémoire propre pour chaque test
         $store = new InMemoryStore();
         StoreManager::configureStore($store);
+        Env::clear('ED25519_PRIVATE_KEY');
+        Env::clear('ED25519_PUBLIC_KEY');
 
         // 2. Charger une configuration de sécurité de base pour les tests
         $this->securityConfig = SecurityProfiles::createSecurityProfile('balanced', [
@@ -261,6 +264,80 @@ class FingerprintEngineTest extends TestCase
 
         // Malgré le ticket valide, le score est élevé, une nouvelle vérification PoW doit être imposée
         $this->assertEquals('challenge', $redecision['action']);
+    }
+
+    public function testEd25519KeyAutoGenerationAndPersistence(): void
+    {
+        if (!extension_loaded('openssl')) {
+            $this->markTestSkipped('openssl extension is not loaded.');
+        }
+
+        if (!defined('OPENSSL_KEYTYPE_ED25519')) {
+            $this->markTestSkipped('Ed25519 is not supported or constant OPENSSL_KEYTYPE_ED25519 is undefined in this PHP/OpenSSL environment.');
+        }
+
+        $pkey = @openssl_pkey_new(["private_key_type" => constant('OPENSSL_KEYTYPE_ED25519')]);
+        if (!$pkey) {
+            $this->markTestSkipped('Ed25519 is not supported in this PHP/OpenSSL environment.');
+        }
+
+        $configDir = dirname(__FILE__, 3) . '/config'; // Match engine's behavior
+        $keyPath = $configDir . '/ed25519_key.json';
+
+        Env::clear('ED25519_PRIVATE_KEY');
+        Env::clear('ED25519_PUBLIC_KEY');
+        if (file_exists($keyPath)) {
+            unlink($keyPath);
+        }
+
+        $config = SecurityProfiles::createSecurityProfile('balanced', [
+            'ed25519' => 'auto',
+            'verbose' => false,
+            'useAsymmetricTickets' => true
+        ]);
+
+        new FingerprintEngine($config);
+
+        $this->assertNotEmpty(Env::get('ED25519_PRIVATE_KEY') ?? '');
+        $this->assertNotEmpty(Env::get('ED25519_PUBLIC_KEY') ?? '');
+        $this->assertFileExists($keyPath);
+
+        $stored = json_decode(file_get_contents($keyPath), true);
+        $this->assertEquals(Env::get('ED25519_PRIVATE_KEY'), $stored['privateKey']);
+        $this->assertEquals(Env::get('ED25519_PUBLIC_KEY'), $stored['publicKey']);
+
+        unlink($keyPath);
+    }
+
+    public function testEd25519KeyLoadingFromDisk(): void
+    {
+        $configDir = dirname(__FILE__, 3) . '/config'; // Match engine's behavior
+        if (!is_dir($configDir)) {
+            mkdir($configDir, 0777, true);
+        }
+        $keyPath = $configDir . '/ed25519_key.json';
+
+        $dummyKeys = [
+            'privateKey' => '-----BEGIN PRIVATE KEY-----\ndummy-php-private\n-----END PRIVATE KEY-----',
+            'publicKey' => '-----BEGIN PUBLIC KEY-----\ndummy-php-public\n-----END PUBLIC KEY-----'
+        ];
+        file_put_contents($keyPath, json_encode($dummyKeys, JSON_PRETTY_PRINT));
+
+        Env::clear('ED25519_PRIVATE_KEY');
+        Env::clear('ED25519_PUBLIC_KEY');
+
+        $config = SecurityProfiles::createSecurityProfile('balanced', [
+            'ed25519' => 'auto',
+            'verbose' => false,
+            'useAsymmetricTickets' => true
+        ]);
+
+        new FingerprintEngine($config);
+
+        $this->assertEquals($dummyKeys['privateKey'], Env::get('ED25519_PRIVATE_KEY'));
+        $this->assertEquals($dummyKeys['publicKey'], Env::get('ED25519_PUBLIC_KEY'));
+
+        unlink($keyPath);
     }
     public function testFingerprintBuilderCompareLogic(): void
     {

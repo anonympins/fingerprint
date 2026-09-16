@@ -6,7 +6,7 @@ import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
 import {DynamicWasmGenerator} from "./dynamic-wasm.js";
-import {readFileSync, existsSync} from "node:fs";
+import {writeFileSync, readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
 import {
@@ -3880,16 +3880,31 @@ export class FingerprintEngine {
 
         // Auto-generate Ed25519 key pair on load if indicated and keys are not set
         if (securityConfig && (securityConfig.useAsymmetricTickets || securityConfig.ed25519 === 'auto') && !process.env.ED25519_PRIVATE_KEY) {
-          try {
-            const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519', {
-              privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
-              publicKeyEncoding: { format: 'pem', type: 'spki' }
-            });
-            process.env.ED25519_PRIVATE_KEY = privateKey;
-            process.env.ED25519_PUBLIC_KEY = publicKey;
-          } catch (e) {
-            console.error('[Fingerprint] Native Ed25519 key generation failed:', e.message);
-          }
+            const persistentKeyPath = join(configDir, 'ed25519_key.json');
+            if (existsSync(persistentKeyPath)) {
+                try {
+                    const keys = JSON.parse(readFileSync(persistentKeyPath, 'utf-8'));
+                    process.env.ED25519_PRIVATE_KEY = keys.privateKey;
+                    process.env.ED25519_PUBLIC_KEY = keys.publicKey;
+                    this._log('Persistent Ed25519 keys loaded from disk');
+                } catch (e) {
+                    console.error('[Fingerprint] Failed to load persistent Ed25519 keys:', e.message);
+                }
+            } else {
+                try {
+                    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519', {
+                        privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
+                        publicKeyEncoding: { format: 'pem', type: 'spki' }
+                    });
+                    process.env.ED25519_PRIVATE_KEY = privateKey;
+                    process.env.ED25519_PUBLIC_KEY = publicKey;
+                    // Persist keys on disk for subsequent restarts
+                    writeFileSync(persistentKeyPath, JSON.stringify({ privateKey, publicKey }, null, 2), 'utf-8');
+                    this._log('New persistent Ed25519 keys generated and saved to disk');
+                } catch (e) {
+                    console.error('[Fingerprint] Native Ed25519 key generation failed:', e.message);
+                }
+                }
         }
 
     let finalConfig = securityConfig;

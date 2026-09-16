@@ -38,23 +38,67 @@ public class FingerprintEngine {
         String envPrivate = System.getenv("ED25519_PRIVATE_KEY");
         String propPrivate = System.getProperty("ED25519_PRIVATE_KEY");
         if (useAsymmetric && (envPrivate == null || envPrivate.isEmpty()) && (propPrivate == null || propPrivate.isEmpty())) {
-            try {
-                java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("Ed25519");
-                java.security.KeyPair kp = kpg.generateKeyPair();
-                String privPem = "-----BEGIN PRIVATE KEY-----\n" +
-                        Base64.getMimeEncoder().encodeToString(kp.getPrivate().getEncoded()) +
-                        "\n-----END PRIVATE KEY-----";
-                String pubPem = "-----BEGIN PUBLIC KEY-----\n" +
-                        Base64.getMimeEncoder().encodeToString(kp.getPublic().getEncoded()) +
-                        "\n-----END PUBLIC KEY-----";
-                System.setProperty("ED25519_PRIVATE_KEY", privPem);
-                System.setProperty("ED25519_PUBLIC_KEY", pubPem);
-            } catch (Exception e) {
-                if (verbose) {
-                    System.err.println("[Fingerprint] Native Ed25519 key generation failed: " + e.getMessage());
+            // Chemin vers le fichier de clés persistant
+            java.io.File configDir = new java.io.File("config");
+            java.io.File keyFile = new java.io.File(configDir, "ed25519_key.json");
+
+            // Tenter de charger les clés existantes
+            if (keyFile.exists()) {
+                try {
+                    String content = java.nio.file.Files.readString(keyFile.toPath());
+                    String priv = extractJsonValue(content, "privateKey");
+                    String pub = extractJsonValue(content, "publicKey");
+                    if (priv != null && pub != null) {
+                        System.setProperty("ED25519_PRIVATE_KEY", priv);
+                        System.setProperty("ED25519_PUBLIC_KEY", pub);
+                        if (verbose) {
+                            System.out.println("[Fingerprint] Persistent Ed25519 keys loaded from disk.");
+                        }
+                    }
+                } catch (Exception e) {
+                    if (verbose) {
+                        System.err.println("[Fingerprint] Failed to load persistent Ed25519 keys: " + e.getMessage());
+                    }
+                }
+            } else {
+                // Si le fichier n'existe pas, générer de nouvelles clés et les sauvegarder
+                try {
+                    java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("Ed25519");
+                    java.security.KeyPair kp = kpg.generateKeyPair();
+                    String privPem = "-----BEGIN PRIVATE KEY-----\n" +
+                            Base64.getMimeEncoder().encodeToString(kp.getPrivate().getEncoded()) +
+                            "\n-----END PRIVATE KEY-----";
+                    String pubPem = "-----BEGIN PUBLIC KEY-----\n" +
+                            Base64.getMimeEncoder().encodeToString(kp.getPublic().getEncoded()) +
+                            "\n-----END PUBLIC KEY-----";
+                    System.setProperty("ED25519_PRIVATE_KEY", privPem);
+                    System.setProperty("ED25519_PUBLIC_KEY", pubPem);
+                    if (!configDir.exists()) {
+                        configDir.mkdirs(); // Créer le répertoire 'config' si nécessaire
+                    }
+                    String json = "{\n  \"privateKey\": \"" + privPem.replace("\n", "\\n") + "\",\n  \"publicKey\": \"" + pubPem.replace("\n", "\\n") + "\"\n}";
+                    java.nio.file.Files.writeString(keyFile.toPath(), json);
+                    if (verbose) {
+                        System.out.println("[Fingerprint] New persistent Ed25519 keys generated and saved to disk.");
+                    }
+                } catch (Exception e) {
+                    if (verbose) {
+                        System.err.println("[Fingerprint] Native Ed25519 key generation failed: " + e.getMessage());
+                    }
                 }
             }
         }
+    }
+
+    // Helper method to extract JSON values without external libraries
+    private String extractJsonValue(String json, String key) {
+        String search = "\"" + key + "\": \"";
+        int start = json.indexOf(search);
+        if (start == -1) return null;
+        start += search.length();
+        int end = json.indexOf("\"", start);
+        if (end == -1) return null;
+        return json.substring(start, end).replace("\\n", "\n");
     }
 
     public Map<String, Object> getThresholds() {

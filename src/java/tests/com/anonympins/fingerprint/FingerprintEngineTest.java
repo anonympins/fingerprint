@@ -1,12 +1,35 @@
 package com.anonympins.fingerprint;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 public class FingerprintEngineTest {
+    private final File configDir = new File("config");
+    private final File keyFile = new File(configDir, "ed25519_key.json");
 
+    @BeforeEach
+    public void setUp() {
+        System.clearProperty("ED25519_PRIVATE_KEY");
+        System.clearProperty("ED25519_PUBLIC_KEY");
+        if (keyFile.exists()) {
+            keyFile.delete();
+        }
+    }
+
+    @AfterEach
+    public void tearDown() {
+        if (keyFile.exists()) {
+            keyFile.delete();
+        }
+    }
     @Test
     public void testTrivialEngineUsageAndSecurityConfigInjection() {
         // 1. Initialisation triviale du Store (InMemoryStore par défaut)
@@ -90,4 +113,42 @@ public class FingerprintEngineTest {
         assertNotNull(filter.getEngine());
         assertSame(engine, filter.getEngine(), "L'instance retournée par le middleware WebFlux doit être identique à celle injectée");
     }
+
+    @Test
+    public void testEd25519KeyAutoGenerationAndPersistence() {
+        Map<String, Object> config = new HashMap<>();
+        config.put("ed25519", "auto");
+
+        IStore mockStore = new InMemoryStore();
+        new FingerprintEngine(config, mockStore);
+
+        String privKey = System.getProperty("ED25519_PRIVATE_KEY");
+        String pubKey = System.getProperty("ED25519_PUBLIC_KEY");
+
+        assertNotNull(privKey);
+        assertNotNull(pubKey);
+        assertTrue(keyFile.exists());
+    }
+
+    @Test
+    public void testEd25519KeyLoadingFromDisk() throws IOException {
+        if (!configDir.exists()) {
+            configDir.mkdirs();
+        }
+        String dummyJson = "{\n" +
+                "  \"privateKey\": \"-----BEGIN PRIVATE KEY-----\\ndummy-java-private\\n-----END PRIVATE KEY-----\",\n" +
+                "  \"publicKey\": \"-----BEGIN PUBLIC KEY-----\\ndummy-java-public\\n-----END PUBLIC KEY-----\"\n" +
+                "}";
+        Files.writeString(keyFile.toPath(), dummyJson);
+
+        Map<String, Object> config = new HashMap<>();
+        config.put("ed25519", "auto");
+
+        IStore mockStore = new InMemoryStore();
+        new FingerprintEngine(config, mockStore);
+
+        assertEquals("-----BEGIN PRIVATE KEY-----\ndummy-java-private\n-----END PRIVATE KEY-----", System.getProperty("ED25519_PRIVATE_KEY"));
+        assertEquals("-----BEGIN PUBLIC KEY-----\ndummy-java-public\n-----END PUBLIC KEY-----", System.getProperty("ED25519_PUBLIC_KEY"));
+    }
+
 }

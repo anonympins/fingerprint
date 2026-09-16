@@ -3,7 +3,7 @@ import time
 import ipaddress
 from typing import Optional, Dict, Any, List
 
-from .fingerprint import get_composite_device_hash, cyrb53, extract_stable_part
+from fingerprint import get_composite_device_hash, cyrb53, extract_stable_part
 
 def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Optional[str]:
     try:
