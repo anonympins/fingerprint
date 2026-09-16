@@ -2877,17 +2877,31 @@ async function getBotnetClusterScore(context, stableFpHash) {
 
   clusterData = clusterData.filter(entry => entry.timestamp > tenMinutesAgo);
   const existingIndex = clusterData.findIndex(entry => entry.ip === context.clientIp);
+  const userAgent = context.headers?.['user-agent'] || '';
+  const subnet = getIpSubnet(context.clientIp) || 'unknown';
+
   if (existingIndex !== -1) {
     clusterData[existingIndex].timestamp = now;
+    clusterData[existingIndex].ua = userAgent;
+    clusterData[existingIndex].subnet = subnet;
   } else {
-    clusterData.push({ ip: context.clientIp, timestamp: now });
+    clusterData.push({ ip: context.clientIp, timestamp: now, ua: userAgent, subnet: subnet });
   }
 
   await store.set(key, clusterData, 600);
   const uniqueIpsCount = clusterData.length;
   let botnetClusterScore = 0;
   if (uniqueIpsCount >= 2) {
-    botnetClusterScore = Math.min(100, Math.round(1000 * (1 - Math.exp(-0.35 * (uniqueIpsCount - 1)))) / 10);
+    // Calcul de la diversité des sous-réseaux et de la rotation des User-Agents
+    const uniqueSubnets = new Set(clusterData.map(e => e.subnet)).size;
+    const uniqueUserAgents = new Set(clusterData.map(e => e.ua).filter(Boolean)).size;
+
+    // Facteurs d'ajustement
+    const subnetMultiplier = uniqueSubnets > 1 ? 1.3 : 0.6; // Réduit le score si même sous-réseau (NAT), l'augmente si distribué
+    const uaRotationMultiplier = uniqueUserAgents > 1 ? 1.5 : 1.0; // Forte pénalité en cas de rotation d'en-tête UA
+
+    const baseScore = 100 * (1 - Math.exp(-0.35 * (uniqueIpsCount - 1)));
+    botnetClusterScore = Math.min(100, Math.round(baseScore * subnetMultiplier * uaRotationMultiplier * 10) / 10);
   }
   return { botnetClusterScore };
 }

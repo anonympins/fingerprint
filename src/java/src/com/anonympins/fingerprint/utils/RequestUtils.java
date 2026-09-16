@@ -633,9 +633,77 @@ public class RequestUtils {
         return currentDeviceHash != null ? currentDeviceHash : "";
     }
 
-    public static Map<String, Double> getBotnetClusterScore(RequestContext context, String stableFpHash) {
+    @SuppressWarnings("unchecked")
+    public static Map<String, Double> getBotnetClusterScore(IStore store, RequestContext context, String stableFpHash) {
         Map<String, Double> result = new HashMap<>();
-        result.put("botnetClusterScore", 0.0);
+        if (stableFpHash == null || stableFpHash.isEmpty()) {
+            result.put("botnetClusterScore", 0.0);
+            return result;
+        }
+
+        String key = "botnet-cluster:" + stableFpHash;
+        long now = System.currentTimeMillis() / 1000;
+        long tenMinutesAgo = now - 600;
+
+        List<Map<String, Object>> clusterData = (List<Map<String, Object>>) store.get(key);
+        if (clusterData == null) {
+            clusterData = new ArrayList<>();
+        }
+
+        List<Map<String, Object>> activeData = new ArrayList<>();
+        Map<String, Object> existingEntry = null;
+
+        for (Map<String, Object> entry : clusterData) {
+            long timestamp = ((Number) entry.getOrDefault("timestamp", 0L)).longValue();
+            if (timestamp > tenMinutesAgo) {
+                activeData.add(entry);
+                if (context.clientIp.equals(entry.get("ip"))) {
+                    existingEntry = entry;
+                }
+            }
+        }
+
+        String userAgent = context.getHeader("user-agent");
+        if (userAgent == null) userAgent = "";
+        String subnet = getIpSubnet(context.clientIp, 24, 48);
+        if (subnet == null) subnet = "unknown";
+
+        if (existingEntry != null) {
+            existingEntry.put("timestamp", now);
+            existingEntry.put("ua", userAgent);
+            existingEntry.put("subnet", subnet);
+        } else {
+            Map<String, Object> newEntry = new HashMap<>();
+            newEntry.put("ip", context.clientIp);
+            newEntry.put("timestamp", now);
+            newEntry.put("ua", userAgent);
+            newEntry.put("subnet", subnet);
+            activeData.add(newEntry);
+        }
+
+        store.set(key, activeData, 600);
+
+        int uniqueIpsCount = activeData.size();
+        double botnetClusterScore = 0.0;
+        if (uniqueIpsCount >= 2) {
+            Set<String> uniqueSubnets = new HashSet<>();
+            Set<String> uniqueUserAgents = new HashSet<>();
+
+            for (Map<String, Object> entry : activeData) {
+                String sub = (String) entry.get("subnet");
+                String ua = (String) entry.get("ua");
+                if (sub != null && !sub.isEmpty()) uniqueSubnets.add(sub);
+                if (ua != null && !ua.isEmpty()) uniqueUserAgents.add(ua);
+            }
+
+            double subnetMultiplier = uniqueSubnets.size() > 1 ? 1.3 : 0.6;
+            double uaRotationMultiplier = uniqueUserAgents.size() > 1 ? 1.5 : 1.0;
+
+            double baseScore = 100.0 * (1.0 - Math.exp(-0.35 * (uniqueIpsCount - 1)));
+            botnetClusterScore = Math.min(100.0, Math.round(baseScore * subnetMultiplier * uaRotationMultiplier * 10.0) / 10.0);
+        }
+
+        result.put("botnetClusterScore", botnetClusterScore);
         return result;
     }
 

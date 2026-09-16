@@ -331,7 +331,7 @@ public class FingerprintEngine {
         
         String stableFp = RequestUtils.extractStablePart(currentDeviceHash);
         String stableFpHash = FingerprintBuilder.cyrb53(stableFp, 0);
-        double botnetClusterScore = RequestUtils.getBotnetClusterScore(context, stableFpHash).getOrDefault("botnetClusterScore", 0.0);
+        double botnetClusterScore = RequestUtils.getBotnetClusterScore(store, context, stableFpHash).getOrDefault("botnetClusterScore", 0.0);
 
         double tcpAnomalyScore = RequestUtils.getTcpAnomalyScore(context).getOrDefault("tcpAnomalyScore", 0.0);
         double quicAnomalyScore = RequestUtils.getQuicAnomalyScore(context).getOrDefault("quicAnomalyScore", 0.0);

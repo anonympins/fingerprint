@@ -2714,18 +2714,18 @@ describe('Botnet Cluster Scoring (Node.js)', () => {
         // 2. Ajout de 2 IPs uniques (total 3)
         await getBotnetClusterScore({ clientIp: '192.168.1.2' }, stableFpHash);
         scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.3' }, stableFpHash);
-            expect(scoreData.botnetClusterScore).toBe(50.3);
+            expect(scoreData.botnetClusterScore).toBe(30.2);
 
         // 3. Ajout de 2 IPs uniques (total 5)
         await getBotnetClusterScore({ clientIp: '192.168.1.4' }, stableFpHash);
         scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.5' }, stableFpHash);
-            expect(scoreData.botnetClusterScore).toBe(75.3);
+            expect(scoreData.botnetClusterScore).toBe(45.2);
 
         // 4. Ajout de 5 IPs uniques (total 10)
         for (let i = 6; i <= 10; i++) {
             scoreData = await getBotnetClusterScore({ clientIp: `192.168.1.${i}` }, stableFpHash);
         }
-            expect(scoreData.botnetClusterScore).toBe(95.7);
+            expect(scoreData.botnetClusterScore).toBe(57.4);
     });
 
         it('should realistically group PS4 consoles with volatile differences (different IPs/cookies) under the same cluster score', async () => {
@@ -2759,15 +2759,15 @@ describe('Botnet Cluster Scoring (Node.js)', () => {
                 if (i === 1) {
                     expect(vector.botnetClusterScore).toBe(0);
                 } else if (i === 2) {
-                    expect(vector.botnetClusterScore).toBe(29.5);
+                    expect(vector.botnetClusterScore).toBe(17.7);
                 } else if (i === 3) {
-                    expect(vector.botnetClusterScore).toBe(50.3);
+                    expect(vector.botnetClusterScore).toBe(30.2);
                 } else if (i === 4) {
-                    expect(vector.botnetClusterScore).toBe(65);
+                    expect(vector.botnetClusterScore).toBe(39.0);
                 } else if (i === 5) {
-                    expect(vector.botnetClusterScore).toBe(75.3);
+                    expect(vector.botnetClusterScore).toBe(45.2);
                 } else if (i === 10) {
-                    expect(vector.botnetClusterScore).toBe(95.7);
+                    expect(vector.botnetClusterScore).toBe(57.4);
                 }
             }
         });

@@ -1364,10 +1364,15 @@ class RequestUtils
         });
         $clusterData = array_values($clusterData);
 
+        $userAgent = $context->getHeader('user-agent') ?? '';
+        $subnet = self::getIpSubnet($context->clientIp) ?? 'unknown';
+
         $found = false;
         foreach ($clusterData as &$entry) {
             if (isset($entry['ip']) && $entry['ip'] === $context->clientIp) {
                 $entry['timestamp'] = $now;
+                $entry['ua'] = $userAgent;
+                $entry['subnet'] = $subnet;
                 $found = true;
                 break;
             }
@@ -1375,14 +1380,26 @@ class RequestUtils
         unset($entry);
 
         if (!$found) {
-            $clusterData[] = ['ip' => $context->clientIp, 'timestamp' => $now];
+            $clusterData[] = [
+                'ip' => $context->clientIp,
+                'timestamp' => $now,
+                'ua' => $userAgent,
+                'subnet' => $subnet
+            ];
         }
 
         $store->set($key, $clusterData, 600);
         $uniqueIpsCount = count($clusterData);
         $botnetClusterScore = 0.0;
         if ($uniqueIpsCount >= 2) {
-            $botnetClusterScore = min(100.0, round(100.0 * (1.0 - exp(-0.35 * ($uniqueIpsCount - 1))), 1));
+            $uniqueSubnets = count(array_unique(array_filter(array_column($clusterData, 'subnet'))));
+            $uniqueUserAgents = count(array_unique(array_filter(array_column($clusterData, 'ua'))));
+
+            $subnetMultiplier = $uniqueSubnets > 1 ? 1.3 : 0.6;
+            $uaRotationMultiplier = $uniqueUserAgents > 1 ? 1.5 : 1.0;
+
+            $baseScore = 100.0 * (1.0 - exp(-0.35 * ($uniqueIpsCount - 1)));
+            $botnetClusterScore = min(100.0, round($baseScore * $subnetMultiplier * $uaRotationMultiplier * 10.0) / 10.0);
         }
         return ['botnetClusterScore' => $botnetClusterScore];
     }
