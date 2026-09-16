@@ -47,12 +47,21 @@ Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, Java (>=17), an
 *   **Solution**: Our engine cross-references information from various layers (User-Agent, Client Hints, TLS, TCP stack) to detect subtle discrepancies. For example, a client claiming to be a Windows browser but exhibiting a Linux TCP stack will be flagged.
 *   **Benefit**: Catch advanced spoofing attempts that bypass single-layer detection, providing a more robust defense against sophisticated attackers.
 
-### 6. 🦠 Honeypot Traps & Extensible WAF: Instantly Condemn Malicious Actors
+### 6. 🌐 Federated Threat Intelligence & Peer Sharing: Immunize Your Network Instantly
+*   **Problem**: Isolated servers are vulnerable to distributed attacks, learning about new malicious actors only after being hit and compromised.
+*   **Solution**: Our decentralized gossip protocol securely synchronizes cryptographically signed, privacy-compliant threat intelligence (ZKP public keys) with trusted peer networks in real-time. If an attacker is blocked on one federated node, they are instantly blacklisted across all nodes.
+*   **Benefit**: Leverage collective defense. Your system is immunized against active botnets before they even attempt to target your servers.
+
+### 7. 🕸️ Coordinated Botnet Clustering: Neutralize IP-Rotation Tactics
+*   **Problem**: Modern botnets rotate thousands of clean, residential proxy IPs to easily bypass traditional IP-based reputation lists and standard rate limiters.
+*   **Solution**: The engine clusters and profiles incoming requests using highly stable, non-volatile hardware invariants (such as combinations of JA3/JA4, TCP, and GPU hashes). Multiple requests sharing the exact same hardware footprint across distinct IPs within a rolling window are grouped and treated as a single coordinated botnet.
+*   **Benefit**: Defeat distributed scraping and credential stuffing campaigns, making expensive residential proxy rotation completely useless for attackers.
+
+### 8. 🦠 Honeypot Traps & Extensible WAF: Instantly Condemn Malicious Actors
 *   **Problem**: Malicious bots and vulnerability scanners often probe for hidden fields or sensitive URLs, but traditional defenses only react after an attack has occurred.
 *   **Solution**: We deploy invisible traps (hidden form fields, signed trap URLs) that only bots interact with. Any interaction with these honeypots immediately triggers a maximum suspicion score, leading to instant blocking. Our extensible WAF also detects common injection attempts (SQLi, XSS, RCE).
 *   **Benefit**: Proactively identify and block malicious actors at the earliest stage of their attack, preventing data breaches, spam, and system exploitation.
-
-### 7. 🧬 Progressive Threshold Auto-Tuning: Adapt Your Defenses Automatically
+### 9. 🧬 Progressive Threshold Auto-Tuning: Adapt Your Defenses Automatically
 *   **Problem**: Threat landscapes constantly evolve, requiring continuous manual adjustments to security settings, which is time-consuming and prone to human error.
 *   **Solution**: Our engine uses a genetic algorithm to continuously optimize your security parameters (weights, thresholds, patterns) in the background, based on real-world traffic data. It learns to distinguish between legitimate users and bots, adapting your defenses in real-time.
 *   **Benefit**: Maintain optimal protection without constant manual intervention. Your security posture automatically adapts to new threats and traffic patterns, ensuring maximum effectiveness and minimal false positives.
