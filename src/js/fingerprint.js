@@ -2801,7 +2801,11 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
     if (!subnetData.highScoreDevices) {
         subnetData.highScoreDevices = {};
     }
-    if (!subnetData.ips) subnetData.ips = [];
+    if (subnetData.ips instanceof Set) {
+        subnetData.ips = Array.from(subnetData.ips);
+    } else if (!subnetData.ips) {
+        subnetData.ips = [];
+    }
     if (!subnetData.uas) subnetData.uas = [];
 
     // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
@@ -2862,7 +2866,10 @@ async function getSubnetScore(context) {
 
     let highScoreCount = subnetData.highScoreCount || 0;
     let deviceCount = subnetData.deviceIds ? subnetData.deviceIds.length : 0;
-    let ipCount = subnetData.ips ? subnetData.ips.length : 1;
+    let ipCount = 1;
+    if (subnetData.ips) {
+        ipCount = subnetData.ips instanceof Set ? subnetData.ips.size : (subnetData.ips.length || 1);
+    }
     let uaCount = subnetData.uas ? subnetData.uas.length : 1;
 
     if (halfLives > 0) {
