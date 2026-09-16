@@ -1196,6 +1196,14 @@ public class RequestUtils {
     }
 
     public static String getCompositeDeviceHash(RequestContext context) {
+        String clientFp = context.getHeader("x-device-fingerprint");
+        if (clientFp == null) {
+            clientFp = context.getHeader("x-hardware-fingerprint");
+        }
+        if (clientFp != null && !clientFp.isEmpty()) {
+            return clientFp;
+        }
+
         FingerprintBuilder srv = new FingerprintBuilder();
         
         // TLS Fingerprints

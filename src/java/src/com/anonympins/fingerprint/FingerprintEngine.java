@@ -9,6 +9,7 @@ public class FingerprintEngine {
     private final Map<String, Object> config;
     private final IStore store;
     private final BlockList allowlist;
+    private final BlockList blocklist;
     private final boolean verbose;
     private final boolean dryRun;
     private final Map<String, Object> thresholds;
@@ -17,12 +18,22 @@ public class FingerprintEngine {
     @SuppressWarnings("unchecked")
     public FingerprintEngine(Map<String, Object> config, IStore store) {
         this.config = config != null ? config : new HashMap<>();
+
+        Object failSafe = this.config.get("fail_safe");
+        if (failSafe != null) {
+            String fsStr = failSafe.toString();
+            if (!"fail_open".equals(fsStr) && !"fail_closed".equals(fsStr)) {
+                throw new IllegalArgumentException("Invalid fail_safe value: " + fsStr);
+            }
+        }
+
         this.store = store;
         this.thresholds = (Map<String, Object>) this.config.getOrDefault("thresholds", createDefaultThresholds());
-        this.weights = (Map<String, Object>) this.config.getOrDefault("weights", new HashMap<String, Object>());
+        this.weights = (Map<String, Object>) this.config.getOrDefault("weights", createDefaultWeights());
         this.verbose = Boolean.TRUE.equals(this.config.get("verbose"));
         this.dryRun = Boolean.TRUE.equals(this.config.get("dryRun"));
         this.allowlist = buildAllowlist();
+        this.blocklist = buildBlocklist();
 
         // Bind Ed25519 keys if passed via config
         if (this.config.containsKey("ed25519_private_key")) {
@@ -118,6 +129,64 @@ public class FingerprintEngine {
         return map;
     }
 
+    private Map<String, Object> createDefaultWeights() {
+        Map<String, Object> map = new HashMap<>();
+        map.put("historyScore", 0.3);
+        map.put("rotationScore", 0.5);
+        map.put("headerAnomalyScore", 0.1);
+        map.put("requestPatternScore", 0.6);
+        map.put("inconsistencyScore", 0.8);
+        map.put("behaviorScore", 0.7);
+        map.put("honeypotScore", 1.0);
+        map.put("crossLayerInconsistencyScore", 0.4);
+        map.put("timeInconsistencyScore", 0.9);
+        map.put("tlsSpoofingScore", 0.8);
+        map.put("botScore", 1.0);
+        map.put("cookieDroppingScore", 0.9);
+        map.put("threatIntelScore", 0.4);
+        map.put("clientHintsInconsistencyScore", 0.7);
+        map.put("clickVarianceScore", 0.6);
+        map.put("subnetScore", 0.5);
+        map.put("botnetClusterScore", 0.6);
+        map.put("tcpAnomalyScore", 0.8);
+        map.put("quicAnomalyScore", 0.8);
+        map.put("renderingAnomalyScore", 0.8);
+        map.put("ipReputationScore", 0.5);
+        return map;
+    }
+
+    @SuppressWarnings("unchecked")
+    private BlockList buildBlocklist() {
+        BlockList bl = new BlockList();
+        List<Map<String, Object>> whitelistRules = (List<Map<String, Object>>) config.get("whitelist");
+        if (whitelistRules != null) {
+            for (Map<String, Object> rule : whitelistRules) {
+                if ("blocklist".equals(rule.get("type")) || "ip_blocklist".equals(rule.get("type"))) {
+                    List<String> entries = (List<String>) rule.get("entries");
+                    if (entries != null) {
+                        for (String entry : entries) {
+                            bl.add(entry);
+                        }
+                    }
+                }
+            }
+        }
+        List<Map<String, Object>> blacklistRules = (List<Map<String, Object>>) config.get("blacklist");
+        if (blacklistRules != null) {
+            for (Map<String, Object> rule : blacklistRules) {
+                if ("blocklist".equals(rule.get("type")) || "ip_blocklist".equals(rule.get("type"))) {
+                    List<String> entries = (List<String>) rule.get("entries");
+                    if (entries != null) {
+                        for (String entry : entries) {
+                            bl.add(entry);
+                        }
+                    }
+                }
+            }
+        }
+        return bl;
+    }
+
     @SuppressWarnings("unchecked")
     private BlockList buildAllowlist() {
         BlockList bl = new BlockList();
@@ -134,6 +203,75 @@ public class FingerprintEngine {
             }
         }
         return bl;
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean isPathInAllowlist(String requestPath) {
+        Object whitelistObj = config.get("whitelist");
+        if (!(whitelistObj instanceof List)) {
+            return false;
+        }
+        List<?> whitelistRules = (List<?>) whitelistObj;
+        for (Object ruleObj : whitelistRules) {
+            if (ruleObj instanceof Map) {
+                Map<String, Object> rule = (Map<String, Object>) ruleObj;
+                if ("path_allowlist".equals(rule.get("type"))) {
+                    List<String> entries = (List<String>) rule.get("entries");
+                    if (entries != null) {
+                        for (String entry : entries) {
+                            if (pathMatches(requestPath, entry)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean pathMatches(String requestPath, String entry) {
+        if (entry.endsWith("*")) {
+            String base = entry.substring(0, entry.length() - 1);
+            return requestPath.startsWith(base);
+        } else {
+            return requestPath.equals(entry);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean isUserAgentInAllowlist(String userAgent) {
+        if (userAgent == null) {
+            return false;
+        }
+        Object whitelistObj = config.get("whitelist");
+        if (!(whitelistObj instanceof List)) {
+            return false;
+        }
+        List<?> whitelistRules = (List<?>) whitelistObj;
+        for (Object ruleObj : whitelistRules) {
+            if (ruleObj instanceof Map) {
+                Map<String, Object> rule = (Map<String, Object>) ruleObj;
+                String type = (String) rule.get("type");
+                if ("user_agent_allowlist".equals(type) || "user_agent".equals(type)) {
+                    List<String> entries = (List<String>) rule.get("entries");
+                    if (entries != null) {
+                        for (String entry : entries) {
+                            try {
+                                if (userAgent.equals(entry) || userAgent.contains(entry) || java.util.regex.Pattern.compile(entry).matcher(userAgent).find()) {
+                                    return true;
+                                }
+                            } catch (Exception e) {
+                                if (userAgent.contains(entry)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     public double calculateFinalScore(Map<String, Double> suspicionVector) {
@@ -237,6 +375,19 @@ public class FingerprintEngine {
     public Map<String, Object> processRequest(RequestContext context) {
         Map<String, Double> suspicionVector = new HashMap<>();
 
+        // Check blocklist
+        if (blocklist.check(context.clientIp)) {
+            Map<String, Object> res = new HashMap<>();
+            res.put("action", "block");
+            res.put("status", 403);
+            res.put("body", "Forbidden");
+            res.put("score", 1.0);
+            Map<String, Double> vec = new HashMap<>();
+            vec.put("blocklisted", 1.0);
+            res.put("vector", vec);
+            return res;
+        }
+
         String coopOp = null;
         Object rawCoopOp = context.queryParams.get("coop_op");
         if (rawCoopOp instanceof String) {
@@ -285,9 +436,9 @@ public class FingerprintEngine {
         }
         
         // Check allowlists
-        if (allowlist.check(context.clientIp)) {
+        if (allowlist.check(context.clientIp) || isPathInAllowlist(context.path) || isUserAgentInAllowlist(context.getHeader("user-agent"))) {
             Map<String, Object> res = new HashMap<>();
-            res.put("action", "next");
+            res.put("action", "allow");
             res.put("score", 0.0);
             Map<String, Double> vec = new HashMap<>();
             vec.put("whitelisted", 100.0);

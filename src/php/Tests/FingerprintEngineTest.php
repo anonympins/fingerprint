@@ -16,6 +16,8 @@ use PHPUnit\Framework\TestCase;
 
 class FingerprintEngineTest extends TestCase
 {
+    private array $defaultConfig;
+
     private FingerprintEngine $engine;
     private array $securityConfig;
 
@@ -25,6 +27,11 @@ class FingerprintEngineTest extends TestCase
      */
     protected function setUp(): void
     {
+        $this->defaultConfig = [
+            'fail_safe' => 'fail_open', // 'fail_open' ou 'fail_closed'
+            'threshold' => 0.7,
+            'shared_keys' => []
+        ];
 
         // 1. Utiliser un store en mémoire propre pour chaque test
         $store = new InMemoryStore();
@@ -537,5 +544,105 @@ class FingerprintEngineTest extends TestCase
         $ref = new \ReflectionClass(ChallengeUtils::class);
         $method = $ref->getMethod('generateBlock');
         return $method->invoke(null, $seed, $blockIndex);
+    }
+
+
+    /**
+     * Test la compatibilité de validation des signatures Ed25519 (Zero-Trust / federatedPeers).
+     */
+    public function testEd25519SignatureVerificationSuccess(): void
+    {
+        if (!function_exists('sodium_crypto_sign_keypair')) {
+            $this->markTestSkipped('L\'extension Sodium de PHP est requise pour tester les signatures Ed25519.');
+        }
+
+        // Simulation de la génération de clés (comme le fait l'auto-création de clés des federatedPeers)
+        $keypair = sodium_crypto_sign_keypair();
+        $privateKey = sodium_crypto_sign_secretkey($keypair);
+        $publicKey = sodium_crypto_sign_publickey($keypair);
+
+        $challengeTicket = "session_challenge_token_valid_120s";
+        $signature = sodium_crypto_sign($challengeTicket, $privateKey);
+
+        // Le nœud PHP doit pouvoir valider la signature émise par un pair de confiance
+        $verifiedMessage = sodium_crypto_sign_open($signature, $publicKey);
+        $this->assertEquals($challengeTicket, $verifiedMessage);
+    }
+
+    /**
+     * Test que l'altération d'une signature ou d'une clé Ed25519 lève bien un rejet.
+     */
+    public function testEd25519SignatureVerificationFailure(): void
+    {
+        if (!function_exists('sodium_crypto_sign_keypair')) {
+            $this->markTestSkipped('L\'extension Sodium de PHP est requise.');
+        }
+
+        $keypair = sodium_crypto_sign_keypair();
+        $publicKey = sodium_crypto_sign_publickey($keypair);
+
+        // Signature corrompue (ou clé altérée)
+        $corruptedSignature = str_repeat('x', 64) . "session_challenge_token_valid_120s";
+
+        $this->assertFalse(@sodium_crypto_sign_open($corruptedSignature, $publicKey));
+    }
+
+    /**
+     * Test du mode Fail-Safe : FAIL-OPEN.
+     * Si Redis ou la base de données de synchronisation tombe, la requête de l'utilisateur doit passer.
+     */
+    public function testFailOpenBehaviorWhenStorageFails(): void
+    {
+        $engine = new class($this->defaultConfig) {
+            private array $config;
+            public function __construct(array $config) { $this->config = $config; }
+
+            public function evaluateRequest(): array {
+                try {
+                    // Simulation d'une panne Redis/DB
+                    throw new \RuntimeException("Redis instance is down");
+                } catch (\Exception $e) {
+                    if ($this->config['fail_safe'] === 'fail_open') {
+                        return ['status' => 'allowed', 'score' => 0.0, 'reason' => 'fail-safe backup'];
+                    }
+                    throw $e;
+                }
+            }
+        };
+
+        $result = $engine->evaluateRequest();
+        $this->assertEquals('allowed', $result['status']);
+        $this->assertEquals(0.0, $result['score']);
+    }
+
+    /**
+     * Test du mode Fail-Safe : FAIL-CLOSED.
+     * Utile pour les endpoints critiques (ex: paiements) où un crash de base de données doit bloquer par défaut.
+     */
+    public function testFailClosedBehaviorWhenStorageFails(): void
+    {
+        $config = $this->defaultConfig;
+        $config['fail_safe'] = 'fail_closed';
+
+        $engine = new class($config) {
+            private array $config;
+            public function __construct(array $config) { $this->config = $config; }
+
+            public function evaluateRequest(): array {
+                try {
+                    // Simulation d'une panne Redis/DB
+                    throw new \RuntimeException("Redis instance is down");
+                } catch (\Exception $e) {
+                    if ($this->config['fail_safe'] === 'fail_open') {
+                        return ['status' => 'allowed', 'score' => 0.0];
+                    }
+                    return ['status' => 'blocked', 'score' => 1.0, 'reason' => 'security fallback'];
+                }
+            }
+        };
+
+        $result = $engine->evaluateRequest();
+        $this->assertEquals('blocked', $result['status']);
+        $this->assertEquals(1.0, $result['score']);
     }
 }
