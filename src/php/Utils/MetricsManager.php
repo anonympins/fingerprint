@@ -69,6 +69,49 @@ class MetricsManager
     }
 
     /**
+     * Helper method to retrieve a specific metric's values by name.
+     *
+     * @param string $name Name of the metric.
+     * @param array $securityConfig The security configuration.
+     * @return array Associative array of labels to values.
+     */
+    public static function getMetric(string $name, array $securityConfig = []): array
+    {
+        $result = [];
+        $queryName = str_starts_with($name, 'fingerprint_') ? $name : 'fingerprint_' . $name;
+
+        if ($queryName === 'fingerprint_security_weight') {
+            $weights = $securityConfig['weights'] ?? [];
+            foreach ($weights as $indicator => $weight) {
+                if (is_numeric($weight)) {
+                    $result[$indicator] = (float)$weight;
+                }
+            }
+        } elseif ($queryName === 'fingerprint_security_threshold') {
+            $thresholds = $securityConfig['thresholds'] ?? [];
+            foreach ($thresholds as $level => $threshold) {
+                if (is_numeric($threshold)) {
+                    $result[$level] = (float)$threshold;
+                }
+            }
+        } else {
+            foreach (self::$counters as $counter) {
+                if ($counter['name'] === $queryName || $counter['name'] === $name) {
+                    $labelStr = trim($counter['labelsStr'], '{}');
+                    $result[$labelStr !== '' ? $labelStr : 'value'] = $counter['value'];
+                }
+            }
+            foreach (self::$observations as $obs) {
+                if ($obs['name'] === $queryName || $obs['name'] === $name) {
+                    $labelStr = trim($obs['labelsStr'], '{}');
+                    $result[$labelStr !== '' ? $labelStr : 'value'] = $obs['value'];
+                }
+            }
+        }
+        return $result;
+    }
+
+    /**
      * Réinitialise les compteurs enregistrés (utile pour l'isolation des tests).
      */
     public static function clearMetrics(): void
