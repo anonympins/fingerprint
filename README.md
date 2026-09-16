@@ -1,4 +1,4 @@
-# Fingerprint anti-bot protection
+# Fingerprint Anti-Bot Protection: Secure Your Digital Assets
 
 NodeJS tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-nodejs.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-nodejs.yml) / PHP tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-php.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-php.yml) / Python tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-python.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-python.yml) / Java tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci-java.yml](https://img.shields.io/github/actions/workflow/status/anonympins/fingerprint/ci-java.yml)](https://github.com/anonympins/fingerprint/actions/workflows/ci-java.yml)
 
@@ -7,7 +7,7 @@ NodeJS tests : [![https://github.com/anonympins/fingerprint/actions/workflows/ci
 [![https://github.com/anonympins/fingerprint/commits/main](https://img.shields.io/github/commit-activity/w/anonympins/fingerprint)](https://github.com/anonympins/fingerprint/commits/main)
 [![https://github.com/anonympins/fingerprint](https://img.shields.io/github/repo-size/anonympins/fingerprint)](https://github.com/anonympins/fingerprint)
 
-A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Java**, **Python** and **PHP** environments. 
+A multi-layered behavioral, cryptographic, and network analysis production-grade engine designed to identify and mitigate malicious requests (bots, scrapers, session hijacking, bot farms) in real-time. Supports **Node.js**, **Java**, **Python** and **PHP** environments.
 
 It leverages multi-layer hardware fingerprinting, real-time behavioral analysis, passive network/TLS tracking, and adaptive/useful proof-of-work challenges to dynamically detect and mitigate scraping, scalping, account takeover (ATO), and sophisticated automated threats.
 
@@ -20,44 +20,42 @@ Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, Java (>=17), an
 [![Presentation](https://i.ibb.co/1tkPS01C/Capture-d-cran-2026-09-07-194728.png)](https://www.youtube.com/watch?v=Ujeznl0JAl4)
 
 
-## 🚀 Key Features
+## 🚀 Key Features: Stop Automated Threats and Protect Your Business
 
-### 1. 🧬 Polymorphic Client-Side WASM & JS Solvers
-* **Polymorphic WebAssembly Solver**: Dynamically generates unique, randomized C++ compiled WebAssembly binary modules per session. Prevents static analysis, bot automation, and emulator tampering.
-* **IndexedDB WASM Caching**: Transparently caches compiled WASM modules (`wasm-cache-db`) in the browser's IndexedDB, minimizing initialization overhead and execution lag on subsequent visits.
-* **Advanced Obfuscation**: Uses multi-layered control flow flattening and string array obfuscation for client-side libraries.
-* **Zero-Knowledge Proofs (ZKP) (New in v0.5.0)**: Added cryptographically secure Schnorr ZKPs (`generateZkpProof` on client and `verifyZkpProof` on server) for device fingerprints, allowing zero-disclosure fingerprint validation and making session tickets completely tamper-proof.
+### 1. 🧬 Polymorphic Client-Side WASM & JS Solvers: Outsmart Bot Adaptation
+*   **Problem**: Sophisticated bots constantly adapt to your defenses, reverse-engineering client-side code to bypass protection.
+*   **Solution**: Our engine dynamically generates unique, randomized client-side code (WebAssembly and JavaScript) for each session. This makes it impossible for bots to fingerprint and consistently bypass your protection, forcing them to constantly re-adapt.
+*   **Benefit**: Stay one step ahead of bot developers. Your defenses evolve with every request, making automated attacks economically unviable.
 
-### 2. 💱 Useful Proof-of-Work (uPoW) & PoSpace
-* **Collaborative Useful PoW**: Instead of burning CPU cycles on arbitrary mathematical hash puzzles, suspicious clients solve complex optimization problems (e.g., *Traveling Salesperson*, *Portfolio Allocation*, *Facility Location*, *Fraud Detection Parameter Tuning*).
-* **Cooperative Proof-of-Space (Coop PoSpace) (New in v0.5.0)**: Introduced decentralized, cooperative Proof-of-Space challenge routing within local subnets. Highly suspicious clients must coordinate with neighboring subnet peers to fetch and aggregate cryptographic blocks, vastly increasing the cost and complexity for distributed botnets trying to cycle residential proxy IPs.
-* **Chained CPU/Memory Challenges**: Employs client-side resource exhaustion techniques (Chained SHA-256 target seeking & Memory Hard allocation vectors up to 128MB) that are validated in $O(1)$ on the server.
+### 2. 💱 Useful Proof-of-Work (uPoW) & PoSpace: Eliminate Bot Farm Profitability
+*   **Problem**: Traditional CAPTCHAs and simple PoW puzzles are easily automated or solved by bot farms, leading to high operational costs for you and low costs for attackers.
+*   **Solution**: We force suspicious clients to solve complex, real-world optimization problems (e.g., Traveling Salesperson, Fraud Detection parameter tuning) or prove significant storage allocation. This work is valuable to you, and computationally expensive for bot farms.
+*   **Benefit**: Turn bot activity into a resource drain for attackers. By making large-scale automated attacks economically unviable, you protect your resources and ensure fair access for legitimate users.
 
-### 3. 🌐 Passive TLS, HTTP/2, and TCP/IP (p0f) Tracking
-* **Native JA3/JA4 TLS Handshake Parsing**: Inspects raw TLS client hello bytes to extract and analyze cipher suite arrangements, extensions, and elliptic curve formats.
-* **Passive TCP/IP Stack Fingerprinting**: Emulates `p0f` rules by analyzing raw TCP SYN packets (TTL, Window Size, MSS, WS, SACK) to classify client OS and detect raw network spoofing.
-* **Multi-Language Handshake Parser**: Built-in support for event-driven PHP runtimes (Swoole, ReactPHP, Workerman), Node.js native sockets, and Python ASGI/WSGI contexts.
+### 3. 🌐 Passive Network Signature Analysis: Unmask Stealthy Bots
+*   **Problem**: Advanced bots try to mimic real browsers, but often fail to replicate genuine network signatures, allowing them to slip past basic defenses.
+*   **Solution**: Our engine analyzes deep network layers (TLS, HTTP/2, TCP/IP stack) to identify unique digital fingerprints. This includes inspecting TLS handshake details (JA3/JA4), HTTP/2 settings, and even raw TCP packet characteristics (like TTL and Window Size) to classify the true nature of the client.
+*   **Benefit**: Detect and block bots that attempt to spoof their identity at the transport layer, revealing their true automated nature regardless of their declared User-Agent.
 
-### 4. 🧠 Stateful Behavioral Entropy & Click Variance
-* **Click Coordinate Variance**: Tracks exact click relative positions on DOM elements to compute spatial entropy, flagging bots clicking targets with robotic, mathematically perfect precision (zero variance).
-* **Mobile Touch Move Dynamics**: Captures mobile-specific touchscreen signals, analyzing tactile contact area radius, variable pressure indices, and multi-touch capabilities.
-* **Typing Keystroke Latency**: Measures real-time keystroke interval latencies to prevent automated text insertion.
+### 4. 🧠 Stateful Behavioral Entropy & Click Variance: Distinguish Humans from Robots
+*   **Problem**: Bots can simulate basic interactions, but they lack the subtle, natural imperfections of human behavior, making them hard to differentiate from real users.
+*   **Solution**: We analyze real-time user interactions, including mouse movements (speed, acceleration, straightness), typing rhythm (keystroke latency, dwell, and flight times), and click precision (coordinate variance). These metrics reveal whether an interaction is genuinely human or robotically precise.
+*   **Benefit**: Identify and block sophisticated bots that attempt to mimic human behavior, protecting your applications from automated fraud, account takeovers, and content manipulation.
 
-### 5. 🔍 Cross-Layer & Analog Inconsistency Scoring
-* **Layer Cross-Referencing**: Analyzes inconsistencies between User-Agent declarations, Client-Hints (`Sec-CH-UA`), TLS Handshake capabilities, and TCP stacks (e.g., claiming Windows NT on Chrome but negotiating TLS like curl/Safari on a Linux kernel).
-* **Viewport Aspect ratio & Screen mismatches**: Detects virtualized viewports exceeding physical dimensions or fake hardware specifications.
-* **Optional Ed25519 Asymmetric Keys (New in v0.5.0)**: Dynamic and optional Ed25519 asymmetric key binding with an automatic fallback to symmetric AES-256-CBC encryption for session tickets.
+### 5. 🔍 Cross-Layer & Analog Inconsistency Scoring: Expose Advanced Spoofing
+*   **Problem**: Bots often try to fake their identity across different layers of their connection, leading to inconsistencies that traditional security systems miss.
+*   **Solution**: Our engine cross-references information from various layers (User-Agent, Client Hints, TLS, TCP stack) to detect subtle discrepancies. For example, a client claiming to be a Windows browser but exhibiting a Linux TCP stack will be flagged.
+*   **Benefit**: Catch advanced spoofing attempts that bypass single-layer detection, providing a more robust defense against sophisticated attackers.
 
-### 6. 🦠 Honeypot Traps & Extensible WAF
-* **Signed Trap URLs**: Injects visually hidden, signed trap URLs into the DOM. Attempts to crawl, probe, or scrape these URLs immediately condemn the device.
-* **Recursive Injection Filters (Enhanced in v0.5.0)**: Upgraded the WAF and input validation subsystem to recursively inspect deeply nested NoSQL/SQL structures, significantly improving protection against complex MongoDB/SQL injection vectors.
-* **ModSecurity NodeJS Extensibility**: Allows plugging in native core rule sets or custom WAF rule compilers into the honeypot pipeline.
+### 6. 🦠 Honeypot Traps & Extensible WAF: Instantly Condemn Malicious Actors
+*   **Problem**: Malicious bots and vulnerability scanners often probe for hidden fields or sensitive URLs, but traditional defenses only react after an attack has occurred.
+*   **Solution**: We deploy invisible traps (hidden form fields, signed trap URLs) that only bots interact with. Any interaction with these honeypots immediately triggers a maximum suspicion score, leading to instant blocking. Our extensible WAF also detects common injection attempts (SQLi, XSS, RCE).
+*   **Benefit**: Proactively identify and block malicious actors at the earliest stage of their attack, preventing data breaches, spam, and system exploitation.
 
-### 🧬 Progressive Threshold Auto-Tuning
-* **Genetic Policy Optimizer**: Dynamically updates classification parameters using a multi-objective genetic algorithm on your actual sanitized traffic data.
-* **Inertial Parameter Sliding**: Adjusts security thresholds slowly with an adaptive learning rate to prevent configuration spikes.
-* **Sybil Protection**: Filters out traffic logs, ensuring individual compromised bot networks cannot pollute optimization datasets.
-* **Traffic Data Pruning (New in v0.5.0)**: Introduces automated traffic data pruning (`pruneTrafficData`) with time-based and size-based limiters to avoid memory leaks during long-running auto-tuning sessions.
+### 7. 🧬 Progressive Threshold Auto-Tuning: Adapt Your Defenses Automatically
+*   **Problem**: Threat landscapes constantly evolve, requiring continuous manual adjustments to security settings, which is time-consuming and prone to human error.
+*   **Solution**: Our engine uses a genetic algorithm to continuously optimize your security parameters (weights, thresholds, patterns) in the background, based on real-world traffic data. It learns to distinguish between legitimate users and bots, adapting your defenses in real-time.
+*   **Benefit**: Maintain optimal protection without constant manual intervention. Your security posture automatically adapts to new threats and traffic patterns, ensuring maximum effectiveness and minimal false positives.
 
 ## Quick Start
 
