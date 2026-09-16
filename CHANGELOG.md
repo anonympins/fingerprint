@@ -1,3 +1,9 @@
+## Version 0.6.2
+
+- 🔒 Java security fixes
+- 📁 Updated peer thread list documentation and full options
+- ⚡ Added getMetric(name) in each language (with wiki documentation)
+
 ## Version 0.6.1
 
 - **🔑 Asymmetric Keys by Default**: Promoted Ed25519 asymmetric key binding to be active by default for validating stateless challenge tickets and cooperative signatures. This ensures secure, zero-trust validation chains out-of-the-box, preventing client-side decryption or tampering of authorization claims.
