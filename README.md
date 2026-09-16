@@ -115,6 +115,8 @@ If this security suite helps protect your business against botnets, automated sc
 
 Sponsorship helps maintain the library, fund active updates, and keep the dynamic WebAssembly engine cutting-edge.
 
+**Want to be featured here?** You can also become a sponsor and get your logo displayed in this section simply by running Fingerprint in production on your platforms!
+
 ### 🌟 Featured Sponsors
 
 <img src="https://s6.imgcdn.dev/YJTWv9.png" width="100" alt="YJTWv9.png" border="0" valign="middle"> 
