@@ -24,6 +24,7 @@ class FingerprintEngineTest extends TestCase
      */
     protected function setUp(): void
     {
+
         // 1. Utiliser un store en mémoire propre pour chaque test
         $store = new InMemoryStore();
         StoreManager::configureStore($store);
@@ -36,6 +37,7 @@ class FingerprintEngineTest extends TestCase
 
         // 3. Créer une nouvelle instance du moteur pour chaque test
         $this->engine = new FingerprintEngine($this->securityConfig);
+
     }
 
     /**

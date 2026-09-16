@@ -2793,12 +2793,16 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
         highScoreCount: 0,
         deviceIds: [],
         highScoreDevices: {},
-        lastActivity: 0
+        lastActivity: 0,
+        ips: [],
+        uas: []
     };
 
     if (!subnetData.highScoreDevices) {
         subnetData.highScoreDevices = {};
     }
+    if (!subnetData.ips) subnetData.ips = [];
+    if (!subnetData.uas) subnetData.uas = [];
 
     // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
     const currentDeviceHash = getCompositeDeviceHash(context);
@@ -2813,6 +2817,16 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
     if (!subnetData.deviceIds.includes(stableFpId)) {
         subnetData.deviceIds.push(stableFpId);
     }
+
+    if (!subnetData.ips.includes(context.clientIp)) {
+        subnetData.ips.push(context.clientIp);
+    }
+
+    const userAgent = context.headers?.['user-agent'] || '';
+    if (userAgent && !subnetData.uas.includes(userAgent)) {
+        subnetData.uas.push(userAgent);
+    }
+
     subnetData.lastActivity = Date.now();
 
     if (subnetData.deviceIds.length > 100) {
@@ -2823,6 +2837,8 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
             delete subnetData.highScoreDevices[oldDeviceId];
         }
     }
+    if (subnetData.ips.length > 100) subnetData.ips.shift();
+    if (subnetData.uas.length > 50) subnetData.uas.shift();
 
     await store.set(key, subnetData, 86400); // 24-hour TTL
 }
@@ -2846,16 +2862,34 @@ async function getSubnetScore(context) {
 
     let highScoreCount = subnetData.highScoreCount || 0;
     let deviceCount = subnetData.deviceIds ? subnetData.deviceIds.length : 0;
+    let ipCount = subnetData.ips ? subnetData.ips.length : 1;
+    let uaCount = subnetData.uas ? subnetData.uas.length : 1;
 
     if (halfLives > 0) {
-        highScoreCount = Math.max(0, Math.floor(highScoreCount / Math.pow(2, halfLives)));
-        deviceCount = Math.max(0, Math.floor(deviceCount / Math.pow(2, halfLives)));
+        const decay = Math.pow(2, halfLives);
+        highScoreCount = Math.max(0, Math.floor(highScoreCount / decay));
+        deviceCount = Math.max(0, Math.floor(deviceCount / decay));
+        ipCount = Math.max(1, Math.floor(ipCount / decay));
+        uaCount = Math.max(1, Math.floor(uaCount / decay));
     }
 
-    const deviceCountPenalty = Math.min(80, Math.max(0, deviceCount - 10) * 5);
-    const highScorePenalty = Math.min(40, highScoreCount * 2);
+    if (deviceCount === 0) {
+        return { subnetScore: 0.0 };
+    }
 
-    return { subnetScore: Math.min(100, deviceCountPenalty + highScorePenalty) };
+    // Calculs analogues continus (sans sauts brusques)
+    const suspicionDensity = highScoreCount / deviceCount;
+    const ipDeviceRatio = ipCount / deviceCount;
+
+    // Base score continu basé sur le volume de menaces
+    const baseScore = 100 * (1 - Math.exp(-0.15 * highScoreCount));
+
+    // Multiplicateurs continus
+    const densityMultiplier = 0.4 + (1.6 * suspicionDensity); // Favorise les densités de suspicion élevées
+    const distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio); // NAT (faible ratio IP/Device) vs Proxy distribué (fort ratio)
+
+    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * 10) / 10);
+    return { subnetScore: finalScore };
 }
 
 /**

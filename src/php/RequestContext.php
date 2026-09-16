@@ -32,6 +32,9 @@ class RequestContext
     /** @var ?array<string, mixed> */
     public ?array $newCookieForResponse = null;
 
+    /** @var ?array<string, mixed> */
+    public ?array $resolvedIdentity = null;
+
     // Propriétés spécifiques qui peuvent être fournies par un proxy inverse
     public ?string $ja3 = null;
     public ?string $ja4 = null;

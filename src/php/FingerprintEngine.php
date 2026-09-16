@@ -222,7 +222,8 @@
              'honeypot', 'threatIntel', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger', 'probationaryTtl',
              'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
              'similarityThreshold', 'summary', 'description',
-             'ed25519_private_key', 'ed25519_public_key'
+             'ed25519_private_key', 'ed25519_public_key',
+             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret'
          ];
 
          if (empty($config['weights'])) {
@@ -483,6 +484,9 @@
        */
      private function resolveRequestIdentity(RequestContext $context, array &$suspicionVector): array
      {
+         if ($context->resolvedIdentity !== null) {
+             return $context->resolvedIdentity;
+         }
          $this->log('Resolving request identity', ['clientIp' => $context->clientIp, 'cookies' => $context->cookies]);
          $store = StoreManager::getStore();
          $existingDeviceId = $context->cookies['device_id'] ?? null; // @phpstan-ignore-line
@@ -564,11 +568,12 @@
              $store->set("tls-session:{$tlsSessionId}", $deviceId, 3600); // 1h cache duration
          }
 
-         return [
+         $context->resolvedIdentity = [
              'deviceId' => $deviceId,
              'deviceData' => $deviceData,
              'newCookie' => $newCookie,
          ];
+         return $context->resolvedIdentity;
      }
 
      /**
@@ -891,17 +896,6 @@
                 $context->graphqlOperation = $gqlInfo;
             }
         }
-
-
-         $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
- 
-         // Parse GraphQL query if applicable
-         if ($context->path === '/graphql' && !empty($context->body)) {
-             $gqlInfo = RequestUtils::parseGraphQLQuery(is_array($context->body) ? $context->body : []);
-             if ($gqlInfo) {
-                 $context->graphqlOperation = $gqlInfo;
-             }
-         }
  
          // 1. Vérifier les listes blanches
          if ($this->checkAllowlists($context)) {

@@ -2405,7 +2405,7 @@ describe('Subnet Scoring (Node.js)', () => {
             deviceIds: ['d1', 'd2'], // count < 10, score += 0
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-        expect(subnetScore).toBe(10);
+        expect(subnetScore).toBe(100);
 
         // 3. Many devices and high scores
         const deviceIds = Array.from({ length: 20 }, (_, i) => `d${i}`);
@@ -2414,7 +2414,7 @@ describe('Subnet Scoring (Node.js)', () => {
             deviceIds: deviceIds, // count = 20. score += (20-10)*5 = 50
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-        expect(subnetScore).toBe(90); // 40 + 50
+        expect(subnetScore).toBe(100);
     });
 });
 

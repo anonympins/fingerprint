@@ -1166,9 +1166,126 @@ public class RequestUtils {
     }
 
     public static void updateSubnetMetrics(IStore store, RequestContext context, String deviceId, double finalScore) {
-        // Met à jour les métriques de sous-réseau dans le store (par exemple le nombre de requêtes à haut risque par bloc CIDR)
+        String subnet = getIpSubnet(context.clientIp, 24, 48);
+        if (subnet == null) return;
+
+        String key = "subnet:" + subnet;
+        @SuppressWarnings("unchecked")
+        Map<String, Object> subnetData = (Map<String, Object>) store.get(key);
+        if (subnetData == null) {
+            subnetData = new HashMap<>();
+            subnetData.put("highScoreCount", 0);
+            subnetData.put("deviceIds", new ArrayList<String>());
+            subnetData.put("highScoreDevices", new HashMap<String, Integer>());
+            subnetData.put("lastActivity", 0L);
+            subnetData.put("ips", new ArrayList<String>());
+            subnetData.put("uas", new ArrayList<String>());
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Integer> highScoreDevices = (Map<String, Integer>) subnetData.get("highScoreDevices");
+        @SuppressWarnings("unchecked")
+        List<String> deviceIds = (List<String>) subnetData.get("deviceIds");
+        @SuppressWarnings("unchecked")
+        List<String> ips = (List<String>) subnetData.get("ips");
+        @SuppressWarnings("unchecked")
+        List<String> uas = (List<String>) subnetData.get("uas");
+
+        String currentDeviceHash = getCompositeDeviceHash(context);
+        String stableFpId = FingerprintBuilder.cyrb53(extractStablePart(currentDeviceHash), 0);
+
+        int currentDeviceContributions = highScoreDevices.getOrDefault(stableFpId, 0);
+        if (currentDeviceContributions < 5 && finalScore < 95.0) { // Limit contributions per device
+            highScoreDevices.put(stableFpId, currentDeviceContributions + 1);
+            subnetData.put("highScoreCount", ((Number) subnetData.get("highScoreCount")).intValue() + 1);
+        }
+
+        if (!deviceIds.contains(stableFpId)) {
+            deviceIds.add(stableFpId);
+        }
+
+        if (!ips.contains(context.clientIp)) {
+            ips.add(context.clientIp);
+        }
+
+        String userAgent = context.getHeader("user-agent");
+        if (userAgent != null && !userAgent.isEmpty() && !uas.contains(userAgent)) {
+            uas.add(userAgent);
+        }
+
+        subnetData.put("lastActivity", System.currentTimeMillis());
+
+        // Pruning logic
+        if (deviceIds.size() > 100) {
+            String oldDeviceId = deviceIds.remove(0);
+            if (highScoreDevices.containsKey(oldDeviceId)) {
+                int oldContributions = highScoreDevices.remove(oldDeviceId);
+                subnetData.put("highScoreCount", ((Number) subnetData.get("highScoreCount")).intValue() - oldContributions);
+            }
+        }
+        if (ips.size() > 100) {
+            ips.remove(0);
+        }
+        if (uas.size() > 50) {
+            uas.remove(0);
+        }
+
+        store.set(key, subnetData, 86400); // 24-hour TTL
     }
 
+    @SuppressWarnings("unchecked")
+    public static Map<String, Double> getSubnetScore(IStore store, RequestContext context, String currentDeviceId) {
+        Map<String, Double> result = new HashMap<>();
+        String subnet = getIpSubnet(context.clientIp, 24, 48);
+        if (subnet == null) {
+            result.put("subnetScore", 0.0);
+            return result;
+        }
+
+        Map<String, Object> subnetData = (Map<String, Object>) store.get("subnet:" + subnet);
+        if (subnetData == null) {
+            result.put("subnetScore", 0.0);
+            return result;
+        }
+
+        long now = System.currentTimeMillis();
+        long lastActivity = (Long) subnetData.getOrDefault("lastActivity", now);
+        long inactivityMs = now - lastActivity;
+        long halfLives = inactivityMs / (30 * 60 * 1000L); // 30 minutes half-life
+
+        int highScoreCount = (Integer) subnetData.getOrDefault("highScoreCount", 0);
+        List<String> deviceIdsList = (List<String>) subnetData.getOrDefault("deviceIds", new ArrayList<String>());
+        int deviceCount = deviceIdsList.size();
+        List<String> ipsList = (List<String>) subnetData.getOrDefault("ips", new ArrayList<String>());
+        int ipCount = ipsList.size();
+        // List<String> uasList = (List<String>) subnetData.getOrDefault("uas", new ArrayList<String>()); // Not used in score calculation
+        // int uaCount = uasList.size(); // Not used in score calculation
+
+        if (halfLives > 0) {
+            double decay = Math.pow(2, halfLives);
+            highScoreCount = Math.max(0, (int) Math.floor(highScoreCount / decay));
+            deviceCount = Math.max(0, (int) Math.floor(deviceCount / decay));
+            ipCount = Math.max(1, (int) Math.floor(ipCount / decay)); // Ensure ipCount is at least 1
+            // uaCount = Math.max(1, (int) Math.floor(uaCount / decay)); // Not used in score calculation
+        }
+
+        if (deviceCount == 0) {
+            result.put("subnetScore", 0.0);
+            return result;
+        }
+
+        double suspicionDensity = (double) highScoreCount / deviceCount;
+        double ipDeviceRatio = (double) ipCount / deviceCount;
+
+        double baseScore = 100.0 * (1.0 - Math.exp(-0.15 * highScoreCount));
+
+        double densityMultiplier = 0.4 + (1.6 * suspicionDensity);
+        double distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio);
+
+        double finalScore = Math.min(100.0, Math.round(baseScore * densityMultiplier * distributionMultiplier * 10.0) / 10.0);
+        result.put("subnetScore", finalScore);
+        return result;
+    }
     /**
      * Calcule le HMAC-SHA256 d'une chaîne de données avec une clé secrète.
      * @param data La chaîne de données à signer.
