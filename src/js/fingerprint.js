@@ -3576,13 +3576,15 @@ function calculateTarget(suspicionFactor, securityConfig = {}) {
  * @param {string} nonce
  * @param {string} clientSecret
  * @param {string} fingerprint
+ * @param {string} clientIp
+ * @param {string} tlsSessionId
  * @returns {Buffer}
  */
-function createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint) {
+function createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint, clientIp = '', tlsSessionId = '') {
     const sortedFingerprint = (fingerprint || '').split('|').filter(p => p).sort().join('|');
     // On concatène les chaînes, puis on les convertit en buffer une seule fois.
     // Cela garantit que le client et le serveur travaillent sur la même base binaire.
-    const messageBase = `${nonce}:${clientSecret}:${sortedFingerprint}:`; // Le ':' final est le séparateur pour la solution.
+    const messageBase = `${nonce}:${clientSecret}:${sortedFingerprint}:${clientIp}:${tlsSessionId}:`; // Le ':' final est le séparateur pour la solution.
     return Buffer.from(messageBase, 'utf8');
 }
 
@@ -3595,10 +3597,11 @@ export function generateCpuTargetChallenge(
   suspicionFactor,
   originalUrl,
   securityConfig,
+  tlsSessionId = '',
 ) {
   const target = calculateTarget(suspicionFactor, securityConfig);
   // Le baseBlock est créé ici et sera stocké dans le contexte du challenge.
-  const baseBlock = createCpuChallengeBaseBlock(nonce, null, ''); // Pour le challenge simple, le secret et le fingerprint sont vides.
+  const baseBlock = createCpuChallengeBaseBlock(nonce, null, '', clientIp, tlsSessionId);
   return {
     type: "cpu_target",
     nonce: nonce,
@@ -3682,14 +3685,14 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  * @param {string} clientIp - The client's IP address.
  * @returns {string} HTML content.
  */
-function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapUrls, originalFingerprint) { // eslint-disable-line max-len
+function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapUrls, originalFingerprint, tlsSessionId = '') { // eslint-disable-line max-len
     const { nonce, target, path } = cpuChallengeDetails;
     const safePath = sanitizeRedirectPath(path);
     const solverCode = getPowSolverCode();
     // On prépare le baseBlock pour le client. Il sera envoyé sous forme de tableau d'octets.
     // Le fingerprint est maintenant passé directement en paramètre.
     const fingerprint = originalFingerprint;
-    const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint);
+    const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint, clientIp, tlsSessionId);
     const baseBlockBytes = `[${baseBlock.toString('utf8').split('').map(c => c.charCodeAt(0)).join(',')}]`;
 
     // Prépare la configuration pour l'initialisation du client, y compris les URL pièges.
@@ -4974,7 +4977,8 @@ export class FingerprintEngine {
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce)); // Génère les URL
 
             // On passe la configuration pour que la difficulté soit calculée correctement.
-            const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
+    const tlsSessionId = getTlsSessionId(requestContext) || '';
+    const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig, tlsSessionId);
 
             // La difficulté mémoire augmente désormais en parfaite synergie avec le facteur de suspicion (ratio constant)
             const memActivationFactor = suspicionFactor;
@@ -4993,7 +4997,7 @@ export class FingerprintEngine {
             const originalFingerprint = requestContext.headers['x-device-fingerprint'] || __internal.getCompositeDeviceHash(requestContext);
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
-            const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint);
+    const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint, clientIp, tlsSessionId);
 
             // SECURITY: Cryptographically sign the payload before storing it to prevent database tampering
             const payloadToSign = `${clientSecret}:${cpuChallengeDetails.target}:${originalFingerprint}:${memDifficulty}:${path}:${clientIp}`;
@@ -5042,7 +5046,7 @@ export class FingerprintEngine {
                 decision.body = challengePayload;
             } else {
                 // For browsers, send the HTML page.
-                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapUrls, originalFingerprint);
+        const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapUrls, originalFingerprint, tlsSessionId);
                 this._log('Browser challenge page generated', {
                     pageLength: page.length,
                     trapUrlsInjected: trapUrls.length

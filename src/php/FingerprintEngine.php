@@ -1354,7 +1354,8 @@
                  $memDifficulty = (int)round($memActivationFactor * 48); // 0 à 48MB
 
                  $originalFingerprint = RequestUtils::getCompositeDeviceHash($context);
-                 $baseBlock = ChallengeUtils::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint);
+                 $tlsSessionId = $context->tlsSessionId ?? '';
+                 $baseBlock = ChallengeUtils::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint, $context->clientIp, $tlsSessionId);
 
                  $challengeContext = [
                      'clientSecret' => $clientSecret,
