@@ -4317,6 +4317,16 @@ export class FingerprintEngine {
 
       const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     
+    let preCalculatedVector = null;
+    let preCalculatedScore = null;
+    const getScoreAndVector = async () => {
+      if (preCalculatedScore === null) {
+        preCalculatedVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
+        preCalculatedScore = this.calculateFinalScore(preCalculatedVector);
+      }
+      return { score: preCalculatedScore, vector: preCalculatedVector };
+    };
+
     this._log('Processing request', { clientIp, path, isStatic });
     
     // Bypass instantané si l'appareil a prouvé cryptographiquement son identité matérielle (Secure Enclave / TPM)
@@ -4362,8 +4372,18 @@ export class FingerprintEngine {
 
     if (whitelisted) {
       const filterWhitelist = this.securityConfig.filterWhitelist || false;
-      if (filterWhitelist && this._hasCertainAttack(requestContext)) {
-        this._log('Whitelisted request contains a certain attack - bypassing whitelist bypass', { clientIp, path });
+      let bypassWhitelist = false;
+      if (filterWhitelist === true) {
+        bypassWhitelist = this._hasCertainAttack(requestContext);
+      } else if (typeof filterWhitelist === 'number') {
+        const res = await getScoreAndVector();
+        if (res.score > filterWhitelist) {
+          bypassWhitelist = true;
+        }
+      }
+
+      if (bypassWhitelist) {
+        this._log('Whitelisted request exceeds filter threshold - bypassing whitelist bypass', { clientIp, path });
       } else {
         this._log(`IP/Path in allowlist (${whitelistType}) - allowing request`, { clientIp, path });
         return { action: 'next', score: 0, vector: { whitelisted: 100, type: whitelistType } };
@@ -4386,8 +4406,18 @@ export class FingerprintEngine {
     // Check if the request is from a verified, whitelisted bot (e.g., Googlebot)
     if (await this._verifyWhitelistedBot(requestContext)) {
       const filterWhitelist = this.securityConfig.filterWhitelist || false;
-      if (filterWhitelist && this._hasCertainAttack(requestContext)) {
-        this._log('Verified bot request contains a certain attack - bypassing bot whitelist bypass', { clientIp });
+      let bypassWhitelist = false;
+      if (filterWhitelist === true) {
+        bypassWhitelist = this._hasCertainAttack(requestContext);
+      } else if (typeof filterWhitelist === 'number') {
+        const res = await getScoreAndVector();
+        if (res.score > filterWhitelist) {
+          bypassWhitelist = true;
+        }
+      }
+
+      if (bypassWhitelist) {
+        this._log('Verified bot request exceeds filter threshold - bypassing bot whitelist bypass', { clientIp });
       } else {
         this._log('Whitelisted bot verified - allowing request', { clientIp });
         return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
@@ -4420,16 +4450,14 @@ export class FingerprintEngine {
     }
 
     // The engine now works with the context directly, no more rawReq dependency here.
-    const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
-    // honeypotScore et behaviorScore sont maintenant inclus directement dans le vecteur de suspicion.
+    const suspicionVector = preCalculatedVector || await __internal.getSuspicionVector(requestContext, this.securityConfig);
+    let finalScore = preCalculatedScore !== null ? preCalculatedScore : this.calculateFinalScore(suspicionVector);
 
     this._log('Suspicion vector calculated', { 
         vector: suspicionVector,
         weights: this.securityConfig.weights 
     });
 
-    let finalScore = this.calculateFinalScore(suspicionVector);
-    
     this._log('Final score calculated', { finalScore });
 
     const blockThreshold = thresholds.block ?? 95;

@@ -302,6 +302,9 @@ public class FingerprintEngine {
 
     @SuppressWarnings("unchecked")
     public Map<String, Object> resolveRequestIdentity(RequestContext context, Map<String, Double> suspicionVector) {
+        if (context.resolvedIdentity != null) {
+            return context.resolvedIdentity;
+        }
         String existingDeviceId = context.cookies.get("device_id");
         String currentDeviceHash = RequestUtils.getCompositeDeviceHash(context);
         int pendingCookieTtl = 120;
@@ -381,6 +384,7 @@ public class FingerprintEngine {
         result.put("deviceData", deviceData);
         result.put("newCookie", newCookie);
         result.put("currentDeviceHash", currentDeviceHash); // Ajouter le hash au résultat
+        context.resolvedIdentity = result;
         return result;
     }
 
@@ -451,12 +455,28 @@ public class FingerprintEngine {
         // Check allowlists
         boolean whitelisted = allowlist.check(context.clientIp) || isPathInAllowlist(context.path) || isUserAgentInAllowlist(context.getHeader("user-agent"));
         if (whitelisted) {
-            boolean filterWhitelist = Boolean.TRUE.equals(config.get("filterWhitelist"));
-            if (filterWhitelist && hasCertainAttack(context)) {
-                if (verbose) {
-                    System.out.println("[FingerprintEngine] Whitelisted request contains a certain attack - bypassing whitelist bypass");
+            Object filterWhitelistObj = config.get("filterWhitelist");
+            boolean bypassWhitelist = false;
+
+            if (filterWhitelistObj instanceof Boolean) {
+                if (Boolean.TRUE.equals(filterWhitelistObj) && hasCertainAttack(context)) {
+                    bypassWhitelist = true;
+                    if (verbose) {
+                        System.out.println("[FingerprintEngine] Whitelisted request contains a certain attack - bypassing whitelist bypass");
+                    }
                 }
-            } else {
+            } else if (filterWhitelistObj instanceof Number) {
+                double maxIgnoredScore = ((Number) filterWhitelistObj).doubleValue();
+                double calculatedScore = calculateScoreAndVector(context, suspicionVector);
+                if (calculatedScore > maxIgnoredScore) {
+                    bypassWhitelist = true;
+                    if (verbose) {
+                        System.out.println("[FingerprintEngine] Whitelisted request score (" + calculatedScore + ") exceeds filterWhitelist threshold (" + maxIgnoredScore + ") - bypassing whitelist");
+                    }
+                }
+            }
+
+            if (!bypassWhitelist) {
                 Map<String, Object> res = new HashMap<>();
                 res.put("action", "allow");
                 res.put("score", 0.0);
@@ -467,27 +487,12 @@ public class FingerprintEngine {
             }
         }
 
+        double finalScore = calculateScoreAndVector(context, suspicionVector);
+
         Map<String, Object> identity = resolveRequestIdentity(context, suspicionVector);
         String deviceId = (String) identity.get("deviceId");
         Map<String, Object> deviceData = (Map<String, Object>) identity.get("deviceData");
         Map<String, Object> newCookie = (Map<String, Object>) identity.get("newCookie");
-        String currentDeviceHash = (String) identity.get("currentDeviceHash"); // Récupérer le hash calculé
-
-        // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
-        String behaviorHeader = context.getHeader("x-behavior-metrics");
-        if (behaviorHeader != null && deviceData != null) {
-            try {
-                Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
-                if (metrics != null && metrics.containsKey("webauthnAnchor")) {
-                    Map<String, Object> anchor = (Map<String, Object>) metrics.get("webauthnAnchor");
-                    if (ChallengeUtils.verifyWebAuthnHardwareAnchor(anchor, deviceData)) {
-                        deviceData.put("webauthnVerified", true);
-                    }
-                }
-            } catch (Exception e) {
-                // ignore
-            }
-        }
 
         if (deviceData != null && Boolean.TRUE.equals(deviceData.get("webauthnVerified"))) {
             Map<String, Object> res = new HashMap<>();
@@ -516,67 +521,6 @@ public class FingerprintEngine {
             }
             return res;
         }
-
-        // Gather metrics and scores
-        double similarity = FingerprintBuilder.compare(deviceData != null ? (String) deviceData.get("initialDeviceHash") : "", currentDeviceHash);
-        double inconsistencyScore = Math.min(100.0, Math.max(0.0, (1.0 - similarity) * 200.0));
-        if (similarity < ((Number) config.getOrDefault("similarityThreshold", 0.7)).doubleValue()) {
-            inconsistencyScore = 100.0;
-        }
-
-        Map<String, Double> behavioral = RequestUtils.getBehavioralIndicators(context, deviceData);
-        double historyScore = behavioral.getOrDefault("historyScore", 0.0);
-        double rotationScore = behavioral.getOrDefault("rotationScore", 0.0);
-
-        double headerAnomalyScore = RequestUtils.getHeaderAnomalies(context).getOrDefault("headerAnomalyScore", 0.0);
-        double tlsSpoofingScore = RequestUtils.getTlsSpoofingScore(context).getOrDefault("tlsSpoofingScore", 0.0);
-        double timeInconsistencyScore = RequestUtils.getTimeInconsistencyScore(context).getOrDefault("timeInconsistencyScore", 0.0);
-        double crossLayerInconsistencyScore = RequestUtils.getCrossLayerInconsistency(context).getOrDefault("crossLayerInconsistencyScore", 0.0);
-        
-        Map<String, Object> patternsConfig = (Map<String, Object>) config.getOrDefault("patterns", new HashMap<String, Object>());
-        double requestPatternScore = RequestUtils.getRequestPatternScore(context, deviceData, patternsConfig).getOrDefault("requestPatternScore", 0.0);
-        
-        Map<String, Object> honeypotConfig = (Map<String, Object>) config.getOrDefault("honeypot", new HashMap<String, Object>());
-        double honeypotScore = RequestUtils.getHoneypotScore(context, honeypotConfig).getOrDefault("honeypotScore", 0.0);
-        
-        double behaviorScore = RequestUtils.getBehaviorScore(context).getOrDefault("behaviorScore", 0.0);
-        double botScore = RequestUtils.getBotScore(context).getOrDefault("botScore", 0.0);
-        double clickVarianceScore = RequestUtils.getClickVarianceScore(context).getOrDefault("clickVarianceScore", 0.0);
-        double clientHintsInconsistencyScore = RequestUtils.getClientHintsInconsistencyScore(context).getOrDefault("clientHintsInconsistencyScore", 0.0);
-        double subnetScore = RequestUtils.getSubnetScore(store, context, deviceId).getOrDefault("subnetScore", 0.0);
-        
-        String stableFp = RequestUtils.extractStablePart(currentDeviceHash);
-        String stableFpHash = FingerprintBuilder.cyrb53(stableFp, 0);
-        double botnetClusterScore = RequestUtils.getBotnetClusterScore(store, context, stableFpHash).getOrDefault("botnetClusterScore", 0.0);
-
-        double tcpAnomalyScore = RequestUtils.getTcpAnomalyScore(context).getOrDefault("tcpAnomalyScore", 0.0);
-        double quicAnomalyScore = RequestUtils.getQuicAnomalyScore(context).getOrDefault("quicAnomalyScore", 0.0);
-        double renderingAnomalyScore = RequestUtils.getRenderingAnomalyScore(context).getOrDefault("renderingAnomalyScore", 0.0);
-        double ipReputationScore = RequestUtils.getIpReputationScore(store, context.clientIp);
-        double threatIntelScore = RequestUtils.getThreatIntelScore(store, context.zkpY).getOrDefault("threatIntelScore", 0.0);
-
-        suspicionVector.put("threatIntelScore", threatIntelScore);
-        suspicionVector.put("inconsistencyScore", inconsistencyScore);
-        suspicionVector.put("historyScore", historyScore);
-        suspicionVector.put("rotationScore", rotationScore);
-        suspicionVector.put("headerAnomalyScore", headerAnomalyScore);
-        suspicionVector.put("tlsSpoofingScore", tlsSpoofingScore);
-        suspicionVector.put("timeInconsistencyScore", timeInconsistencyScore);
-        suspicionVector.put("crossLayerInconsistencyScore", crossLayerInconsistencyScore);
-        suspicionVector.put("requestPatternScore", requestPatternScore);
-        suspicionVector.put("honeypotScore", honeypotScore);
-        suspicionVector.put("behaviorScore", behaviorScore);
-        suspicionVector.put("botScore", botScore);
-        suspicionVector.put("clickVarianceScore", clickVarianceScore);
-        suspicionVector.put("clientHintsInconsistencyScore", clientHintsInconsistencyScore);
-        suspicionVector.put("subnetScore", subnetScore);
-        suspicionVector.put("botnetClusterScore", botnetClusterScore);
-        suspicionVector.put("tcpAnomalyScore", tcpAnomalyScore);
-        suspicionVector.put("quicAnomalyScore", quicAnomalyScore);
-        suspicionVector.put("renderingAnomalyScore", renderingAnomalyScore);
-        suspicionVector.put("ipReputationScore", ipReputationScore);
-
-        double finalScore = calculateFinalScore(suspicionVector);
 
         // Update subnet metrics
         int lowThreshold = ((Number) thresholds.getOrDefault("low", 20)).intValue();
@@ -732,6 +676,117 @@ public class FingerprintEngine {
         }).start();
     }
     
+    @SuppressWarnings("unchecked")
+    private double calculateScoreAndVector(RequestContext context, Map<String, Double> suspicionVector) {
+        if (context.preCalculatedScore != null) {
+            if (context.preCalculatedVector != null) {
+                suspicionVector.putAll(context.preCalculatedVector);
+            }
+            return context.preCalculatedScore;
+        }
+
+        Map<String, Object> identity = resolveRequestIdentity(context, suspicionVector);
+        String deviceId = (String) identity.get("deviceId");
+        Map<String, Object> deviceData = (Map<String, Object>) identity.get("deviceData");
+        String currentDeviceHash = (String) identity.get("currentDeviceHash");
+
+        // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
+        String behaviorHeader = context.getHeader("x-behavior-metrics");
+        if (behaviorHeader != null && deviceData != null) {
+            try {
+                Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
+                if (metrics != null && metrics.containsKey("webauthnAnchor")) {
+                    Map<String, Object> anchor = (Map<String, Object>) metrics.get("webauthnAnchor");
+                    if (ChallengeUtils.verifyWebAuthnHardwareAnchor(anchor, deviceData)) {
+                        deviceData.put("webauthnVerified", true);
+                    }
+                }
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+
+        if (deviceData != null && Boolean.TRUE.equals(deviceData.get("webauthnVerified"))) {
+            suspicionVector.put("webauthn_verified", 100.0);
+            context.preCalculatedScore = 0.0;
+            context.preCalculatedVector = new HashMap<>(suspicionVector);
+            return 0.0;
+        }
+
+        if (deviceData != null && Boolean.TRUE.equals(deviceData.get("condemned"))) {
+            suspicionVector.put("honeypotScore", 100.0);
+            context.preCalculatedScore = 100.0;
+            context.preCalculatedVector = new HashMap<>(suspicionVector);
+            return 100.0;
+        }
+
+        // Gather metrics and scores
+        double similarity = FingerprintBuilder.compare(deviceData != null ? (String) deviceData.get("initialDeviceHash") : "", currentDeviceHash);
+        double inconsistencyScore = Math.min(100.0, Math.max(0.0, (1.0 - similarity) * 200.0));
+        if (similarity < ((Number) config.getOrDefault("similarityThreshold", 0.7)).doubleValue()) {
+            inconsistencyScore = 100.0;
+        }
+
+        Map<String, Double> behavioral = RequestUtils.getBehavioralIndicators(context, deviceData);
+        double historyScore = behavioral.getOrDefault("historyScore", 0.0);
+        double rotationScore = behavioral.getOrDefault("rotationScore", 0.0);
+
+        double headerAnomalyScore = RequestUtils.getHeaderAnomalies(context).getOrDefault("headerAnomalyScore", 0.0);
+        double tlsSpoofingScore = RequestUtils.getTlsSpoofingScore(context).getOrDefault("tlsSpoofingScore", 0.0);
+        double timeInconsistencyScore = RequestUtils.getTimeInconsistencyScore(context).getOrDefault("timeInconsistencyScore", 0.0);
+        double crossLayerInconsistencyScore = RequestUtils.getCrossLayerInconsistency(context).getOrDefault("crossLayerInconsistencyScore", 0.0);
+        
+        Map<String, Object> patternsConfig = (Map<String, Object>) config.getOrDefault("patterns", new HashMap<String, Object>());
+        double requestPatternScore = RequestUtils.getRequestPatternScore(context, deviceData, patternsConfig).getOrDefault("requestPatternScore", 0.0);
+        
+        Map<String, Object> honeypotConfig = (Map<String, Object>) config.getOrDefault("honeypot", new HashMap<String, Object>());
+        double honeypotScore = RequestUtils.getHoneypotScore(context, honeypotConfig).getOrDefault("honeypotScore", 0.0);
+        
+        double behaviorScore = RequestUtils.getBehaviorScore(context).getOrDefault("behaviorScore", 0.0);
+        double botScore = RequestUtils.getBotScore(context).getOrDefault("botScore", 0.0);
+        double clickVarianceScore = RequestUtils.getClickVarianceScore(context).getOrDefault("clickVarianceScore", 0.0);
+        double clientHintsInconsistencyScore = RequestUtils.getClientHintsInconsistencyScore(context).getOrDefault("clientHintsInconsistencyScore", 0.0);
+        double subnetScore = RequestUtils.getSubnetScore(store, context, deviceId).getOrDefault("subnetScore", 0.0);
+        
+        String stableFp = RequestUtils.extractStablePart(currentDeviceHash);
+        String stableFpHash = FingerprintBuilder.cyrb53(stableFp, 0);
+        double botnetClusterScore = RequestUtils.getBotnetClusterScore(store, context, stableFpHash).getOrDefault("botnetClusterScore", 0.0);
+
+        double tcpAnomalyScore = RequestUtils.getTcpAnomalyScore(context).getOrDefault("tcpAnomalyScore", 0.0);
+        double quicAnomalyScore = RequestUtils.getQuicAnomalyScore(context).getOrDefault("quicAnomalyScore", 0.0);
+        double renderingAnomalyScore = RequestUtils.getRenderingAnomalyScore(context).getOrDefault("renderingAnomalyScore", 0.0);
+        double ipReputationScore = RequestUtils.getIpReputationScore(store, context.clientIp);
+        double threatIntelScore = RequestUtils.getThreatIntelScore(store, context.zkpY).getOrDefault("threatIntelScore", 0.0);
+
+        suspicionVector.put("threatIntelScore", threatIntelScore);
+        suspicionVector.put("inconsistencyScore", inconsistencyScore);
+        suspicionVector.put("historyScore", historyScore);
+        suspicionVector.put("rotationScore", rotationScore);
+        suspicionVector.put("headerAnomalyScore", headerAnomalyScore);
+        suspicionVector.put("tlsSpoofingScore", tlsSpoofingScore);
+        suspicionVector.put("timeInconsistencyScore", timeInconsistencyScore);
+        suspicionVector.put("crossLayerInconsistencyScore", crossLayerInconsistencyScore);
+        suspicionVector.put("requestPatternScore", requestPatternScore);
+        suspicionVector.put("honeypotScore", honeypotScore);
+        suspicionVector.put("behaviorScore", behaviorScore);
+        suspicionVector.put("botScore", botScore);
+        suspicionVector.put("clickVarianceScore", clickVarianceScore);
+        suspicionVector.put("clientHintsInconsistencyScore", clientHintsInconsistencyScore);
+        suspicionVector.put("subnetScore", subnetScore);
+        suspicionVector.put("botnetClusterScore", botnetClusterScore);
+        suspicionVector.put("tcpAnomalyScore", tcpAnomalyScore);
+        suspicionVector.put("quicAnomalyScore", quicAnomalyScore);
+        suspicionVector.put("renderingAnomalyScore", renderingAnomalyScore);
+        suspicionVector.put("ipReputationScore", ipReputationScore);
+
+        double finalScore = calculateFinalScore(suspicionVector);
+
+        context.preCalculatedScore = finalScore;
+        context.preCalculatedVector = new HashMap<>(suspicionVector);
+
+        return finalScore;
+    }
+
     @SuppressWarnings("unchecked")
     private void recordTrafficLog(RequestContext context, double score, Map<String, Double> vector) {
         try {

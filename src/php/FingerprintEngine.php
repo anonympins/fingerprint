@@ -519,8 +519,22 @@
 
          if ($whitelisted) {
              $filterWhitelist = $this->securityConfig['filterWhitelist'] ?? false;
-             if ($filterWhitelist && $this->hasCertainAttack($context)) {
-                 $this->log('Whitelisted request contains a certain attack - bypassing whitelist bypass', ['clientIp' => $context->clientIp, 'path' => $context->path]);
+             $bypassWhitelist = false;
+             if ($filterWhitelist === true) {
+                 $bypassWhitelist = $this->hasCertainAttack($context);
+             } elseif (is_numeric($filterWhitelist)) {
+                 if ($context->preCalculatedScore === null) {
+                     $suspicionVector = [];
+                     $context->preCalculatedVector = $this->getSuspicionVector($context, $suspicionVector);
+                     $context->preCalculatedScore = $this->calculateFinalScore($context->preCalculatedVector);
+                 }
+                 if ($context->preCalculatedScore > $filterWhitelist) {
+                     $bypassWhitelist = true;
+                 }
+             }
+
+             if ($bypassWhitelist) {
+                 $this->log('Whitelisted request exceeds filter threshold - bypassing whitelist bypass', ['clientIp' => $context->clientIp, 'path' => $context->path]);
                  return false;
              }
              $this->log("IP/Path in allowlist ({$type}) - allowing request", ['clientIp' => $context->clientIp, 'path' => $context->path]);
@@ -1138,8 +1152,8 @@
              return $decision;
          }
 
-         $suspicionVector = $this->getSuspicionVector($context, $suspicionVector);
-         $finalScore = $this->calculateFinalScore($suspicionVector);
+         $suspicionVector = $context->preCalculatedVector ?? $this->getSuspicionVector($context, $suspicionVector);
+         $finalScore = $context->preCalculatedScore ?? $this->calculateFinalScore($suspicionVector);
          $this->log('Suspicion vector and final score calculated', [
              'finalScore' => round($finalScore, 2),
              'vector' => $suspicionVector

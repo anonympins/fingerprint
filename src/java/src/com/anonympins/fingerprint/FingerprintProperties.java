@@ -18,7 +18,7 @@ public class FingerprintProperties {
     private Cpu cpu = new Cpu();
     private boolean challengeNewDevices = false;
     private int challengeTtl = 300;
-    private boolean filterWhitelist = false;
+    private Object filterWhitelist = false;
     private long deviceIdCookieMaxAge = 2592000000L; // 30 jours par défaut
     private boolean verbose = false;
     private boolean dryRun = false;
@@ -93,11 +93,11 @@ public class FingerprintProperties {
         this.challengeTtl = challengeTtl;
     }
 
-    public boolean isFilterWhitelist() {
+    public Object getFilterWhitelist() {
         return filterWhitelist;
     }
 
-    public void setFilterWhitelist(boolean filterWhitelist) {
+    public void setFilterWhitelist(Object filterWhitelist) {
         this.filterWhitelist = filterWhitelist;
     }
 

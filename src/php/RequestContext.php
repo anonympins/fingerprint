@@ -35,6 +35,10 @@ class RequestContext
     /** @var ?array<string, mixed> */
     public ?array $resolvedIdentity = null;
 
+    public ?float $preCalculatedScore = null;
+    /** @var ?array<string, float> */
+    public ?array $preCalculatedVector = null;
+
     // Propriétés spécifiques qui peuvent être fournies par un proxy inverse
     public ?string $ja3 = null;
     public ?string $ja4 = null;

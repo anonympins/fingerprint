@@ -50,6 +50,7 @@ public class FingerprintAutoConfiguration {
         config.put("enableProofOfSpace", properties.isEnableProofOfSpace());
         config.put("pospace", properties.getPospace());
         config.put("whitelist", properties.getWhitelist());
+        config.put("filterWhitelist", properties.getFilterWhitelist());
         config.put("allowCrossNetworkRoaming", properties.isAllowCrossNetworkRoaming());
         config.put("useAsymmetricTickets", properties.isUseAsymmetricTickets());
         if (properties.getEd25519PrivateKey() != null) {

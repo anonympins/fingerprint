@@ -19,6 +19,9 @@ public class RequestContext {
     public String tcpFingerprint = null;
     public String quicFingerprint = null;
     public String zkpY = null;
+    public Map<String, Object> resolvedIdentity = null;
+    public Double preCalculatedScore = null;
+    public Map<String, Double> preCalculatedVector = null;
 
     public RequestContext(String clientIp, String path, Map<String, String> headers,
                           Map<String, Object> queryParams, Map<String, Object> body,

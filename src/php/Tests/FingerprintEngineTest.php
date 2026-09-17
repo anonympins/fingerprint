@@ -228,6 +228,52 @@ class FingerprintEngineTest extends TestCase
         $this->assertContains($decision['action'], ['challenge', 'block']);
     }
 
+    public function testAllowsWhitelistedIpWithNumericFilterBelowThreshold(): void
+    {
+        $config = SecurityProfiles::createSecurityProfile('strict', [
+            'whitelist' => [['type' => 'allowlist', 'entries' => ['10.0.0.1']]],
+            'filterWhitelist' => 50.0,
+            'weights' => ['headerAnomalyScore' => 1.0],
+            'thresholds' => ['low' => 20, 'medium' => 45, 'high' => 75, 'block' => 95]
+        ]);
+        $engine = new FingerprintEngine($config);
+
+        $context = $this->createRequestContext([
+            'clientIp' => '10.0.0.1',
+            'headers' => [
+                'user-agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+                'accept-language' => 'en-US,en;q=0.9'
+            ]
+        ]);
+        $decision = $engine->processRequest($context);
+
+        $this->assertEquals('next', $decision['action']);
+        $this->assertEquals(0, $decision['score']);
+    }
+
+    public function testAllowsWhitelistedIpWithNumericFilterExceedingThreshold(): void
+    {
+        $config = SecurityProfiles::createSecurityProfile('strict', [
+            'whitelist' => [['type' => 'allowlist', 'entries' => ['10.0.0.1']]],
+            'filterWhitelist' => 20.0,
+            'weights' => ['headerAnomalyScore' => 1.0],
+            'thresholds' => ['low' => 20, 'medium' => 45, 'high' => 75, 'block' => 95]
+        ]);
+        $engine = new FingerprintEngine($config);
+
+        $context = $this->createRequestContext([
+            'clientIp' => '10.0.0.1',
+            'headers' => [
+                'user-agent' => 'Chrome',
+                'accept-language' => 'en-US,en;q=0.9'
+            ]
+        ]);
+        $decision = $engine->processRequest($context);
+
+        $this->assertEquals('challenge', $decision['action']);
+        $this->assertEquals(60, $decision['score']);
+    }
+
     public function testAllowsWhitelistedIp(): void
     {
         $config = SecurityProfiles::createSecurityProfile('strict', [
