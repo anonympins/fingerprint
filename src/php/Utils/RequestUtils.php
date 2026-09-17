@@ -1254,11 +1254,19 @@ class RequestUtils
             'highScoreCount' => 0,
             'deviceIds' => [],
             'highScoreDevices' => [],
-            'lastActivity' => 0
+            'lastActivity' => 0,
+            'ips' => [],
+            'uas' => []
         ];
 
         if (!isset($subnetData['highScoreDevices'])) {
             $subnetData['highScoreDevices'] = [];
+        }
+        if (!isset($subnetData['ips'])) {
+            $subnetData['ips'] = [];
+        }
+        if (!isset($subnetData['uas'])) {
+            $subnetData['uas'] = [];
         }
 
         // Utilisation de la partie stable du fingerprint matériel plutôt que l'ID de cookie volatil
@@ -1274,6 +1282,16 @@ class RequestUtils
         if (!in_array($stableFpId, $subnetData['deviceIds'], true)) {
             $subnetData['deviceIds'][] = $stableFpId;
         }
+
+        if (!in_array($context->clientIp, $subnetData['ips'], true)) {
+            $subnetData['ips'][] = $context->clientIp;
+        }
+
+        $userAgent = $context->getHeader('user-agent') ?? '';
+        if (!empty($userAgent) && !in_array($userAgent, $subnetData['uas'], true)) {
+            $subnetData['uas'][] = $userAgent;
+        }
+
         $subnetData['lastActivity'] = time();
 
         // Limiter la taille du tableau des deviceIds pour éviter une consommation mémoire excessive.
@@ -1284,6 +1302,12 @@ class RequestUtils
                 $subnetData['highScoreCount'] = max(0, $subnetData['highScoreCount'] - $oldContributions);
                 unset($subnetData['highScoreDevices'][$oldDeviceId]);
             }
+        }
+        if (count($subnetData['ips']) > 100) {
+            array_shift($subnetData['ips']);
+        }
+        if (count($subnetData['uas']) > 50) {
+            array_shift($subnetData['uas']);
         }
 
         // TTL de 24 heures pour les données de sous-réseau.
@@ -1318,23 +1342,32 @@ class RequestUtils
 
         $highScoreCount = $subnetData['highScoreCount'] ?? 0;
         $deviceCount = isset($subnetData['deviceIds']) ? count($subnetData['deviceIds']) : 0;
+        $ipCount = isset($subnetData['ips']) ? count($subnetData['ips']) : 1;
+        $uaCount = isset($subnetData['uas']) ? count($subnetData['uas']) : 1;
 
         if ($halfLives > 0) {
-            $highScoreCount = max(0, (int)floor($highScoreCount / pow(2, $halfLives)));
-            $deviceCount = max(0, (int)floor($deviceCount / pow(2, $halfLives)));
+            $decay = pow(2, $halfLives);
+            $highScoreCount = max(0, (int)floor($highScoreCount / $decay));
+            $deviceCount = max(0, (int)floor($deviceCount / $decay));
+            $ipCount = max(1, (int)floor($ipCount / $decay));
+            $uaCount = max(1, (int)floor($uaCount / $decay));
         }
 
-        $score = 0.0;
-
-        // Pénalité basée sur le nombre de devices uniques vus depuis ce sous-réseau.
-        if ($deviceCount > 10) {
-            $score += min(80.0, ($deviceCount - 10) * 5);
+        if ($deviceCount === 0) {
+            return ['subnetScore' => 0.0];
         }
 
-        // Pénalité basée sur le nombre de scores élevés enregistrés.
-        $score += min(40.0, $highScoreCount * 2);
+        $suspicionDensity = $highScoreCount / $deviceCount;
+        $ipDeviceRatio = $ipCount / $deviceCount;
 
-        return ['subnetScore' => min(100.0, $score)];
+        $baseScore = 100.0 * (1.0 - exp(-0.15 * $highScoreCount));
+
+        $densityMultiplier = 0.4 + (1.6 * $suspicionDensity);
+        $distributionMultiplier = 0.5 + (1.0 * $ipDeviceRatio);
+
+        $finalScore = min(100.0, round($baseScore * $densityMultiplier * $distributionMultiplier * 10.0) / 10.0);
+
+        return ['subnetScore' => $finalScore];
     }
 
     /**
@@ -1364,10 +1397,15 @@ class RequestUtils
         });
         $clusterData = array_values($clusterData);
 
+        $userAgent = $context->getHeader('user-agent') ?? '';
+        $subnet = self::getIpSubnet($context->clientIp) ?? 'unknown';
+
         $found = false;
         foreach ($clusterData as &$entry) {
             if (isset($entry['ip']) && $entry['ip'] === $context->clientIp) {
                 $entry['timestamp'] = $now;
+                $entry['ua'] = $userAgent;
+                $entry['subnet'] = $subnet;
                 $found = true;
                 break;
             }
@@ -1375,14 +1413,26 @@ class RequestUtils
         unset($entry);
 
         if (!$found) {
-            $clusterData[] = ['ip' => $context->clientIp, 'timestamp' => $now];
+            $clusterData[] = [
+                'ip' => $context->clientIp,
+                'timestamp' => $now,
+                'ua' => $userAgent,
+                'subnet' => $subnet
+            ];
         }
 
         $store->set($key, $clusterData, 600);
         $uniqueIpsCount = count($clusterData);
         $botnetClusterScore = 0.0;
         if ($uniqueIpsCount >= 2) {
-            $botnetClusterScore = min(100.0, round(100.0 * (1.0 - exp(-0.35 * ($uniqueIpsCount - 1))), 1));
+            $uniqueSubnets = count(array_unique(array_filter(array_column($clusterData, 'subnet'))));
+            $uniqueUserAgents = count(array_unique(array_filter(array_column($clusterData, 'ua'))));
+
+            $subnetMultiplier = $uniqueSubnets > 1 ? 1.3 : 0.6;
+            $uaRotationMultiplier = $uniqueUserAgents > 1 ? 1.5 : 1.0;
+
+            $baseScore = 100.0 * (1.0 - exp(-0.35 * ($uniqueIpsCount - 1)));
+            $botnetClusterScore = min(100.0, round($baseScore * $subnetMultiplier * $uaRotationMultiplier * 10.0) / 10.0);
         }
         return ['botnetClusterScore' => $botnetClusterScore];
     }

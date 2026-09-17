@@ -48,8 +48,12 @@ FunctionRegistry['facility.calculateEnergy'] = (facilities, payload) => {
  * @param {Array<{x: number, y: number}>} path - Un tableau de points représentant le chemin.
  * @returns {number} La distance totale du chemin.
  */
-FunctionRegistry['tsp.calculateEnergy'] = (path) => {
-    // Crée un tableau d'indices [0, 1, 2, ...] pour la fonction evaluatePathDistance.
+FunctionRegistry['tsp.calculateEnergy'] = (path, payload) => {
+    const cities = payload?.cities || payload?.points || [];
+    if (path && typeof path[0] === 'number') {
+        return Optimization.Utils.evaluatePathDistance(cities, path);
+    }
+    // Fallback: Crée un tableau d'indices [0, 1, 2, ...] pour la fonction evaluatePathDistance.
     const indices = Array.from({ length: path.length }, (_, i) => i);
     return Optimization.Utils.evaluatePathDistance(path, indices);
 };

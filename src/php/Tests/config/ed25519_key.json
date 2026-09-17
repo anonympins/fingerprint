@@ -1,0 +1,4 @@
+{
+    "privateKey": "-----BEGIN PRIVATE KEY-----\\ndummy-php-private\\n-----END PRIVATE KEY-----",
+    "publicKey": "-----BEGIN PUBLIC KEY-----\\ndummy-php-public\\n-----END PUBLIC KEY-----"
+}

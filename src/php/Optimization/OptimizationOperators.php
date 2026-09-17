@@ -129,6 +129,7 @@ class OptimizationOperators
      */
     public static function solveFullSecurityTuning(array $context, array $options = []): array
     {
+        $currentConfig = $context['currentConfig'] ?? null;
         $fitnessFunction = self::createFullSecurityConfigEvaluator($context);
 
         $crossover = function (array $c1, array $c2): array {
@@ -143,31 +144,30 @@ class OptimizationOperators
             return $child;
         };
         $createIndividual = function () use ($currentConfig): array {
-            if ($currentConfig) {
-                $ind = [
-                    'thresholds' => [],
-                    'weights' => [],
-                    'patterns' => []
-                ];
-                foreach (['thresholds', 'weights', 'patterns'] as $section) {
-                    if (isset($currentConfig[$section]) && is_array($currentConfig[$section])) {
-                        foreach ($currentConfig[$section] as $k => $v) {
-                            if (is_numeric($v) && $k !== 'honeypotScore') {
-                                $randomVariation = 1.0 + (self::secureRandom() - 0.5) * 0.5; // Variation de +/- 25%
-                                $ind[$section][$k] = $v * $randomVariation;
-                            } else {
-                                $ind[$section][$k] = $v;
-                            }
+            $config = $currentConfig ?: \Anonympins\Fingerprint\Config\SecurityProfiles::createSecurityProfile('balanced');
+            $ind = [
+                'thresholds' => [],
+                'weights' => [],
+                'patterns' => []
+            ];
+            foreach (['thresholds', 'weights', 'patterns'] as $section) {
+                if (isset($config[$section]) && is_array($config[$section])) {
+                    foreach ($config[$section] as $k => $v) {
+                        if (is_numeric($v) && $k !== 'honeypotScore') {
+                            $randomVariation = 1.0 + (self::secureRandom() - 0.5) * 0.5; // Variation de +/- 25%
+                            $ind[$section][$k] = $v * $randomVariation;
+                        } else {
+                            $ind[$section][$k] = $v;
                         }
                     }
                 }
-                if (isset($ind['thresholds']['low'], $ind['thresholds']['medium'], $ind['thresholds']['high'])) {
-                    $ind['thresholds']['low'] = max(10.0, min(35.0, (float)$ind['thresholds']['low']));
-                    $ind['thresholds']['medium'] = max($ind['thresholds']['low'] + 5.0, min(70.0, (float)$ind['thresholds']['medium']));
-                    $ind['thresholds']['high'] = max($ind['thresholds']['medium'] + 5.0, min(90.0, (float)$ind['thresholds']['high']));
-                }
-                return $ind;
             }
+            if (isset($ind['thresholds']['low'], $ind['thresholds']['medium'], $ind['thresholds']['high'])) {
+                $ind['thresholds']['low'] = max(10.0, min(35.0, (float)$ind['thresholds']['low']));
+                $ind['thresholds']['medium'] = max($ind['thresholds']['low'] + 5.0, min(70.0, (float)$ind['thresholds']['medium']));
+                $ind['thresholds']['high'] = max($ind['thresholds']['medium'] + 5.0, min(90.0, (float)$ind['thresholds']['high']));
+            }
+            return $ind;
         };
 
         $mutate = function (array $c, ?array $currentConfigRef = null) use ($currentConfig): array {

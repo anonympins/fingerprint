@@ -1,3 +1,11 @@
+## Version 0.6.3
+
+- 🛡️ **Subnet & Botnet Scoring Upgrades**: Refined the IP Subnet reputation score to use an advanced, continuous analog calculation while handling potential `NaN` boundary edge cases. Enhanced the `botnetClusterScore` algorithm to improve grouping and detection precision of clustered threats.
+- 🔑 **Persistent Ed25519 Keypair Recovery**: Hardened persistent Ed25519 key loading, generation, and storage, resolving environment variable fallbacks across test environments.
+- More unit tests and java coverage
+- Java : security profiles added (+ wiki update)
+- NodeJS/PHP : All weights in autotuner
+
 ## Version 0.6.2
 
 - 🔒 Java security fixes

@@ -11,6 +11,7 @@
  use Anonympins\Fingerprint\Utils\Logger;
  use Anonympins\Fingerprint\Utils\MetricsManager;
  use Anonympins\Fingerprint\Utils\RequestUtils;
+ use Anonympins\Fingerprint\Utils\Env;
 
  // Correction de l'import
 
@@ -164,14 +165,56 @@
 
      public function __construct(array $securityConfig)
      {
-         $this->isProduction = ($_ENV['APP_ENV'] ?? getenv('APP_ENV')) === 'production';
+         $this->isProduction = Env::get('APP_ENV') === 'production';
          
          // Dynamically bind Ed25519 keys if passed via config
          if (isset($securityConfig['ed25519_private_key'])) {
-             $_ENV['ED25519_PRIVATE_KEY'] = $securityConfig['ed25519_private_key'];
+             Env::set('ED25519_PRIVATE_KEY', $securityConfig['ed25519_private_key']);
          }
          if (isset($securityConfig['ed25519_public_key'])) {
-             $_ENV['ED25519_PUBLIC_KEY'] = $securityConfig['ed25519_public_key'];
+             Env::set('ED25519_PUBLIC_KEY', $securityConfig['ed25519_public_key']);
+         }
+
+         // Génération et persistance automatique de la paire de clés Ed25519
+         $useAsymmetric = ($securityConfig['useAsymmetricTickets'] ?? false) === true || ($securityConfig['ed25519'] ?? '') === 'auto';
+         $envPrivate = Env::get('ED25519_PRIVATE_KEY');
+         if ($useAsymmetric && ($envPrivate === null || $envPrivate === '')) {
+             $configDir = dirname(__DIR__, 1) . '/config';
+             $persistentKeyPath = $configDir . '/ed25519_key.json';
+
+             if (file_exists($persistentKeyPath)) {
+                 try {
+                     $keys = json_decode(file_get_contents($persistentKeyPath), true);
+                     if (isset($keys['privateKey'], $keys['publicKey'])) {
+                         Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
+                         Env::set('ED25519_PUBLIC_KEY', $keys['publicKey']);
+                     }
+                 } catch (\Throwable $e) {
+                     error_log('[Fingerprint] Failed to load persistent Ed25519 keys: ' . $e->getMessage());
+                 }
+             } else {
+                 try {
+                     if (defined('OPENSSL_KEYTYPE_ED25519')) {
+                         $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
+                         if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
+                             $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
+                             $publicKeyPem = $details['key']; // @phpstan-ignore-line
+                             Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
+                             Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                             // Also update $_ENV and $_SERVER for consistency
+                             if (!is_dir($configDir)) {
+                                 mkdir($configDir, 0777, true);
+                             }
+                             file_put_contents($persistentKeyPath, json_encode([
+                                 'privateKey' => $privateKeyPem,
+                                 'publicKey' => $publicKeyPem
+                             ], JSON_PRETTY_PRINT));
+                         }
+                     }
+                 } catch (\Throwable $e) {
+                     error_log('[Fingerprint] Native Ed25519 key generation failed: ' . $e->getMessage());
+                 }
+             }
          }
 
          // Auto-load optimized config if autotuning savePath is specified
@@ -222,7 +265,8 @@
              'honeypot', 'threatIntel', 'whitelist', 'isStaticResource', 'isApiRequest', 'logger', 'probationaryTtl',
              'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
              'similarityThreshold', 'summary', 'description',
-             'ed25519_private_key', 'ed25519_public_key'
+             'ed25519_private_key', 'ed25519_public_key',
+             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret'
          ];
 
          if (empty($config['weights'])) {
@@ -483,6 +527,9 @@
        */
      private function resolveRequestIdentity(RequestContext $context, array &$suspicionVector): array
      {
+         if ($context->resolvedIdentity !== null) {
+             return $context->resolvedIdentity;
+         }
          $this->log('Resolving request identity', ['clientIp' => $context->clientIp, 'cookies' => $context->cookies]);
          $store = StoreManager::getStore();
          $existingDeviceId = $context->cookies['device_id'] ?? null; // @phpstan-ignore-line
@@ -564,11 +611,12 @@
              $store->set("tls-session:{$tlsSessionId}", $deviceId, 3600); // 1h cache duration
          }
 
-         return [
+         $context->resolvedIdentity = [
              'deviceId' => $deviceId,
              'deviceData' => $deviceData,
              'newCookie' => $newCookie,
          ];
+         return $context->resolvedIdentity;
      }
 
      /**
@@ -891,22 +939,11 @@
                 $context->graphqlOperation = $gqlInfo;
             }
         }
-
-
-         $this->log('Processing request', ['clientIp' => $context->clientIp, 'path' => $context->path]);
- 
-         // Parse GraphQL query if applicable
-         if ($context->path === '/graphql' && !empty($context->body)) {
-             $gqlInfo = RequestUtils::parseGraphQLQuery(is_array($context->body) ? $context->body : []);
-             if ($gqlInfo) {
-                 $context->graphqlOperation = $gqlInfo;
-             }
-         }
  
          // 1. Vérifier les listes blanches
          if ($this->checkAllowlists($context)) {
+             MetricsManager::incrementCounter('requests_total', ['status' => 'whitelisted']);
              return ['action' => 'next', 'score' => 0.0, 'vector' => ['whitelisted' => 100.0]];
-            MetricsManager::incrementCounter('requests_total', ['status' => 'whitelisted']);
          }
  
          // Initialiser le vecteur de suspicion
@@ -1234,7 +1271,7 @@
 
                  if ($shouldUseUsefulWork) {
                      $this->log('Issuing a useful work challenge', ['finalScore' => $finalScore]);
-                    $defaultPath = dirname(__DIR__, 2) . '/config/problems.config.json';
+                            $defaultPath = dirname(__DIR__, 1) . '/config/problems.config.json';
                     $configPath = $this->securityConfig['usefulWorkConfigPath'] ?? (file_exists($defaultPath) ? $defaultPath : null);
                     $problemManager = ProblemManager::getInstance($configPath, $store);
                      $work = $problemManager->dispatchWork($finalScore);
@@ -1437,7 +1474,7 @@
          $signature = '';
          $isAsymmetric = false;
          
-         $privateKey = $_ENV['ED25519_PRIVATE_KEY'] ?? getenv('ED25519_PRIVATE_KEY');
+         $privateKey = Env::get('ED25519_PRIVATE_KEY');
          if ($privateKey) {
              try {
                  $cleanKey = str_replace('\n', "\n", $privateKey);

@@ -6,7 +6,7 @@ import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
 import {DynamicWasmGenerator} from "./dynamic-wasm.js";
-import {readFileSync, existsSync} from "node:fs";
+import {writeFileSync, readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
 import {
@@ -663,13 +663,17 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.8,
             tlsSpoofingScore: 0.6, // Moins critique pour les blogs
-            subnetScore: 0.2,
+            botScore: 0.8,
+            cookieDroppingScore: 0.7, // Moins critique, mais toujours un signal
+            threatIntelScore: 0.3, // Lower priority for a blog
+            clientHintsInconsistencyScore: 0.5,
+            clickVarianceScore: 0.5, // Moderate weight for click variance
+            subnetScore: 0.4, // Utile contre le spam de commentaires coordonné
             ipReputationScore: 0.3, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.5, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.5, // NEW: Anomalie de pile TCP/IP
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
-            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -705,13 +709,17 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.7,
             timeInconsistencyScore: 0.9,
             tlsSpoofingScore: 0.9, // Très important pour l'e-commerce
-            subnetScore: 0.5,
+            botScore: 1.0,
+            cookieDroppingScore: 1.0, // Crucial pour la détection de bots e-commerce
+            threatIntelScore: 0.8, // Very important for e-commerce (scalping proxies)
+            clientHintsInconsistencyScore: 0.9, // Very important for e-commerce
+            clickVarianceScore: 0.8, // Very high weight for click variance
+            subnetScore: 0.9, // Crucial contre les attaques de scalping distribuées
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.9, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.9, // NEW: Anomalie de pile TCP/IP
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie de rendu,threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
-            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -2793,12 +2801,20 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
         highScoreCount: 0,
         deviceIds: [],
         highScoreDevices: {},
-        lastActivity: 0
+        lastActivity: 0,
+        ips: [],
+        uas: []
     };
 
     if (!subnetData.highScoreDevices) {
         subnetData.highScoreDevices = {};
     }
+    if (subnetData.ips instanceof Set) {
+        subnetData.ips = Array.from(subnetData.ips);
+    } else if (!subnetData.ips) {
+        subnetData.ips = [];
+    }
+    if (!subnetData.uas) subnetData.uas = [];
 
     // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
     const currentDeviceHash = getCompositeDeviceHash(context);
@@ -2813,6 +2829,16 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
     if (!subnetData.deviceIds.includes(stableFpId)) {
         subnetData.deviceIds.push(stableFpId);
     }
+
+    if (!subnetData.ips.includes(context.clientIp)) {
+        subnetData.ips.push(context.clientIp);
+    }
+
+    const userAgent = context.headers?.['user-agent'] || '';
+    if (userAgent && !subnetData.uas.includes(userAgent)) {
+        subnetData.uas.push(userAgent);
+    }
+
     subnetData.lastActivity = Date.now();
 
     if (subnetData.deviceIds.length > 100) {
@@ -2823,6 +2849,8 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
             delete subnetData.highScoreDevices[oldDeviceId];
         }
     }
+    if (subnetData.ips.length > 100) subnetData.ips.shift();
+    if (subnetData.uas.length > 50) subnetData.uas.shift();
 
     await store.set(key, subnetData, 86400); // 24-hour TTL
 }
@@ -2846,16 +2874,37 @@ async function getSubnetScore(context) {
 
     let highScoreCount = subnetData.highScoreCount || 0;
     let deviceCount = subnetData.deviceIds ? subnetData.deviceIds.length : 0;
+    let ipCount = 1;
+    if (subnetData.ips) {
+        ipCount = subnetData.ips instanceof Set ? subnetData.ips.size : (subnetData.ips.length || 1);
+    }
+    let uaCount = subnetData.uas ? subnetData.uas.length : 1;
 
     if (halfLives > 0) {
-        highScoreCount = Math.max(0, Math.floor(highScoreCount / Math.pow(2, halfLives)));
-        deviceCount = Math.max(0, Math.floor(deviceCount / Math.pow(2, halfLives)));
+        const decay = Math.pow(2, halfLives);
+        highScoreCount = Math.max(0, Math.floor(highScoreCount / decay));
+        deviceCount = Math.max(0, Math.floor(deviceCount / decay));
+        ipCount = Math.max(1, Math.floor(ipCount / decay));
+        uaCount = Math.max(1, Math.floor(uaCount / decay));
     }
 
-    const deviceCountPenalty = Math.min(80, Math.max(0, deviceCount - 10) * 5);
-    const highScorePenalty = Math.min(40, highScoreCount * 2);
+    if (deviceCount === 0) {
+        return { subnetScore: 0.0 };
+    }
 
-    return { subnetScore: Math.min(100, deviceCountPenalty + highScorePenalty) };
+    // Calculs analogues continus (sans sauts brusques)
+    const suspicionDensity = highScoreCount / deviceCount;
+    const ipDeviceRatio = ipCount / deviceCount;
+
+    // Base score continu basé sur le volume de menaces
+    const baseScore = 100 * (1 - Math.exp(-0.15 * highScoreCount));
+
+    // Multiplicateurs continus
+    const densityMultiplier = 0.4 + (1.6 * suspicionDensity); // Favorise les densités de suspicion élevées
+    const distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio); // NAT (faible ratio IP/Device) vs Proxy distribué (fort ratio)
+
+    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * 10) / 10);
+    return { subnetScore: finalScore };
 }
 
 /**
@@ -2877,17 +2926,31 @@ async function getBotnetClusterScore(context, stableFpHash) {
 
   clusterData = clusterData.filter(entry => entry.timestamp > tenMinutesAgo);
   const existingIndex = clusterData.findIndex(entry => entry.ip === context.clientIp);
+  const userAgent = context.headers?.['user-agent'] || '';
+  const subnet = getIpSubnet(context.clientIp) || 'unknown';
+
   if (existingIndex !== -1) {
     clusterData[existingIndex].timestamp = now;
+    clusterData[existingIndex].ua = userAgent;
+    clusterData[existingIndex].subnet = subnet;
   } else {
-    clusterData.push({ ip: context.clientIp, timestamp: now });
+    clusterData.push({ ip: context.clientIp, timestamp: now, ua: userAgent, subnet: subnet });
   }
 
   await store.set(key, clusterData, 600);
   const uniqueIpsCount = clusterData.length;
   let botnetClusterScore = 0;
   if (uniqueIpsCount >= 2) {
-    botnetClusterScore = Math.min(100, Math.round(1000 * (1 - Math.exp(-0.35 * (uniqueIpsCount - 1)))) / 10);
+    // Calcul de la diversité des sous-réseaux et de la rotation des User-Agents
+    const uniqueSubnets = new Set(clusterData.map(e => e.subnet)).size;
+    const uniqueUserAgents = new Set(clusterData.map(e => e.ua).filter(Boolean)).size;
+
+    // Facteurs d'ajustement
+    const subnetMultiplier = uniqueSubnets > 1 ? 1.3 : 0.6; // Réduit le score si même sous-réseau (NAT), l'augmente si distribué
+    const uaRotationMultiplier = uniqueUserAgents > 1 ? 1.5 : 1.0; // Forte pénalité en cas de rotation d'en-tête UA
+
+    const baseScore = 100 * (1 - Math.exp(-0.35 * (uniqueIpsCount - 1)));
+    botnetClusterScore = Math.min(100, Math.round(baseScore * subnetMultiplier * uaRotationMultiplier * 10) / 10);
   }
   return { botnetClusterScore };
 }
@@ -3825,16 +3888,31 @@ export class FingerprintEngine {
 
         // Auto-generate Ed25519 key pair on load if indicated and keys are not set
         if (securityConfig && (securityConfig.useAsymmetricTickets || securityConfig.ed25519 === 'auto') && !process.env.ED25519_PRIVATE_KEY) {
-          try {
-            const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519', {
-              privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
-              publicKeyEncoding: { format: 'pem', type: 'spki' }
-            });
-            process.env.ED25519_PRIVATE_KEY = privateKey;
-            process.env.ED25519_PUBLIC_KEY = publicKey;
-          } catch (e) {
-            console.error('[Fingerprint] Native Ed25519 key generation failed:', e.message);
-          }
+            const persistentKeyPath = join(configDir, 'ed25519_key.json');
+            if (existsSync(persistentKeyPath)) {
+                try {
+                    const keys = JSON.parse(readFileSync(persistentKeyPath, 'utf-8'));
+                    process.env.ED25519_PRIVATE_KEY = keys.privateKey;
+                    process.env.ED25519_PUBLIC_KEY = keys.publicKey;
+                    this._log('Persistent Ed25519 keys loaded from disk');
+                } catch (e) {
+                    console.error('[Fingerprint] Failed to load persistent Ed25519 keys:', e.message);
+                }
+            } else {
+                try {
+                    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519', {
+                        privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
+                        publicKeyEncoding: { format: 'pem', type: 'spki' }
+                    });
+                    process.env.ED25519_PRIVATE_KEY = privateKey;
+                    process.env.ED25519_PUBLIC_KEY = publicKey;
+                    // Persist keys on disk for subsequent restarts
+                    writeFileSync(persistentKeyPath, JSON.stringify({ privateKey, publicKey }, null, 2), 'utf-8');
+                    this._log('New persistent Ed25519 keys generated and saved to disk');
+                } catch (e) {
+                    console.error('[Fingerprint] Native Ed25519 key generation failed:', e.message);
+                }
+                }
         }
 
     let finalConfig = securityConfig;

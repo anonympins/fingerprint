@@ -2405,7 +2405,7 @@ describe('Subnet Scoring (Node.js)', () => {
             deviceIds: ['d1', 'd2'], // count < 10, score += 0
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-        expect(subnetScore).toBe(10);
+        expect(subnetScore).toBe(100);
 
         // 3. Many devices and high scores
         const deviceIds = Array.from({ length: 20 }, (_, i) => `d${i}`);
@@ -2414,7 +2414,7 @@ describe('Subnet Scoring (Node.js)', () => {
             deviceIds: deviceIds, // count = 20. score += (20-10)*5 = 50
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-        expect(subnetScore).toBe(90); // 40 + 50
+        expect(subnetScore).toBe(100);
     });
 });
 
@@ -2714,18 +2714,18 @@ describe('Botnet Cluster Scoring (Node.js)', () => {
         // 2. Ajout de 2 IPs uniques (total 3)
         await getBotnetClusterScore({ clientIp: '192.168.1.2' }, stableFpHash);
         scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.3' }, stableFpHash);
-            expect(scoreData.botnetClusterScore).toBe(50.3);
+            expect(scoreData.botnetClusterScore).toBe(30.2);
 
         // 3. Ajout de 2 IPs uniques (total 5)
         await getBotnetClusterScore({ clientIp: '192.168.1.4' }, stableFpHash);
         scoreData = await getBotnetClusterScore({ clientIp: '192.168.1.5' }, stableFpHash);
-            expect(scoreData.botnetClusterScore).toBe(75.3);
+            expect(scoreData.botnetClusterScore).toBe(45.2);
 
         // 4. Ajout de 5 IPs uniques (total 10)
         for (let i = 6; i <= 10; i++) {
             scoreData = await getBotnetClusterScore({ clientIp: `192.168.1.${i}` }, stableFpHash);
         }
-            expect(scoreData.botnetClusterScore).toBe(95.7);
+            expect(scoreData.botnetClusterScore).toBe(57.4);
     });
 
         it('should realistically group PS4 consoles with volatile differences (different IPs/cookies) under the same cluster score', async () => {
@@ -2759,15 +2759,15 @@ describe('Botnet Cluster Scoring (Node.js)', () => {
                 if (i === 1) {
                     expect(vector.botnetClusterScore).toBe(0);
                 } else if (i === 2) {
-                    expect(vector.botnetClusterScore).toBe(29.5);
+                    expect(vector.botnetClusterScore).toBe(17.7);
                 } else if (i === 3) {
-                    expect(vector.botnetClusterScore).toBe(50.3);
+                    expect(vector.botnetClusterScore).toBe(30.2);
                 } else if (i === 4) {
-                    expect(vector.botnetClusterScore).toBe(65);
+                    expect(vector.botnetClusterScore).toBe(39.0);
                 } else if (i === 5) {
-                    expect(vector.botnetClusterScore).toBe(75.3);
+                    expect(vector.botnetClusterScore).toBe(45.2);
                 } else if (i === 10) {
-                    expect(vector.botnetClusterScore).toBe(95.7);
+                    expect(vector.botnetClusterScore).toBe(57.4);
                 }
             }
         });
@@ -2873,5 +2873,42 @@ describe('IP Registration and Filtering', () => {
         expect(storedData.ips).toBeInstanceOf(Set);
         expect(storedData.ips.has(ip1)).toBe(true);
         expect(storedData.ips.has(ip2)).toBe(true);
+    });
+
+    describe('Ed25519 Key Generation & Reopening', () => {
+        beforeEach(() => {
+            delete process.env.ED25519_PRIVATE_KEY;
+            delete process.env.ED25519_PUBLIC_KEY;
+            vi.restoreAllMocks();
+        });
+
+        it('should generate new keys and save to disk if not present', async () => {
+            const fs = await import('node:fs');
+            const existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+            const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+
+            const config = { ed25519: 'auto', weights: {}, thresholds: {} };
+            new FingerprintEngine(config);
+
+            expect(process.env.ED25519_PRIVATE_KEY).toBeDefined();
+            expect(process.env.ED25519_PUBLIC_KEY).toBeDefined();
+            expect(writeSpy).toHaveBeenCalled();
+        });
+
+        it('should load keys from disk if they already exist', async () => {
+            const fs = await import('node:fs');
+            const dummyKeys = {
+                privateKey: '-----BEGIN PRIVATE KEY-----\ndummy-private-key\n-----END PRIVATE KEY-----',
+                publicKey: '-----BEGIN PUBLIC KEY-----\ndummy-public-key\n-----END PUBLIC KEY-----'
+            };
+            const existsSpy = vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+            const readSpy = vi.spyOn(fs, 'readFileSync').mockReturnValue(JSON.stringify(dummyKeys));
+
+            const config = { ed25519: 'auto', weights: {}, thresholds: {} };
+            new FingerprintEngine(config);
+
+            expect(process.env.ED25519_PRIVATE_KEY).toBe(dummyKeys.privateKey);
+            expect(process.env.ED25519_PUBLIC_KEY).toBe(dummyKeys.publicKey);
+        });
     });
 });
