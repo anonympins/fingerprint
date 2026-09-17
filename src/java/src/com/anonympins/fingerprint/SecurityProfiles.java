@@ -64,6 +64,7 @@ public class SecurityProfiles {
         balanced.put("patterns", balancedPatterns);
 
         balanced.put("wasm", true);
+        balanced.put("filterWhitelist", 85.0);
         PROFILES.put("balanced", balanced);
 
         // ==========================================
@@ -118,6 +119,7 @@ public class SecurityProfiles {
 
         strict.put("challengeNewDevices", true);
         strict.put("wasm", true);
+        strict.put("filterWhitelist", true);
         PROFILES.put("strict", strict);
 
         // ==========================================
@@ -171,6 +173,7 @@ public class SecurityProfiles {
 
         api.put("isApiRequest", "req.path.startsWith(\"/api/\") || req.headers.accept?.includes(\"application/json\")");
         api.put("wasm", true);
+        api.put("filterWhitelist", 75.0);
         PROFILES.put("api", api);
 
         // ==========================================
@@ -225,6 +228,7 @@ public class SecurityProfiles {
         blog.put("patterns", blogPatterns);
 
         blog.put("wasm", true);
+        blog.put("filterWhitelist", 90.0);
         PROFILES.put("blog", blog);
     }
 

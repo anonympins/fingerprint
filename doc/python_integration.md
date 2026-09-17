@@ -1,6 +1,6 @@
-# Python Integration Guide
+# Python Integration Guide (with SecurityProfiles)
 
-This guide details how to integrate and use the `fingerprint` library within a Python ecosystem, supporting both Asynchronous Server Gateway Interface (ASGI) and Web Server Gateway Interface (WSGI) applications.
+This guide details how to integrate and use the `fingerprint` library within a Python ecosystem, supporting both Asynchronous Server Gateway Interface (ASGI) and Web Server Gateway Interface (WSGI) applications, leveraging the powerful `SecurityProfiles` helper.
 
 ---
 
@@ -10,13 +10,47 @@ This guide details how to integrate and use the `fingerprint` library within a P
 *   The `fingerprint` Python package.
 *   For ASGI applications: An ASGI-compatible framework (e.g., FastAPI, Starlette, Quart).
 *   For WSGI applications: A WSGI-compatible framework (e.g., Flask, Django, Bottle).
-*   For external data storage (recommended for production): A compatible asynchronous client for Redis or MongoDB. The `InMemoryStore` is provided for development and testing.
+*   For external data storage: A compatible client for Redis or MongoDB (the `InMemoryStore` is provided for development and testing).
 
 ---
 
 ## Core Concepts
 
 The Python integration provides middleware components that wrap your existing application. These middlewares intercept incoming requests, apply the fingerprinting logic, and take action (allow, block, challenge, redirect) based on the configured security policy.
+
+---
+
+## Security Profiles
+
+The Python library includes a `SecurityProfiles` helper to quickly bootstrap configurations for common use cases while allowing deep overrides.
+
+Available built-in profiles are:
+*   `"balanced"`: General-purpose configuration, balanced security, and user experience.
+*   `"strict"`: Aggressive security suitable for admin panels or sensitive portals.
+*   `"api"`: Tailored for API endpoints with high sensitivity to rate, velocity, and patterns.
+*   `"blog"`: Content-heavy optimization focusing on scraping protection and spam mitigation.
+
+### Loading a Security Profile
+
+```python
+from fingerprint.security_profiles import SecurityProfiles
+
+# Load the default balanced profile
+security_config = SecurityProfiles.create_security_profile("balanced")
+
+# Load a profile with specific overrides
+custom_config = SecurityProfiles.create_security_profile(
+    profile_name="api",
+    overrides={
+        "thresholds": {
+            "low": 15,  # Override low threshold
+        },
+        "honeypot": {
+            "fields": ["custom_trap_field"]
+        }
+    }
+)
+```
 
 ---
 
@@ -29,31 +63,24 @@ The `ASGIFingerprintMiddleware` is designed for asynchronous Python web framewor
 ```python
 # main.py
 from fastapi import FastAPI, Request, Response
-from fingerprint.engine import FastAPIFingerprintMiddleware, default_whitelist, InMemoryStore
+from fingerprint.engine import FastAPIFingerprintMiddleware, InMemoryStore
+from fingerprint.security_profiles import SecurityProfiles
 import uvicorn
 
 app = FastAPI()
 
-# 1. Define your security configuration
-security_config = {
-    "thresholds": {"low": 20, "high": 75, "block": 95},
-    "weights": {
-        "inconsistencyScore": 0.8,
-        "headerAnomalyScore": 0.1,
-        "clientHintsInconsistencyScore": 0.7,
-        "tlsSpoofingScore": 0.8,
-        "botScore": 1.0,
-        "honeypotScore": 1.0,
-    },
-    "honeypot": {
-        "fields": ["email_confirm"],
-        "trapUrls": ["/wp-admin", "/.env"]
-    },
-    "similarityThreshold": 0.7,
-    "whitelist": default_whitelist()
-}
+# 1. Generate security configuration using SecurityProfiles
+security_config = SecurityProfiles.create_security_profile(
+    profile_name="balanced",
+    overrides={
+        "honeypot": {
+            "fields": ["email_confirm"],
+            "trap_urls": ["/wp-admin", "/.env"]
+        }
+    }
+)
 
-# 2. Initialize the store (use InMemoryStore for development, replace with Redis/MongoDB for production)
+# 2. Initialize the store (InMemoryStore for dev; use Redis/MongoDB in production)
 fingerprint_store = InMemoryStore()
 
 # 3. Add the Fingerprint Middleware to your FastAPI application
@@ -83,6 +110,7 @@ For other ASGI frameworks or custom ASGI applications, you can directly wrap you
 ```python
 # app.py
 from fingerprint.engine import ASGIFingerprintMiddleware, InMemoryStore
+from fingerprint.security_profiles import SecurityProfiles
 
 async def my_asgi_app(scope, receive, send):
     # Your ASGI application logic here
@@ -97,10 +125,16 @@ async def my_asgi_app(scope, receive, send):
             'body': b'Hello from my protected ASGI app!',
         })
 
-# 1. Define your security configuration
-security_config = {
-    # ... (same as FastAPI example) ...
-}
+# 1. Generate security configuration using SecurityProfiles
+security_config = SecurityProfiles.create_security_profile(
+    profile_name="balanced",
+    overrides={
+        "honeypot": {
+            "fields": ["email_confirm"],
+            "trap_urls": ["/wp-admin", "/.env"]
+        }
+    }
+)
 
 # 2. Initialize the store
 fingerprint_store = InMemoryStore()
@@ -127,14 +161,21 @@ The `WSGIFingerprintMiddleware` is designed for synchronous Python web framework
 # app.py
 from flask import Flask, request, jsonify
 from fingerprint.engine import WSGIFingerprintMiddleware, InMemoryStore
+from fingerprint.security_profiles import SecurityProfiles
 import asyncio
 
 app = Flask(__name__)
 
-# 1. Define your security configuration
-security_config = {
-    # ... (same as FastAPI example) ...
-}
+# 1. Generate security configuration using SecurityProfiles
+security_config = SecurityProfiles.create_security_profile(
+    profile_name="balanced",
+    overrides={
+        "honeypot": {
+            "fields": ["email_confirm"],
+            "trap_urls": ["/wp-admin", "/.env"]
+        }
+    }
+)
 
 # 2. Initialize the store
 fingerprint_store = InMemoryStore()
@@ -164,30 +205,18 @@ if __name__ == "__main__":
 
 You can enable automatic, zero-dependency, on-load key generation if no pre-generated keys are configured in your environment.
 
-To activate this, set `useAsymmetricTickets` to `True` in your `security_config`:
+To activate this, set `useAsymmetricTickets` to `True` in your security configuration (via overrides or directly in the profile structure):
 
 ```python
-security_config = {
-    "useAsymmetricTickets": True,
-    # ... other settings
-}
+security_config = SecurityProfiles.create_security_profile(
+    profile_name="balanced",
+    overrides={
+        "useAsymmetricTickets": True
+    }
+)
 ```
 
 The engine will automatically generate a highly secure ephemeral Ed25519 key pair on load using the standard `cryptography` package, storing them in `os.environ["ED25519_PRIVATE_KEY"]` and `os.environ["ED25519_PUBLIC_KEY"]` transparently.
-
----
-
-## Configuration Options
-
-The `security_config` dictionary passed to the middleware constructors is identical in structure to the Node.js and PHP configurations. Refer to the Full Configuration Options for a comprehensive list of available properties.
-
-### Key Configuration Properties
-
-*   `thresholds`: (dict) Defines suspicion score thresholds for `low`, `medium`, `high`, and `block` actions.
-*   `weights`: (dict) Assigns importance to various suspicion vectors (e.g., `inconsistencyScore`, `honeypotScore`).
-*   `honeypot`: (dict) Configures honeypot fields and trap URLs.
-*   `cpu`: (dict) Configures CPU Proof-of-Work challenge difficulty.
-*   `similarityThreshold`: (float) The minimum similarity score required for fingerprint consistency (default: 0.7).
 
 ---
 
@@ -226,10 +255,3 @@ class RedisStore:
 # fingerprint_store = RedisStore(host='your_redis_host')
 # app.add_middleware(FastAPIFingerprintMiddleware, security_config=security_config, store=fingerprint_store)
 ```
-
----
-
-## Next Steps
-
-*   Consult the Key Concepts and Suspicion Vectors guide to learn more about how behavioral telemetry is evaluated.
-*   Review the Full Configuration Options for all available settings.
