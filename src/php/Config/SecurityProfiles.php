@@ -43,7 +43,7 @@ class SecurityProfiles
                 'tcpAnomalyScore' => 0.8, // NEW: Anomalie de pile TCP/IP
                 'quicAnomalyScore' => 0.8, // NEW: Anomalie QUIC
                 'renderingAnomalyScore' => 0.8, // NEW: Anomalie de rendu
-
+                'ipReputationScore' => 0.5, // NOUVEAU: Poids pour la réputation IP
             ],
             'thresholds' => ['low' => 20, 'medium' => 45, 'high' => 75, 'block' => 95],
             'patterns' => [
@@ -177,13 +177,14 @@ class SecurityProfiles
                 'honeypotScore' => 1.0, // Crucial for comment spam
                 'crossLayerInconsistencyScore' => 0.4,
                 'timeInconsistencyScore' => 0.8,
-                'tlsSpoofingScore' => 0.6,
+                'tlsSpoofingScore' => 0.6, // Moins critique pour les blogs
                 'botScore' => 0.8,
                 'cookieDroppingScore' => 0.7, // Moins critique, mais toujours un signal
                 'threatIntelScore' => 0.3, // Lower priority for a blog
                 'clientHintsInconsistencyScore' => 0.5,
                 'clickVarianceScore' => 0.5, // Moderate weight for click variance
                 'subnetScore' => 0.4, // Utile contre le spam de commentaires coordonné
+                'ipReputationScore' => 0.3, // NOUVEAU: Poids pour la réputation IP
                 'botnetClusterScore' => 0.5, // NOUVEAU: Poids pour le clustering botnet
                 'tcpAnomalyScore' => 0.5, // NEW: Anomalie de pile TCP/IP
                 'quicAnomalyScore' => 0.5, // NEW: Anomalie QUIC

@@ -663,13 +663,17 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.8,
             tlsSpoofingScore: 0.6, // Moins critique pour les blogs
-            subnetScore: 0.2,
+            botScore: 0.8,
+            cookieDroppingScore: 0.7, // Moins critique, mais toujours un signal
+            threatIntelScore: 0.3, // Lower priority for a blog
+            clientHintsInconsistencyScore: 0.5,
+            clickVarianceScore: 0.5, // Moderate weight for click variance
+            subnetScore: 0.4, // Utile contre le spam de commentaires coordonné
             ipReputationScore: 0.3, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.5, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.5, // NEW: Anomalie de pile TCP/IP
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
-            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -705,13 +709,17 @@ const securityProfiles = {
             crossLayerInconsistencyScore: 0.7,
             timeInconsistencyScore: 0.9,
             tlsSpoofingScore: 0.9, // Très important pour l'e-commerce
-            subnetScore: 0.5,
+            botScore: 1.0,
+            cookieDroppingScore: 1.0, // Crucial pour la détection de bots e-commerce
+            threatIntelScore: 0.8, // Very important for e-commerce (scalping proxies)
+            clientHintsInconsistencyScore: 0.9, // Very important for e-commerce
+            clickVarianceScore: 0.8, // Very high weight for click variance
+            subnetScore: 0.9, // Crucial contre les attaques de scalping distribuées
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.9, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.9, // NEW: Anomalie de pile TCP/IP
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie de rendu,threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
-            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
