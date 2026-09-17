@@ -497,28 +497,36 @@
       */
      private function checkAllowlists(RequestContext $context): bool
      {
+         $whitelisted = false;
+         $type = '';
+
          if ($this->isIpInAllowlist($context->clientIp)) {
-             $this->log('IP in allowlist - allowing request', ['clientIp' => $context->clientIp]);
+             $whitelisted = true;
+             $type = 'allowlist';
+         } elseif ($this->isPathInAllowlist($context->path)) {
+             $whitelisted = true;
+             $type = 'path_allowlist';
+         } elseif ($this->isHostPathInAllowlist($context->getHeader('host'), $context->path)) {
+             $whitelisted = true;
+             $type = 'host_path_allowlist';
+         } elseif ($context->graphqlOperation && $this->isGraphqlOperationInAllowlist($context->graphqlOperation['type'], $context->graphqlOperation['name'])) {
+             $whitelisted = true;
+             $type = 'graphql_operation_allowlist';
+         } elseif ($this->verifyWhitelistedBot($context)) {
+             $whitelisted = true;
+             $type = 'bot';
+         }
+
+         if ($whitelisted) {
+             $filterWhitelist = $this->securityConfig['filterWhitelist'] ?? false;
+             if ($filterWhitelist && $this->hasCertainAttack($context)) {
+                 $this->log('Whitelisted request contains a certain attack - bypassing whitelist bypass', ['clientIp' => $context->clientIp, 'path' => $context->path]);
+                 return false;
+             }
+             $this->log("IP/Path in allowlist ({$type}) - allowing request", ['clientIp' => $context->clientIp, 'path' => $context->path]);
              return true;
          }
-         if ($this->isPathInAllowlist($context->path)) {
-             $this->log('Path in allowlist - allowing request', ['path' => $context->path]);
-             return true;
-         }
-         if ($this->isHostPathInAllowlist($context->getHeader('host'), $context->path)) {
-             $this->log('Host and path in allowlist - allowing request', ['host' => $context->getHeader('host'), 'path' => $context->path]);
-             return true;
-         }
-         // NOUVEAU: Vérifier la liste blanche GraphQL
-         if ($context->graphqlOperation && $this->isGraphqlOperationInAllowlist($context->graphqlOperation['type'], $context->graphqlOperation['name'])) {
-             $this->log('GraphQL operation in allowlist - allowing request', ['operation' => "{$context->graphqlOperation['type']}:{$context->graphqlOperation['name']}"]);
-             return true;
-         }
-         if ($this->verifyWhitelistedBot($context)) {
-             $this->log('Whitelisted bot verified - allowing request', ['clientIp' => $context->clientIp]);
-             return true;
-         }
- 
+
          return false;
      }
 
@@ -906,6 +914,23 @@
                  break;
              }
          }
+     }
+
+     /**
+      * Évalue si la requête présente des caractéristiques d'attaque flagrantes ou a déclenché un honeypot.
+      */
+     private function hasCertainAttack(RequestContext $context): bool
+     {
+         $honeypotConfig = $this->securityConfig['honeypot'] ?? [];
+         $honeypot = RequestUtils::getHoneypotScore($context, $honeypotConfig);
+         if (($honeypot['honeypotScore'] ?? 0.0) >= 100.0) {
+             return true;
+         }
+         $bot = RequestUtils::getBotScore($context);
+         if (($bot['botScore'] ?? 0.0) >= 100.0) {
+             return true;
+         }
+         return false;
      }
 
      /**

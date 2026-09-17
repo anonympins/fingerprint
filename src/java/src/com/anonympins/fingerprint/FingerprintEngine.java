@@ -274,6 +274,19 @@ public class FingerprintEngine {
         return false;
     }
 
+    private boolean hasCertainAttack(RequestContext context) {
+        Map<String, Object> honeypotConfig = (Map<String, Object>) config.getOrDefault("honeypot", new HashMap<String, Object>());
+        double honeypotScore = RequestUtils.getHoneypotScore(context, honeypotConfig).getOrDefault("honeypotScore", 0.0);
+        if (honeypotScore >= 100.0) {
+            return true;
+        }
+        double botScore = RequestUtils.getBotScore(context).getOrDefault("botScore", 0.0);
+        if (botScore >= 100.0) {
+            return true;
+        }
+        return false;
+    }
+
     public double calculateFinalScore(Map<String, Double> suspicionVector) {
         if (weights == null || weights.isEmpty()) {
             return 0.0;
@@ -436,14 +449,22 @@ public class FingerprintEngine {
         }
         
         // Check allowlists
-        if (allowlist.check(context.clientIp) || isPathInAllowlist(context.path) || isUserAgentInAllowlist(context.getHeader("user-agent"))) {
-            Map<String, Object> res = new HashMap<>();
-            res.put("action", "allow");
-            res.put("score", 0.0);
-            Map<String, Double> vec = new HashMap<>();
-            vec.put("whitelisted", 100.0);
-            res.put("vector", vec);
-            return res;
+        boolean whitelisted = allowlist.check(context.clientIp) || isPathInAllowlist(context.path) || isUserAgentInAllowlist(context.getHeader("user-agent"));
+        if (whitelisted) {
+            boolean filterWhitelist = Boolean.TRUE.equals(config.get("filterWhitelist"));
+            if (filterWhitelist && hasCertainAttack(context)) {
+                if (verbose) {
+                    System.out.println("[FingerprintEngine] Whitelisted request contains a certain attack - bypassing whitelist bypass");
+                }
+            } else {
+                Map<String, Object> res = new HashMap<>();
+                res.put("action", "allow");
+                res.put("score", 0.0);
+                Map<String, Double> vec = new HashMap<>();
+                vec.put("whitelisted", 100.0);
+                res.put("vector", vec);
+                return res;
+            }
         }
 
         Map<String, Object> identity = resolveRequestIdentity(context, suspicionVector);

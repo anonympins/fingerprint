@@ -3970,7 +3970,7 @@ export class FingerprintEngine {
       'wasm',
       'similarityThreshold',
       'ed25519_private_key', 'ed25519_public_key',
-      'federatedPeers', 'federationSecret'
+      'federatedPeers', 'federationSecret', 'filterWhitelist'
     ]);
 
     // 1. Check for essential keys
@@ -3987,6 +3987,19 @@ export class FingerprintEngine {
         console.warn(`[Fingerprint] Warning: Unknown key '${key}' found in securityConfig. This might be a typo.`);
       }
     }
+  }
+
+  _hasCertainAttack(context) {
+    const honeypotConfig = this.securityConfig.honeypot || {};
+    const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
+    if (honeypotScore >= 100) {
+      return true;
+    }
+    const { botScore } = getBotScore(context);
+    if (botScore >= 100) {
+      return true;
+    }
+    return false;
   }
 
   _log(message, data = {}) {
@@ -4324,34 +4337,37 @@ export class FingerprintEngine {
     const allowRoaming = this.securityConfig?.allowCrossNetworkRoaming ?? false;
 
     // 1. Check static IP allowlist first for maximum performance.
+    let whitelisted = false;
+    let whitelistType = '';
+
     if (this._isIpInAllowlist(clientIp)) {
-      this._log('IP in allowlist - allowing request', { clientIp });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'allowlist' } };
+      whitelisted = true;
+      whitelistType = 'allowlist';
+    } else if (await this._isIpInHostnameAllowlist(clientIp)) {
+      whitelisted = true;
+      whitelistType = 'hostname_allowlist';
+    } else {
+      const requestHost = requestContext.headers?.host;
+      if (requestHost && this._isHostPathInAllowlist(requestHost, path)) {
+        whitelisted = true;
+        whitelistType = 'host_path_allowlist';
+      } else if (this._isPathInAllowlist(path)) {
+        whitelisted = true;
+        whitelistType = 'path_allowlist';
+      } else if (graphqlOperationType && this._isGraphqlOperationInAllowlist(graphqlOperationType, graphqlOperationName)) {
+        whitelisted = true;
+        whitelistType = 'graphql_operation_allowlist';
+      }
     }
 
-    // 2. Check hostname-based allowlist.
-    if (await this._isIpInHostnameAllowlist(clientIp)) {
-      this._log('IP resolves to a whitelisted hostname - allowing request', { clientIp });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'hostname_allowlist' } };
-    }
-
-    // 3. Check host+path based allowlist.
-    const requestHost = requestContext.headers?.host;
-    if (requestHost && this._isHostPathInAllowlist(requestHost, path)) {
-      this._log('Host and path in allowlist - allowing request', { host: requestHost, path });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'host_path_allowlist' } };
-    }
-
-    // 3. Check path-based allowlist.
-    if (this._isPathInAllowlist(path)) {
-      this._log('Path in allowlist - allowing request', { path });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'path_allowlist' } };
-    }
-
-    // 5. Check GraphQL operation allowlist.
-    if (graphqlOperationType && this._isGraphqlOperationInAllowlist(graphqlOperationType, graphqlOperationName)) {
-      this._log('GraphQL operation in allowlist - allowing request', { operation: `${graphqlOperationType}:${graphqlOperationName}` });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'graphql_operation_allowlist' } };
+    if (whitelisted) {
+      const filterWhitelist = this.securityConfig.filterWhitelist || false;
+      if (filterWhitelist && this._hasCertainAttack(requestContext)) {
+        this._log('Whitelisted request contains a certain attack - bypassing whitelist bypass', { clientIp, path });
+      } else {
+        this._log(`IP/Path in allowlist (${whitelistType}) - allowing request`, { clientIp, path });
+        return { action: 'next', score: 0, vector: { whitelisted: 100, type: whitelistType } };
+      }
     }
 
     const { pow_nonce } = query;
@@ -4369,8 +4385,13 @@ export class FingerprintEngine {
 
     // Check if the request is from a verified, whitelisted bot (e.g., Googlebot)
     if (await this._verifyWhitelistedBot(requestContext)) {
-      this._log('Whitelisted bot verified - allowing request', { clientIp });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
+      const filterWhitelist = this.securityConfig.filterWhitelist || false;
+      if (filterWhitelist && this._hasCertainAttack(requestContext)) {
+        this._log('Verified bot request contains a certain attack - bypassing bot whitelist bypass', { clientIp });
+      } else {
+        this._log('Whitelisted bot verified - allowing request', { clientIp });
+        return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
+      }
     }
     
     this._log('Identity resolved', { deviceId, isNewDevice, hasDeviceData: !!deviceData });

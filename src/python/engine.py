@@ -2761,6 +2761,29 @@ class FingerprintEngine:
  
          return False
 
+    def _has_certain_attack(self, context: RequestContext) -> bool:
+        """
+        Évalue si la requête présente des caractéristiques d'attaque flagrantes
+        (comme le déclenchement d'un honeypot ou un score de bot atteignant le maximum).
+
+        Args:
+            context (RequestContext): Le contexte de la requête.
+
+        Returns:
+            bool: True si une attaque flagrante est détectée, False sinon.
+        """
+        honeypot_config = self.config.get("honeypot", {})
+        
+        honeypot_score = RequestUtils.get_honeypot_score(context, honeypot_config)
+        if honeypot_score >= 100.0:
+            return True
+            
+        bot_score = RequestUtils.get_bot_score(context)
+        if bot_score >= 100.0:
+            return True
+            
+        return False
+
     def update_config(self, new_config: Dict[str, Any]) -> None:
         """
         Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
@@ -3216,17 +3239,16 @@ class FingerprintEngine:
                 return {"action": "next", "intendedAction": "block"}
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
-        # Honeypot trap URL instant check & condemnation
-        honeypot_config = self.config.get("honeypot", {})
-        for trap in honeypot_config.get("trapUrls", []):
-            if context.path.startswith(trap):
+        # Instant check & condemnation for certain attacks (Honeypot or Bot)
+        if self._has_certain_attack(context):
+            if device_data:
                 device_data["condemned"] = True
-                self._fast_path_cache[client_ip] = (current_time + 60.0, "block")
                 await self.store.set(f"device:{device_id}", device_data)
-                MetricsManager.increment_counter("requests_total", {"status": "blocked"})
-                if self.dry_run:
-                    return {"action": "next", "intendedAction": "block"}
-                return {"action": "block", "status": 403, "body": "Forbidden"}
+            self._fast_path_cache[client_ip] = (current_time + 60.0, "block")
+            MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+            if self.dry_run:
+                return {"action": "next", "intendedAction": "block"}
+            return {"action": "block", "status": 403, "body": "Forbidden"}
 
         # Check for challenge submission
         pow_nonce = context.query_params.get("pow_nonce")
