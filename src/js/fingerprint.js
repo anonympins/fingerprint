@@ -6264,19 +6264,20 @@ export function sanitizeTrafficData(trafficData) {
   if (!trafficData || trafficData.length === 0) {
     return [];
   }
-  const suspiciousLogs = [];
-  const passedLogs = [];
-  const deviceCounts = new Map();
+
+    const rawLogs = [...trafficData];
+    const totalCount = rawLogs.length;
+
+    const maxLogsPerDevice = Math.max(3, Math.floor(totalCount * 0.02)); // Max 2% contribution per device
+    const maxLogsPerIp = Math.max(3, Math.floor(totalCount * 0.02));      // Max 2% par adresse IP individuelle
+    const maxLogsPerSubnet = Math.max(5, Math.floor(totalCount * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
+    const maxLogsPerHardwareCluster = Math.max(3, Math.floor(totalCount * 0.02)); // Max 2% par cluster matériel stable
+
+    const deviceCounts = new Map();
   const ipCounts = new Map();
   const subnetCounts = new Map();
   const hardwareClusterCounts = new Map();
   const hwClusterCache = new Map();
-
-  // Calcul des quotas maximums pour éviter l'influence démesurée d'une entité
-  const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
-  const maxLogsPerIp = Math.max(3, Math.floor(trafficData.length * 0.02));      // Max 2% par adresse IP individuelle
-  const maxLogsPerSubnet = Math.max(5, Math.floor(trafficData.length * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
-  const maxLogsPerHardwareCluster = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% par cluster matériel stable
 
   const getHardwareCluster = (log) => {
     const fp = log.deviceHash || log.fingerprint || log.deviceFingerprint || '';
@@ -6298,8 +6299,41 @@ export function sanitizeTrafficData(trafficData) {
     hwClusterCache.set(fp, result);
     return result;
   };
+// --- REVOLUTION : Compression de Cohorte par Densité Vectorielle (Anti-Sybil / Anti-Poisoning) ---
+    const clusteredLogs = [];
+    const getVectorDistance = (v1, v2) => {
+        if (!v1 || !v2) return Infinity;
+        let sum = 0;
+        const keys = new Set([...Object.keys(v1), ...Object.keys(v2)]);
+        for (const key of keys) {
+            sum += Math.pow((v1[key] || 0) - (v2[key] || 0), 2);
+        }
+        return Math.sqrt(sum);
+    };
 
-  for (const log of trafficData) {
+    for (const log of rawLogs) {
+        let matchedCluster = null;
+        for (const cluster of clusteredLogs) {
+            if (log.type === cluster.type && getVectorDistance(log.vector, cluster.vector) < 5.0) {
+                matchedCluster = cluster;
+                break;
+            }
+        }
+        if (matchedCluster) {
+            matchedCluster.instancesCount = (matchedCluster.instancesCount || 1) + 1;
+            matchedCluster.weight = 1 + Math.log(matchedCluster.instancesCount); // Compression logarithmique
+        } else {
+            const logCopy = { ...log };
+            logCopy.instancesCount = 1;
+            logCopy.weight = 1.0;
+            clusteredLogs.push(logCopy);
+        }
+    }
+
+    const suspiciousLogs = [];
+    const passedLogs = [];
+
+    for (const log of clusteredLogs) {
     const devId = log.deviceId || 'anonymous';
     const ip = log.clientIp || log.ip || 'unknown';
     const subnet = getIpSubnet(ip) || 'unknown-subnet';
@@ -6388,29 +6422,33 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     pruneTrafficData(trafficData, maxDataPoints, maxAgeMs, onCleanup);
     const sanitizedData = sanitizeTrafficData(trafficData);
 
-  const highConfidenceLogs = sanitizedData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
-  const highConfidenceRatio = sanitizedData.length > 0 ? highConfidenceLogs / sanitizedData.length : 0;
+  const highConfidenceLogs = sanitizedData
+    .filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered')
+    .reduce((sum, log) => sum + (log.instancesCount || 1), 0);
+  const totalSanitizedInstances = sanitizedData.reduce((sum, log) => sum + (log.instancesCount || 1), 0);
+  const highConfidenceRatio = totalSanitizedInstances > 0 ? highConfidenceLogs / totalSanitizedInstances : 0;
   const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
   const MIN_HIGH_CONFIDENCE_COUNT = 10; // Absolu de secours pour éviter le gel lors de floods
 
   const hasEnoughSignal = highConfidenceRatio >= MIN_CONFIDENCE_RATIO || highConfidenceLogs >= MIN_HIGH_CONFIDENCE_COUNT;
 
-  if (sanitizedData.length < minDataPoints || !hasEnoughSignal) {
-    if (sanitizedData.length < minDataPoints) {
-    console.log(`[AutoTuning] Reporté : ${sanitizedData.length}/${minDataPoints} points de données.`);
+  if (totalSanitizedInstances < minDataPoints || !hasEnoughSignal) {
+    if (totalSanitizedInstances < minDataPoints) {
+    console.log(`[AutoTuning] Reporté : ${totalSanitizedInstances}/${minDataPoints} points de données.`);
     } else {
       console.log(`[AutoTuning] Reporté : Signaux de confiance insuffisants (Ratio: ${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}% et absolu: ${highConfidenceLogs} < ${MIN_HIGH_CONFIDENCE_COUNT}).`);
     }
     return;
   }
-  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${sanitizedData.length} points de données assainis.`);
+  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${totalSanitizedInstances} points de données assainis.`);
 
-  const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData: sanitizedData });
+  try {
+    const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData: sanitizedData });
 
-  if (!paretoFront || paretoFront.length === 0) {
-    console.warn("[AutoTuning] L'optimisation n'a retourné aucune solution.");
-    return;
-  }
+    if (!paretoFront || paretoFront.length === 0) {
+      console.warn("[AutoTuning] L'optimisation n'a retourné aucune solution.");
+      return;
+    }
 
   // Règles de gardiennage (Sanity Guardrails) pour filtrer le front de Pareto
   const isValidSecurityConfig = (config) => {
@@ -6568,13 +6606,14 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   if (savePath) {
       try {
           const configToSave = JSON.stringify(bestSolution.solution, null, 2);
-          fs.writeFileSync(savePath, configToSave, 'utf-8');
+          writeFileSync(savePath, configToSave, 'utf-8');
           console.log(`[AutoTuning] Meilleure configuration sauvegardée dans : ${savePath}`);
       } catch (error) {
           console.error(`[AutoTuning] Erreur lors de la sauvegarde de la configuration optimisée : ${error.message}`);
       }
   }
 
+  } finally {
     if (clearAfterTuning) {
         const cleared = trafficData.splice(0, trafficData.length);
         if (onCleanup && typeof onCleanup === 'function' && cleared.length > 0) {
@@ -6586,6 +6625,7 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
         }
         console.log(`[AutoTuning] Explicitly cleared ${cleared.length} processed traffic data points.`);
     }
+  }
 }
 
 /**

@@ -70,18 +70,22 @@ class OptimizationOperators
      */
     public static function createFullSecurityConfigEvaluator(array $context): callable
     {
-        $trafficData = $context['trafficData'];
+        $trafficData = $context['trafficData'] ?? [];
+        $currentConfig = $context['currentConfig'] ?? null;
 
-        return function (array $config) use ($trafficData): array {
-            $falsePositives = 0;
-            $falseNegatives = 0;
-            $totalHumans = 0;
-            $totalBots = 0;
+        return function (array $config) use ($trafficData, $currentConfig): array {
+            $falsePositives = 0.0;
+            $falseNegatives = 0.0;
+            $totalHumans = 0.0;
+            $totalBots = 0.0;
+
+            $maxHumanScore = 0.0;
+            $minBotScore = 100.0;
 
             $calculateScore = function (array $log) use ($config): float {
                 $score = 0.0;
                 foreach ($config['weights'] as $key => $weight) {
-                    $score += ($log['vector'][$key] ?? 0) * $weight;
+                    $score += ($log['vector'][$key] ?? 0.0) * $weight;
                 }
                 return $score;
             };
@@ -94,30 +98,50 @@ class OptimizationOperators
                 'trap_triggered' => 2.0,
             ];
 
+            // 1. Évaluation sur les logs de trafic réels
             foreach ($trafficData as $log) {
-                $confidence = $confidenceWeights[$log['type']] ?? 1.0;
-                $isLikelyBot = in_array($log['type'], ['challenge_issued', 'request_blocked', 'trap_triggered']);
-                $isLikelyHuman = in_array($log['type'], ['request_passed', 'challenge_solved']);
+                $weight = (float)($log['weight'] ?? 1.0);
+                $confidence = ($confidenceWeights[$log['type'] ?? ''] ?? 1.0) * $weight;
+                $isLikelyBot = in_array($log['type'] ?? '', ['challenge_issued', 'request_blocked', 'trap_triggered']);
+                $isLikelyHuman = in_array($log['type'] ?? '', ['request_passed', 'challenge_solved']);
+
+                $score = $calculateScore($log);
 
                 if ($isLikelyBot) {
                     $totalBots += $confidence;
-                    $score = $calculateScore($log);
+                    $minBotScore = min($minBotScore, $score);
                     if ($score < $config['thresholds']['low']) {
                         $falseNegatives += $confidence;
                     }
                 } elseif ($isLikelyHuman) {
                     $totalHumans += $confidence;
-                    $score = $calculateScore($log);
+                    $maxHumanScore = max($maxHumanScore, $score);
                     if ($score >= $config['thresholds']['low']) {
                         $falsePositives += $confidence;
                     }
                 }
             }
 
-            $falsePositiveRate = $totalHumans > 0 ? $falsePositives / $totalHumans : 0;
-            $falseNegativeRate = $totalBots > 0 ? $falseNegatives / $totalBots : 0;
+            $falsePositiveRate = $totalHumans > 0.0 ? $falsePositives / $totalHumans : 0.0;
+            $falseNegativeRate = $totalBots > 0.0 ? $falseNegatives / $totalBots : 0.0;
 
-            return [$falsePositiveRate, $falseNegativeRate];
+            // 3. Pénalité de dérive d'échelle (L2 Regularization par rapport au profil d'origine)
+            $regularizationPenalty = 0.0;
+            if ($currentConfig && isset($currentConfig['weights'])) {
+                foreach ($config['weights'] as $key => $val) {
+                    $originalVal = (float)($currentConfig['weights'][$key] ?? 0.0);
+                    $regularizationPenalty += pow((float)$val - $originalVal, 2);
+                }
+            }
+
+            // 4. Maximisation de la marge
+            $marginOverlap = max(0.0, $maxHumanScore - $minBotScore);
+            $marginPenalty = $marginOverlap / 100.0;
+
+            $obj1 = $falsePositiveRate + ($regularizationPenalty * 0.05);
+            $obj2 = $falseNegativeRate + $marginPenalty;
+
+            return [$obj1, $obj2];
         };
     }
 

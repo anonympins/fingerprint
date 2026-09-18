@@ -37,6 +37,59 @@ public class AutoTuner {
         scheduler.shutdown();
     }
 
+
+    private double getVectorDistance(Map<String, Double> v1, Map<String, Double> v2) {
+        if (v1 == null || v2 == null) return Double.POSITIVE_INFINITY;
+        double sum = 0.0;
+        Set<String> allKeys = new HashSet<>(v1.keySet());
+        allKeys.addAll(v2.keySet());
+        for (String key : allKeys) {
+            double val1 = v1.getOrDefault(key, 0.0);
+            double val2 = v2.getOrDefault(key, 0.0);
+            sum += Math.pow(val1 - val2, 2);
+        }
+        return Math.sqrt(sum);
+    }
+
+    private String getHardwareCluster(Map<String, Object> log) {
+        String fp = (String) log.getOrDefault("deviceHash", log.getOrDefault("fingerprint", log.getOrDefault("deviceFingerprint", "")));
+        if (fp == null || fp.isEmpty()) {
+            return (String) log.getOrDefault("deviceId", "anonymous-cluster");
+        }
+        String[] parts = fp.split("\\|");
+        List<String> hwComponents = new ArrayList<>();
+        for (String part : parts) {
+            String[] pair = part.split(":", 2);
+            if (pair.length == 2 && (pair[0].equals("gpu") || pair[0].equals("cvs") || pair[0].equals("hw"))) {
+                hwComponents.add(part);
+            }
+        }
+        if (!hwComponents.isEmpty()) {
+            Collections.sort(hwComponents);
+            return String.join("|", hwComponents);
+        }
+        return (String) log.getOrDefault("deviceId", "anonymous-cluster");
+    }
+
+    private String getIpSubnet(String ip) {
+        if (ip == null || "unknown".equals(ip)) {
+            return "unknown-subnet";
+        }
+        if (ip.contains(":")) {
+            String[] parts = ip.split(":");
+            if (parts.length >= 3) {
+                return parts[0] + ":" + parts[1] + ":" + parts[2] + "::/48";
+            }
+            return "unknown-subnet";
+        } else {
+            String[] parts = ip.split("\\.");
+            if (parts.length == 4) {
+                return parts[0] + "." + parts[1] + "." + parts[2] + ".0/24";
+            }
+            return "unknown-subnet";
+        }
+    }
+
     @SuppressWarnings("unchecked")
     public synchronized void runOptimizationCycle() {
         List<Map<String, Object>> rawLogs = (List<Map<String, Object>>) store.get("traffic_logs");
@@ -128,27 +181,77 @@ public class AutoTuner {
         }
     }
 
+    @SuppressWarnings("unchecked")
     private List<Map<String, Object>> sanitizeTrafficData(List<Map<String, Object>> trafficData) {
+        if (trafficData == null || trafficData.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<Map<String, Object>> rawLogs = new ArrayList<>(trafficData);
+        int totalCount = rawLogs.size();
+
+        int maxLogsPerDevice = Math.max(3, (int) Math.floor(totalCount * 0.02));
+        int maxLogsPerIp = Math.max(3, (int) Math.floor(totalCount * 0.02));
+        int maxLogsPerSubnet = Math.max(5, (int) Math.floor(totalCount * 0.05));
+        int maxLogsPerHardwareCluster = Math.max(3, (int) Math.floor(totalCount * 0.02));
+
+        // --- REVOLUTION : Compression de Cohorte par Densité Vectorielle (Anti-Sybil / Anti-Poisoning) ---
+        List<Map<String, Object>> clusteredLogs = new ArrayList<>();
+        for (Map<String, Object> log : rawLogs) {
+            Map<String, Object> matchedCluster = null;
+            Map<String, Double> logVector = (Map<String, Double>) log.get("vector");
+            String logType = (String) log.get("type");
+
+            for (Map<String, Object> cluster : clusteredLogs) {
+                Map<String, Double> clusterVector = (Map<String, Double>) cluster.get("vector");
+                String clusterType = (String) cluster.get("type");
+
+                if (Objects.equals(logType, clusterType) && getVectorDistance(logVector, clusterVector) < 5.0) {
+                    matchedCluster = cluster;
+                    break;
+                }
+            }
+
+            if (matchedCluster != null) {
+                int instancesCount = (int) matchedCluster.getOrDefault("instancesCount", 1) + 1;
+                matchedCluster.put("instancesCount", instancesCount);
+                matchedCluster.put("weight", 1.0 + Math.log(instancesCount)); // Compression logarithmique
+            } else {
+                Map<String, Object> logCopy = new HashMap<>(log);
+                logCopy.put("instancesCount", 1);
+                logCopy.put("weight", 1.0);
+                clusteredLogs.add(logCopy);
+            }
+        }
+
         List<Map<String, Object>> suspiciousLogs = new ArrayList<>();
         List<Map<String, Object>> passedLogs = new ArrayList<>();
         Map<String, Integer> deviceCounts = new HashMap<>();
         Map<String, Integer> ipCounts = new HashMap<>();
+        Map<String, Integer> subnetCounts = new HashMap<>();
+        Map<String, Integer> hardwareClusterCounts = new HashMap<>();
 
-        int totalCount = trafficData.size();
-        int maxLogsPerDevice = Math.max(3, (int) Math.floor(totalCount * 0.02));
-        int maxLogsPerIp = Math.max(3, (int) Math.floor(totalCount * 0.02));
-
-        for (Map<String, Object> log : trafficData) {
+        for (Map<String, Object> log : clusteredLogs) {
             String devId = (String) log.getOrDefault("deviceId", "anonymous");
             String ip = (String) log.getOrDefault("clientIp", "unknown");
+            String subnet = getIpSubnet(ip);
+            String hwCluster = getHardwareCluster(log);
             String type = (String) log.getOrDefault("type", "");
 
             int currentDeviceCount = deviceCounts.getOrDefault(devId, 0);
             int currentIpCount = ipCounts.getOrDefault(ip, 0);
+            int currentSubnetCount = subnetCounts.getOrDefault(subnet, 0);
+            int currentHwClusterCount = hardwareClusterCounts.getOrDefault(hwCluster, 0);
 
-            if (currentDeviceCount < maxLogsPerDevice && currentIpCount < maxLogsPerIp) {
+            if (currentDeviceCount < maxLogsPerDevice
+                    && ("unknown".equals(ip) || currentIpCount < maxLogsPerIp)
+                    && ("unknown-subnet".equals(subnet) || currentSubnetCount < maxLogsPerSubnet)
+                    && currentHwClusterCount < maxLogsPerHardwareCluster) {
+
                 deviceCounts.put(devId, currentDeviceCount + 1);
-                ipCounts.put(ip, currentIpCount + 1);
+                if (!"unknown".equals(ip)) ipCounts.put(ip, currentIpCount + 1);
+                if (!"unknown-subnet".equals(subnet)) subnetCounts.put(subnet, currentSubnetCount + 1);
+                hardwareClusterCounts.put(hwCluster, currentHwClusterCount + 1);
 
                 if ("request_passed".equals(type)) {
                     passedLogs.add(log);
