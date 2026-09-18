@@ -74,10 +74,43 @@ class OptimizationOperators
         $currentConfig = $context['currentConfig'] ?? null;
 
         return function (array $config) use ($trafficData, $currentConfig): array {
-            $falsePositives = 0.0;
-            $falseNegatives = 0.0;
-            $totalHumans = 0.0;
-            $totalBots = 0.0;
+            $threatProfiles = [
+                'account_takeover' => [
+                    'importance' => 10.0,
+                    'ux_vs_security_ratio' => 0.1,
+                    'target_threshold' => 'block',
+                    'indicators' => ['requestPatternScore', 'behaviorScore', 'timeInconsistencyScore', 'clickVarianceScore']
+                ],
+                'active_exploitation' => [
+                    'importance' => 8.0,
+                    'ux_vs_security_ratio' => 0.2,
+                    'target_threshold' => 'block',
+                    'indicators' => ['honeypotScore', 'headerAnomalyScore']
+                ],
+                'mass_scraping' => [
+                    'importance' => 3.0,
+                    'ux_vs_security_ratio' => 0.8,
+                    'target_threshold' => 'low',
+                    'indicators' => ['requestPatternScore', 'renderingAnomalyScore', 'clientHintsInconsistencyScore']
+                ],
+                'distributed_botnets' => [
+                    'importance' => 6.0,
+                    'ux_vs_security_ratio' => 0.5,
+                    'target_threshold' => 'high',
+                    'indicators' => ['subnetScore', 'botnetClusterScore', 'ipReputationScore', 'tlsSpoofingScore']
+                ],
+                'basic_automation' => [
+                    'importance' => 5.0,
+                    'ux_vs_security_ratio' => 0.4,
+                    'target_threshold' => 'medium',
+                    'indicators' => ['botScore', 'tlsSpoofingScore', 'tcpAnomalyScore']
+                ]
+            ];
+
+            $threatStats = [];
+            foreach ($threatProfiles as $name => $profile) {
+                $threatStats[$name] = ['fp' => 0.0, 'fn' => 0.0, 'totalHumans' => 0.0, 'totalBots' => 0.0];
+            }
 
             $maxHumanScore = 0.0;
             $minBotScore = 100.0;
@@ -108,22 +141,56 @@ class OptimizationOperators
                 $score = $calculateScore($log);
 
                 if ($isLikelyBot) {
-                    $totalBots += $confidence;
                     $minBotScore = min($minBotScore, $score);
-                    if ($score < $config['thresholds']['low']) {
-                        $falseNegatives += $confidence;
-                    }
                 } elseif ($isLikelyHuman) {
-                    $totalHumans += $confidence;
                     $maxHumanScore = max($maxHumanScore, $score);
-                    if ($score >= $config['thresholds']['low']) {
-                        $falsePositives += $confidence;
+                }
+
+                foreach ($threatProfiles as $name => $profile) {
+                    $threatActivity = 0.0;
+                    foreach ($profile['indicators'] as $indicator) {
+                        $threatActivity += (float)($log['vector'][$indicator] ?? 0.0);
+                    }
+                    if ($threatActivity <= 0.0) {
+                        continue;
+                    }
+                    $effectiveConfidence = $confidence * ($threatActivity / 100.0);
+                    $targetThreshold = (float)($config['thresholds'][$profile['target_threshold']] ?? 20.0);
+
+                    if ($isLikelyBot) {
+                        $threatStats[$name]['totalBots'] += $effectiveConfidence;
+                        if ($score < $targetThreshold) {
+                            $threatStats[$name]['fn'] += $effectiveConfidence;
+                        }
+                    } elseif ($isLikelyHuman) {
+                        $threatStats[$name]['totalHumans'] += $effectiveConfidence;
+                        if ($score >= $targetThreshold) {
+                            $threatStats[$name]['fp'] += $effectiveConfidence;
+                        }
                     }
                 }
             }
 
-            $falsePositiveRate = $totalHumans > 0.0 ? $falsePositives / $totalHumans : 0.0;
-            $falseNegativeRate = $totalBots > 0.0 ? $falseNegatives / $totalBots : 0.0;
+            $weightedFpr = 0.0;
+            $weightedFnr = 0.0;
+            $totalImportance = 0.0;
+
+            foreach ($threatProfiles as $name => $profile) {
+                $totalImportance += $profile['importance'];
+            }
+
+            foreach ($threatProfiles as $name => $profile) {
+                $stats = $threatStats[$name];
+                $fpr = $stats['totalHumans'] > 0 ? $stats['fp'] / $stats['totalHumans'] : 0.0;
+                $fnr = $stats['totalBots'] > 0 ? $stats['fn'] / $stats['totalBots'] : 0.0;
+
+                $importanceWeight = $profile['importance'] / $totalImportance;
+                $uxRatio = $profile['ux_vs_security_ratio'];
+                $secRatio = 1.0 - $uxRatio;
+
+                $weightedFpr += $fpr * $importanceWeight * $uxRatio;
+                $weightedFnr += $fnr * $importanceWeight * $secRatio;
+            }
 
             // 3. Pénalité de dérive d'échelle (L2 Regularization par rapport au profil d'origine)
             $regularizationPenalty = 0.0;
@@ -138,8 +205,8 @@ class OptimizationOperators
             $marginOverlap = max(0.0, $maxHumanScore - $minBotScore);
             $marginPenalty = $marginOverlap / 100.0;
 
-            $obj1 = $falsePositiveRate + ($regularizationPenalty * 0.05);
-            $obj2 = $falseNegativeRate + $marginPenalty;
+            $obj1 = $weightedFpr + ($regularizationPenalty * 0.05);
+            $obj2 = $weightedFnr + $marginPenalty;
 
             return [$obj1, $obj2];
         };
@@ -169,10 +236,10 @@ class OptimizationOperators
             $config = $currentConfig ?: \Anonympins\Fingerprint\Config\SecurityProfiles::createSecurityProfile('balanced');
             $ind = [
                 'thresholds' => [],
-                'weights' => $config['weights'] ?? [], // Conserver strictement les poids de l'expert
+                'weights' => [],
                 'patterns' => []
             ];
-            foreach (['thresholds', 'patterns'] as $section) {
+            foreach (['thresholds', 'weights', 'patterns'] as $section) {
                 if (isset($config[$section]) && is_array($config[$section])) {
                     foreach ($config[$section] as $k => $v) {
                         if (is_numeric($v)) {
@@ -195,8 +262,9 @@ class OptimizationOperators
         $mutate = function (array $c, ?array $currentConfigRef = null) use ($currentConfig): array {
             $newConfig = $c;
             $sections = [
-                ['name' => 'patterns', 'weight' => 0.85],
-                ['name' => 'thresholds', 'weight' => 0.15]
+                ['name' => 'patterns', 'weight' => 0.50],
+                ['name' => 'thresholds', 'weight' => 0.25],
+                ['name' => 'weights', 'weight' => 0.25]
             ];
             $rand = self::secureRandom();
             $cumulativeWeight = 0;
@@ -213,7 +281,15 @@ class OptimizationOperators
             $keyToMutate = $keys[random_int(0, count($keys) - 1)];
 
             if ($sectionToMutate === 'weights') {
-                $newConfig[$sectionToMutate][$keyToMutate] = max(0, min(1.5, $newConfig[$sectionToMutate][$keyToMutate]));
+                $newConfig[$sectionToMutate][$keyToMutate] = max(0.05, min(1.5, $newConfig[$sectionToMutate][$keyToMutate] + (self::secureRandom() - 0.5) * 0.1));
+            } elseif ($sectionToMutate === 'thresholds') {
+                $newConfig[$sectionToMutate][$keyToMutate] = (int)round($newConfig[$sectionToMutate][$keyToMutate] + (self::secureRandom() - 0.5) * 5.0);
+            } else {
+                if ($keyToMutate === 'decayFactor') {
+                    $newConfig['patterns']['decayFactor'] = max(0.8, min(0.999, $newConfig['patterns']['decayFactor'] + (self::secureRandom() - 0.5) * 0.05));
+                } elseif (str_contains($keyToMutate, 'Threshold') || str_contains($keyToMutate, 'Reset')) {
+                    $newConfig['patterns'][$keyToMutate] = max(50.0, $newConfig['patterns'][$keyToMutate] + (self::secureRandom() - 0.5) * 50.0);
+                }
             }
 
             $refConfig = $currentConfigRef ?? $currentConfig;

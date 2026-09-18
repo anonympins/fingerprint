@@ -1555,6 +1555,40 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
   const trafficData = context.trafficData || [];
   const currentConfig = context.currentConfig || null;
 
+
+  const THREAT_PROFILES = {
+    account_takeover: {
+      importance: 10.0,
+      ux_vs_security_ratio: 0.1, // 10% FPR / 90% FNR (Priorité sécurité maximale)
+      target_threshold: 'block',
+      indicators: ['requestPatternScore', 'behaviorScore', 'timeInconsistencyScore', 'clickVarianceScore']
+    },
+    active_exploitation: {
+      importance: 8.0,
+      ux_vs_security_ratio: 0.2, // 20% FPR / 80% FNR (Sécurité prioritaire)
+      target_threshold: 'block',
+      indicators: ['honeypotScore', 'headerAnomalyScore']
+    },
+    mass_scraping: {
+      importance: 3.0,
+      ux_vs_security_ratio: 0.8, // 80% FPR / 20% FNR (UX prioritaire)
+      target_threshold: 'low',
+      indicators: ['requestPatternScore', 'renderingAnomalyScore', 'clientHintsInconsistencyScore']
+    },
+    distributed_botnets: {
+      importance: 6.0,
+      ux_vs_security_ratio: 0.5, // Équilibré
+      target_threshold: 'high',
+      indicators: ['subnetScore', 'botnetClusterScore', 'ipReputationScore', 'tlsSpoofingScore']
+    },
+    basic_automation: {
+      importance: 5.0,
+      ux_vs_security_ratio: 0.4, // 40% FPR / 60% FNR
+      target_threshold: 'medium',
+      indicators: ['botScore', 'tlsSpoofingScore', 'tcpAnomalyScore']
+    }
+  };
+
   // Ancres immuables (Baseline Anchors) pour forcer le calibrage d'échelle de suspicion
   const STATIC_ANCHORS = [
     {
@@ -1608,10 +1642,10 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
   ];
 
   return function fullConfigFitness(config) {
-    let falsePositives = 0;
-    let falseNegatives = 0;
-    let totalHumans = 0;
-    let totalBots = 0;
+    const threatStats = {};
+    for (const threatName in THREAT_PROFILES) {
+      threatStats[threatName] = { fp: 0, fn: 0, totalHumans: 0, totalBots: 0 };
+    }
 
     let maxHumanScore = 0;
     let minBotScore = 100;
@@ -1642,42 +1676,96 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       const score = calculateScore(log);
 
       if (isLikelyBot) {
-        totalBots += confidence;
         minBotScore = Math.min(minBotScore, score);
-        if (score < config.thresholds.low) {
-          falseNegatives += confidence;
-        }
       } else if (isLikelyHuman) {
-        totalHumans += confidence;
         maxHumanScore = Math.max(maxHumanScore, score);
-        if (score >= config.thresholds.low) {
-          falsePositives += confidence;
+      }
+
+      for (const threatName in THREAT_PROFILES) {
+        const profile = THREAT_PROFILES[threatName];
+        let threatActivity = 0.0;
+        for (const indicator of profile.indicators) {
+          threatActivity += (log.vector?.[indicator] || 0.0);
+        }
+        if (threatActivity <= 0.0) {
+          continue;
+        }
+        const effectiveConfidence = confidence * (threatActivity / 100.0);
+        const targetThreshold = config.thresholds[profile.target_threshold] || 20;
+
+        if (isLikelyBot) {
+          threatStats[threatName].totalBots += effectiveConfidence;
+          if (score < targetThreshold) {
+            threatStats[threatName].fn += effectiveConfidence;
+          }
+        } else if (isLikelyHuman) {
+          threatStats[threatName].totalHumans += effectiveConfidence;
+          if (score >= targetThreshold) {
+            threatStats[threatName].fp += effectiveConfidence;
+          }
         }
       }
-    }
 
+    }
     // 2. Évaluation sur les ancres immuables pour fixer l'échelle
     for (const anchor of STATIC_ANCHORS) {
       const score = calculateScore(anchor);
       const weight = anchor.weight;
+      const isBot = anchor.type === 'request_blocked' || anchor.type === 'challenge_issued';
 
-      if (anchor.type === 'request_blocked' || anchor.type === 'challenge_issued') {
-        totalBots += weight;
+      if (isBot){
         minBotScore = Math.min(minBotScore, score);
-        if (score < config.thresholds.low) {
-          falseNegatives += weight * 10; // Pénalité punitive forte
-        }
       } else {
-        totalHumans += weight;
         maxHumanScore = Math.max(maxHumanScore, score);
-        if (score >= config.thresholds.low) {
-          falsePositives += weight * 10; // Pénalité punitive forte
+      }
+
+      for (const threatName in THREAT_PROFILES) {
+        const profile = THREAT_PROFILES[threatName];
+        let threatActivity = 0.0;
+        for (const indicator of profile.indicators) {
+          threatActivity += (anchor.vector?.[indicator] || 0.0);
+        }
+        if (threatActivity <= 0.0) {
+          continue;
+        }
+        const effectiveWeight = weight * (threatActivity / 100.0);
+        const targetThreshold = config.thresholds[profile.target_threshold] || 20;
+
+        if (isBot) {
+          threatStats[threatName].totalBots += effectiveWeight;
+          if (score < targetThreshold) {
+            threatStats[threatName].fn += effectiveWeight * 10; // Pénalité punitive forte
+          }
+        } else {
+          threatStats[threatName].totalHumans += effectiveWeight;
+          if (score >= targetThreshold) {
+            threatStats[threatName].fp += effectiveWeight * 10; // Pénalité punitive forte
+          }
         }
       }
     }
+    let weightedFpr = 0;
+    let weightedFnr = 0;
+    let totalImportance = 0;
 
-    const falsePositiveRate = totalHumans > 0 ? falsePositives / totalHumans : 0;
-    const falseNegativeRate = totalBots > 0 ? falseNegatives / totalBots : 0;
+    for (const threatName in THREAT_PROFILES) {
+      totalImportance += THREAT_PROFILES[threatName].importance;
+    }
+
+    for (const threatName in THREAT_PROFILES) {
+      const profile = THREAT_PROFILES[threatName];
+      const stats = threatStats[threatName];
+
+      const fpr = stats.totalHumans > 0 ? stats.fp / stats.totalHumans : 0;
+      const fnr = stats.totalBots > 0 ? stats.fn / stats.totalBots : 0;
+
+      const importanceWeight = profile.importance / totalImportance;
+      const uxRatio = profile.ux_vs_security_ratio;
+      const secRatio = 1.0 - uxRatio;
+
+      weightedFpr += fpr * importanceWeight * uxRatio;
+      weightedFnr += fnr * importanceWeight * secRatio;
+    }
 
     // 3. Pénalité de dérive d'échelle L2 (Régularisation par rapport au point d'origine)
     let regularizationPenalty = 0;
@@ -1692,9 +1780,8 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
     const marginOverlap = Math.max(0, maxHumanScore - minBotScore);
     const marginPenalty = marginOverlap / 100;
 
-    const obj1 = falsePositiveRate + (regularizationPenalty * 0.05);
-    const obj2 = falseNegativeRate + marginPenalty;
-
+    const obj1 = weightedFpr + (regularizationPenalty * 0.05);
+    const obj2 = weightedFnr + marginPenalty;
     return [obj1, obj2];
   };
 };
@@ -1735,8 +1822,15 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
             low: 15 + secureRandom() * 20, // 15-35
             medium: 40 + secureRandom() * 25,
             high: 70 + secureRandom() * 20,
+          block: 90 + secureRandom() * 9,
         },
-        weights: { ...baseWeights }, // Conserver les poids d'origine de l'expert
+        weights: (() => {
+          const w = {};
+          for (const key in baseWeights) {
+            w[key] = baseWeights[key] * (0.75 + secureRandom() * 0.5); // +/- 25%
+          }
+          return w;
+        })(),
         patterns: {
             velocityThreshold: 100 + secureRandom() * 400,
             velocityWeight: 10 + secureRandom() * 40,
@@ -1760,6 +1854,9 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         for (const key in child.thresholds) {
             child.thresholds[key] = (c1.thresholds[key] + c2.thresholds[key]) / 2;
         }
+        for (const key in child.weights) {
+          child.weights[key] = (c1.weights[key] + c2.weights[key]) / 2;
+        }
         for (const key in child.patterns) {
             child.patterns[key] = (c1.patterns[key] + c2.patterns[key]) / 2;
         }
@@ -1773,8 +1870,9 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         // On donne plus de poids à la mutation des 'patterns' et des 'weights',
         // car ils ont un impact plus direct sur la détection que les seuils.
         const sections = [
-            { name: 'patterns', weight: 0.65 },   // 60% de chance
-            { name: 'thresholds', weight: 0.15 } // 15% de chance
+          { name: 'patterns', weight: 0.50 },
+          { name: 'thresholds', weight: 0.25 },
+          { name: 'weights', weight: 0.25 }
         ];
         const rand = secureRandom();
         let cumulativeWeight = 0;
@@ -1793,13 +1891,15 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     
         // S'assurer que les valeurs restent dans des limites raisonnables
         if (sectionToMutate === 'weights') {
-            newConfig[sectionToMutate][keyToMutate] = Math.max(0, Math.min(1.5, newConfig[sectionToMutate][keyToMutate]));
-        }
-        if (keyToMutate === 'decayFactor') {
-            newConfig.patterns.decayFactor = Math.max(0.8, Math.min(0.999, newConfig.patterns.decayFactor));
-        }
-        if (keyToMutate.includes('Threshold') || keyToMutate.includes('Reset')) {
-            newConfig.patterns[keyToMutate] = Math.max(50, newConfig.patterns[keyToMutate]);
+          newConfig[sectionToMutate][keyToMutate] = Math.max(0.05, Math.min(1.5, newConfig[sectionToMutate][keyToMutate] + (secureRandom() - 0.5) * 0.1));
+        } else if (sectionToMutate === 'thresholds') {
+          newConfig[sectionToMutate][keyToMutate] = Math.round(newConfig[sectionToMutate][keyToMutate] + (secureRandom() - 0.5) * 5.0);
+        } else {
+          if (keyToMutate === 'decayFactor') {
+            newConfig.patterns.decayFactor = Math.max(0.8, Math.min(0.999, newConfig.patterns.decayFactor + (secureRandom() - 0.5) * 0.05));
+          } else if (keyToMutate.includes('Threshold') || keyToMutate.includes('Reset')) {
+            newConfig.patterns[keyToMutate] = Math.max(50, newConfig.patterns[keyToMutate] + (secureRandom() - 0.5) * 50.0);
+          }
         }
     
         // Contrainte de dérive maximale (±30% par rapport à la configuration actuelle)
