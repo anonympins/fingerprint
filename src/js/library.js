@@ -1707,6 +1707,27 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
  */ // eslint-disable-line max-len
 Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator(context);
+    const currentConfig = context.currentConfig || {};
+    const baseWeights = currentConfig.weights || {
+      historyScore: 0.3,
+      rotationScore: 0.5,
+      headerAnomalyScore: 0.1,
+      requestPatternScore: 0.6,
+      inconsistencyScore: 0.8,
+      honeypotScore: 1.0,
+      behaviorScore: 0.7,
+      crossLayerInconsistencyScore: 0.4,
+      timeInconsistencyScore: 0.9,
+      tlsSpoofingScore: 0.8,
+      botScore: 1.0,
+      subnetScore: 0.4,
+      ipReputationScore: 0.5,
+      botnetClusterScore: 0.6,
+      tcpAnomalyScore: 0.8,
+      quicAnomalyScore: 0.8,
+      renderingAnomalyScore: 0.8,
+      threatIntelScore: 1.0
+    };
 
     // Un "individu" est un objet de configuration complet
     const createIndividual = () => ({
@@ -1715,26 +1736,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
             medium: 40 + secureRandom() * 25,
             high: 70 + secureRandom() * 20,
         },
-        weights: {
-          historyScore: secureRandom(),
-          rotationScore: secureRandom(),
-          headerAnomalyScore: secureRandom(),
-          requestPatternScore: 0.5 + secureRandom(),
-          inconsistencyScore: secureRandom(),
-          honeypotScore: 1.0, // Garder le honeypot à 1.0 est une bonne pratique
-          behaviorScore: secureRandom(),
-          crossLayerInconsistencyScore: secureRandom(),
-          timeInconsistencyScore: secureRandom(),
-          tlsSpoofingScore: secureRandom(),
-          botScore: secureRandom(),
-          subnetScore: secureRandom(),
-          ipReputationScore: secureRandom(),
-          botnetClusterScore: secureRandom(),
-          tcpAnomalyScore: secureRandom(),
-          quicAnomalyScore: secureRandom(),
-          clickVarianceScore: secureRandom(),
-          clientHintsInconsistencyScore: secureRandom()
-        },
+        weights: { ...baseWeights }, // Conserver les poids d'origine de l'expert
         patterns: {
             velocityThreshold: 100 + secureRandom() * 400,
             velocityWeight: 10 + secureRandom() * 40,
@@ -1758,11 +1760,6 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         for (const key in child.thresholds) {
             child.thresholds[key] = (c1.thresholds[key] + c2.thresholds[key]) / 2;
         }
-        for (const key in child.weights) {
-            if (key !== 'honeypotScore') { // Ne pas croiser le poids du honeypot
-                child.weights[key] = (c1.weights[key] + c2.weights[key]) / 2;
-            }
-        }
         for (const key in child.patterns) {
             child.patterns[key] = (c1.patterns[key] + c2.patterns[key]) / 2;
         }
@@ -1776,8 +1773,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         // On donne plus de poids à la mutation des 'patterns' et des 'weights',
         // car ils ont un impact plus direct sur la détection que les seuils.
         const sections = [
-            { name: 'patterns', weight: 0.5 },   // 50% de chance
-            { name: 'weights', weight: 0.35 },   // 35% de chance
+            { name: 'patterns', weight: 0.65 },   // 60% de chance
             { name: 'thresholds', weight: 0.15 } // 15% de chance
         ];
         const rand = secureRandom();
@@ -1794,11 +1790,6 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         const keys = Object.keys(newConfig[sectionToMutate]);
         const keyToMutate = keys[crypto.randomInt(0, keys.length)];
 
-        if (keyToMutate === 'honeypotScore') return newConfig; // Ne pas muter le poids du honeypot
-
-        // Appliquer une mutation avec une amplitude variable
-        const mutationAmount = (secureRandom() - 0.5) * 0.4; // +/- 20%
-        newConfig[sectionToMutate][keyToMutate] *= (1 + mutationAmount);
     
         // S'assurer que les valeurs restent dans des limites raisonnables
         if (sectionToMutate === 'weights') {

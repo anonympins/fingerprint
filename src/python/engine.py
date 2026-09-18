@@ -4763,8 +4763,8 @@ class AutoTuner:
 
         ind.thresholds = {"low": low, "medium": medium, "high": high, "block": block}
         weights_config = self.security_config.get("weights", {})
-        for w_key in weights_config.keys():
-            ind.weights[w_key] = 0.1 + random.random() * 1.3
+        for w_key, w_val in weights_config.items():
+            ind.weights[w_key] = float(w_val)
         patterns_config = self.security_config.get("patterns", {})
         for p_key, p_val in patterns_config.items():
             if isinstance(p_val, (int, float)):
@@ -4777,8 +4777,7 @@ class AutoTuner:
         child = Individual()
         for key in p1.thresholds.keys():
             child.thresholds[key] = int(round((p1.thresholds[key] + p2.thresholds[key]) / 2.0))
-        for key in p1.weights.keys():
-            child.weights[key] = (p1.weights[key] + p2.weights[key]) / 2.0
+        child.weights = copy.deepcopy(p1.weights)
         for key in p1.patterns.keys():
             if isinstance(p1.patterns[key], (int, float)) and isinstance(p2.patterns[key], (int, float)):
                 child.patterns[key] = (p1.patterns[key] + p2.patterns[key]) / 2.0
@@ -4787,13 +4786,10 @@ class AutoTuner:
         return child
 
     def mutate(self, ind: Individual) -> None:
-        mutation_target = random.choice(["thresholds", "weights", "patterns"])
+        mutation_target = random.choice(["thresholds", "patterns"])
         if mutation_target == "thresholds":
             k = random.choice(list(ind.thresholds.keys()))
             ind.thresholds[k] = max(10, ind.thresholds[k] + random.choice([2, -2]))
-        elif mutation_target == "weights" and ind.weights:
-            k = random.choice(list(ind.weights.keys()))
-            ind.weights[k] = max(0.05, min(1.8, ind.weights[k] + (random.random() - 0.5) * 0.2))
         elif mutation_target == "patterns" and ind.patterns:
             numeric_keys = [k for k, v in ind.patterns.items() if isinstance(v, (int, float))]
             if numeric_keys:

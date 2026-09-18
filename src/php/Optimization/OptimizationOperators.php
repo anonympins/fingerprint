@@ -160,9 +160,7 @@ class OptimizationOperators
             $child = $c1;
             foreach (['thresholds', 'weights', 'patterns'] as $section) {
                 foreach ($child[$section] as $key => $value) {
-                    if ($key !== 'honeypotScore') {
-                        $child[$section][$key] = ($c1[$section][$key] + $c2[$section][$key]) / 2;
-                    }
+                    $child[$section][$key] = ($c1[$section][$key] + $c2[$section][$key]) / 2;
                 }
             }
             return $child;
@@ -171,13 +169,13 @@ class OptimizationOperators
             $config = $currentConfig ?: \Anonympins\Fingerprint\Config\SecurityProfiles::createSecurityProfile('balanced');
             $ind = [
                 'thresholds' => [],
-                'weights' => [],
+                'weights' => $config['weights'] ?? [], // Conserver strictement les poids de l'expert
                 'patterns' => []
             ];
-            foreach (['thresholds', 'weights', 'patterns'] as $section) {
+            foreach (['thresholds', 'patterns'] as $section) {
                 if (isset($config[$section]) && is_array($config[$section])) {
                     foreach ($config[$section] as $k => $v) {
-                        if (is_numeric($v) && $k !== 'honeypotScore') {
+                        if (is_numeric($v)) {
                             $randomVariation = 1.0 + (self::secureRandom() - 0.5) * 0.5; // Variation de +/- 25%
                             $ind[$section][$k] = $v * $randomVariation;
                         } else {
@@ -197,8 +195,7 @@ class OptimizationOperators
         $mutate = function (array $c, ?array $currentConfigRef = null) use ($currentConfig): array {
             $newConfig = $c;
             $sections = [
-                ['name' => 'patterns', 'weight' => 0.5],
-                ['name' => 'weights', 'weight' => 0.35],
+                ['name' => 'patterns', 'weight' => 0.85],
                 ['name' => 'thresholds', 'weight' => 0.15]
             ];
             $rand = self::secureRandom();
@@ -214,11 +211,6 @@ class OptimizationOperators
 
             $keys = array_keys($newConfig[$sectionToMutate]);
             $keyToMutate = $keys[random_int(0, count($keys) - 1)];
-
-            if ($keyToMutate === 'honeypotScore') return $newConfig;
-
-            $mutationAmount = (self::secureRandom() - 0.5) * 0.4;
-            $newConfig[$sectionToMutate][$keyToMutate] *= (1 + $mutationAmount);
 
             if ($sectionToMutate === 'weights') {
                 $newConfig[$sectionToMutate][$keyToMutate] = max(0, min(1.5, $newConfig[$sectionToMutate][$keyToMutate]));

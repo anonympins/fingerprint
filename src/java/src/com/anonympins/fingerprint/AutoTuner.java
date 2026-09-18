@@ -382,8 +382,9 @@ public class AutoTuner {
         ind.thresholds.put("high", ind.thresholds.get("medium") + 10 + rand.nextInt(20));
         ind.thresholds.put("block", ind.thresholds.get("high") + 8 + rand.nextInt(10));
 
-        for (String wKey : engine.getWeights().keySet()) {
-            ind.weights.put(wKey, 0.1 + rand.nextDouble() * 1.3);
+        // Conserver strictement les poids de l'expert
+        for (Map.Entry<String, Object> entry : engine.getWeights().entrySet()) {
+            ind.weights.put(entry.getKey(), ((Number) entry.getValue()).doubleValue());
         }
         return ind;
     }
@@ -393,22 +394,16 @@ public class AutoTuner {
         for (String key : p1.thresholds.keySet()) {
             child.thresholds.put(key, (int) Math.round((p1.thresholds.get(key) + p2.thresholds.get(key)) / 2.0));
         }
-        for (String key : p1.weights.keySet()) {
-            child.weights.put(key, (p1.weights.get(key) + p2.weights.get(key)) / 2.0);
-        }
+        // Conserver les poids d'origine inchangés
+        child.weights.putAll(p1.weights);
         return child;
     }
 
     private void mutate(Individual ind, Random rand) {
-        if (rand.nextBoolean()) {
-            String[] tKeys = ind.thresholds.keySet().toArray(new String[0]);
-            String k = tKeys[rand.nextInt(tKeys.length)];
-            ind.thresholds.put(k, Math.max(10, ind.thresholds.get(k) + (rand.nextBoolean() ? 2 : -2)));
-        } else {
-            String[] wKeys = ind.weights.keySet().toArray(new String[0]);
-            String k = wKeys[rand.nextInt(wKeys.length)];
-            ind.weights.put(k, Math.max(0.05, Math.min(1.8, ind.weights.get(k) + (rand.nextDouble() - 0.5) * 0.2)));
-        }
+        // Uniquement muter les thresholds car les poids de l'expert sont verrouillés
+        String[] tKeys = ind.thresholds.keySet().toArray(new String[0]);
+        String k = tKeys[rand.nextInt(tKeys.length)];
+        ind.thresholds.put(k, Math.max(10, ind.thresholds.get(k) + (rand.nextBoolean() ? 2 : -2)));
     }
 
     @SuppressWarnings("unchecked")
