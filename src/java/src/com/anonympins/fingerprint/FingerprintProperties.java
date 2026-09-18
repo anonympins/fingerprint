@@ -494,6 +494,7 @@ public class FingerprintProperties {
         private int maxDataPoints = 10000;
         private double validationTolerance = 0.15;
         private long interval = 30;
+        private double maxDensityPercentage = 0.02;
         private String savePath;
 
         public boolean isEnabled() { return enabled; }
@@ -508,6 +509,10 @@ public class FingerprintProperties {
         public void setInterval(long interval) { this.interval = interval; }
         public String getSavePath() { return savePath; }
         public void setSavePath(String savePath) { this.savePath = savePath; }
+        public double getMaxDensityPercentage() { return maxDensityPercentage; }
+        public void setMaxDensityPercentage(double maxDensityPercentage) {
+            this.maxDensityPercentage = maxDensityPercentage;
+        }
 
         public Map<String, Object> toMap() {
             Map<String, Object> map = new HashMap<>();
@@ -516,6 +521,7 @@ public class FingerprintProperties {
             map.put("maxDataPoints", maxDataPoints);
             map.put("validationTolerance", validationTolerance);
             map.put("interval", interval);
+            map.put("maxDensityPercentage", maxDensityPercentage);
             if (savePath != null) map.put("savePath", savePath);
             return map;
         }

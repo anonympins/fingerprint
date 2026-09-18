@@ -53,6 +53,47 @@ class AutoTuner
         $this->onCleanup = $options['onCleanup'] ?? null;
         $this->savePath = $options['savePath'] ?? null;
         $this->validationTolerance = $options['validationTolerance'] ?? 0.15;
+
+        if (isset($this->securityConfig['logger']) && is_callable($this->securityConfig['logger']) && !isset($this->securityConfig['logger_wrapped'])) {
+            $originalLogger = $this->securityConfig['logger'];
+            $maxPercentage = $this->securityConfig['autotuning']['maxDensityPercentage'] ?? 0.02;
+
+            $this->securityConfig['logger'] = function (array $log) use ($originalLogger, $maxPercentage) {
+                $ip = $log['clientIp'] ?? $log['ip'] ?? null;
+                $subnet = $ip ? RequestUtils::getIpSubnet($ip, 24, 48) : null;
+                $fp = $log['deviceHash'] ?? $log['fingerprint'] ?? $log['deviceFingerprint'] ?? null;
+                $stableFp = $fp ? RequestUtils::extractStablePart($fp) : null;
+
+                if (count($this->trafficData) > 0) {
+                    $total = count($this->trafficData);
+                    $ipMatchCount = 0;
+                    $fpMatchCount = 0;
+                    $matchedKey = null;
+
+                    foreach ($this->trafficData as $key => $existingLog) {
+                        $logIp = $existingLog['clientIp'] ?? $existingLog['ip'] ?? null;
+                        $logSubnet = $logIp ? RequestUtils::getIpSubnet($logIp, 24, 48) : null;
+                        $logFp = $existingLog['deviceHash'] ?? $existingLog['fingerprint'] ?? $existingLog['deviceFingerprint'] ?? null;
+                        $logStableFp = $logFp ? RequestUtils::extractStablePart($logFp) : null;
+
+                        $isIpMatch = $subnet && $logSubnet === $subnet;
+                        $isFpMatch = $stableFp && $logStableFp === $stableFp;
+                        if ($isIpMatch) $ipMatchCount++;
+                        if ($isFpMatch) $fpMatchCount++;
+                        if ($isIpMatch || $isFpMatch) $matchedKey = $key;
+                    }
+                    if (($subnet && ($ipMatchCount / $total) > $maxPercentage) || ($stableFp && ($fpMatchCount / $total) > $maxPercentage)) {
+                        if ($matchedKey !== null) {
+                            $this->trafficData[$matchedKey]['instancesCount'] = ($this->trafficData[$matchedKey]['instancesCount'] ?? 1) + 1;
+                            $this->trafficData[$matchedKey]['weight'] = ($this->trafficData[$matchedKey]['weight'] ?? 1.0) + 1.0;
+                        }
+                        return;
+                    }
+                }
+                $originalLogger($log);
+            };
+            $this->securityConfig['logger_wrapped'] = true;
+        }
     }
 
     /**

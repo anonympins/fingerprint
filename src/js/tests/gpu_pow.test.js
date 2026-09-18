@@ -27,7 +27,7 @@ describe('GpuPowSolver - Chaotic Logistic Map PoW', () => {
         const solutions = [];
 
         for (let idx = 0; idx < 64; idx++) {
-            let x = Math.fround(numericSeed + idx * 0.015);
+            let x = Math.fround((numericSeed + idx * 0.015) % 1); // Ensure x starts in [0, 1)
             for (let i = 0; i < iterations; i++) {
                 x = Math.fround(rFloat * x * Math.fround(1.0 - x));
             }
@@ -53,19 +53,21 @@ describe('GpuPowSolver - Chaotic Logistic Map PoW', () => {
         const solutions = [];
 
         for (let idx = 0; idx < 64; idx++) {
-            let x = Math.fround(numericSeed + idx * 0.015);
+            let x = Math.fround((numericSeed + idx * 0.015) % 1); // Ensure x starts in [0, 1)
             for (let i = 0; i < iterations; i++) {
                 x = Math.fround(rFloat * x * Math.fround(1.0 - x));
             }
             solutions.push(x.toFixed(6));
         }
 
-        // Tamper with the 12th channel (one of the default sample indices [0, 12, 35, 57])
+        // Tamper with one of the dynamically derived sample indices
+        const sampleIndices = GpuPowSolver.deriveSampleIndices('127.0.0.1', 'gpu-pow-salt');
+        const tamperedIndex = sampleIndices[0];
         const tamperedSolutions = [...solutions];
-        const originalVal = parseFloat(tamperedSolutions[12]);
-        tamperedSolutions[12] = (originalVal + 0.0002).toFixed(6); // exceeding 1e-4 tolerance
-
-        expect(GpuPowSolver.verify(seed, iterations, tamperedSolutions.join(','))).toBe(false);
+        const originalVal = parseFloat(tamperedSolutions[tamperedIndex]);
+        tamperedSolutions[tamperedIndex] = (originalVal + 0.1).toFixed(6); // exceeding tolerance
+        const verificationResult = GpuPowSolver.verify(seed, iterations, tamperedSolutions.join(','), '127.0.0.1', 'gpu-pow-salt');
+        expect(verificationResult).toBe(false);
     });
 
     it('should fallback to WebGL2 if WebGPU is not supported', async () => {

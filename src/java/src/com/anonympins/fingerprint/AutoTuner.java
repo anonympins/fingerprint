@@ -14,6 +14,7 @@ public class AutoTuner {
     private final int minDataPoints;
     private final int maxDataPoints;
     private final double validationTolerance;
+    private final double maxDensityPercentage;
     private final long intervalMinutes;
     private static Map<String, Object> lastBestSolution = null;
 
@@ -26,6 +27,7 @@ public class AutoTuner {
         this.minDataPoints = config.getMinDataPoints();
         this.maxDataPoints = config.getMaxDataPoints();
         this.validationTolerance = config.getValidationTolerance();
+        this.maxDensityPercentage = config.getMaxDensityPercentage();
         this.intervalMinutes = config.getInterval();
     }
 
@@ -382,8 +384,9 @@ public class AutoTuner {
         ind.thresholds.put("high", ind.thresholds.get("medium") + 10 + rand.nextInt(20));
         ind.thresholds.put("block", ind.thresholds.get("high") + 8 + rand.nextInt(10));
 
-        for (String wKey : engine.getWeights().keySet()) {
-            ind.weights.put(wKey, 0.1 + rand.nextDouble() * 1.3);
+        for (Map.Entry<String, Object> entry : engine.getWeights().entrySet()) {
+            double baseW = ((Number) entry.getValue()).doubleValue();
+            ind.weights.put(entry.getKey(), baseW * (0.75 + rand.nextDouble() * 0.5)); // +/- 25%
         }
         return ind;
     }
@@ -400,25 +403,70 @@ public class AutoTuner {
     }
 
     private void mutate(Individual ind, Random rand) {
-        if (rand.nextBoolean()) {
-            String[] tKeys = ind.thresholds.keySet().toArray(new String[0]);
-            String k = tKeys[rand.nextInt(tKeys.length)];
-            ind.thresholds.put(k, Math.max(10, ind.thresholds.get(k) + (rand.nextBoolean() ? 2 : -2)));
+        double rVal = rand.nextDouble();
+        String sectionToMutate = "patterns";
+        if (rVal < 0.50) {
+            sectionToMutate = "patterns";
+        } else if (rVal < 0.75) {
+            sectionToMutate = "thresholds";
         } else {
+            sectionToMutate = "weights";
+        }
+
+        if ("weights".equals(sectionToMutate)) {
             String[] wKeys = ind.weights.keySet().toArray(new String[0]);
-            String k = wKeys[rand.nextInt(wKeys.length)];
-            ind.weights.put(k, Math.max(0.05, Math.min(1.8, ind.weights.get(k) + (rand.nextDouble() - 0.5) * 0.2)));
+            if (wKeys.length > 0) {
+                String k = wKeys[rand.nextInt(wKeys.length)];
+                double mutatedWeight = ind.weights.get(k) + (rand.nextDouble() - 0.5) * 0.1;
+                ind.weights.put(k, Math.max(0.05, Math.min(1.5, mutatedWeight)));
+            }
+        } else if ("thresholds".equals(sectionToMutate)) {
+            String[] tKeys = ind.thresholds.keySet().toArray(new String[0]);
+            if (tKeys.length > 0) {
+                String k = tKeys[rand.nextInt(tKeys.length)];
+                int mutatedThreshold = (int) Math.round(ind.thresholds.get(k) + (rand.nextDouble() - 0.5) * 5.0);
+                ind.thresholds.put(k, Math.max(10, mutatedThreshold));
+            }
         }
     }
 
     @SuppressWarnings("unchecked")
     private double[] evaluateFitness(Map<String, ?> thresholds, Map<String, ?> weights, List<Map<String, Object>> trafficData) {
-        double falsePositives = 0;
-        double falseNegatives = 0;
-        double totalHumans = 0;
-        double totalBots = 0;
+        Map<String, List<String>> threatIndicators = new HashMap<>();
+        threatIndicators.put("account_takeover", Arrays.asList("requestPatternScore", "behaviorScore", "timeInconsistencyScore", "clickVarianceScore"));
+        threatIndicators.put("active_exploitation", Arrays.asList("honeypotScore", "headerAnomalyScore"));
+        threatIndicators.put("mass_scraping", Arrays.asList("requestPatternScore", "renderingAnomalyScore", "clientHintsInconsistencyScore"));
+        threatIndicators.put("distributed_botnets", Arrays.asList("subnetScore", "botnetClusterScore", "ipReputationScore", "tlsSpoofingScore"));
+        threatIndicators.put("basic_automation", Arrays.asList("botScore", "tlsSpoofingScore", "tcpAnomalyScore"));
 
-        double lowThreshold = ((Number) thresholds.get("low")).doubleValue();
+        Map<String, String> threatTargetThreshold = new HashMap<>();
+        threatTargetThreshold.put("account_takeover", "block");
+        threatTargetThreshold.put("active_exploitation", "block");
+        threatTargetThreshold.put("mass_scraping", "low");
+        threatTargetThreshold.put("distributed_botnets", "high");
+        threatTargetThreshold.put("basic_automation", "medium");
+
+        Map<String, Double> threatImportance = new HashMap<>();
+        threatImportance.put("account_takeover", 10.0);
+        threatImportance.put("active_exploitation", 8.0);
+        threatImportance.put("mass_scraping", 3.0);
+        threatImportance.put("distributed_botnets", 6.0);
+        threatImportance.put("basic_automation", 5.0);
+
+        Map<String, Double> threatUxRatio = new HashMap<>();
+        threatUxRatio.put("account_takeover", 0.1);
+        threatUxRatio.put("active_exploitation", 0.2);
+        threatUxRatio.put("mass_scraping", 0.8);
+        threatUxRatio.put("distributed_botnets", 0.5);
+        threatUxRatio.put("basic_automation", 0.4);
+
+        Map<String, double[]> threatStats = new HashMap<>();
+        for (String key : threatIndicators.keySet()) {
+            threatStats.put(key, new double[4]); // [fp, fn, totalHumans, totalBots]
+        }
+
+        double maxHumanScore = 0.0;
+        double minBotScore = 100.0;
 
         for (Map<String, Object> log : trafficData) {
             String type = (String) log.get("type");
@@ -429,25 +477,67 @@ public class AutoTuner {
                 score += vector.getOrDefault(wKey, 0.0) * ((Number) weights.get(wKey)).doubleValue();
             }
 
-            boolean isLikelyBot = "request_blocked".equals(type) || "trap_triggered".equals(type);
+            boolean isLikelyBot = "request_blocked".equals(type) || "trap_triggered".equals(type) || "challenge_issued".equals(type);
             boolean isLikelyHuman = "request_passed".equals(type) || "challenge_solved".equals(type);
 
             if (isLikelyBot) {
-                totalBots++;
-                if (score < lowThreshold) {
-                    falseNegatives++;
-                }
+                minBotScore = Math.min(minBotScore, score);
             } else if (isLikelyHuman) {
-                totalHumans++;
-                if (score >= lowThreshold) {
-                    falsePositives++;
+                maxHumanScore = Math.max(maxHumanScore, score);
+            }
+
+            for (String threatName : threatIndicators.keySet()) {
+                double threatActivity = 0.0;
+                for (String indKey : threatIndicators.get(threatName)) {
+                    threatActivity += vector.getOrDefault(indKey, 0.0);
+                }
+                if (threatActivity <= 0.0) {
+                    continue;
+                }
+                double effectiveConfidence = 1.0 * (threatActivity / 100.0);
+                String targetKey = threatTargetThreshold.get(threatName);
+                Object thresholdVal = thresholds.get(targetKey);
+                double targetThreshold = (thresholdVal instanceof Number) ? ((Number) thresholdVal).doubleValue() : 20.0;
+
+                double[] stats = threatStats.get(threatName);
+                if (isLikelyBot) {
+                    stats[3] += effectiveConfidence; // totalBots
+                    if (score < targetThreshold) {
+                        stats[1] += effectiveConfidence; // fn
+                    }
+                } else if (isLikelyHuman) {
+                    stats[2] += effectiveConfidence; // totalHumans
+                    if (score >= targetThreshold) {
+                        stats[0] += effectiveConfidence; // fp
+                    }
                 }
             }
         }
 
-        double fpr = totalHumans > 0 ? falsePositives / totalHumans : 0.0;
-        double fnr = totalBots > 0 ? falseNegatives / totalBots : 0.0;
-        return new double[]{fpr, fnr};
+        double weightedFpr = 0.0;
+        double weightedFnr = 0.0;
+        double totalImportance = 0.0;
+        for (double val : threatImportance.values()) {
+            totalImportance += val;
+        }
+
+        for (String threatName : threatIndicators.keySet()) {
+            double[] stats = threatStats.get(threatName);
+            double fpr = stats[2] > 0 ? stats[0] / stats[2] : 0.0;
+            double fnr = stats[3] > 0 ? stats[1] / stats[3] : 0.0;
+
+            double importanceWeight = threatImportance.get(threatName) / totalImportance;
+            double uxRatio = threatUxRatio.get(threatName);
+            double secRatio = 1.0 - uxRatio;
+
+            weightedFpr += fpr * importanceWeight * uxRatio;
+            weightedFnr += fnr * importanceWeight * secRatio;
+        }
+
+        double marginOverlap = Math.max(0.0, maxHumanScore - minBotScore);
+        double marginPenalty = marginOverlap / 100.0;
+
+        return new double[]{weightedFpr, weightedFnr + marginPenalty};
     }
 
     private List<List<Individual>> nonDominatedSort(List<Individual> population) {

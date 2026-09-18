@@ -4683,36 +4683,91 @@ class AutoTuner:
             current["block"] = block
 
     def evaluate_fitness(self, thresholds: Dict[str, Any], weights: Dict[str, Any], traffic_data: List[Dict[str, Any]]) -> List[float]:
-        false_positives = 0.0
-        false_negatives = 0.0
-        total_humans = 0.0
-        total_bots = 0.0
+        threat_profiles = {
+            "account_takeover": {
+                "importance": 10.0,
+                "ux_vs_security_ratio": 0.1,
+                "indicators": ["requestPatternScore", "behaviorScore", "timeInconsistencyScore", "clickVarianceScore"]
+            },
+            "active_exploitation": {
+                "importance": 8.0,
+                "ux_vs_security_ratio": 0.2,
+                "indicators": ["honeypotScore", "headerAnomalyScore"]
+            },
+            "mass_scraping": {
+                "importance": 3.0,
+                "ux_vs_security_ratio": 0.8,
+                "indicators": ["requestPatternScore", "renderingAnomalyScore", "clientHintsInconsistencyScore"]
+            },
+            "distributed_botnets": {
+                "importance": 6.0,
+                "ux_vs_security_ratio": 0.5,
+                "indicators": ["subnetScore", "botnetClusterScore", "ipReputationScore", "tlsSpoofingScore"]
+            },
+            "basic_automation": {
+                "importance": 5.0,
+                "ux_vs_security_ratio": 0.4,
+                "indicators": ["botScore", "tlsSpoofingScore", "tcpAnomalyScore"]
+            }
+        }
 
+        threat_stats = {
+            name: {"fp": 0.0, "fn": 0.0, "totalHumans": 0.0, "totalBots": 0.0}
+            for name in threat_profiles
+        }
+
+        max_human_score = 0.0
+        min_bot_score = 100.0
         low_threshold = float(thresholds.get("low", 20.0))
 
         for log in traffic_data:
-            type_ = log.get("type")
+            log_type = log.get("type")
             vector = log.get("vector", {})
 
             score = 0.0
             for w_key in weights.keys():
                 score += float(vector.get(w_key, 0.0)) * float(weights[w_key])
 
-            is_likely_bot = type_ in ("request_blocked", "trap_triggered")
-            is_likely_human = type_ in ("request_passed", "challenge_solved")
+            is_likely_bot = log_type in ("request_blocked", "trap_triggered")
+            is_likely_human = log_type in ("request_passed", "challenge_solved")
 
             if is_likely_bot:
-                total_bots += 1.0
-                if score < low_threshold:
-                    false_negatives += 1.0
+                min_bot_score = min(min_bot_score, score)
             elif is_likely_human:
-                total_humans += 1.0
-                if score >= low_threshold:
-                    false_positives += 1.0
+                max_human_score = max(max_human_score, score)
 
-        fpr = false_positives / total_humans if total_humans > 0.0 else 0.0
-        fnr = false_negatives / total_bots if total_bots > 0.0 else 0.0
-        return [fpr, fnr]
+            for name, profile in threat_profiles.items():
+                threat_score = sum(float(vector.get(ind, 0.0)) * float(weights.get(ind, 0.0)) for ind in profile["indicators"])
+                stats = threat_stats[name]
+                if is_likely_bot:
+                    stats["totalBots"] += 1.0
+                    if threat_score < low_threshold:
+                        stats["fn"] += 1.0
+                elif is_likely_human:
+                    stats["totalHumans"] += 1.0
+                    if threat_score >= low_threshold:
+                        stats["fp"] += 1.0
+
+        weighted_fpr = 0.0
+        weighted_fnr = 0.0
+        total_importance = sum(p["importance"] for p in threat_profiles.values())
+
+        for name, profile in threat_profiles.items():
+            stats = threat_stats[name]
+            fpr = stats["fp"] / stats["totalHumans"] if stats["totalHumans"] > 0.0 else 0.0
+            fnr = stats["fn"] / stats["totalBots"] if stats["totalBots"] > 0.0 else 0.0
+
+            importance_weight = profile["importance"] / total_importance
+            ux_ratio = profile["ux_vs_security_ratio"]
+            sec_ratio = 1.0 - ux_ratio
+
+            weighted_fpr += fpr * importance_weight * ux_ratio
+            weighted_fnr += fnr * importance_weight * sec_ratio
+
+        margin_overlap = max(0.0, max_human_score - min_bot_score)
+        margin_penalty = margin_overlap / 100.0
+
+        return [weighted_fpr, weighted_fnr + margin_penalty]
 
     def solve_full_security_tuning(self, traffic_data: List[Dict[str, Any]]) -> List[Individual]:
         population_size = 50
@@ -4763,8 +4818,8 @@ class AutoTuner:
 
         ind.thresholds = {"low": low, "medium": medium, "high": high, "block": block}
         weights_config = self.security_config.get("weights", {})
-        for w_key in weights_config.keys():
-            ind.weights[w_key] = 0.1 + random.random() * 1.3
+        for w_key, w_val in weights_config.items():
+            ind.weights[w_key] = float(w_val)
         patterns_config = self.security_config.get("patterns", {})
         for p_key, p_val in patterns_config.items():
             if isinstance(p_val, (int, float)):
@@ -4777,8 +4832,7 @@ class AutoTuner:
         child = Individual()
         for key in p1.thresholds.keys():
             child.thresholds[key] = int(round((p1.thresholds[key] + p2.thresholds[key]) / 2.0))
-        for key in p1.weights.keys():
-            child.weights[key] = (p1.weights[key] + p2.weights[key]) / 2.0
+        child.weights = copy.deepcopy(p1.weights)
         for key in p1.patterns.keys():
             if isinstance(p1.patterns[key], (int, float)) and isinstance(p2.patterns[key], (int, float)):
                 child.patterns[key] = (p1.patterns[key] + p2.patterns[key]) / 2.0
@@ -4787,13 +4841,10 @@ class AutoTuner:
         return child
 
     def mutate(self, ind: Individual) -> None:
-        mutation_target = random.choice(["thresholds", "weights", "patterns"])
+        mutation_target = random.choice(["thresholds", "patterns"])
         if mutation_target == "thresholds":
             k = random.choice(list(ind.thresholds.keys()))
             ind.thresholds[k] = max(10, ind.thresholds[k] + random.choice([2, -2]))
-        elif mutation_target == "weights" and ind.weights:
-            k = random.choice(list(ind.weights.keys()))
-            ind.weights[k] = max(0.05, min(1.8, ind.weights[k] + (random.random() - 0.5) * 0.2))
         elif mutation_target == "patterns" and ind.patterns:
             numeric_keys = [k for k, v in ind.patterns.items() if isinstance(v, (int, float))]
             if numeric_keys:

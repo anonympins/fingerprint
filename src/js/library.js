@@ -16,10 +16,10 @@ import os from "node:os";
 import crypto from "node:crypto";
 
 /**
- * Génère un nombre flottant aléatoire cryptographiquement sûr entre 0 (inclus) et 1 (exclus).
+ * Génère un nombre flottant aléatoire entre 0 (inclus) et 1 (exclus).
  * @returns {number}
  */
-const secureRandom = () => crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
+const random = () => Math.random();
 
 const Optimization = {
   // eslint-disable-line no-unused-vars
@@ -62,7 +62,7 @@ const Optimization = {
       );
 
       // Décide si on se déplace vers la nouvelle solution.
-      if (newEnergy < currentEnergy || secureRandom() < acceptanceProbability) {
+      if (newEnergy < currentEnergy || random() < acceptanceProbability) {
         currentSolution = newSolution;
         currentEnergy = newEnergy;
       }
@@ -142,7 +142,7 @@ const Optimization = {
 
         let offspringChromosome;
         // 4. Croisement
-        if (secureRandom() < crossoverRate) {
+        if (random() < crossoverRate) {
           offspringChromosome = crossover(
             parent1.chromosome,
             parent2.chromosome,
@@ -152,7 +152,7 @@ const Optimization = {
         }
 
         // 5. Mutation
-        if (secureRandom() < mutationRate) {
+        if (random() < mutationRate) {
           offspringChromosome = mutate(offspringChromosome);
         }
 
@@ -524,7 +524,7 @@ Optimization.geneticAlgorithmMultiObjective = function (
         const parent1 = population[crypto.randomInt(0, population.length)];
         const parent2 = population[crypto.randomInt(0, population.length)];
       let childIndividual = crossover(parent1.individual, parent2.individual);
-      if (secureRandom() < mutationRate) {
+        if (random() < mutationRate) {
         childIndividual = mutate(childIndividual, currentConfig); // mutate doit maintenant utiliser currentConfig
       }
       const child = { individual: childIndividual };
@@ -668,7 +668,7 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
         }
 
         for (let i = 0; i < populationSize; i++) {
-            const z = Array.from({ length: n }, () => secureRandom() * 2 - 1); // Vecteur normal standard
+            const z = Array.from({ length: n }, () => random() * 2 - 1); // Vecteur normal standard
             const y = Array(n).fill(0); // z transformé par L
             for (let r = 0; r < n; r++) {
                 for (let c = 0; c < n; c++) {
@@ -926,7 +926,7 @@ Optimization.Operators.solveTSP = (cities, options = {}) => {
 
   // Solution initiale : un chemin aléatoire.
   const initialPath = Array.from({ length: cities.length }, (_, i) => i).sort(
-    () => secureRandom() - 0.5,
+    () => random() - 0.5,
   );
 
   // Paramètres par défaut pour le TSP, pouvant être surchargés par `options`.
@@ -968,14 +968,14 @@ Optimization.Operators.solvePortfolio = (
 
   // Fonctions spécifiques au problème pour l'AG, maintenant encapsulées.
   const createIndividual = () =>
-    Array.from({ length: assets.length }, () => secureRandom());
+    Array.from({ length: assets.length }, () => random());
 
   const crossover = (p1, p2) => p1.map((w1, i) => (w1 + p2[i]) / 2); // Moyenne des poids
 
   const mutate = (p) => {
     const newP = [...p];
       const i = crypto.randomInt(0, newP.length);
-    newP[i] += (secureRandom() - 0.5) * 0.2; // Mutation douce
+    newP[i] += (random() - 0.5) * 0.2; // Mutation douce
     newP[i] = Math.max(0, newP[i]); // Les poids ne peuvent être négatifs
     return newP;
   };
@@ -1109,8 +1109,8 @@ Optimization.Operators.solveFacilityLocation = (
   const facilityNeighbor = (facilities) => {
     const newFacilities = facilities.map((f) => ({ ...f }));
       const i = crypto.randomInt(0, numFacilities);
-    const moveX = (secureRandom() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
-    const moveY = (secureRandom() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
+    const moveX = (random() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
+    const moveY = (random() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
 
     newFacilities[i].x = Math.max(
       bounds.minX,
@@ -1126,8 +1126,8 @@ Optimization.Operators.solveFacilityLocation = (
 
   // Solution initiale : place les infrastructures au hasard sur la carte.
   const initialFacilities = Array.from({ length: numFacilities }, () => ({
-    x: bounds.minX + secureRandom() * (bounds.maxX - bounds.minX),
-    y: bounds.minY + secureRandom() * (bounds.maxY - bounds.minY),
+    x: bounds.minX + random() * (bounds.maxX - bounds.minX),
+    y: bounds.minY + random() * (bounds.maxY - bounds.minY),
   }));
 
   const saOptions = {
@@ -1244,7 +1244,7 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
   // Un "individu" est simplement une valeur de CPC.
   const createIndividual = () => {
     // Le CPC peut varier, par exemple, entre 0.5 et 5 PRIM'S.
-    return 0.5 + secureRandom() * 4.5;
+    return 0.5 + random() * 4.5;
   };
 
   // Croisement : moyenne des CPC des parents.
@@ -1254,7 +1254,7 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
 
   // Mutation : légère variation aléatoire du CPC.
   const mutate = (cpc) => {
-    const newCpc = cpc + (secureRandom() - 0.5) * 0.5;
+    const newCpc = cpc + (random() - 0.5) * 0.5;
     return Math.max(0.1, newCpc); // Assurer un CPC minimum.
   };
 
@@ -1501,9 +1501,9 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
 
   // Un "individu" est un tableau de 4 seuils : [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents]
   const createIndividual = () => {
-    const minTimeToClick = 100 + secureRandom() * 4900; // entre 100ms et 5s
-    const maxClickVariance = 1 + secureRandom() * 9999; // entre 1 et 10000
-    const minMouseEntropy = secureRandom() * 0.5; // entre 0 et 0.5
+    const minTimeToClick = 100 + random() * 4900; // entre 100ms et 5s
+    const maxClickVariance = 1 + random() * 9999; // entre 1 et 10000
+    const minMouseEntropy = random() * 0.5; // entre 0 et 0.5
     const minScrollEvents = crypto.randomInt(0, 10); // entre 0 et 10
     return [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents];
   };
@@ -1554,6 +1554,40 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
 Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
   const trafficData = context.trafficData || [];
   const currentConfig = context.currentConfig || null;
+
+
+  const THREAT_PROFILES = {
+    account_takeover: {
+      importance: 10.0,
+      ux_vs_security_ratio: 0.1, // 10% FPR / 90% FNR (Priorité sécurité maximale)
+      target_threshold: 'block',
+      indicators: ['requestPatternScore', 'behaviorScore', 'timeInconsistencyScore', 'clickVarianceScore']
+    },
+    active_exploitation: {
+      importance: 8.0,
+      ux_vs_security_ratio: 0.2, // 20% FPR / 80% FNR (Sécurité prioritaire)
+      target_threshold: 'block',
+      indicators: ['honeypotScore', 'headerAnomalyScore']
+    },
+    mass_scraping: {
+      importance: 3.0,
+      ux_vs_security_ratio: 0.8, // 80% FPR / 20% FNR (UX prioritaire)
+      target_threshold: 'low',
+      indicators: ['requestPatternScore', 'renderingAnomalyScore', 'clientHintsInconsistencyScore']
+    },
+    distributed_botnets: {
+      importance: 6.0,
+      ux_vs_security_ratio: 0.5, // Équilibré
+      target_threshold: 'high',
+      indicators: ['subnetScore', 'botnetClusterScore', 'ipReputationScore', 'tlsSpoofingScore']
+    },
+    basic_automation: {
+      importance: 5.0,
+      ux_vs_security_ratio: 0.4, // 40% FPR / 60% FNR
+      target_threshold: 'medium',
+      indicators: ['botScore', 'tlsSpoofingScore', 'tcpAnomalyScore']
+    }
+  };
 
   // Ancres immuables (Baseline Anchors) pour forcer le calibrage d'échelle de suspicion
   const STATIC_ANCHORS = [
@@ -1608,10 +1642,10 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
   ];
 
   return function fullConfigFitness(config) {
-    let falsePositives = 0;
-    let falseNegatives = 0;
-    let totalHumans = 0;
-    let totalBots = 0;
+    const threatStats = {};
+    for (const threatName in THREAT_PROFILES) {
+      threatStats[threatName] = { fp: 0, fn: 0, totalHumans: 0, totalBots: 0 };
+    }
 
     let maxHumanScore = 0;
     let minBotScore = 100;
@@ -1642,42 +1676,96 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       const score = calculateScore(log);
 
       if (isLikelyBot) {
-        totalBots += confidence;
         minBotScore = Math.min(minBotScore, score);
-        if (score < config.thresholds.low) {
-          falseNegatives += confidence;
-        }
       } else if (isLikelyHuman) {
-        totalHumans += confidence;
         maxHumanScore = Math.max(maxHumanScore, score);
-        if (score >= config.thresholds.low) {
-          falsePositives += confidence;
+      }
+
+      for (const threatName in THREAT_PROFILES) {
+        const profile = THREAT_PROFILES[threatName];
+        let threatActivity = 0.0;
+        for (const indicator of profile.indicators) {
+          threatActivity += (log.vector?.[indicator] || 0.0);
+        }
+        if (threatActivity <= 0.0) {
+          continue;
+        }
+        const effectiveConfidence = confidence * (threatActivity / 100.0);
+        const targetThreshold = config.thresholds[profile.target_threshold] || 20;
+
+        if (isLikelyBot) {
+          threatStats[threatName].totalBots += effectiveConfidence;
+          if (score < targetThreshold) {
+            threatStats[threatName].fn += effectiveConfidence;
+          }
+        } else if (isLikelyHuman) {
+          threatStats[threatName].totalHumans += effectiveConfidence;
+          if (score >= targetThreshold) {
+            threatStats[threatName].fp += effectiveConfidence;
+          }
         }
       }
-    }
 
+    }
     // 2. Évaluation sur les ancres immuables pour fixer l'échelle
     for (const anchor of STATIC_ANCHORS) {
       const score = calculateScore(anchor);
       const weight = anchor.weight;
+      const isBot = anchor.type === 'request_blocked' || anchor.type === 'challenge_issued';
 
-      if (anchor.type === 'request_blocked' || anchor.type === 'challenge_issued') {
-        totalBots += weight;
+      if (isBot){
         minBotScore = Math.min(minBotScore, score);
-        if (score < config.thresholds.low) {
-          falseNegatives += weight * 10; // Pénalité punitive forte
-        }
       } else {
-        totalHumans += weight;
         maxHumanScore = Math.max(maxHumanScore, score);
-        if (score >= config.thresholds.low) {
-          falsePositives += weight * 10; // Pénalité punitive forte
+      }
+
+      for (const threatName in THREAT_PROFILES) {
+        const profile = THREAT_PROFILES[threatName];
+        let threatActivity = 0.0;
+        for (const indicator of profile.indicators) {
+          threatActivity += (anchor.vector?.[indicator] || 0.0);
+        }
+        if (threatActivity <= 0.0) {
+          continue;
+        }
+        const effectiveWeight = weight * (threatActivity / 100.0);
+        const targetThreshold = config.thresholds[profile.target_threshold] || 20;
+
+        if (isBot) {
+          threatStats[threatName].totalBots += effectiveWeight;
+          if (score < targetThreshold) {
+            threatStats[threatName].fn += effectiveWeight * 10; // Pénalité punitive forte
+          }
+        } else {
+          threatStats[threatName].totalHumans += effectiveWeight;
+          if (score >= targetThreshold) {
+            threatStats[threatName].fp += effectiveWeight * 10; // Pénalité punitive forte
+          }
         }
       }
     }
+    let weightedFpr = 0;
+    let weightedFnr = 0;
+    let totalImportance = 0;
 
-    const falsePositiveRate = totalHumans > 0 ? falsePositives / totalHumans : 0;
-    const falseNegativeRate = totalBots > 0 ? falseNegatives / totalBots : 0;
+    for (const threatName in THREAT_PROFILES) {
+      totalImportance += THREAT_PROFILES[threatName].importance;
+    }
+
+    for (const threatName in THREAT_PROFILES) {
+      const profile = THREAT_PROFILES[threatName];
+      const stats = threatStats[threatName];
+
+      const fpr = stats.totalHumans > 0 ? stats.fp / stats.totalHumans : 0;
+      const fnr = stats.totalBots > 0 ? stats.fn / stats.totalBots : 0;
+
+      const importanceWeight = profile.importance / totalImportance;
+      const uxRatio = profile.ux_vs_security_ratio;
+      const secRatio = 1.0 - uxRatio;
+
+      weightedFpr += fpr * importanceWeight * uxRatio;
+      weightedFnr += fnr * importanceWeight * secRatio;
+    }
 
     // 3. Pénalité de dérive d'échelle L2 (Régularisation par rapport au point d'origine)
     let regularizationPenalty = 0;
@@ -1692,9 +1780,8 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
     const marginOverlap = Math.max(0, maxHumanScore - minBotScore);
     const marginPenalty = marginOverlap / 100;
 
-    const obj1 = falsePositiveRate + (regularizationPenalty * 0.05);
-    const obj2 = falseNegativeRate + marginPenalty;
-
+    const obj1 = weightedFpr + (regularizationPenalty * 0.05);
+    const obj2 = weightedFnr + marginPenalty;
     return [obj1, obj2];
   };
 };
@@ -1707,47 +1794,56 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
  */ // eslint-disable-line max-len
 Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator(context);
+    const currentConfig = context.currentConfig || {};
+    const baseWeights = currentConfig.weights || {
+      historyScore: 0.3,
+      rotationScore: 0.5,
+      headerAnomalyScore: 0.1,
+      requestPatternScore: 0.6,
+      inconsistencyScore: 0.8,
+      honeypotScore: 1.0,
+      behaviorScore: 0.7,
+      crossLayerInconsistencyScore: 0.4,
+      timeInconsistencyScore: 0.9,
+      tlsSpoofingScore: 0.8,
+      botScore: 1.0,
+      subnetScore: 0.4,
+      ipReputationScore: 0.5,
+      botnetClusterScore: 0.6,
+      tcpAnomalyScore: 0.8,
+      quicAnomalyScore: 0.8,
+      renderingAnomalyScore: 0.8,
+      threatIntelScore: 1.0
+    };
 
     // Un "individu" est un objet de configuration complet
     const createIndividual = () => ({
         thresholds: {
-            low: 15 + secureRandom() * 20, // 15-35
-            medium: 40 + secureRandom() * 25,
-            high: 70 + secureRandom() * 20,
+            low: 15 + random() * 20, // 15-35
+            medium: 40 + random() * 25,
+            high: 70 + random() * 20,
+          block: 90 + random() * 9,
         },
-        weights: {
-          historyScore: secureRandom(),
-          rotationScore: secureRandom(),
-          headerAnomalyScore: secureRandom(),
-          requestPatternScore: 0.5 + secureRandom(),
-          inconsistencyScore: secureRandom(),
-          honeypotScore: 1.0, // Garder le honeypot à 1.0 est une bonne pratique
-          behaviorScore: secureRandom(),
-          crossLayerInconsistencyScore: secureRandom(),
-          timeInconsistencyScore: secureRandom(),
-          tlsSpoofingScore: secureRandom(),
-          botScore: secureRandom(),
-          subnetScore: secureRandom(),
-          ipReputationScore: secureRandom(),
-          botnetClusterScore: secureRandom(),
-          tcpAnomalyScore: secureRandom(),
-          quicAnomalyScore: secureRandom(),
-          clickVarianceScore: secureRandom(),
-          clientHintsInconsistencyScore: secureRandom()
-        },
+        weights: (() => {
+          const w = {};
+          for (const key in baseWeights) {
+            w[key] = baseWeights[key] * (0.75 + random() * 0.5); // +/- 25%
+          }
+          return w;
+        })(),
         patterns: {
-            velocityThreshold: 100 + secureRandom() * 400,
-            velocityWeight: 10 + secureRandom() * 40,
-            burstThreshold: 300 + secureRandom() * 700,
-            burstWeight: 20 + secureRandom() * 40,
-            scrapeThreshold: 500 + secureRandom() * 1000,
-            scrapeWeight: 15 + secureRandom() * 35,
+            velocityThreshold: 100 + random() * 400,
+            velocityWeight: 10 + random() * 40,
+            burstThreshold: 300 + random() * 700,
+            burstWeight: 20 + random() * 40,
+            scrapeThreshold: 500 + random() * 1000,
+            scrapeWeight: 15 + random() * 35,
             sequenceLength: 3 + crypto.randomInt(0, 3),
-            sequenceWeight: 20 + secureRandom() * 50,
-            regularityThreshold: 50 + secureRandom() * 200,
-            regularityWeight: 20 + secureRandom() * 40,
-            decayFactor: 0.85 + secureRandom() * 0.14,
-            inactivityReset: 15000 + secureRandom() * 45000,
+            sequenceWeight: 20 + random() * 50,
+            regularityThreshold: 50 + random() * 200,
+            regularityWeight: 20 + random() * 40,
+            decayFactor: 0.85 + random() * 0.14,
+            inactivityReset: 15000 + random() * 45000,
         }
     });
 
@@ -1759,9 +1855,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
             child.thresholds[key] = (c1.thresholds[key] + c2.thresholds[key]) / 2;
         }
         for (const key in child.weights) {
-            if (key !== 'honeypotScore') { // Ne pas croiser le poids du honeypot
-                child.weights[key] = (c1.weights[key] + c2.weights[key]) / 2;
-            }
+          child.weights[key] = (c1.weights[key] + c2.weights[key]) / 2;
         }
         for (const key in child.patterns) {
             child.patterns[key] = (c1.patterns[key] + c2.patterns[key]) / 2;
@@ -1776,11 +1870,11 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         // On donne plus de poids à la mutation des 'patterns' et des 'weights',
         // car ils ont un impact plus direct sur la détection que les seuils.
         const sections = [
-            { name: 'patterns', weight: 0.5 },   // 50% de chance
-            { name: 'weights', weight: 0.35 },   // 35% de chance
-            { name: 'thresholds', weight: 0.15 } // 15% de chance
+          { name: 'patterns', weight: 0.50 },
+          { name: 'thresholds', weight: 0.25 },
+          { name: 'weights', weight: 0.25 }
         ];
-        const rand = secureRandom();
+        const rand = random();
         let cumulativeWeight = 0;
         let sectionToMutate = 'patterns'; // Fallback
         for (const section of sections) {
@@ -1794,21 +1888,18 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         const keys = Object.keys(newConfig[sectionToMutate]);
         const keyToMutate = keys[crypto.randomInt(0, keys.length)];
 
-        if (keyToMutate === 'honeypotScore') return newConfig; // Ne pas muter le poids du honeypot
-
-        // Appliquer une mutation avec une amplitude variable
-        const mutationAmount = (secureRandom() - 0.5) * 0.4; // +/- 20%
-        newConfig[sectionToMutate][keyToMutate] *= (1 + mutationAmount);
     
         // S'assurer que les valeurs restent dans des limites raisonnables
         if (sectionToMutate === 'weights') {
-            newConfig[sectionToMutate][keyToMutate] = Math.max(0, Math.min(1.5, newConfig[sectionToMutate][keyToMutate]));
-        }
-        if (keyToMutate === 'decayFactor') {
-            newConfig.patterns.decayFactor = Math.max(0.8, Math.min(0.999, newConfig.patterns.decayFactor));
-        }
-        if (keyToMutate.includes('Threshold') || keyToMutate.includes('Reset')) {
-            newConfig.patterns[keyToMutate] = Math.max(50, newConfig.patterns[keyToMutate]);
+          newConfig[sectionToMutate][keyToMutate] = Math.max(0.05, Math.min(1.5, newConfig[sectionToMutate][keyToMutate] + (random() - 0.5) * 0.1));
+        } else if (sectionToMutate === 'thresholds') {
+          newConfig[sectionToMutate][keyToMutate] = Math.round(newConfig[sectionToMutate][keyToMutate] + (random() - 0.5) * 5.0);
+        } else {
+          if (keyToMutate === 'decayFactor') {
+            newConfig.patterns.decayFactor = Math.max(0.8, Math.min(0.999, newConfig.patterns.decayFactor + (random() - 0.5) * 0.05));
+          } else if (keyToMutate.includes('Threshold') || keyToMutate.includes('Reset')) {
+            newConfig.patterns[keyToMutate] = Math.max(50, newConfig.patterns[keyToMutate] + (random() - 0.5) * 50.0);
+          }
         }
     
         // Contrainte de dérive maximale (±30% par rapport à la configuration actuelle)

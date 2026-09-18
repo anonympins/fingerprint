@@ -1,3 +1,14 @@
+## Version 0.6.5
+
+- 🧬 **Auto-Tuner Upgrades & Threat Profiles**:
+  - **Threat-Profile Aware Tuning**: Integrated predefined security and threat profiles (e.g., `balanced`, `strict`, `api`) directly into the Auto-Tuner loop, ensuring optimized parameters dynamically align with the active defense posture.
+  - **Threshold Auto-Tuning Stabilization**: Disabled raw suspicion score threshold autotuning to prevent boundary drift, keeping decision limits highly predictable while focusing optimizer learning cycles on feature weights.
+- 🌐 **Federated Consensus & Proof-of-Work Verification**:
+  - **Federated Consensus Protocols (`federationConsensus`)**: Hardened decentralized consensus validation across federated peer nodes, improving consensus routing speed and securing verification against distributed proxy and replay tactics.
+  - **Cryptographic Sample Derivation (`deriveSampleIndices`)**: Reinforced the verification pipeline by binding sample coordinate indexing inside cryptographic challenges to a secure, time-windowed HMAC of the client IP and secret key, completely neutralizing lookup bypasses.
+- 🛡️ **Library Security Hardening**:
+  - Resolved critical security alerts and code-quality edge cases inside the main runtime library (`src/js/library.js`).
+
 ## Version 0.6.4
 
 - 🔑 **IP and TLS Session Binding in CPU Challenge**: Reinforced CPU challenge security by cryptographically binding the client's IP and `tlsSessionId` to the challenge's binary block (`baseBlock`). This effectively prevents replay attacks and the sharing of calculation solutions between distinct sessions or IP addresses.
