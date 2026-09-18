@@ -74,5 +74,8 @@ export function createSqlStore(knex, tableName = 'fingerprint_store') {
     async delete(key) {
       await knex(tableName).where('key', key).del();
     },
+    async clear() {
+      await knex(tableName).del();
+    }
   };
 }

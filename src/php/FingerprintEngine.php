@@ -237,6 +237,9 @@
          $this->logger = isset($securityConfig['logger']) && is_callable($securityConfig['logger']) ? new Logger($securityConfig['logger']) : null;
          $this->dryRun = $securityConfig['dryRun'] ?? false;
          $this->validateConfig($securityConfig);
+         if ($this->securityConfig['reset'] ?? false) {
+             $this->resetStore();
+         }
      }
 
     /**
@@ -250,6 +253,18 @@
         $this->validateConfig($newConfig);
         $this->securityConfig = SecurityProfiles::deepMerge($this->securityConfig, $newConfig);
         $this->log('Configuration mise à jour à chaud (Hot-Reloaded)', $this->securityConfig);
+    }
+
+    /**
+     * Réinitialise le store de persistance actif.
+     */
+    public function resetStore(): void
+    {
+        $store = StoreManager::getStore();
+        if (method_exists($store, 'clear')) {
+            $store->clear();
+        }
+        $this->log('Store has been reset/cleared.');
     }
 
      private function validateConfig(array $config): void
@@ -266,7 +281,7 @@
              'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
              'similarityThreshold', 'summary', 'description',
              'ed25519_private_key', 'ed25519_public_key',
-             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret'
+             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret', 'reset'
          ];
 
          if (empty($config['weights'])) {

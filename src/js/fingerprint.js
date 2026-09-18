@@ -3173,6 +3173,7 @@ function verifyTrapUrl(path, signature, nonce) {
  * @property {(key: string, value: any, ttl?: number) => Promise<void>} set
  * @property {(key: string) => Promise<boolean>} has
  * @property {(key: string) => Promise<void>} delete
+ * @property {() => Promise<void>} clear
  */
 
 /**
@@ -3198,6 +3199,13 @@ const inMemoryStore = {
   },
   async has(key) { return this._map.has(key); },
   async delete(key) { this._map.delete(key); },
+  async clear() {
+    this._map.clear();
+    for (const timeoutId of this._timeouts.values()) {
+      clearTimeout(timeoutId);
+    }
+    this._timeouts.clear();
+  }
 };
 
 /** @type {IStore} */
@@ -3941,6 +3949,11 @@ export class FingerprintEngine {
     this._validateConfig(finalConfig); // Validate the configuration
     this.verbose = finalConfig.verbose || false;
     this.dryRun = finalConfig.dryRun || false;
+    if (finalConfig.reset) {
+      this.resetStore().catch(err => {
+        console.error('[FingerprintEngine] Failed to reset store on startup:', err.message);
+      });
+    }
   }
 
   /**
@@ -3953,6 +3966,16 @@ export class FingerprintEngine {
     this.securityConfig = deepMerge(this.securityConfig, newConfig);
     this.dryRun = this.securityConfig.dryRun || false;
     this._log('Configuration mise à jour à chaud (Hot-Reloaded)', this.securityConfig);
+  }
+
+  /**
+   * Réinitialise le store de persistance actif.
+   */
+  async resetStore() {
+    if (store && typeof store.clear === 'function') {
+      await store.clear();
+      this._log('Store has been reset/cleared.');
+    }
   }
 
   /**
@@ -3973,7 +3996,7 @@ export class FingerprintEngine {
       'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
       'trustedProxies',
       'wasm',
-      'similarityThreshold',
+      'similarityThreshold', 'reset',
       'ed25519_private_key', 'ed25519_public_key',
       'federatedPeers', 'federationSecret', 'filterWhitelist'
     ]);

@@ -35,6 +35,10 @@ public class FingerprintEngine {
         this.allowlist = buildAllowlist();
         this.blocklist = buildBlocklist();
 
+        if (Boolean.TRUE.equals(this.config.get("reset"))) {
+            resetStore();
+        }
+
         // Bind Ed25519 keys if passed via config
         if (this.config.containsKey("ed25519_private_key")) {
             System.setProperty("ED25519_PRIVATE_KEY", (String) this.config.get("ed25519_private_key"));
@@ -118,6 +122,21 @@ public class FingerprintEngine {
 
     public Map<String, Object> getWeights() {
         return weights;
+    }
+
+    /**
+     * Réinitialise le store de persistance actif.
+     */
+    public void resetStore() {
+        if (store != null) {
+            try {
+                store.clear();
+            } catch (Exception e) {
+                if (verbose) {
+                    System.err.println("[FingerprintEngine] Failed to clear store: " + e.getMessage());
+                }
+            }
+        }
     }
 
     private Map<String, Object> createDefaultThresholds() {

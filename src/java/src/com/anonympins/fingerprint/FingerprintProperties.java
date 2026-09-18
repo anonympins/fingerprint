@@ -36,6 +36,7 @@ public class FingerprintProperties {
     private boolean useAsymmetricTickets = true;
     private String ed25519PrivateKey;
     private String ed25519PublicKey;
+    private boolean reset = false;
 
     public boolean isEnabled() {
         return enabled;
@@ -235,6 +236,14 @@ public class FingerprintProperties {
 
     public void setEd25519PublicKey(String ed25519PublicKey) {
         this.ed25519PublicKey = ed25519PublicKey;
+    }
+
+    public boolean isReset() {
+        return reset;
+    }
+
+    public void setReset(boolean reset) {
+        this.reset = reset;
     }
 
 

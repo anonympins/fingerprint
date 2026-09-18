@@ -131,4 +131,16 @@ class RedisStore implements IStore
             $this->lastReconnectAttempt = microtime(true);
         }
     }
+
+    public function clear(): void
+    {
+        $this->fallbackStore->clear();
+        $this->checkConnection();
+        if ($this->isDown) return;
+        try {
+            $this->redis->flushdb();
+        } catch (\Throwable $e) {
+            $this->isDown = true;
+        }
+    }
 }
