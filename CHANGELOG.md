@@ -1,3 +1,14 @@
+## Version 0.6.4
+
+- 🔑 **IP and TLS Session Binding in CPU Challenge**: Reinforced CPU challenge security by cryptographically binding the client's IP and `tlsSessionId` to the challenge's binary block (`baseBlock`). This effectively prevents replay attacks and the sharing of calculation solutions between distinct sessions or IP addresses.
+- 🛡️ **Intelligent Filtering and Whitelist Inspection**:
+  - **Certain Attack Detection**: Added a mechanism that automatically bypasses the whitelist if an "authorized" client triggers a honeypot or presents obvious bot signatures (`_hasCertainAttack`).
+  - **Inspection Thresholds (`filterWhitelist`)**: Ability to inspect and challenge whitelist requests if their suspicion score exceeds a configurable limit (numeric or strict).
+  - **Updated Security Profiles**: Default integration of the `filterWhitelist` parameter across all predefined profiles (`balanced` at 85.0, `api` at 75.0, `blog` at 90.0, and `strict` and `ecommerce` set to `true` [strict]).
+- 🧬 **Auto-Tuner Extensions & Log Compression**: Improved the auto-tuning engine to better handle recent log patterns, adaptively optimize configurations, and smooth out transitions with better inertia management.
+- ⚡ **Automatic uPoW Updates**: The Auto-Tuner now autonomously updates useful Proof-of-Work (uPoW) task configurations using optimized Pareto fronts.
+- 🧹 **Store Reset on Startup**: Introduced the `reset` configuration option to cleanly empty the active persistence store during the initial instantiation of the fingerprinting engine.
+
 ## Version 0.6.3
 
 - 🛡️ **Subnet & Botnet Scoring Upgrades**: Refined the IP Subnet reputation score to use an advanced, continuous analog calculation while handling potential `NaN` boundary edge cases. Enhanced the `botnetClusterScore` algorithm to improve grouping and detection precision of clustered threats.
