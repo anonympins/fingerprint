@@ -124,6 +124,25 @@ public class FingerprintEngine {
         return weights;
     }
 
+    @SuppressWarnings("unchecked")
+    public synchronized void updateConfig(Map<String, Object> newConfig) {
+        if (newConfig == null) return;
+        Map<String, Object> merged = SecurityProfiles.deepMerge(this.config, newConfig);
+        this.config.clear();
+        this.config.putAll(merged);
+
+        Object newThresholds = this.config.get("thresholds");
+        if (newThresholds instanceof Map) {
+            this.thresholds.clear();
+            this.thresholds.putAll((Map<String, Object>) newThresholds);
+        }
+        Object newWeights = this.config.get("weights");
+        if (newWeights instanceof Map) {
+            this.weights.clear();
+            this.weights.putAll((Map<String, Object>) newWeights);
+        }
+    }
+
     /**
      * Réinitialise le store de persistance actif.
      */
@@ -471,6 +490,78 @@ public class FingerprintEngine {
             return res;
         }
         
+        // --- Interception et vérification des challenges Useful Work (uPoW) ---
+        Object rawPowNonce = context.queryParams.get("pow_nonce");
+        String powNonce = rawPowNonce instanceof String ? (String) rawPowNonce : null;
+        Object rawPowType = context.queryParams.get("pow_type");
+        String powType = rawPowType instanceof String ? (String) rawPowType : null;
+        Object rawPowSolutionWorkResult = context.queryParams.get("pow_solution_work_result");
+        String powSolutionWorkResult = rawPowSolutionWorkResult instanceof String ? (String) rawPowSolutionWorkResult : null;
+        Object rawPowProblemId = context.queryParams.get("pow_problem_id");
+        String powProblemId = rawPowProblemId instanceof String ? (String) rawPowProblemId : null;
+
+        if (powNonce != null && "useful_work_task".equals(powType) && powSolutionWorkResult != null && powProblemId != null) {
+            Object challengeContextObj = store.get("secret:" + powNonce);
+            if (challengeContextObj instanceof Map) {
+                try {
+                    Map<String, Object> workResult = ChallengeUtils.simpleJsonParse(powSolutionWorkResult);
+                    store.delete("secret:" + powNonce);
+
+                    Map<String, Object> autotuningConfig = (Map<String, Object>) config.get("autotuning");
+                    boolean autotuningEnabled = autotuningConfig != null && Boolean.TRUE.equals(autotuningConfig.get("enabled"));
+                    
+                    if ("security_auto_tuning".equals(powProblemId) && autotuningEnabled) {
+                        Object paretoFrontObj = workResult.get("paretoFront");
+                        if (paretoFrontObj instanceof List) {
+                            List<Map<String, Object>> paretoFront = (List<Map<String, Object>>) paretoFrontObj;
+                            if (!paretoFront.isEmpty()) {
+                                Map<String, Object> bestSolution = paretoFront.get(0);
+                                List<Object> objs0 = (List<Object>) bestSolution.get("objectives");
+                                double minDistance = Math.sqrt(
+                                    Math.pow(Double.parseDouble(objs0.get(0).toString()), 2) + 
+                                    Math.pow(Double.parseDouble(objs0.get(1).toString()), 2)
+                                );
+                                
+                                for (int i = 1; i < paretoFront.size(); i++) {
+                                    Map<String, Object> item = paretoFront.get(i);
+                                    List<Object> objsI = (List<Object>) item.get("objectives");
+                                    double distance = Math.sqrt(
+                                        Math.pow(Double.parseDouble(objsI.get(0).toString()), 2) + 
+                                        Math.pow(Double.parseDouble(objsI.get(1).toString()), 2)
+                                    );
+                                    if (distance < minDistance) {
+                                        minDistance = distance;
+                                        bestSolution = item;
+                                    }
+                                }
+                                
+                                if (bestSolution.containsKey("solution")) {
+                                    updateConfig((Map<String, Object>) bestSolution.get("solution"));
+                                    System.out.println("[FingerprintEngine] Useful Work auto-tuning applied successfully to live config.");
+                                }
+                            }
+                        }
+                    }
+
+                    String ticket = UUID.randomUUID().toString();
+                    Map<String, Object> ticketData = new HashMap<>();
+                    ticketData.put("ip", context.clientIp);
+                    Map<String, Object> identity = resolveRequestIdentity(context, suspicionVector);
+                    ticketData.put("deviceId", (String) identity.get("deviceId"));
+                    store.set("ticket:" + ticket, ticketData, 3600);
+
+                    Map<String, Object> redirectRes = new HashMap<>();
+                    redirectRes.put("action", "redirect");
+                    redirectRes.put("path", context.path);
+                    return redirectRes;
+                } catch (Exception e) {
+                    if (verbose) {
+                        System.err.println("[FingerprintEngine] Error processing useful work solution: " + e.getMessage());
+                    }
+                }
+            }
+        }
+
         // Check allowlists
         boolean whitelisted = allowlist.check(context.clientIp) || isPathInAllowlist(context.path) || isUserAgentInAllowlist(context.getHeader("user-agent"));
         if (whitelisted) {

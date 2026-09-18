@@ -1086,6 +1086,28 @@
                                 $problemManager = \Anonympins\Fingerprint\ProblemManager::getInstance($configPath, $store);
                                  // FIX: La solution est directement le $workResult, pas une sous-propriété.
                                  $problemManager->integrateSolution($problemId, $workResult);
+
+                             // Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
+                             // on applique directement la meilleure solution calculée au moteur en direct.
+                             if ($problemId === 'security_auto_tuning' && ($this->securityConfig['autotuning']['enabled'] ?? false)) {
+                                 $paretoFront = $workResult['paretoFront'] ?? null;
+                                 if (is_array($paretoFront) && !empty($paretoFront)) {
+                                     $bestSolution = $paretoFront[0];
+                                     $minDistance = sqrt(pow((float)$bestSolution['objectives'][0], 2) + pow((float)$bestSolution['objectives'][1], 2));
+                                     for ($i = 1; $i < count($paretoFront); $i++) {
+                                         $distance = sqrt(pow((float)$paretoFront[$i]['objectives'][0], 2) + pow((float)$paretoFront[$i]['objectives'][1], 2));
+                                         if ($distance < $minDistance) {
+                                             $minDistance = $distance;
+                                             $bestSolution = $paretoFront[$i];
+                                         }
+                                     }
+                                     if (isset($bestSolution['solution'])) {
+                                         $this->updateConfig($bestSolution['solution']);
+                                         $this->log('Useful Work auto-tuning applied successfully to live config.');
+                                     }
+                                 }
+                             }
+
                                  $isValid = true;
                                  // FIX: Générer un vrai ticket pour uPoW, comme pour un PoW normal.
                                  $ticketTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000; // 1 heure par défaut

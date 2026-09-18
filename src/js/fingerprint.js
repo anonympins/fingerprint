@@ -4767,6 +4767,27 @@ export class FingerprintEngine {
                 }, store);
                 await manager.integrateSolution(pow_problem_id, workResult);
 
+                // Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
+                // on applique directement la meilleure solution calculée au moteur en direct.
+                if (pow_problem_id === 'security_auto_tuning' && this.securityConfig.autotuning?.enabled) {
+                    const paretoFront = workResult.paretoFront;
+                    if (Array.isArray(paretoFront) && paretoFront.length > 0) {
+                        let bestSolution = paretoFront[0];
+                        let minDistance = Math.sqrt(Math.pow(bestSolution.objectives[0], 2) + Math.pow(bestSolution.objectives[1], 2));
+                        for (let i = 1; i < paretoFront.length; i++) {
+                            const distance = Math.sqrt(Math.pow(paretoFront[i].objectives[0], 2) + Math.pow(paretoFront[i].objectives[1], 2));
+                            if (distance < minDistance) {
+                                minDistance = distance;
+                                bestSolution = paretoFront[i];
+                            }
+                        }
+                        if (bestSolution && bestSolution.solution) {
+                            this.updateConfig(bestSolution.solution);
+                            this._log('Useful Work auto-tuning applied successfully to live config.');
+                        }
+                    }
+                }
+
                 await store.delete(`secret:${pow_nonce}`);
                 // Accorder un ticket de passage comme pour un PoW normal
                 const ticket = "valid_ticket_placeholder"; // Générer un vrai ticket ici

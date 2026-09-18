@@ -3302,6 +3302,22 @@ class FingerprintEngine:
                         await pm.load_problems()
                     await pm.integrate_solution(pow_problem_id, work_result)
 
+                    # Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
+                    # on applique directement la meilleure solution calculée au moteur en direct.
+                    if pow_problem_id == "security_auto_tuning" and self.config.get("autotuning", {}).get("enabled", False):
+                        pareto_front = work_result.get("paretoFront")
+                        if isinstance(pareto_front, list) and pareto_front:
+                            best_solution = pareto_front[0]
+                            min_distance = math.sqrt(float(best_solution['objectives'][0])**2 + float(best_solution['objectives'][1])**2)
+                            for item in pareto_front[1:]:
+                                distance = math.sqrt(float(item['objectives'][0])**2 + float(item['objectives'][1])**2)
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    best_solution = item
+                            if "solution" in best_solution:
+                                self.update_config(best_solution["solution"])
+                                print("[FingerprintEngine] Useful Work auto-tuning applied successfully to live config.")
+
                     await self.store.delete(f"secret:{pow_nonce}")
                     ticket = str(uuid.uuid4())
                     await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
