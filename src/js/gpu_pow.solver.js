@@ -53,26 +53,57 @@ export class GpuPowSolver {
         }
     }
 
+    static deriveSampleIndices(clientIp, secret) {
+        const timeWindow = Math.floor(Date.now() / (1000 * 60 * 5));
+        const message = `${clientIp}:${timeWindow}`;
+        let hmacBytes;
+        if (typeof window === 'undefined') {
+            try {
+                const crypto = require('node:crypto');
+                const hmac = crypto.createHmac('sha256', secret || 'gpu-pow-salt').update(message).digest();
+                hmacBytes = new Uint8Array(hmac);
+            } catch (e) {
+                hmacBytes = new TextEncoder().encode(message);
+            }
+        } else {
+            hmacBytes = new TextEncoder().encode(message);
+        }
+
+        const indices = [];
+        for (let i = 0; i < 4; i++) {
+            const offset = (i * 2) % hmacBytes.length;
+            const value = (hmacBytes[offset] << 8) | hmacBytes[(offset + 1) % hmacBytes.length];
+            let idx = value % 64;
+            while (indices.includes(idx)) {
+                idx = (idx + 1) % 64;
+            }
+            indices.push(idx);
+        }
+        return indices;
+    }
+
     /**
      * Verifies a GPU PoW solution.
      * To prevent server-side DoS, it verifies a sample of the 64 channels.
      * @param {string} seed - The challenge seed.
      * @param {number} iterations - Number of iterations.
      * @param {string} solution - The comma-separated solution string.
-     * @param {Array<number>} [sampleIndices=[0, 12, 35, 57]] - Indices to verify.
+     * @param {string} [clientIp='127.0.0.1'] - Client IP address.
+     * @param {string} [secret='gpu-pow-salt'] - Session secret key.
      * @returns {boolean} True if the solution is valid.
      */
-    static verify(seed, iterations, solution, sampleIndices = [0, 12, 35, 57]) {
+    static verify(seed, iterations, solution, clientIp = '127.0.0.1', secret = 'gpu-pow-salt') {
         if (!solution || typeof solution !== 'string') return false;
         const values = solution.split(',');
         if (values.length !== 64) return false;
 
+        const sampleIndices = this.deriveSampleIndices(clientIp, secret);
         const numericSeed = this._hashSeedToFloat(seed);
         const r = 3.9999;
 
         for (const idx of sampleIndices) {
             if (idx < 0 || idx >= 64) return false;
-            let x = Math.fround(numericSeed + idx * 0.015);
+            let x = Math.fround((numericSeed + idx * 0.015) % 1);
             const rFloat = Math.fround(r);
             for (let i = 0; i < iterations; i++) {
                 x = Math.fround(rFloat * x * Math.fround(1.0 - x));

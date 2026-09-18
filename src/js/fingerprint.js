@@ -4843,11 +4843,23 @@ export class FingerprintEngine {
               const [zkpY, zkpT, zkpS] = parts;
               // 1. Valider cryptographiquement la preuve avant de bannir/diffuser
               if (verifyZkpProof(zkpY, zkpT, zkpS)) {
-                  // 2. Dédoublonner : Ne diffuser que si la clé n'est pas déjà connue comme bannie
-                  if (!(await store.has(`banned-zkp-y:${zkpY}`))) {
-                      await store.set(`banned-zkp-y:${zkpY}`, true, 86400 * 30); // Banni pour 30 jours
-                      broadcastBannedZkp(zkpY, this.securityConfig).catch(() => {});
+                  const peersKey = `fed-peers:${zkpY}`;
+                  let reportedPeers = await store.get(peersKey) || [];
+                  if (!Array.isArray(reportedPeers)) {
+                      reportedPeers = [];
                   }
+                  if (!reportedPeers.includes('local')) {
+                      reportedPeers.push('local');
+                      await store.set(peersKey, reportedPeers, 86400 * 30);
+                  }
+
+                  const threshold = this.securityConfig.federationConsensusThreshold || 3;
+                  if (reportedPeers.length >= threshold) {
+                      if (!(await store.has(`banned-zkp-y:${zkpY}`))) {
+                          await store.set(`banned-zkp-y:${zkpY}`, true, 86400 * 30); // Banni pour 30 jours
+                      }
+                  }
+                  broadcastBannedZkp(zkpY, this.securityConfig).catch(() => {});
               }
           }
       }
@@ -5339,8 +5351,22 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
             return { error: 'Missing signature' };
         }
 
-        await store.set(`banned-zkp-y:${zkpY}`, true, 86400 * 30); // 30 jours
-        return { status: 'synchronized' };
+        const peersKey = `fed-peers:${zkpY}`;
+        let reportedPeers = await store.get(peersKey) || [];
+        if (!Array.isArray(reportedPeers)) {
+            reportedPeers = [];
+        }
+        if (!reportedPeers.includes(clientIp)) {
+            reportedPeers.push(clientIp);
+            await store.set(peersKey, reportedPeers, 86400 * 30);
+        }
+
+        const threshold = config.federationConsensusThreshold || 3;
+        if (reportedPeers.length >= threshold) {
+            await store.set(`banned-zkp-y:${zkpY}`, true, 86400 * 30);
+            return { status: 'synchronized', banned: true };
+        }
+        return { status: 'synchronized', banned: false, reportsCount: reportedPeers.length };
     }
 
     const nodeId = params.node_id || '';
@@ -6703,6 +6729,50 @@ export function startThresholdAutoTuning(options) {
 
     if (!securityConfig || !trafficData) {
         throw new Error("[AutoTuning] `securityConfig` et `trafficData` sont requis.");
+    }
+    if (securityConfig.logger && typeof securityConfig.logger === 'function' && !securityConfig.logger_wrapped) {
+        const originalLogger = securityConfig.logger;
+        const maxPercentage = securityConfig.autotuning?.maxDensityPercentage || 0.02;
+
+        securityConfig.logger = function (log) {
+            const ip = log.clientIp || log.ip;
+            const subnet = ip ? __internal.getIpSubnet(ip, 24, 48) : null;
+            const fp = log.deviceHash || log.fingerprint || log.deviceFingerprint;
+            const stableFp = fp ? extractStablePart(fp) : null;
+
+            if (trafficData.length > 0) {
+                const total = trafficData.length;
+                let ipMatchCount = 0;
+                let fpMatchCount = 0;
+                let matchedKey = null;
+
+                for (let i = 0; i < trafficData.length; i++) {
+                    const existingLog = trafficData[i];
+                    const logIp = existingLog.clientIp || existingLog.ip;
+                    const logSubnet = logIp ? __internal.getIpSubnet(logIp, 24, 48) : null;
+                    const logFp = existingLog.deviceHash || existingLog.fingerprint || existingLog.deviceFingerprint;
+                    const logStableFp = logFp ? extractStablePart(logFp) : null;
+
+                    const isIpMatch = subnet && logSubnet === subnet;
+                    const isFpMatch = stableFp && logStableFp === stableFp;
+
+                    if (isIpMatch) ipMatchCount++;
+                    if (isFpMatch) fpMatchCount++;
+
+                    if (isIpMatch || isFpMatch) matchedKey = i;
+                }
+
+                if ((subnet && (ipMatchCount / total) > maxPercentage) || (stableFp && (fpMatchCount / total) > maxPercentage)) {
+                    if (matchedKey !== null) {
+                        trafficData[matchedKey].instancesCount = (trafficData[matchedKey].instancesCount || 1) + 1;
+                        trafficData[matchedKey].weight = (trafficData[matchedKey].weight || 1.0) + 1.0;
+                    }
+                    return;
+                }
+            }
+            originalLogger(log);
+        };
+        securityConfig.logger_wrapped = true;
     }
 
     console.log(`[AutoTuning] Job d'optimisation des seuils démarré. Prochain cycle dans ${interval / 60000} minutes.`);

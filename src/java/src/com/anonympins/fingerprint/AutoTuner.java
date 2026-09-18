@@ -14,6 +14,7 @@ public class AutoTuner {
     private final int minDataPoints;
     private final int maxDataPoints;
     private final double validationTolerance;
+    private final double maxDensityPercentage;
     private final long intervalMinutes;
     private static Map<String, Object> lastBestSolution = null;
 
@@ -26,6 +27,7 @@ public class AutoTuner {
         this.minDataPoints = config.getMinDataPoints();
         this.maxDataPoints = config.getMaxDataPoints();
         this.validationTolerance = config.getValidationTolerance();
+        this.maxDensityPercentage = config.getMaxDensityPercentage();
         this.intervalMinutes = config.getInterval();
     }
 

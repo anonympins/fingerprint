@@ -1249,10 +1249,21 @@
                  // 1. Valider cryptographiquement la preuve avant de bannir/diffuser
                  if (ChallengeUtils::verifyZkpProof($zkpY, $zkpT, $zkpS)) {
                      // 2. Dédoublonner : Ne diffuser que si la clé n'est pas déjà bannie
-                     if (!$store->has("banned-zkp-y:{$zkpY}")) {
-                         $store->set("banned-zkp-y:{$zkpY}", true, 86400 * 30);
-                         $this->broadcastBannedZkp($zkpY);
+                     $peersKey = "fed-peers:{$zkpY}";
+                     $reportedPeers = $store->get($peersKey) ?: [];
+                     if (!is_array($reportedPeers)) {
+                         $reportedPeers = [];
                      }
+                     if (!in_array('local', $reportedPeers, true)) {
+                         $reportedPeers[] = 'local';
+                         $store->set($peersKey, $reportedPeers, 86400 * 30);
+                     }
+
+                     $threshold = $this->securityConfig['federationConsensusThreshold'] ?? 3;
+                     if (count($reportedPeers) >= $threshold) {
+                         $store->set("banned-zkp-y:{$zkpY}", true, 86400 * 30);
+                     }
+                     $this->broadcastBannedZkp($zkpY);
                  }
              }
 

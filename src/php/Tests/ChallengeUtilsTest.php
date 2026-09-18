@@ -53,7 +53,9 @@ class ChallengeUtilsTest extends TestCase
 
         // Tamper with value on verified sample index 12
         $tampered = $solutions;
-        $tampered[12] = (string)((float)$tampered[12] + 0.0002); // Out of tolerance
+        $sampleIndices = ChallengeUtils::deriveSampleIndices('127.0.0.1', 'gpu-pow-salt');
+        $tamperedIndex = $sampleIndices[0];
+        $tampered[$tamperedIndex] = (string)((float)$tampered[$tamperedIndex] + 0.0002); // Out of tolerance
         $this->assertFalse(ChallengeUtils::verifyGpuPow($seed, $iterations, implode(',', $tampered)));
     }
 
@@ -85,8 +87,10 @@ class ChallengeUtilsTest extends TestCase
         }
         $solutionString = implode(',', $solutions);
         $this->assertTrue(ChallengeUtils::verifyGpuPow($seed, $iterations, $solutionString));
+        $sampleIndices = ChallengeUtils::deriveSampleIndices('127.0.0.1', 'gpu-pow-salt');
+        $tamperedIndex = $sampleIndices[0];
         $tamperedSolutions = $solutions;
-        $tamperedSolutions[0] = (string)((float)$tamperedSolutions[0] + 0.1);
+        $tamperedSolutions[$tamperedIndex] = (string)((float)$tamperedSolutions[$tamperedIndex] + 0.1);
         $this->assertFalse(ChallengeUtils::verifyGpuPow($seed, $iterations, implode(',', $tamperedSolutions)));
     }
 

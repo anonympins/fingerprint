@@ -32,12 +32,33 @@ class ChallengeUtils
         return abs($hash % 1000000) / 1000000;
     }
 
-    public static function verifyGpuPow(string $seed, int $iterations, string $solution, array $sampleIndices = [0, 12, 35, 57]): bool
+    public static function deriveSampleIndices(string $clientIp, string $secret): array
+    {
+        $timeWindow = (int)floor(time() / (60 * 5));
+        $message = "{$clientIp}:{$timeWindow}";
+        $hmacHex = hash_hmac('sha256', $message, $secret ?: 'gpu-pow-salt');
+        $hmacBytes = array_values(unpack('C*', hex2bin($hmacHex)));
+
+        $indices = [];
+        for ($i = 0; $i < 4; $i++) {
+            $offset = ($i * 2) % count($hmacBytes);
+            $value = ($hmacBytes[$offset] << 8) | $hmacBytes[($offset + 1) % count($hmacBytes)];
+            $idx = $value % 64;
+            while (in_array($idx, $indices, true)) {
+                $idx = ($idx + 1) % 64;
+            }
+            $indices[] = $idx;
+        }
+        return $indices;
+    }
+
+    public static function verifyGpuPow(string $seed, int $iterations, string $solution, string $clientIp = '127.0.0.1', string $secret = 'gpu-pow-salt'): bool
     {
         $values = explode(',', $solution);
         if (count($values) !== 64) {
             return false;
         }
+        $sampleIndices = self::deriveSampleIndices($clientIp, $secret);
         $numericSeed = self::hashSeedToFloat($seed);
         $r = 3.9999;
         foreach ($sampleIndices as $idx) {
@@ -203,9 +224,22 @@ class ChallengeUtils
                 return ['error' => 'Missing signature'];
             }
 
-            // Ban the ZKP public key for 30 days
-            $store->set("banned-zkp-y:{$zkpY}", true, 86400 * 30);
-            return ['status' => 'synchronized'];
+            $peersKey = "fed-peers:{$zkpY}";
+            $reportedPeers = $store->get($peersKey) ?: [];
+            if (!is_array($reportedPeers)) {
+                $reportedPeers = [];
+            }
+            if (!in_array($clientIp, $reportedPeers, true)) {
+                $reportedPeers[] = $clientIp;
+                $store->set($peersKey, $reportedPeers, 86400 * 30);
+            }
+
+            $threshold = $config['federationConsensusThreshold'] ?? 3;
+            if (count($reportedPeers) >= $threshold) {
+                $store->set("banned-zkp-y:{$zkpY}", true, 86400 * 30);
+                return ['status' => 'synchronized', 'banned' => true];
+            }
+            return ['status' => 'synchronized', 'banned' => false, 'reportsCount' => count($reportedPeers)];
         }
 
         $nodeId = $params['node_id'] ?? '';
