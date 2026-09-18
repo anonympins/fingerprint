@@ -16,10 +16,10 @@ import os from "node:os";
 import crypto from "node:crypto";
 
 /**
- * Génère un nombre flottant aléatoire cryptographiquement sûr entre 0 (inclus) et 1 (exclus).
+ * Génère un nombre flottant aléatoire entre 0 (inclus) et 1 (exclus).
  * @returns {number}
  */
-const secureRandom = () => crypto.randomBytes(4).readUInt32LE(0) / 0x100000000;
+const random = () => Math.random();
 
 const Optimization = {
   // eslint-disable-line no-unused-vars
@@ -62,7 +62,7 @@ const Optimization = {
       );
 
       // Décide si on se déplace vers la nouvelle solution.
-      if (newEnergy < currentEnergy || secureRandom() < acceptanceProbability) {
+      if (newEnergy < currentEnergy || random() < acceptanceProbability) {
         currentSolution = newSolution;
         currentEnergy = newEnergy;
       }
@@ -142,7 +142,7 @@ const Optimization = {
 
         let offspringChromosome;
         // 4. Croisement
-        if (secureRandom() < crossoverRate) {
+        if (random() < crossoverRate) {
           offspringChromosome = crossover(
             parent1.chromosome,
             parent2.chromosome,
@@ -152,7 +152,7 @@ const Optimization = {
         }
 
         // 5. Mutation
-        if (secureRandom() < mutationRate) {
+        if (random() < mutationRate) {
           offspringChromosome = mutate(offspringChromosome);
         }
 
@@ -524,7 +524,7 @@ Optimization.geneticAlgorithmMultiObjective = function (
         const parent1 = population[crypto.randomInt(0, population.length)];
         const parent2 = population[crypto.randomInt(0, population.length)];
       let childIndividual = crossover(parent1.individual, parent2.individual);
-      if (secureRandom() < mutationRate) {
+        if (random() < mutationRate) {
         childIndividual = mutate(childIndividual, currentConfig); // mutate doit maintenant utiliser currentConfig
       }
       const child = { individual: childIndividual };
@@ -668,7 +668,7 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
         }
 
         for (let i = 0; i < populationSize; i++) {
-            const z = Array.from({ length: n }, () => secureRandom() * 2 - 1); // Vecteur normal standard
+            const z = Array.from({ length: n }, () => random() * 2 - 1); // Vecteur normal standard
             const y = Array(n).fill(0); // z transformé par L
             for (let r = 0; r < n; r++) {
                 for (let c = 0; c < n; c++) {
@@ -926,7 +926,7 @@ Optimization.Operators.solveTSP = (cities, options = {}) => {
 
   // Solution initiale : un chemin aléatoire.
   const initialPath = Array.from({ length: cities.length }, (_, i) => i).sort(
-    () => secureRandom() - 0.5,
+    () => random() - 0.5,
   );
 
   // Paramètres par défaut pour le TSP, pouvant être surchargés par `options`.
@@ -968,14 +968,14 @@ Optimization.Operators.solvePortfolio = (
 
   // Fonctions spécifiques au problème pour l'AG, maintenant encapsulées.
   const createIndividual = () =>
-    Array.from({ length: assets.length }, () => secureRandom());
+    Array.from({ length: assets.length }, () => random());
 
   const crossover = (p1, p2) => p1.map((w1, i) => (w1 + p2[i]) / 2); // Moyenne des poids
 
   const mutate = (p) => {
     const newP = [...p];
       const i = crypto.randomInt(0, newP.length);
-    newP[i] += (secureRandom() - 0.5) * 0.2; // Mutation douce
+    newP[i] += (random() - 0.5) * 0.2; // Mutation douce
     newP[i] = Math.max(0, newP[i]); // Les poids ne peuvent être négatifs
     return newP;
   };
@@ -1109,8 +1109,8 @@ Optimization.Operators.solveFacilityLocation = (
   const facilityNeighbor = (facilities) => {
     const newFacilities = facilities.map((f) => ({ ...f }));
       const i = crypto.randomInt(0, numFacilities);
-    const moveX = (secureRandom() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
-    const moveY = (secureRandom() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
+    const moveX = (random() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
+    const moveY = (random() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
 
     newFacilities[i].x = Math.max(
       bounds.minX,
@@ -1126,8 +1126,8 @@ Optimization.Operators.solveFacilityLocation = (
 
   // Solution initiale : place les infrastructures au hasard sur la carte.
   const initialFacilities = Array.from({ length: numFacilities }, () => ({
-    x: bounds.minX + secureRandom() * (bounds.maxX - bounds.minX),
-    y: bounds.minY + secureRandom() * (bounds.maxY - bounds.minY),
+    x: bounds.minX + random() * (bounds.maxX - bounds.minX),
+    y: bounds.minY + random() * (bounds.maxY - bounds.minY),
   }));
 
   const saOptions = {
@@ -1244,7 +1244,7 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
   // Un "individu" est simplement une valeur de CPC.
   const createIndividual = () => {
     // Le CPC peut varier, par exemple, entre 0.5 et 5 PRIM'S.
-    return 0.5 + secureRandom() * 4.5;
+    return 0.5 + random() * 4.5;
   };
 
   // Croisement : moyenne des CPC des parents.
@@ -1254,7 +1254,7 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
 
   // Mutation : légère variation aléatoire du CPC.
   const mutate = (cpc) => {
-    const newCpc = cpc + (secureRandom() - 0.5) * 0.5;
+    const newCpc = cpc + (random() - 0.5) * 0.5;
     return Math.max(0.1, newCpc); // Assurer un CPC minimum.
   };
 
@@ -1501,9 +1501,9 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
 
   // Un "individu" est un tableau de 4 seuils : [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents]
   const createIndividual = () => {
-    const minTimeToClick = 100 + secureRandom() * 4900; // entre 100ms et 5s
-    const maxClickVariance = 1 + secureRandom() * 9999; // entre 1 et 10000
-    const minMouseEntropy = secureRandom() * 0.5; // entre 0 et 0.5
+    const minTimeToClick = 100 + random() * 4900; // entre 100ms et 5s
+    const maxClickVariance = 1 + random() * 9999; // entre 1 et 10000
+    const minMouseEntropy = random() * 0.5; // entre 0 et 0.5
     const minScrollEvents = crypto.randomInt(0, 10); // entre 0 et 10
     return [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents];
   };
@@ -1819,31 +1819,31 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     // Un "individu" est un objet de configuration complet
     const createIndividual = () => ({
         thresholds: {
-            low: 15 + secureRandom() * 20, // 15-35
-            medium: 40 + secureRandom() * 25,
-            high: 70 + secureRandom() * 20,
-          block: 90 + secureRandom() * 9,
+            low: 15 + random() * 20, // 15-35
+            medium: 40 + random() * 25,
+            high: 70 + random() * 20,
+          block: 90 + random() * 9,
         },
         weights: (() => {
           const w = {};
           for (const key in baseWeights) {
-            w[key] = baseWeights[key] * (0.75 + secureRandom() * 0.5); // +/- 25%
+            w[key] = baseWeights[key] * (0.75 + random() * 0.5); // +/- 25%
           }
           return w;
         })(),
         patterns: {
-            velocityThreshold: 100 + secureRandom() * 400,
-            velocityWeight: 10 + secureRandom() * 40,
-            burstThreshold: 300 + secureRandom() * 700,
-            burstWeight: 20 + secureRandom() * 40,
-            scrapeThreshold: 500 + secureRandom() * 1000,
-            scrapeWeight: 15 + secureRandom() * 35,
+            velocityThreshold: 100 + random() * 400,
+            velocityWeight: 10 + random() * 40,
+            burstThreshold: 300 + random() * 700,
+            burstWeight: 20 + random() * 40,
+            scrapeThreshold: 500 + random() * 1000,
+            scrapeWeight: 15 + random() * 35,
             sequenceLength: 3 + crypto.randomInt(0, 3),
-            sequenceWeight: 20 + secureRandom() * 50,
-            regularityThreshold: 50 + secureRandom() * 200,
-            regularityWeight: 20 + secureRandom() * 40,
-            decayFactor: 0.85 + secureRandom() * 0.14,
-            inactivityReset: 15000 + secureRandom() * 45000,
+            sequenceWeight: 20 + random() * 50,
+            regularityThreshold: 50 + random() * 200,
+            regularityWeight: 20 + random() * 40,
+            decayFactor: 0.85 + random() * 0.14,
+            inactivityReset: 15000 + random() * 45000,
         }
     });
 
@@ -1874,7 +1874,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
           { name: 'thresholds', weight: 0.25 },
           { name: 'weights', weight: 0.25 }
         ];
-        const rand = secureRandom();
+        const rand = random();
         let cumulativeWeight = 0;
         let sectionToMutate = 'patterns'; // Fallback
         for (const section of sections) {
@@ -1891,14 +1891,14 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     
         // S'assurer que les valeurs restent dans des limites raisonnables
         if (sectionToMutate === 'weights') {
-          newConfig[sectionToMutate][keyToMutate] = Math.max(0.05, Math.min(1.5, newConfig[sectionToMutate][keyToMutate] + (secureRandom() - 0.5) * 0.1));
+          newConfig[sectionToMutate][keyToMutate] = Math.max(0.05, Math.min(1.5, newConfig[sectionToMutate][keyToMutate] + (random() - 0.5) * 0.1));
         } else if (sectionToMutate === 'thresholds') {
-          newConfig[sectionToMutate][keyToMutate] = Math.round(newConfig[sectionToMutate][keyToMutate] + (secureRandom() - 0.5) * 5.0);
+          newConfig[sectionToMutate][keyToMutate] = Math.round(newConfig[sectionToMutate][keyToMutate] + (random() - 0.5) * 5.0);
         } else {
           if (keyToMutate === 'decayFactor') {
-            newConfig.patterns.decayFactor = Math.max(0.8, Math.min(0.999, newConfig.patterns.decayFactor + (secureRandom() - 0.5) * 0.05));
+            newConfig.patterns.decayFactor = Math.max(0.8, Math.min(0.999, newConfig.patterns.decayFactor + (random() - 0.5) * 0.05));
           } else if (keyToMutate.includes('Threshold') || keyToMutate.includes('Reset')) {
-            newConfig.patterns[keyToMutate] = Math.max(50, newConfig.patterns[keyToMutate] + (secureRandom() - 0.5) * 50.0);
+            newConfig.patterns[keyToMutate] = Math.max(50, newConfig.patterns[keyToMutate] + (random() - 0.5) * 50.0);
           }
         }
     
