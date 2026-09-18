@@ -182,4 +182,16 @@ class MongoDbStore implements IStore
             $this->lastReconnectAttempt = microtime(true);
         }
     }
+
+    public function clear(): void
+    {
+        $this->fallbackStore->clear();
+        $this->checkConnection();
+        if ($this->isDown) return;
+        try {
+            $this->collection->deleteMany([]);
+        } catch (\Throwable $e) {
+            $this->isDown = true;
+        }
+    }
 }

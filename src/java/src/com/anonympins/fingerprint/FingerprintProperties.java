@@ -18,6 +18,7 @@ public class FingerprintProperties {
     private Cpu cpu = new Cpu();
     private boolean challengeNewDevices = false;
     private int challengeTtl = 300;
+    private Object filterWhitelist = false;
     private long deviceIdCookieMaxAge = 2592000000L; // 30 jours par défaut
     private boolean verbose = false;
     private boolean dryRun = false;
@@ -35,6 +36,7 @@ public class FingerprintProperties {
     private boolean useAsymmetricTickets = true;
     private String ed25519PrivateKey;
     private String ed25519PublicKey;
+    private boolean reset = false;
 
     public boolean isEnabled() {
         return enabled;
@@ -90,6 +92,14 @@ public class FingerprintProperties {
 
     public void setChallengeTtl(int challengeTtl) {
         this.challengeTtl = challengeTtl;
+    }
+
+    public Object getFilterWhitelist() {
+        return filterWhitelist;
+    }
+
+    public void setFilterWhitelist(Object filterWhitelist) {
+        this.filterWhitelist = filterWhitelist;
     }
 
     public long getDeviceIdCookieMaxAge() {
@@ -226,6 +236,14 @@ public class FingerprintProperties {
 
     public void setEd25519PublicKey(String ed25519PublicKey) {
         this.ed25519PublicKey = ed25519PublicKey;
+    }
+
+    public boolean isReset() {
+        return reset;
+    }
+
+    public void setReset(boolean reset) {
+        this.reset = reset;
     }
 
 

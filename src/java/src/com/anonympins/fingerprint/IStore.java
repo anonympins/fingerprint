@@ -5,4 +5,5 @@ public interface IStore {
     void set(String key, Object value, Integer ttl);
     boolean has(String key);
     void delete(String key);
+    void clear();
 }

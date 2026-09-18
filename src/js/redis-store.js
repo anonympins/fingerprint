@@ -111,5 +111,18 @@ export function createRedisStore(redisClient) {
         triggerFallback();
       }
     },
+    async clear() {
+      localStore.clear();
+      for (const timeout of localTimeouts.values()) {
+        clearTimeout(timeout);
+      }
+      localTimeouts.clear();
+      if (isDown) return;
+      try {
+        await redisClient.flushdb();
+      } catch (e) {
+        triggerFallback();
+      }
+    }
   };
 }

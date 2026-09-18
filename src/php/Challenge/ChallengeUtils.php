@@ -633,14 +633,14 @@ class ChallengeUtils
     /**
      * Crée le bloc de données de base pour le challenge CPU.
      */
-    public static function createCpuChallengeBaseBlock(string $nonce, string $clientSecret, string $fingerprint): string
+    public static function createCpuChallengeBaseBlock(string $nonce, string $clientSecret, string $fingerprint, string $clientIp = '', string $tlsSessionId = ''): string
     {
         $parts = explode('|', $fingerprint);
         $filteredParts = array_filter($parts);
         sort($filteredParts);
         $sortedFingerprint = implode('|', $filteredParts);
         
-        return "{$nonce}:{$clientSecret}:{$sortedFingerprint}:";
+        return "{$nonce}:{$clientSecret}:{$sortedFingerprint}:{$clientIp}:{$tlsSessionId}:";
     }
 
     /**

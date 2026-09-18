@@ -154,6 +154,19 @@ export function createMongoDbStore(db, collectionName = 'fingerprint_store') {
         triggerFallback();
       }
     },
+    async clear() {
+      localStore.clear();
+      for (const timeout of localTimeouts.values()) {
+        clearTimeout(timeout);
+      }
+      localTimeouts.clear();
+      if (isDown) return;
+      try {
+        await collection.deleteMany({});
+      } catch (e) {
+        triggerFallback();
+      }
+    },
     async init() {
       try {
         // Automates index configuration

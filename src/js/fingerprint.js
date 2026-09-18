@@ -564,6 +564,7 @@ const securityProfiles = {
         },
         allowCrossNetworkRoaming: true, // Profil balancé : tolérant par défaut
     wasm: true,
+    filterWhitelist: 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
         useAsymmetricTickets: true,
     },
     /**
@@ -603,6 +604,7 @@ const securityProfiles = {
         },
         challengeNewDevices: true, // Challenge all new devices
         allowCrossNetworkRoaming: false, // Strict : interdiction de changer complètement de réseau sans re-challenge
+    filterWhitelist: true, // Tout comportement d'attaque certain bypass immédiatement la liste blanche
     wasm: true,
         useAsymmetricTickets: true,
     },
@@ -643,6 +645,7 @@ const securityProfiles = {
         },
         isApiRequest: (req) => req.path.startsWith('/api/') || req.headers.accept?.includes('application/json'),
         allowCrossNetworkRoaming: false, // Les API ne doivent pas subir de roaming inter-IP suspect
+    filterWhitelist: 75.0, // Seuil bas pour parer au vol de clés/tokens API légitimes
     wasm: true,
         useAsymmetricTickets: true,
     }
@@ -690,6 +693,7 @@ const securityProfiles = {
         },
         allowCrossNetworkRoaming: true,
     wasm: true,
+    filterWhitelist: 90.0, // Très tolérant, n'inspecte que si le score est presque au blocage
         useAsymmetricTickets: true,
     },
     /**
@@ -737,6 +741,7 @@ const securityProfiles = {
         challengeNewDevices: true, // New devices are suspicious in e-commerce
         isApiRequest: (req) => req.path.startsWith('/api/cart') || req.path.startsWith('/api/stock') || req.path.startsWith('/api/checkout'),
         allowCrossNetworkRoaming: false, // E-commerce : interdiction de changer de réseau sans re-challenge
+    filterWhitelist: true, // Tolérance zéro pour le scraping / scalping distribué
     wasm: true,
         useAsymmetricTickets: true,
     }
@@ -3168,6 +3173,7 @@ function verifyTrapUrl(path, signature, nonce) {
  * @property {(key: string, value: any, ttl?: number) => Promise<void>} set
  * @property {(key: string) => Promise<boolean>} has
  * @property {(key: string) => Promise<void>} delete
+ * @property {() => Promise<void>} clear
  */
 
 /**
@@ -3193,6 +3199,13 @@ const inMemoryStore = {
   },
   async has(key) { return this._map.has(key); },
   async delete(key) { this._map.delete(key); },
+  async clear() {
+    this._map.clear();
+    for (const timeoutId of this._timeouts.values()) {
+      clearTimeout(timeoutId);
+    }
+    this._timeouts.clear();
+  }
 };
 
 /** @type {IStore} */
@@ -3576,13 +3589,15 @@ function calculateTarget(suspicionFactor, securityConfig = {}) {
  * @param {string} nonce
  * @param {string} clientSecret
  * @param {string} fingerprint
+ * @param {string} clientIp
+ * @param {string} tlsSessionId
  * @returns {Buffer}
  */
-function createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint) {
+function createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint, clientIp = '', tlsSessionId = '') {
     const sortedFingerprint = (fingerprint || '').split('|').filter(p => p).sort().join('|');
     // On concatène les chaînes, puis on les convertit en buffer une seule fois.
     // Cela garantit que le client et le serveur travaillent sur la même base binaire.
-    const messageBase = `${nonce}:${clientSecret}:${sortedFingerprint}:`; // Le ':' final est le séparateur pour la solution.
+    const messageBase = `${nonce}:${clientSecret}:${sortedFingerprint}:${clientIp}:${tlsSessionId}:`; // Le ':' final est le séparateur pour la solution.
     return Buffer.from(messageBase, 'utf8');
 }
 
@@ -3595,10 +3610,11 @@ export function generateCpuTargetChallenge(
   suspicionFactor,
   originalUrl,
   securityConfig,
+  tlsSessionId = '',
 ) {
   const target = calculateTarget(suspicionFactor, securityConfig);
   // Le baseBlock est créé ici et sera stocké dans le contexte du challenge.
-  const baseBlock = createCpuChallengeBaseBlock(nonce, null, ''); // Pour le challenge simple, le secret et le fingerprint sont vides.
+  const baseBlock = createCpuChallengeBaseBlock(nonce, null, '', clientIp, tlsSessionId);
   return {
     type: "cpu_target",
     nonce: nonce,
@@ -3682,14 +3698,14 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
  * @param {string} clientIp - The client's IP address.
  * @returns {string} HTML content.
  */
-function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapUrls, originalFingerprint) { // eslint-disable-line max-len
+function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty, clientIp, clientSecret, securityConfig, trapUrls, originalFingerprint, tlsSessionId = '') { // eslint-disable-line max-len
     const { nonce, target, path } = cpuChallengeDetails;
     const safePath = sanitizeRedirectPath(path);
     const solverCode = getPowSolverCode();
     // On prépare le baseBlock pour le client. Il sera envoyé sous forme de tableau d'octets.
     // Le fingerprint est maintenant passé directement en paramètre.
     const fingerprint = originalFingerprint;
-    const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint);
+    const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint, clientIp, tlsSessionId);
     const baseBlockBytes = `[${baseBlock.toString('utf8').split('').map(c => c.charCodeAt(0)).join(',')}]`;
 
     // Prépare la configuration pour l'initialisation du client, y compris les URL pièges.
@@ -3933,6 +3949,11 @@ export class FingerprintEngine {
     this._validateConfig(finalConfig); // Validate the configuration
     this.verbose = finalConfig.verbose || false;
     this.dryRun = finalConfig.dryRun || false;
+    if (finalConfig.reset) {
+      this.resetStore().catch(err => {
+        console.error('[FingerprintEngine] Failed to reset store on startup:', err.message);
+      });
+    }
   }
 
   /**
@@ -3945,6 +3966,16 @@ export class FingerprintEngine {
     this.securityConfig = deepMerge(this.securityConfig, newConfig);
     this.dryRun = this.securityConfig.dryRun || false;
     this._log('Configuration mise à jour à chaud (Hot-Reloaded)', this.securityConfig);
+  }
+
+  /**
+   * Réinitialise le store de persistance actif.
+   */
+  async resetStore() {
+    if (store && typeof store.clear === 'function') {
+      await store.clear();
+      this._log('Store has been reset/cleared.');
+    }
   }
 
   /**
@@ -3965,9 +3996,9 @@ export class FingerprintEngine {
       'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
       'trustedProxies',
       'wasm',
-      'similarityThreshold',
+      'similarityThreshold', 'reset',
       'ed25519_private_key', 'ed25519_public_key',
-      'federatedPeers', 'federationSecret'
+      'federatedPeers', 'federationSecret', 'filterWhitelist'
     ]);
 
     // 1. Check for essential keys
@@ -3984,6 +4015,19 @@ export class FingerprintEngine {
         console.warn(`[Fingerprint] Warning: Unknown key '${key}' found in securityConfig. This might be a typo.`);
       }
     }
+  }
+
+  _hasCertainAttack(context) {
+    const honeypotConfig = this.securityConfig.honeypot || {};
+    const { honeypotScore } = getHoneypotScore(context, honeypotConfig);
+    if (honeypotScore >= 100) {
+      return true;
+    }
+    const { botScore } = getBotScore(context);
+    if (botScore >= 100) {
+      return true;
+    }
+    return false;
   }
 
   _log(message, data = {}) {
@@ -4301,6 +4345,16 @@ export class FingerprintEngine {
 
       const { weights, thresholds, logger, onDeviceCompromised } = this.securityConfig;
     
+    let preCalculatedVector = null;
+    let preCalculatedScore = null;
+    const getScoreAndVector = async () => {
+      if (preCalculatedScore === null) {
+        preCalculatedVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
+        preCalculatedScore = this.calculateFinalScore(preCalculatedVector);
+      }
+      return { score: preCalculatedScore, vector: preCalculatedVector };
+    };
+
     this._log('Processing request', { clientIp, path, isStatic });
     
     // Bypass instantané si l'appareil a prouvé cryptographiquement son identité matérielle (Secure Enclave / TPM)
@@ -4321,34 +4375,47 @@ export class FingerprintEngine {
     const allowRoaming = this.securityConfig?.allowCrossNetworkRoaming ?? false;
 
     // 1. Check static IP allowlist first for maximum performance.
+    let whitelisted = false;
+    let whitelistType = '';
+
     if (this._isIpInAllowlist(clientIp)) {
-      this._log('IP in allowlist - allowing request', { clientIp });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'allowlist' } };
+      whitelisted = true;
+      whitelistType = 'allowlist';
+    } else if (await this._isIpInHostnameAllowlist(clientIp)) {
+      whitelisted = true;
+      whitelistType = 'hostname_allowlist';
+    } else {
+      const requestHost = requestContext.headers?.host;
+      if (requestHost && this._isHostPathInAllowlist(requestHost, path)) {
+        whitelisted = true;
+        whitelistType = 'host_path_allowlist';
+      } else if (this._isPathInAllowlist(path)) {
+        whitelisted = true;
+        whitelistType = 'path_allowlist';
+      } else if (graphqlOperationType && this._isGraphqlOperationInAllowlist(graphqlOperationType, graphqlOperationName)) {
+        whitelisted = true;
+        whitelistType = 'graphql_operation_allowlist';
+      }
     }
 
-    // 2. Check hostname-based allowlist.
-    if (await this._isIpInHostnameAllowlist(clientIp)) {
-      this._log('IP resolves to a whitelisted hostname - allowing request', { clientIp });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'hostname_allowlist' } };
-    }
+    if (whitelisted) {
+      const filterWhitelist = this.securityConfig.filterWhitelist || false;
+      let bypassWhitelist = false;
+      if (filterWhitelist === true) {
+        bypassWhitelist = this._hasCertainAttack(requestContext);
+      } else if (typeof filterWhitelist === 'number') {
+        const res = await getScoreAndVector();
+        if (res.score > filterWhitelist) {
+          bypassWhitelist = true;
+        }
+      }
 
-    // 3. Check host+path based allowlist.
-    const requestHost = requestContext.headers?.host;
-    if (requestHost && this._isHostPathInAllowlist(requestHost, path)) {
-      this._log('Host and path in allowlist - allowing request', { host: requestHost, path });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'host_path_allowlist' } };
-    }
-
-    // 3. Check path-based allowlist.
-    if (this._isPathInAllowlist(path)) {
-      this._log('Path in allowlist - allowing request', { path });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'path_allowlist' } };
-    }
-
-    // 5. Check GraphQL operation allowlist.
-    if (graphqlOperationType && this._isGraphqlOperationInAllowlist(graphqlOperationType, graphqlOperationName)) {
-      this._log('GraphQL operation in allowlist - allowing request', { operation: `${graphqlOperationType}:${graphqlOperationName}` });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'graphql_operation_allowlist' } };
+      if (bypassWhitelist) {
+        this._log('Whitelisted request exceeds filter threshold - bypassing whitelist bypass', { clientIp, path });
+      } else {
+        this._log(`IP/Path in allowlist (${whitelistType}) - allowing request`, { clientIp, path });
+        return { action: 'next', score: 0, vector: { whitelisted: 100, type: whitelistType } };
+      }
     }
 
     const { pow_nonce } = query;
@@ -4366,8 +4433,23 @@ export class FingerprintEngine {
 
     // Check if the request is from a verified, whitelisted bot (e.g., Googlebot)
     if (await this._verifyWhitelistedBot(requestContext)) {
-      this._log('Whitelisted bot verified - allowing request', { clientIp });
-      return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
+      const filterWhitelist = this.securityConfig.filterWhitelist || false;
+      let bypassWhitelist = false;
+      if (filterWhitelist === true) {
+        bypassWhitelist = this._hasCertainAttack(requestContext);
+      } else if (typeof filterWhitelist === 'number') {
+        const res = await getScoreAndVector();
+        if (res.score > filterWhitelist) {
+          bypassWhitelist = true;
+        }
+      }
+
+      if (bypassWhitelist) {
+        this._log('Verified bot request exceeds filter threshold - bypassing bot whitelist bypass', { clientIp });
+      } else {
+        this._log('Whitelisted bot verified - allowing request', { clientIp });
+        return { action: 'next', score: 0, vector: { whitelisted: 100, type: 'bot' } };
+      }
     }
     
     this._log('Identity resolved', { deviceId, isNewDevice, hasDeviceData: !!deviceData });
@@ -4396,16 +4478,14 @@ export class FingerprintEngine {
     }
 
     // The engine now works with the context directly, no more rawReq dependency here.
-    const suspicionVector = await __internal.getSuspicionVector(requestContext, this.securityConfig);
-    // honeypotScore et behaviorScore sont maintenant inclus directement dans le vecteur de suspicion.
+    const suspicionVector = preCalculatedVector || await __internal.getSuspicionVector(requestContext, this.securityConfig);
+    let finalScore = preCalculatedScore !== null ? preCalculatedScore : this.calculateFinalScore(suspicionVector);
 
     this._log('Suspicion vector calculated', { 
         vector: suspicionVector,
         weights: this.securityConfig.weights 
     });
 
-    let finalScore = this.calculateFinalScore(suspicionVector);
-    
     this._log('Final score calculated', { finalScore });
 
     const blockThreshold = thresholds.block ?? 95;
@@ -4686,6 +4766,27 @@ export class FingerprintEngine {
                     config: this.securityConfig.usefulWorkConfig
                 }, store);
                 await manager.integrateSolution(pow_problem_id, workResult);
+
+                // Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
+                // on applique directement la meilleure solution calculée au moteur en direct.
+                if (pow_problem_id === 'security_auto_tuning' && this.securityConfig.autotuning?.enabled) {
+                    const paretoFront = workResult.paretoFront;
+                    if (Array.isArray(paretoFront) && paretoFront.length > 0) {
+                        let bestSolution = paretoFront[0];
+                        let minDistance = Math.sqrt(Math.pow(bestSolution.objectives[0], 2) + Math.pow(bestSolution.objectives[1], 2));
+                        for (let i = 1; i < paretoFront.length; i++) {
+                            const distance = Math.sqrt(Math.pow(paretoFront[i].objectives[0], 2) + Math.pow(paretoFront[i].objectives[1], 2));
+                            if (distance < minDistance) {
+                                minDistance = distance;
+                                bestSolution = paretoFront[i];
+                            }
+                        }
+                        if (bestSolution && bestSolution.solution) {
+                            this.updateConfig(bestSolution.solution);
+                            this._log('Useful Work auto-tuning applied successfully to live config.');
+                        }
+                    }
+                }
 
                 await store.delete(`secret:${pow_nonce}`);
                 // Accorder un ticket de passage comme pour un PoW normal
@@ -4974,7 +5075,8 @@ export class FingerprintEngine {
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce)); // Génère les URL
 
             // On passe la configuration pour que la difficulté soit calculée correctement.
-            const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig);
+    const tlsSessionId = getTlsSessionId(requestContext) || '';
+    const cpuChallengeDetails = generateCpuTargetChallenge(clientIp, nonce, suspicionFactor, path, this.securityConfig, tlsSessionId);
 
             // La difficulté mémoire augmente désormais en parfaite synergie avec le facteur de suspicion (ratio constant)
             const memActivationFactor = suspicionFactor;
@@ -4993,7 +5095,7 @@ export class FingerprintEngine {
             const originalFingerprint = requestContext.headers['x-device-fingerprint'] || __internal.getCompositeDeviceHash(requestContext);
 
             // Store the entire challenge context with a short TTL (e.g., 5 minutes)
-            const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint);
+    const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint, clientIp, tlsSessionId);
 
             // SECURITY: Cryptographically sign the payload before storing it to prevent database tampering
             const payloadToSign = `${clientSecret}:${cpuChallengeDetails.target}:${originalFingerprint}:${memDifficulty}:${path}:${clientIp}`;
@@ -5042,7 +5144,7 @@ export class FingerprintEngine {
                 decision.body = challengePayload;
             } else {
                 // For browsers, send the HTML page.
-                const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapUrls, originalFingerprint);
+        const page = generateCombinedPoWChallengePage(cpuChallengeDetails, memDifficulty, clientIp, clientSecret, this.securityConfig, trapUrls, originalFingerprint, tlsSessionId);
                 this._log('Browser challenge page generated', {
                     pageLength: page.length,
                     trapUrlsInjected: trapUrls.length
@@ -6206,19 +6308,20 @@ export function sanitizeTrafficData(trafficData) {
   if (!trafficData || trafficData.length === 0) {
     return [];
   }
-  const suspiciousLogs = [];
-  const passedLogs = [];
-  const deviceCounts = new Map();
+
+    const rawLogs = [...trafficData];
+    const totalCount = rawLogs.length;
+
+    const maxLogsPerDevice = Math.max(3, Math.floor(totalCount * 0.02)); // Max 2% contribution per device
+    const maxLogsPerIp = Math.max(3, Math.floor(totalCount * 0.02));      // Max 2% par adresse IP individuelle
+    const maxLogsPerSubnet = Math.max(5, Math.floor(totalCount * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
+    const maxLogsPerHardwareCluster = Math.max(3, Math.floor(totalCount * 0.02)); // Max 2% par cluster matériel stable
+
+    const deviceCounts = new Map();
   const ipCounts = new Map();
   const subnetCounts = new Map();
   const hardwareClusterCounts = new Map();
   const hwClusterCache = new Map();
-
-  // Calcul des quotas maximums pour éviter l'influence démesurée d'une entité
-  const maxLogsPerDevice = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% contribution per device
-  const maxLogsPerIp = Math.max(3, Math.floor(trafficData.length * 0.02));      // Max 2% par adresse IP individuelle
-  const maxLogsPerSubnet = Math.max(5, Math.floor(trafficData.length * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
-  const maxLogsPerHardwareCluster = Math.max(3, Math.floor(trafficData.length * 0.02)); // Max 2% par cluster matériel stable
 
   const getHardwareCluster = (log) => {
     const fp = log.deviceHash || log.fingerprint || log.deviceFingerprint || '';
@@ -6240,8 +6343,41 @@ export function sanitizeTrafficData(trafficData) {
     hwClusterCache.set(fp, result);
     return result;
   };
+// --- REVOLUTION : Compression de Cohorte par Densité Vectorielle (Anti-Sybil / Anti-Poisoning) ---
+    const clusteredLogs = [];
+    const getVectorDistance = (v1, v2) => {
+        if (!v1 || !v2) return Infinity;
+        let sum = 0;
+        const keys = new Set([...Object.keys(v1), ...Object.keys(v2)]);
+        for (const key of keys) {
+            sum += Math.pow((v1[key] || 0) - (v2[key] || 0), 2);
+        }
+        return Math.sqrt(sum);
+    };
 
-  for (const log of trafficData) {
+    for (const log of rawLogs) {
+        let matchedCluster = null;
+        for (const cluster of clusteredLogs) {
+            if (log.type === cluster.type && getVectorDistance(log.vector, cluster.vector) < 5.0) {
+                matchedCluster = cluster;
+                break;
+            }
+        }
+        if (matchedCluster) {
+            matchedCluster.instancesCount = (matchedCluster.instancesCount || 1) + 1;
+            matchedCluster.weight = 1 + Math.log(matchedCluster.instancesCount); // Compression logarithmique
+        } else {
+            const logCopy = { ...log };
+            logCopy.instancesCount = 1;
+            logCopy.weight = 1.0;
+            clusteredLogs.push(logCopy);
+        }
+    }
+
+    const suspiciousLogs = [];
+    const passedLogs = [];
+
+    for (const log of clusteredLogs) {
     const devId = log.deviceId || 'anonymous';
     const ip = log.clientIp || log.ip || 'unknown';
     const subnet = getIpSubnet(ip) || 'unknown-subnet';
@@ -6330,29 +6466,33 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     pruneTrafficData(trafficData, maxDataPoints, maxAgeMs, onCleanup);
     const sanitizedData = sanitizeTrafficData(trafficData);
 
-  const highConfidenceLogs = sanitizedData.filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered').length;
-  const highConfidenceRatio = sanitizedData.length > 0 ? highConfidenceLogs / sanitizedData.length : 0;
+  const highConfidenceLogs = sanitizedData
+    .filter(log => log.type === 'challenge_solved' || log.type === 'trap_triggered')
+    .reduce((sum, log) => sum + (log.instancesCount || 1), 0);
+  const totalSanitizedInstances = sanitizedData.reduce((sum, log) => sum + (log.instancesCount || 1), 0);
+  const highConfidenceRatio = totalSanitizedInstances > 0 ? highConfidenceLogs / totalSanitizedInstances : 0;
   const MIN_CONFIDENCE_RATIO = 0.05; // Exiger au moins 5% de signaux forts.
   const MIN_HIGH_CONFIDENCE_COUNT = 10; // Absolu de secours pour éviter le gel lors de floods
 
   const hasEnoughSignal = highConfidenceRatio >= MIN_CONFIDENCE_RATIO || highConfidenceLogs >= MIN_HIGH_CONFIDENCE_COUNT;
 
-  if (sanitizedData.length < minDataPoints || !hasEnoughSignal) {
-    if (sanitizedData.length < minDataPoints) {
-    console.log(`[AutoTuning] Reporté : ${sanitizedData.length}/${minDataPoints} points de données.`);
+  if (totalSanitizedInstances < minDataPoints || !hasEnoughSignal) {
+    if (totalSanitizedInstances < minDataPoints) {
+    console.log(`[AutoTuning] Reporté : ${totalSanitizedInstances}/${minDataPoints} points de données.`);
     } else {
       console.log(`[AutoTuning] Reporté : Signaux de confiance insuffisants (Ratio: ${(highConfidenceRatio * 100).toFixed(2)}% < ${(MIN_CONFIDENCE_RATIO * 100).toFixed(2)}% et absolu: ${highConfidenceLogs} < ${MIN_HIGH_CONFIDENCE_COUNT}).`);
     }
     return;
   }
-  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${sanitizedData.length} points de données assainis.`);
+  console.log(`[AutoTuning] Démarrage du cycle d'optimisation complet avec ${totalSanitizedInstances} points de données assainis.`);
 
-  const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData: sanitizedData });
+  try {
+    const paretoFront = Optimization.Operators.solveFullSecurityTuning({ trafficData: sanitizedData });
 
-  if (!paretoFront || paretoFront.length === 0) {
-    console.warn("[AutoTuning] L'optimisation n'a retourné aucune solution.");
-    return;
-  }
+    if (!paretoFront || paretoFront.length === 0) {
+      console.warn("[AutoTuning] L'optimisation n'a retourné aucune solution.");
+      return;
+    }
 
   // Règles de gardiennage (Sanity Guardrails) pour filtrer le front de Pareto
   const isValidSecurityConfig = (config) => {
@@ -6510,13 +6650,14 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   if (savePath) {
       try {
           const configToSave = JSON.stringify(bestSolution.solution, null, 2);
-          fs.writeFileSync(savePath, configToSave, 'utf-8');
+          writeFileSync(savePath, configToSave, 'utf-8');
           console.log(`[AutoTuning] Meilleure configuration sauvegardée dans : ${savePath}`);
       } catch (error) {
           console.error(`[AutoTuning] Erreur lors de la sauvegarde de la configuration optimisée : ${error.message}`);
       }
   }
 
+  } finally {
     if (clearAfterTuning) {
         const cleared = trafficData.splice(0, trafficData.length);
         if (onCleanup && typeof onCleanup === 'function' && cleared.length > 0) {
@@ -6528,6 +6669,7 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
         }
         console.log(`[AutoTuning] Explicitly cleared ${cleared.length} processed traffic data points.`);
     }
+  }
 }
 
 /**

@@ -92,8 +92,7 @@ describe('FingerprintEngine Challenge Validation', () => {
 
         // The client solves the challenge
         // --- FIX: Simulate the client creating the baseBlock for the solver ---
-        const messageBase = `${nonce}:${challengeContext.clientSecret}:fingerprint-A:`;
-        const baseBlock = new TextEncoder().encode(messageBase);
+        const baseBlock = new Uint8Array(challengeContext.baseBlock);
 
         const cpuSolution = await solveCpuTargetInline(baseBlock, cpuTarget, null);
         // The memory challenge seed does not include the fingerprint.
@@ -153,7 +152,7 @@ describe('FingerprintEngine Challenge Validation', () => {
         // --- 2. Second request: Solution is submitted from "Machine B" ---
         // --- FIX: Simulate the client creating the baseBlock for the solver ---
         // The solver uses the fingerprint of the machine it's running on.
-        const messageBase = `${nonce}:${challengeContext.clientSecret}:fingerprint-B:`;
+        const messageBase = `${nonce}:${challengeContext.clientSecret}:fingerprint-B:127.0.0.1::`;
         const baseBlock = new TextEncoder().encode(messageBase);
 
         const cpuSolution = await solveCpuTargetInline(baseBlock, cpuTarget, null);

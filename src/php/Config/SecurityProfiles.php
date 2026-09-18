@@ -58,6 +58,7 @@ class SecurityProfiles
                 'decayFactor' => 0.9,
                 'inactivityReset' => 5000,
             ],
+        'filterWhitelist' => 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
         'wasm' => true,
         ],
 
@@ -108,6 +109,7 @@ class SecurityProfiles
             ],
             'challengeNewDevices' => true, // Challenge all new devices
         'wasm' => true,
+        'filterWhitelist' => true, // Tout comportement d'attaque certain bypass immédiatement la liste blanche
         ],
 
         /**
@@ -155,6 +157,7 @@ class SecurityProfiles
             ],
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/") || req.headers.accept?.includes("application/json")',
+        'filterWhitelist' => 75.0, // Seuil bas pour parer au vol de clés/tokens API légitimes
         'wasm' => true,
         ],
 
@@ -204,6 +207,7 @@ class SecurityProfiles
                 'decayFactor' => 0.92,
                 'inactivityReset' => 10000,
             ],
+        'filterWhitelist' => 90.0, // Très tolérant, n'inspecte que si le score est presque au blocage
         'wasm' => true,
         ],
 
@@ -257,6 +261,7 @@ class SecurityProfiles
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/cart") || req.path.startsWith("/api/stock") || req.path.startsWith("/api/checkout")',
         'wasm' => true,
+        'filterWhitelist' => true, // Tolérance zéro pour le scraping / scalping distribué
         ],
     ];
 

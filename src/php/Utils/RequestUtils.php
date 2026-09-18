@@ -1482,19 +1482,19 @@ class RequestUtils
             return [];
         }
 
-        $suspiciousLogs = [];
-        $passedLogs = [];
+        $rawLogs = $trafficData;
+        $totalCount = count($rawLogs);
+
+        $maxLogsPerDevice = max(3, (int)floor($totalCount * 0.02));
+        $maxLogsPerIp = max(3, (int)floor($totalCount * 0.02));
+        $maxLogsPerSubnet = max(5, (int)floor($totalCount * 0.05));
+        $maxLogsPerHardwareCluster = max(3, (int)floor($totalCount * 0.02));
+
         $deviceCounts = [];
         $ipCounts = [];
         $subnetCounts = [];
         $hardwareClusterCounts = [];
         $hwClusterCache = [];
-
-        $totalCount = count($trafficData);
-        $maxLogsPerDevice = max(3, (int)floor($totalCount * 0.02)); // Max 2% contribution per device
-        $maxLogsPerIp = max(3, (int)floor($totalCount * 0.02));      // Max 2% par adresse IP individuelle
-        $maxLogsPerSubnet = max(5, (int)floor($totalCount * 0.05));  // Max 5% par bloc réseau (anti-proxy-rotation)
-        $maxLogsPerHardwareCluster = max(3, (int)floor($totalCount * 0.02)); // Max 2% par cluster matériel stable
 
         $getHardwareCluster = function (array $log) use (&$hwClusterCache): string {
             $fp = $log['deviceHash'] ?? $log['fingerprint'] ?? $log['deviceFingerprint'] ?? '';
@@ -1522,7 +1522,40 @@ class RequestUtils
             return $log['deviceId'] ?? 'anonymous-cluster';
         };
 
-        foreach ($trafficData as $log) {
+        // --- REVOLUTION : Compression de Cohorte par Densité Vectorielle (Anti-Sybil) ---
+        $getVectorDistance = function (array $v1, array $v2): float {
+            $sum = 0.0;
+            $keys = array_unique(array_merge(array_keys($v1), array_keys($v2)));
+            foreach ($keys as $key) {
+                $sum += pow((float)($v1[$key] ?? 0.0) - (float)($v2[$key] ?? 0.0), 2);
+            }
+            return sqrt($sum);
+        };
+
+        $clusteredLogs = [];
+        foreach ($rawLogs as $log) {
+            $matchedClusterKey = null;
+            foreach ($clusteredLogs as $key => $cluster) {
+                if (($log['type'] ?? '') === ($cluster['type'] ?? '') && $getVectorDistance($log['vector'] ?? [], $cluster['vector'] ?? []) < 5.0) {
+                    $matchedClusterKey = $key;
+                    break;
+                }
+            }
+            if ($matchedClusterKey !== null) {
+                $clusteredLogs[$matchedClusterKey]['instancesCount'] = ($clusteredLogs[$matchedClusterKey]['instancesCount'] ?? 1) + 1;
+                $clusteredLogs[$matchedClusterKey]['weight'] = 1.0 + log((float)$clusteredLogs[$matchedClusterKey]['instancesCount']);
+            } else {
+                $logCopy = $log;
+                $logCopy['instancesCount'] = 1;
+                $logCopy['weight'] = 1.0;
+                $clusteredLogs[] = $logCopy;
+            }
+        }
+
+        $suspiciousLogs = [];
+        $passedLogs = [];
+
+        foreach ($clusteredLogs as $log) {
             $devId = $log['deviceId'] ?? 'anonymous';
             $ip = $log['clientIp'] ?? $log['ip'] ?? 'unknown';
             $subnet = self::getIpSubnet($ip) ?? 'unknown-subnet';

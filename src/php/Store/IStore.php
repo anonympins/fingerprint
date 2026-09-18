@@ -39,4 +39,10 @@ interface IStore
      * @return void
      */
     public function delete(string $key): void;
+
+    /**
+     * Supprime toutes les clés du stockage.
+     * @return void
+     */
+    public function clear(): void;
 }

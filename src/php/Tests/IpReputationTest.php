@@ -25,6 +25,7 @@ class IpReputationTest extends TestCase
             public function set(string $key, $value, ?int $ttl = null): void { $this->data[$key] = $value; }
             public function has(string $key): bool { return isset($this->data[$key]); }
             public function delete(string $key): void { unset($this->data[$key]); }
+            public function clear(): void { $this->data = []; }
         };
 
         StoreManager::setStore($this->store);

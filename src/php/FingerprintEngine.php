@@ -237,6 +237,9 @@
          $this->logger = isset($securityConfig['logger']) && is_callable($securityConfig['logger']) ? new Logger($securityConfig['logger']) : null;
          $this->dryRun = $securityConfig['dryRun'] ?? false;
          $this->validateConfig($securityConfig);
+         if ($this->securityConfig['reset'] ?? false) {
+             $this->resetStore();
+         }
      }
 
     /**
@@ -250,6 +253,18 @@
         $this->validateConfig($newConfig);
         $this->securityConfig = SecurityProfiles::deepMerge($this->securityConfig, $newConfig);
         $this->log('Configuration mise à jour à chaud (Hot-Reloaded)', $this->securityConfig);
+    }
+
+    /**
+     * Réinitialise le store de persistance actif.
+     */
+    public function resetStore(): void
+    {
+        $store = StoreManager::getStore();
+        if (method_exists($store, 'clear')) {
+            $store->clear();
+        }
+        $this->log('Store has been reset/cleared.');
     }
 
      private function validateConfig(array $config): void
@@ -266,7 +281,7 @@
              'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
              'similarityThreshold', 'summary', 'description',
              'ed25519_private_key', 'ed25519_public_key',
-             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret'
+             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret', 'reset'
          ];
 
          if (empty($config['weights'])) {
@@ -497,28 +512,50 @@
       */
      private function checkAllowlists(RequestContext $context): bool
      {
+         $whitelisted = false;
+         $type = '';
+
          if ($this->isIpInAllowlist($context->clientIp)) {
-             $this->log('IP in allowlist - allowing request', ['clientIp' => $context->clientIp]);
+             $whitelisted = true;
+             $type = 'allowlist';
+         } elseif ($this->isPathInAllowlist($context->path)) {
+             $whitelisted = true;
+             $type = 'path_allowlist';
+         } elseif ($this->isHostPathInAllowlist($context->getHeader('host'), $context->path)) {
+             $whitelisted = true;
+             $type = 'host_path_allowlist';
+         } elseif ($context->graphqlOperation && $this->isGraphqlOperationInAllowlist($context->graphqlOperation['type'], $context->graphqlOperation['name'])) {
+             $whitelisted = true;
+             $type = 'graphql_operation_allowlist';
+         } elseif ($this->verifyWhitelistedBot($context)) {
+             $whitelisted = true;
+             $type = 'bot';
+         }
+
+         if ($whitelisted) {
+             $filterWhitelist = $this->securityConfig['filterWhitelist'] ?? false;
+             $bypassWhitelist = false;
+             if ($filterWhitelist === true) {
+                 $bypassWhitelist = $this->hasCertainAttack($context);
+             } elseif (is_numeric($filterWhitelist)) {
+                 if ($context->preCalculatedScore === null) {
+                     $suspicionVector = [];
+                     $context->preCalculatedVector = $this->getSuspicionVector($context, $suspicionVector);
+                     $context->preCalculatedScore = $this->calculateFinalScore($context->preCalculatedVector);
+                 }
+                 if ($context->preCalculatedScore > $filterWhitelist) {
+                     $bypassWhitelist = true;
+                 }
+             }
+
+             if ($bypassWhitelist) {
+                 $this->log('Whitelisted request exceeds filter threshold - bypassing whitelist bypass', ['clientIp' => $context->clientIp, 'path' => $context->path]);
+                 return false;
+             }
+             $this->log("IP/Path in allowlist ({$type}) - allowing request", ['clientIp' => $context->clientIp, 'path' => $context->path]);
              return true;
          }
-         if ($this->isPathInAllowlist($context->path)) {
-             $this->log('Path in allowlist - allowing request', ['path' => $context->path]);
-             return true;
-         }
-         if ($this->isHostPathInAllowlist($context->getHeader('host'), $context->path)) {
-             $this->log('Host and path in allowlist - allowing request', ['host' => $context->getHeader('host'), 'path' => $context->path]);
-             return true;
-         }
-         // NOUVEAU: Vérifier la liste blanche GraphQL
-         if ($context->graphqlOperation && $this->isGraphqlOperationInAllowlist($context->graphqlOperation['type'], $context->graphqlOperation['name'])) {
-             $this->log('GraphQL operation in allowlist - allowing request', ['operation' => "{$context->graphqlOperation['type']}:{$context->graphqlOperation['name']}"]);
-             return true;
-         }
-         if ($this->verifyWhitelistedBot($context)) {
-             $this->log('Whitelisted bot verified - allowing request', ['clientIp' => $context->clientIp]);
-             return true;
-         }
- 
+
          return false;
      }
 
@@ -909,6 +946,23 @@
      }
 
      /**
+      * Évalue si la requête présente des caractéristiques d'attaque flagrantes ou a déclenché un honeypot.
+      */
+     private function hasCertainAttack(RequestContext $context): bool
+     {
+         $honeypotConfig = $this->securityConfig['honeypot'] ?? [];
+         $honeypot = RequestUtils::getHoneypotScore($context, $honeypotConfig);
+         if (($honeypot['honeypotScore'] ?? 0.0) >= 100.0) {
+             return true;
+         }
+         $bot = RequestUtils::getBotScore($context);
+         if (($bot['botScore'] ?? 0.0) >= 100.0) {
+             return true;
+         }
+         return false;
+     }
+
+     /**
       * Traite une requête entrante et retourne une décision.
       * @param RequestContext $context Le contexte de la requête.
       * @return array{action: string, score: float, vector: array, status?: int, body?: mixed, cookie?: array, path?: string, newCookieForResponse?: array}
@@ -1032,6 +1086,28 @@
                                 $problemManager = \Anonympins\Fingerprint\ProblemManager::getInstance($configPath, $store);
                                  // FIX: La solution est directement le $workResult, pas une sous-propriété.
                                  $problemManager->integrateSolution($problemId, $workResult);
+
+                             // Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
+                             // on applique directement la meilleure solution calculée au moteur en direct.
+                             if ($problemId === 'security_auto_tuning' && ($this->securityConfig['autotuning']['enabled'] ?? false)) {
+                                 $paretoFront = $workResult['paretoFront'] ?? null;
+                                 if (is_array($paretoFront) && !empty($paretoFront)) {
+                                     $bestSolution = $paretoFront[0];
+                                     $minDistance = sqrt(pow((float)$bestSolution['objectives'][0], 2) + pow((float)$bestSolution['objectives'][1], 2));
+                                     for ($i = 1; $i < count($paretoFront); $i++) {
+                                         $distance = sqrt(pow((float)$paretoFront[$i]['objectives'][0], 2) + pow((float)$paretoFront[$i]['objectives'][1], 2));
+                                         if ($distance < $minDistance) {
+                                             $minDistance = $distance;
+                                             $bestSolution = $paretoFront[$i];
+                                         }
+                                     }
+                                     if (isset($bestSolution['solution'])) {
+                                         $this->updateConfig($bestSolution['solution']);
+                                         $this->log('Useful Work auto-tuning applied successfully to live config.');
+                                     }
+                                 }
+                             }
+
                                  $isValid = true;
                                  // FIX: Générer un vrai ticket pour uPoW, comme pour un PoW normal.
                                  $ticketTtl = $this->securityConfig['ticketMaxAge'] ?? 3600000; // 1 heure par défaut
@@ -1113,8 +1189,8 @@
              return $decision;
          }
 
-         $suspicionVector = $this->getSuspicionVector($context, $suspicionVector);
-         $finalScore = $this->calculateFinalScore($suspicionVector);
+         $suspicionVector = $context->preCalculatedVector ?? $this->getSuspicionVector($context, $suspicionVector);
+         $finalScore = $context->preCalculatedScore ?? $this->calculateFinalScore($suspicionVector);
          $this->log('Suspicion vector and final score calculated', [
              'finalScore' => round($finalScore, 2),
              'vector' => $suspicionVector
@@ -1354,7 +1430,8 @@
                  $memDifficulty = (int)round($memActivationFactor * 48); // 0 à 48MB
 
                  $originalFingerprint = RequestUtils::getCompositeDeviceHash($context);
-                 $baseBlock = ChallengeUtils::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint);
+                 $tlsSessionId = $context->tlsSessionId ?? '';
+                 $baseBlock = ChallengeUtils::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint, $context->clientIp, $tlsSessionId);
 
                  $challengeContext = [
                      'clientSecret' => $clientSecret,

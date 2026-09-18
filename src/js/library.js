@@ -1551,23 +1551,72 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
  * @param {Array<object>} config.trafficData - Données de trafic collectées.
  * @returns {function(object): number[]} Une fonction de fitness qui prend une configuration complète et retourne les scores [taux de faux positifs, taux de faux négatifs].
  */
-Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => {
-  // Un "individu" est un objet de configuration complet
-  // { thresholds: { low, medium, high }, weights: { historyScore, ... }, patterns: { velocityThreshold, ... } }
+Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
+  const trafficData = context.trafficData || [];
+  const currentConfig = context.currentConfig || null;
+
+  // Ancres immuables (Baseline Anchors) pour forcer le calibrage d'échelle de suspicion
+  const STATIC_ANCHORS = [
+    {
+      type: 'request_passed',
+      weight: 15.0,
+      vector: {
+        historyScore: 0, rotationScore: 0, headerAnomalyScore: 0, requestPatternScore: 0,
+        inconsistencyScore: 0, behaviorScore: 0, honeypotScore: 0, botScore: 0,
+        crossLayerInconsistencyScore: 0, timeInconsistencyScore: 0, tlsSpoofingScore: 0,
+        clickVarianceScore: 0, clientHintsInconsistencyScore: 0, subnetScore: 0,
+        ipReputationScore: 0, botnetClusterScore: 0, tcpAnomalyScore: 0,
+        quicAnomalyScore: 0, renderingAnomalyScore: 0, threatIntelScore: 0
+      }
+    },
+    {
+      type: 'request_blocked',
+      weight: 15.0,
+      vector: {
+        historyScore: 100, rotationScore: 100, headerAnomalyScore: 80, requestPatternScore: 100,
+        inconsistencyScore: 100, behaviorScore: 0, honeypotScore: 100, botScore: 100,
+        crossLayerInconsistencyScore: 80, timeInconsistencyScore: 100, tlsSpoofingScore: 100,
+        clickVarianceScore: 100, clientHintsInconsistencyScore: 90, subnetScore: 100,
+        ipReputationScore: 100, botnetClusterScore: 100, tcpAnomalyScore: 100,
+        quicAnomalyScore: 100, renderingAnomalyScore: 100, threatIntelScore: 100
+      }
+    },
+    {
+      type: 'request_passed', // Profil humain sain avec du bruit (doit rester sous le seuil d'alerte, ex: < 20)
+      weight: 10.0,
+      vector: {
+        historyScore: 15, rotationScore: 10, headerAnomalyScore: 20, requestPatternScore: 15,
+        inconsistencyScore: 10, behaviorScore: 15, honeypotScore: 0, botScore: 0,
+        crossLayerInconsistencyScore: 10, timeInconsistencyScore: 10, tlsSpoofingScore: 10,
+        clickVarianceScore: 0, clientHintsInconsistencyScore: 10, subnetScore: 5,
+        ipReputationScore: 5, botnetClusterScore: 5, tcpAnomalyScore: 10,
+        quicAnomalyScore: 10, renderingAnomalyScore: 5, threatIntelScore: 0
+      }
+    },
+    {
+      type: 'challenge_issued', // Profil robot furtif moyen (doit être challengé, ex: > 35)
+      weight: 10.0,
+      vector: {
+        historyScore: 20, rotationScore: 20, headerAnomalyScore: 20, requestPatternScore: 40,
+        inconsistencyScore: 30, behaviorScore: 30, honeypotScore: 0, botScore: 0,
+        crossLayerInconsistencyScore: 20, timeInconsistencyScore: 20, tlsSpoofingScore: 30,
+        clickVarianceScore: 20, clientHintsInconsistencyScore: 20, subnetScore: 15,
+        ipReputationScore: 15, botnetClusterScore: 20, tcpAnomalyScore: 30,
+        quicAnomalyScore: 20, renderingAnomalyScore: 20, threatIntelScore: 0
+      }
+    }
+  ];
 
   return function fullConfigFitness(config) {
-    let falsePositives = 0; // Humains légitimes challengés ou bloqués
-    let falseNegatives = 0; // Bots qui sont passés
+    let falsePositives = 0;
+    let falseNegatives = 0;
     let totalHumans = 0;
     let totalBots = 0;
-    let totalChallenges = 0;
-    let totalChallengeCost = 0; // NOUVEAU: Coût cumulé des challenges
 
-    // Simule le calcul du score pour chaque point de données avec la configuration testée
+    let maxHumanScore = 0;
+    let minBotScore = 100;
+
     const calculateScore = (log) => {
-      // Cette fonction interne devrait répliquer la logique de `getSuspicionVector`
-      // en utilisant les poids et les paramètres de `config`.
-      // Pour cet exemple, nous utilisons une version simplifiée.
       let score = 0;
       for (const key in config.weights) {
         score += (log.vector?.[key] || 0) * config.weights[key];
@@ -1575,57 +1624,78 @@ Optimization.Operators.createFullSecurityConfigEvaluator = ({ trafficData }) => 
       return score;
     };
 
-    // Pondération de la confiance : un challenge résolu est un signal humain plus fort.
     const confidenceWeights = {
-        request_passed: 0.7,
-        challenge_issued: 1.0,
-        request_blocked: 1.0,
-        challenge_solved: 1.5, // Signal "humain" de très haute confiance
-        trap_triggered: 2.0,   // Signal "bot" de confiance absolue
+      request_passed: 0.7,
+      challenge_issued: 1.0,
+      request_blocked: 1.0,
+      challenge_solved: 1.5,
+      trap_triggered: 2.0,
     };
 
+    // 1. Évaluation sur les données de trafic réelles
     for (const log of trafficData) {
-      const confidence = confidenceWeights[log.type] || 1.0;
-
-      // On se base sur le comportement observé pour déterminer la nature "réelle" de la requête
-      const isLikelyBot = log.type === 'challenge_issued' || log.type === 'request_blocked';
+      const weight = log.weight || 1.0;
+      const confidence = (confidenceWeights[log.type] || 1.0) * weight;
+      const isLikelyBot = log.type === 'challenge_issued' || log.type === 'request_blocked' || log.type === 'trap_triggered';
       const isLikelyHuman = log.type === 'request_passed' || log.type === 'challenge_solved';
 
+      const score = calculateScore(log);
+
       if (isLikelyBot) {
-        totalBots++;
-        const score = calculateScore(log);
-        // Faux négatif : un bot qui aurait dû être challengé mais ne l'a pas été
+        totalBots += confidence;
+        minBotScore = Math.min(minBotScore, score);
         if (score < config.thresholds.low) {
           falseNegatives += confidence;
-        } else {
-          totalChallenges += confidence; // Un bot correctement challengé
-          // Calculer le coût de ce challenge (proportionnel à la difficulté)
-          const suspicionFactor = (score - config.thresholds.low) / (config.thresholds.high - config.thresholds.low);
-          totalChallengeCost += Math.min(1, Math.max(0, suspicionFactor)) * confidence;
         }
       } else if (isLikelyHuman) {
-        totalHumans++;
-        const score = calculateScore(log);
-        // Faux positif : un humain qui a été challengé inutilement
+        totalHumans += confidence;
+        maxHumanScore = Math.max(maxHumanScore, score);
         if (score >= config.thresholds.low) {
           falsePositives += confidence;
-          totalChallenges += confidence; // Un humain incorrectement challengé
-          const suspicionFactor = (score - config.thresholds.low) / (config.thresholds.high - config.thresholds.low);
-          totalChallengeCost += Math.min(1, Math.max(0, suspicionFactor)) * confidence;
+        }
+      }
+    }
+
+    // 2. Évaluation sur les ancres immuables pour fixer l'échelle
+    for (const anchor of STATIC_ANCHORS) {
+      const score = calculateScore(anchor);
+      const weight = anchor.weight;
+
+      if (anchor.type === 'request_blocked' || anchor.type === 'challenge_issued') {
+        totalBots += weight;
+        minBotScore = Math.min(minBotScore, score);
+        if (score < config.thresholds.low) {
+          falseNegatives += weight * 10; // Pénalité punitive forte
+        }
+      } else {
+        totalHumans += weight;
+        maxHumanScore = Math.max(maxHumanScore, score);
+        if (score >= config.thresholds.low) {
+          falsePositives += weight * 10; // Pénalité punitive forte
         }
       }
     }
 
     const falsePositiveRate = totalHumans > 0 ? falsePositives / totalHumans : 0;
     const falseNegativeRate = totalBots > 0 ? falseNegatives / totalBots : 0;
-    // NOUVEAU: Taux de challenge global
-    const challengeRate = (totalHumans + totalBots) > 0 ? totalChallenges / (totalHumans + totalBots) : 0;
-    // NOUVEAU: Coût moyen par challenge émis
-    const averageChallengeCost = totalChallenges > 0 ? totalChallengeCost / totalChallenges : 0;
 
-    // L'algorithme doit minimiser ces deux objectifs
-    // On a maintenant 4 objectifs à minimiser !
-    return [falsePositiveRate, falseNegativeRate, challengeRate, averageChallengeCost];
+    // 3. Pénalité de dérive d'échelle L2 (Régularisation par rapport au point d'origine)
+    let regularizationPenalty = 0;
+    if (currentConfig && currentConfig.weights) {
+      for (const key in config.weights) {
+        const originalVal = currentConfig.weights[key] || 0;
+        regularizationPenalty += Math.pow(config.weights[key] - originalVal, 2);
+      }
+    }
+
+    // 4. Maximisation de la marge de séparation (SVM-like Margin Loss)
+    const marginOverlap = Math.max(0, maxHumanScore - minBotScore);
+    const marginPenalty = marginOverlap / 100;
+
+    const obj1 = falsePositiveRate + (regularizationPenalty * 0.05);
+    const obj2 = falseNegativeRate + marginPenalty;
+
+    return [obj1, obj2];
   };
 };
 

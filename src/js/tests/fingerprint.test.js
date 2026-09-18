@@ -739,7 +739,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             const memDifficulty = parseInt(challengeBody.match(/const memDifficulty = (\d+)/)[1], 10);
 
             // The client constructs the base block and solves the challenge
-            const baseBlock = new TextEncoder().encode(`${nonce}:${clientSecret}:${solverFingerprint}:`);
+            const baseBlock = new TextEncoder().encode(`${nonce}:${clientSecret}:${solverFingerprint}:${ip}::`);
             const cpuSolution = await solveCpuTargetInline(baseBlock, cpuTargetHex, () => {});
             const memSolution = await solveMemory(`:${nonce}:${clientSecret}`, memDifficulty);
 
@@ -821,7 +821,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             const memDifficulty = parseInt(challengeBody.match(/const memDifficulty = (\d+)/)[1], 10);
 
             // The server stores the challenge context. We need to ensure the `baseBlock` is present for verification.
-            const baseBlock = new TextEncoder().encode(`${nonce}:${clientSecret}:${solverFingerprint}:`);
+            const baseBlock = new TextEncoder().encode(`${nonce}:${clientSecret}:${solverFingerprint}:${ip}::`);
             await inMemoryStore.set(`secret:${nonce}`, {
                 clientSecret: clientSecret,
                 cpuTarget: cpuTargetHex,

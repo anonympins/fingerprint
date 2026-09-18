@@ -10,81 +10,82 @@ Here is a complete representation of a custom security configuration containing 
 
  ```json
  {
-   "verbose": false,
-   "dryRun": false,
-   "challengeNewDevices": false,
-   "allowCrossNetworkRoaming": true,
-   "similarityThreshold": 0.70,
-   "ticketMaxAge": 3600000,
-   "challengeTtl": 300,
-   "deviceIdCookieMaxAge": 2592000000,
-   "thresholds": {
-     "low": 20,
-     "medium": 45,
-     "high": 75,
-     "block": 95
-   },
-   "weights": {
-     "historyScore": 0.30,
-     "rotationScore": 0.50,
-     "headerAnomalyScore": 0.10,
-     "requestPatternScore": 0.60,
-     "inconsistencyScore": 0.80,
-     "behaviorScore": 0.70,
-     "honeypotScore": 1.00,
-     "crossLayerInconsistencyScore": 0.40,
-     "timeInconsistencyScore": 0.90,
-     "tlsSpoofingScore": 0.80,
-     "botScore": 1.00,
-     "cookieDroppingScore": 0.90,
-     "threatIntelScore": 0.40,
-     "clientHintsInconsistencyScore": 0.70,
-     "clickVarianceScore": 0.60,
-     "subnetScore": 0.50,
-     "botnetClusterScore": 0.60,
-     "tcpAnomalyScore": 0.80,
-     "quicAnomalyScore": 0.80,
-     "renderingAnomalyScore": 0.80,
-     "ipReputationScore": 0.50
-   },
-   "patterns": {
-     "velocityThreshold": 800,
-     "burstThreshold": 1500,
-     "scrapeThreshold": 1000,
-     "historySize": 10,
-     "minSamples": 5,
-     "regularityThreshold": 50,
-     "benfordThreshold": 0.15,
-     "patternWeight": 80,
-     "decayFactor": 0.90,
-     "inactivityReset": 5000,
-     "regularityRatio": 0.40,
-     "benfordRatio": 0.30,
-     "enumerationRatio": 0.30
-   },
-   "honeypot": {
-     "fields": ["email_confirm", "admin_login_bypass"],
-     "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
-     "detectInjections": true
-   },
-   "threatIntel": {
-     "knownIps": []
-   },
-   "cpu": {
-     "minDifficultyBits": 8,
-     "maxDifficultyBits": 16
-   },
-   "pospace": {
-     "sizeMb": 100,
-     "numQueries": 10
-   },
-   "federatedPeers": [
-     "https://peer1.example.com",
-     "https://peer2.example.com"
-   ],
-   "useAsymmetricTickets": true,
-   "ed25519": "auto"
- }
+  "verbose": false,
+  "dryRun": false,
+  "challengeNewDevices": false,
+  "allowCrossNetworkRoaming": true,
+  "similarityThreshold": 0.70,
+  "ticketMaxAge": 3600000,
+  "challengeTtl": 300,
+  "deviceIdCookieMaxAge": 2592000000,
+  "thresholds": {
+    "low": 20,
+    "medium": 45,
+    "high": 75,
+    "block": 95
+  },
+  "weights": {
+    "historyScore": 0.30,
+    "rotationScore": 0.50,
+    "headerAnomalyScore": 0.10,
+    "requestPatternScore": 0.60,
+    "inconsistencyScore": 0.80,
+    "behaviorScore": 0.70,
+    "honeypotScore": 1.00,
+    "crossLayerInconsistencyScore": 0.40,
+    "timeInconsistencyScore": 0.90,
+    "tlsSpoofingScore": 0.80,
+    "botScore": 1.00,
+    "cookieDroppingScore": 0.90,
+    "threatIntelScore": 0.40,
+    "clientHintsInconsistencyScore": 0.70,
+    "clickVarianceScore": 0.60,
+    "subnetScore": 0.50,
+    "botnetClusterScore": 0.60,
+    "tcpAnomalyScore": 0.80,
+    "quicAnomalyScore": 0.80,
+    "renderingAnomalyScore": 0.80,
+    "ipReputationScore": 0.50
+  },
+  "patterns": {
+    "velocityThreshold": 800,
+    "burstThreshold": 1500,
+    "scrapeThreshold": 1000,
+    "historySize": 10,
+    "minSamples": 5,
+    "regularityThreshold": 50,
+    "benfordThreshold": 0.15,
+    "patternWeight": 80,
+    "decayFactor": 0.90,
+    "inactivityReset": 5000,
+    "regularityRatio": 0.40,
+    "benfordRatio": 0.30,
+    "enumerationRatio": 0.30
+  },
+  "honeypot": {
+    "fields": ["email_confirm", "admin_login_bypass"],
+    "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
+    "detectInjections": true
+  },
+  "threatIntel": {
+    "knownIps": []
+  },
+  "cpu": {
+    "minDifficultyBits": 8,
+    "maxDifficultyBits": 16
+  },
+  "pospace": {
+    "sizeMb": 100,
+    "numQueries": 10
+  },
+  "federatedPeers": [
+    "https://peer1.example.com",
+    "https://peer2.example.com"
+  ],
+  "useAsymmetricTickets": true,
+  "ed25519": "auto",
+  "reset": false
+}
  ```
  
 ---
@@ -124,6 +125,7 @@ The following table details the role of each weight in the `weights` object. The
 ### Global Controls
 *   **`verbose`** *(bool, default: `false`)*: Enables deep server-side log output.
 *   **`dryRun`** *(bool, default: `false`)*: Intended block and challenge actions are logged, but requests are always allowed to pass through (`next`). Useful for evaluating auto-tuner impact in production safely.
+*   **`reset`** *(bool, default: `false`)*: If `true`, resets and clears the active persistent store (such as Redis, MongoDB, SQL, or in-memory) during startup.
 *   **`challengeNewDevices`** *(bool, default: `false`)*: Forces a proof-of-work challenge on all new devices by setting their initial score to the `low` threshold.
 *   **`allowCrossNetworkRoaming`** *(bool, default: `true`)*: If `true`, a user can switch networks (e.g., from Home Wi-Fi to 4G) without being re-challenged, provided their hardware-based fingerprint remains absolutely identical.
 *   **`similarityThreshold`** *(float, default: `0.70`)*: The similarity coefficient (0 to 1) required to consider two composite fingerprints a match.
@@ -176,7 +178,7 @@ For quick starts without manually defining everything, use pre-made profiles:
 | `balanced` | Standard websites, balanced UX & security. |
 | `strict` | High security / sensitive dashboards. All new devices are challenged. |
 | `api` | Focused heavily on rate limit patterns and API scrapers. |
-| `blog` | Lenient on human readers, heavy on anti-scraping and spam comment honeypots. |
+| `blog` | Human-friendly; protects against spam and content scraping. |
 | `ecommerce` | Strict tracking against scalper bots and account takeover. |
 
 ### Profile Usage
@@ -184,11 +186,11 @@ For quick starts without manually defining everything, use pre-made profiles:
 **Node.js**:
   ```javascript
   import { createSecurityProfile } from '@anonympins/fingerprint';
- 
-  const config = createSecurityProfile('ecommerce', {
-      verbose: true
-      // overrides here...
-  });
+
+const config = createSecurityProfile('ecommerce', {
+    verbose: true
+    // overrides here...
+});
   ```
 
 **PHP**
@@ -220,53 +222,53 @@ $fingerprint = $protector->protect();
 **Python**
  ```python
  import asyncio
- from fingerprint.engine import FingerprintEngine, InMemoryStore, RequestContext
- 
- # 1. Choose a security profile and customize it if necessary.
- #    For Python, you typically define the configuration dictionary directly,
- #    mimicking a predefined profile like 'ecommerce' and applying overrides.
- security_config = {
-  "verbose": True,  # Enable verbose mode for development
-  "thresholds": {"low": 15, "medium": 40, "high": 70, "block": 90},
-  "weights": {
-      "inconsistencyScore": 1.0,
-      "requestPatternScore": 0.9,
-      "honeypotScore": 1.0,
-      "behaviorScore": 0.8,
-      "tlsSpoofingScore": 0.9,
-      "botScore": 1.0,
-      "cookieDroppingScore": 1.0,
-      "ipReputationScore": 0.6,
-      "subnetScore": 0.9,
-      "botnetClusterScore": 0.9,
-      "tcpAnomalyScore": 0.9,
-      "quicAnomalyScore": 0.9,
-      "renderingAnomalyScore": 0.9,
-  },
-  "honeypot": {
-      "fields": ["email_confirm", "admin_login_bypass"],
-      "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
-      "detectInjections": True
-  },
-  "challengeNewDevices": True,
-  "allowCrossNetworkRoaming": False,
- }
- 
- # 2. Initialize the store (use InMemoryStore for development, replace with Redis/MongoDB for production)
- fingerprint_store = InMemoryStore()
- 
- # 3. Create an instance of the FingerprintEngine.
- protector = FingerprintEngine(security_config, fingerprint_store)
- 
- # 4. In an actual application, you would then process an incoming request:
- #    (e.g., in an ASGI/WSGI middleware or a direct HTTP handler)
- #    # context = RequestContext(...) # Construct your request context
- #    # decision = await protector.process_request(context)
- #    # if decision["action"] == "next":
- #    #     print("Welcome on the secured page!")
- #    # else:
- #    #     # Handle blocking, challenging, or redirecting
- #    #     print(f"Request {decision['action']}!")
+from fingerprint.engine import FingerprintEngine, InMemoryStore, RequestContext
+
+# 1. Choose a security profile and customize it if necessary.
+#    For Python, you typically define the configuration dictionary directly,
+#    mimicking a predefined profile like 'ecommerce' and applying overrides.
+security_config = {
+    "verbose": True,  # Enable verbose mode for development
+    "thresholds": {"low": 15, "medium": 40, "high": 70, "block": 90},
+    "weights": {
+        "inconsistencyScore": 1.0,
+        "requestPatternScore": 0.9,
+        "honeypotScore": 1.0,
+        "behaviorScore": 0.8,
+        "tlsSpoofingScore": 0.9,
+        "botScore": 1.0,
+        "cookieDroppingScore": 1.0,
+        "ipReputationScore": 0.6,
+        "subnetScore": 0.9,
+        "botnetClusterScore": 0.9,
+        "tcpAnomalyScore": 0.9,
+        "quicAnomalyScore": 0.9,
+        "renderingAnomalyScore": 0.9,
+    },
+    "honeypot": {
+        "fields": ["email_confirm", "admin_login_bypass"],
+        "trapUrls": ["/wp-admin", "/.env", "/.git/config"],
+        "detectInjections": True
+    },
+    "challengeNewDevices": True,
+    "allowCrossNetworkRoaming": False,
+}
+
+# 2. Initialize the store (use InMemoryStore for development, replace with Redis/MongoDB for production)
+fingerprint_store = InMemoryStore()
+
+# 3. Create an instance of the FingerprintEngine.
+protector = FingerprintEngine(security_config, fingerprint_store)
+
+# 4. In an actual application, you would then process an incoming request:
+#    (e.g., in an ASGI/WSGI middleware or a direct HTTP handler)
+#    # context = RequestContext(...) # Construct your request context
+#    # decision = await protector.process_request(context)
+#    # if decision["action"] == "next":
+#    #     print("Welcome on the secured page!")
+#    # else:
+#    #     # Handle blocking, challenging, or redirecting
+#    #     print(f"Request {decision['action']}!")
  ```
  
 ---

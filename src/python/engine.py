@@ -6,6 +6,7 @@ import math
 import ctypes
 import re
 import random
+import logging
 import copy
 import json
 import os
@@ -409,6 +410,7 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
     if not traffic_data:
         return []
     
+    raw_logs = list(traffic_data)
     suspicious_logs = []
     passed_logs = []
     device_counts = {}
@@ -422,6 +424,34 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
     max_logs_per_ip = max(3, total_count // 50)      # 2%
     max_logs_per_subnet = max(5, total_count // 20)  # 5%
     max_logs_per_hw_cluster = max(3, total_count // 50) # 2%
+
+    def get_vector_distance(v1: Dict[str, float], v2: Dict[str, float]) -> float:
+        if not v1 or not v2:
+            return float('inf')
+        all_keys = set(v1.keys()).union(v2.keys())
+        sum_sq = 0.0
+        for key in all_keys:
+            sum_sq += (v1.get(key, 0.0) - v2.get(key, 0.0)) ** 2
+        return math.sqrt(sum_sq)
+
+    # Cohort compression (Anti-Sybil / Anti-Poisoning)
+    clustered_logs = []
+    for log in raw_logs:
+        matched_cluster = None
+        log_vector = log.get("vector") or {}
+        log_type = log.get("type") or ""
+        for cluster in clustered_logs:
+            if log_type == cluster.get("type", "") and get_vector_distance(log_vector, cluster.get("vector", {})) < 5.0:
+                matched_cluster = cluster
+                break
+        if matched_cluster is not None:
+            matched_cluster["instancesCount"] = matched_cluster.get("instancesCount", 1) + 1
+            matched_cluster["weight"] = 1.0 + math.log(matched_cluster["instancesCount"])
+        else:
+            log_copy = dict(log)
+            log_copy["instancesCount"] = 1
+            log_copy["weight"] = 1.0
+            clustered_logs.append(log_copy)
 
     def get_hardware_cluster(log_entry: Dict[str, Any]) -> str:
         fp = log_entry.get("deviceHash") or log_entry.get("fingerprint") or log_entry.get("deviceFingerprint") or ""
@@ -442,7 +472,7 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
             return result
         return log_entry.get("deviceId") or "anonymous-cluster"
 
-    for log in traffic_data:
+    for log in clustered_logs:
         dev_id = log.get("deviceId") or "anonymous"
         ip = log.get("clientIp") or log.get("ip") or "unknown"
         subnet = get_ip_subnet(ip) or "unknown-subnet"
@@ -2761,6 +2791,29 @@ class FingerprintEngine:
  
          return False
 
+    def _has_certain_attack(self, context: RequestContext) -> bool:
+        """
+        Évalue si la requête présente des caractéristiques d'attaque flagrantes
+        (comme le déclenchement d'un honeypot ou un score de bot atteignant le maximum).
+
+        Args:
+            context (RequestContext): Le contexte de la requête.
+
+        Returns:
+            bool: True si une attaque flagrante est détectée, False sinon.
+        """
+        honeypot_config = self.config.get("honeypot", {})
+        
+        honeypot_score = RequestUtils.get_honeypot_score(context, honeypot_config)
+        if honeypot_score >= 100.0:
+            return True
+            
+        bot_score = RequestUtils.get_bot_score(context)
+        if bot_score >= 100.0:
+            return True
+            
+        return False
+
     def update_config(self, new_config: Dict[str, Any]) -> None:
         """
         Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
@@ -3216,17 +3269,16 @@ class FingerprintEngine:
                 return {"action": "next", "intendedAction": "block"}
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
-        # Honeypot trap URL instant check & condemnation
-        honeypot_config = self.config.get("honeypot", {})
-        for trap in honeypot_config.get("trapUrls", []):
-            if context.path.startswith(trap):
+        # Instant check & condemnation for certain attacks (Honeypot or Bot)
+        if self._has_certain_attack(context):
+            if device_data:
                 device_data["condemned"] = True
-                self._fast_path_cache[client_ip] = (current_time + 60.0, "block")
                 await self.store.set(f"device:{device_id}", device_data)
-                MetricsManager.increment_counter("requests_total", {"status": "blocked"})
-                if self.dry_run:
-                    return {"action": "next", "intendedAction": "block"}
-                return {"action": "block", "status": 403, "body": "Forbidden"}
+            self._fast_path_cache[client_ip] = (current_time + 60.0, "block")
+            MetricsManager.increment_counter("requests_total", {"status": "blocked"})
+            if self.dry_run:
+                return {"action": "next", "intendedAction": "block"}
+            return {"action": "block", "status": 403, "body": "Forbidden"}
 
         # Check for challenge submission
         pow_nonce = context.query_params.get("pow_nonce")
@@ -3249,6 +3301,22 @@ class FingerprintEngine:
                     if not pm.initialized:
                         await pm.load_problems()
                     await pm.integrate_solution(pow_problem_id, work_result)
+
+                    # Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
+                    # on applique directement la meilleure solution calculée au moteur en direct.
+                    if pow_problem_id == "security_auto_tuning" and self.config.get("autotuning", {}).get("enabled", False):
+                        pareto_front = work_result.get("paretoFront")
+                        if isinstance(pareto_front, list) and pareto_front:
+                            best_solution = pareto_front[0]
+                            min_distance = math.sqrt(float(best_solution['objectives'][0])**2 + float(best_solution['objectives'][1])**2)
+                            for item in pareto_front[1:]:
+                                distance = math.sqrt(float(item['objectives'][0])**2 + float(item['objectives'][1])**2)
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    best_solution = item
+                            if "solution" in best_solution:
+                                self.update_config(best_solution["solution"])
+                                print("[FingerprintEngine] Useful Work auto-tuning applied successfully to live config.")
 
                     await self.store.delete(f"secret:{pow_nonce}")
                     ticket = str(uuid.uuid4())
@@ -4177,237 +4245,621 @@ class OptimizationOperators:
 
         return {"solution": best_solution, "energy": best_energy}
 
+class Individual:
+    def __init__(self, thresholds: Dict[str, float] = None, weights: Dict[str, float] = None, patterns: Dict[str, float] = None):
+        self.thresholds = thresholds or {}
+        self.weights = weights or {}
+        self.objectives = [0.0, 0.0]
+        self.patterns = patterns or {}
+        self.rank = 0
+        self.domination_count = 0
+        self.dominated_solutions = []
+        self.crowding_distance = 0.0
+
 class AutoTuner:
     _last_best_solution: Optional[Dict[str, Any]] = None
 
-    def __init__(self, security_config: Dict[str, Any], traffic_data: List[Dict[str, Any]], options: Optional[Dict[str, Any]] = None):
-        """
-        Initializes the AutoTuner with security configuration, traffic data, and pruning options.
-
-        Args:
-            security_config (Dict[str, Any]): The live security configuration dictionary to be optimized.
-            traffic_data (List[Dict[str, Any]]): The list of collected traffic data logs.
-            options (Optional[Dict[str, Any]]): Configuration options including:
-                - minDataPoints (int, default 200): Minimum required data points to start tuning.
-                - maxDataPoints (int, default 10000): Maximum data points retained in memory.
-                - maxAgeMs (Optional[int], default None): Maximum age of logs in milliseconds.
-                - clearAfterTuning (bool, default False): If True, clear traffic data after tuning.
-                - onCleanup (Optional[Callable], default None): Callback function for processed/pruned logs.
-        """
+    def __init__(self, security_config: Dict[str, Any], store, options: Dict[str, Any] = None):
         self.security_config = security_config
-        self.traffic_data = traffic_data
+        self.store = store
+        self.traffic_data = store
         options = options or {}
-        self.min_data_points = options.get("minDataPoints", 200)
-        self.max_data_points = options.get("maxDataPoints", 10000)
-        self.clear_after_tuning = options.get("clearAfterTuning", False)
-        self.validation_tolerance = options.get("validationTolerance", 0.15)
-        self.options = options
+        self.min_data_points = options.get("min_data_points") or options.get("minDataPoints") or 200
+        self.max_data_points = options.get("max_data_points") or options.get("maxDataPoints") or 10000
+        self.max_age_ms = options.get("max_age_ms") or options.get("maxAgeMs")
+        self.validation_tolerance = options.get("validation_tolerance") or options.get("validationTolerance") or 0.15
+        self.interval_minutes = options.get("interval", 30)
+        self.save_path = options.get("save_path")
+        self.clear_after_tuning = options.get("clear_after_tuning", False)
+        self.on_cleanup = options.get("on_cleanup")
+        self.last_best_solution = None
 
-    def prune_traffic_data(self) -> None:
-        now = int(time.time() * 1000)
-        removed = []
+    def run_optimization_cycle(self) -> Any:
+        if isinstance(self.store, list):
+            return self._run_optimization_cycle_sync()
+        else:
+            return self._run_optimization_cycle_async()
 
-        # 1. Expire par temps
-        max_age_ms = self.options.get("maxAgeMs")
-        if max_age_ms and max_age_ms > 0:
-            threshold = now - max_age_ms
-            retained = []
-            for log in self.traffic_data:
-                log_ts = log.get("timestamp") or log.get("requestTimestamp") or now
-                if log_ts < threshold:
-                    removed.append(log)
-                else:
-                    retained.append(log)
-            self.traffic_data[:] = retained
+    def _run_optimization_cycle_sync(self) -> None:
+        raw_logs = self.store
+        if not raw_logs:
+            return
 
-        # 2. Politique de taille maximale (conserver les plus récents)
-        if self.max_data_points > 0 and len(self.traffic_data) > self.max_data_points:
-            overflow_count = len(self.traffic_data) - self.max_data_points
-            removed.extend(self.traffic_data[:overflow_count])
-            self.traffic_data[:] = self.traffic_data[overflow_count:]
+        self._prune_logs(raw_logs)
+        sanitized_data = self.sanitize_traffic_data(raw_logs)
 
-        # 3. Invocation du callback
-        on_cleanup = self.options.get("onCleanup")
-        if on_cleanup and callable(on_cleanup) and removed:
-            try:
-                on_cleanup(removed)
-            except Exception as e:
-                print(f"[AutoTuning] Error in onCleanup callback: {e}")
-
-    def run_optimization_cycle(self) -> None:
-        self.prune_traffic_data()
-
-        sanitized_data = sanitize_traffic_data(self.traffic_data)
-
-        high_confidence_logs = len([
-            log for log in sanitized_data 
+        high_confidence_logs = sum(
+            log.get("instancesCount", 1) for log in sanitized_data 
             if log.get("type") in ("challenge_solved", "trap_triggered")
-        ])
-        high_confidence_ratio = high_confidence_logs / len(sanitized_data) if sanitized_data else 0.0
+        )
+        total_sanitized_instances = sum(log.get("instancesCount", 1) for log in sanitized_data)
+        high_confidence_ratio = (
+            high_confidence_logs / total_sanitized_instances if total_sanitized_instances else 0.0
+        )
         min_confidence_ratio = 0.05
         min_high_confidence_count = 10
 
-        has_enough_signal = high_confidence_ratio >= min_confidence_ratio or high_confidence_logs >= min_high_confidence_count
+        has_enough_signal = (
+            high_confidence_ratio >= min_confidence_ratio 
+            or high_confidence_logs >= min_high_confidence_count
+        )
 
-        if len(sanitized_data) < self.min_data_points or not has_enough_signal:
-            if len(sanitized_data) < self.min_data_points:
-                print(f"[AutoTuning] Reporté : {len(sanitized_data)}/{self.min_data_points} points de données.")
-            else:
-                print(f"[AutoTuning] Reporté : Signaux de confiance insuffisants (Ratio: {high_confidence_ratio*100:.2f}% < {min_confidence_ratio*100:.2f}% et absolu: {high_confidence_logs} < {min_high_confidence_count}).")
+        if total_sanitized_instances < self.min_data_points or not has_enough_signal:
             return
 
-        if len(self.traffic_data) > self.max_data_points:
-            print(f"[AutoTuning] Le journal de trafic a atteint {len(self.traffic_data)} entrées (max: {self.max_data_points}). Troncation.")
-            self.traffic_data[:] = self.traffic_data[len(self.traffic_data) - self.max_data_points:]
-
-        print(f"[AutoTuning] Démarrage du cycle d'optimisation complet avec {len(sanitized_data)} points de données assainis.")
-
-        pareto_front = OptimizationOperators.solve_full_security_tuning(sanitized_data, options=None, current_config=self.security_config)
-
+        # Execute genetic algorithm
+        pareto_front = self.solve_full_security_tuning(sanitized_data)
         if not pareto_front:
-            print("[AutoTuning] L'optimisation n'a retourné aucune solution.")
             return
 
-        def is_valid_security_config(config: Dict[str, Any]) -> bool:
-            if not config or "weights" not in config or "thresholds" not in config:
-                return False
-            w = config["weights"]
-            t = config["thresholds"]
-            active_weights_sum = (
-                w.get("inconsistencyScore", 0.0) +
-                w.get("tlsSpoofingScore", 0.0) +
-                w.get("requestPatternScore", 0.0) +
-                w.get("behaviorScore", 0.0) +
-                w.get("botScore", 0.0)
-            )
-            if active_weights_sum < 1.5:
-                return False
-            if t.get("low", 0.0) < 10 or t.get("low", 0.0) > 35:
-                return False
-            if t.get("medium", 0.0) < t.get("low", 0.0) + 5 or t.get("medium", 0.0) > 70:
-                return False
-            if t.get("high", 0.0) < t.get("medium", 0.0) + 5 or t.get("high", 0.0) > 90:
-                return False
-            if t.get("block", 0.0) < t.get("high", 0.0) + 5 or t.get("block", 0.0) > 99:
-                return False
-            return True
-
-        filtered_front = [p for p in pareto_front if is_valid_security_config(p["solution"])]
+        # Security guardrails check
+        filtered_front = [
+            ind for ind in pareto_front 
+            if self.is_valid_security_config(ind.thresholds, ind.weights)
+        ]
+        
         if not filtered_front:
-            print("[AutoTuning] Toutes les solutions du front de Pareto ont été rejetées par les règles de gardiennage. Fallback.")
             filtered_front = pareto_front
 
-        # Selecting most balanced solution
+        # Select the most balanced solution (closest to origin)
         best_solution = filtered_front[0]
-        min_distance = math.sqrt(best_solution["objectives"][0]**2 + best_solution["objectives"][1]**2)
-
-        for candidate in filtered_front[1:]:
-            dist = math.sqrt(candidate["objectives"][0]**2 + candidate["objectives"][1]**2)
+        min_distance = math.sqrt(best_solution.objectives[0]**2 + best_solution.objectives[1]**2)
+        for ind in filtered_front[1:]:
+            dist = math.sqrt(ind.objectives[0]**2 + ind.objectives[1]**2)
             if dist < min_distance:
                 min_distance = dist
-                best_solution = candidate
+                best_solution = ind
 
-        new_config = best_solution["solution"]
         traffic_confidence = min(1.5, max(0.3, high_confidence_ratio * 4.0))
 
-        def apply_inertial_update(current_config: Dict[str, Any], target_config: Dict[str, Any], type_str: str, confidence_factor: float = 1.0):
-            if not current_config or not target_config:
-                return
-            base_learning_rate = 0.15
-            learning_rate = max(0.02, min(0.40, base_learning_rate * confidence_factor))
+        # Cross validation
+        temp_thresholds = dict(self.security_config.get("thresholds", {}))
+        temp_weights = dict(self.security_config.get("weights", {}))
+        temp_patterns = dict(self.security_config.get("patterns", {}))
 
-            for key in current_config:
-                if key in target_config and isinstance(current_config[key], (int, float)):
-                    current_val = float(current_config[key])
-                    target_val = float(target_config[key])
+        self.apply_inertial_update(temp_thresholds, best_solution.thresholds, "thresholds", traffic_confidence)
+        self.apply_inertial_update(temp_weights, best_solution.weights, "weights", traffic_confidence)
+        self.apply_inertial_update(temp_patterns, best_solution.patterns, "patterns", traffic_confidence)
 
-                    updated_val = current_val + (target_val - current_val) * learning_rate
+        current_obj = self.evaluate_fitness(
+            self.security_config.get("thresholds", {}), 
+            self.security_config.get("weights", {}),
+            sanitized_data
+        )
+        proposed_obj = self.evaluate_fitness(temp_thresholds, temp_weights, sanitized_data)
 
-                    if type_str == "weights":
-                        updated_val = max(0.05, min(1.8, updated_val))
-                    elif type_str == "patterns":
-                        if key == "benfordThreshold":
-                            updated_val = max(0.05, min(0.30, updated_val))
-                        elif key == "decayFactor":
-                            updated_val = max(0.70, min(0.98, updated_val))
-                        elif key == "minSamples":
-                            updated_val = max(3, min(15, int(round(updated_val))))
-                        elif key == "historySize":
-                            updated_val = max(5, min(30, int(round(updated_val))))
-                        elif key.endswith("Threshold"):
-                            updated_val = max(50, min(3000, int(round(updated_val))))
+        if (proposed_obj[0] > current_obj[0] + self.validation_tolerance or 
+            proposed_obj[1] > current_obj[1] + self.validation_tolerance):
+            # Reject due to poisoning/instability
+            return
 
-                    current_config[key] = updated_val
+        # Apply permanently
+        self.apply_inertial_update(self.security_config["thresholds"], best_solution.thresholds, "thresholds", traffic_confidence)
+        self.apply_inertial_update(self.security_config["weights"], best_solution.weights, "weights", traffic_confidence)
+        self.security_config.setdefault("patterns", {})
+        self.apply_inertial_update(self.security_config["patterns"], best_solution.patterns, "patterns", traffic_confidence)
 
-            if type_str == "thresholds":
-                low = max(10, min(35, current_config["low"]))
-                medium = max(low + 8, min(65, current_config["medium"]))
-                high = max(medium + 8, min(85, current_config["high"]))
-                block = max(high + 8, min(98, current_config["block"]))
+        self.last_best_solution = {
+            "thresholds": self.security_config["thresholds"],
+            "weights": self.security_config["weights"],
+            "patterns": self.security_config["patterns"],
+            "objectives": best_solution.objectives
+        }
+        AutoTuner._last_best_solution = self.last_best_solution
 
-                current_config["low"] = int(round(low))
-                current_config["medium"] = int(round(medium))
-                current_config["high"] = int(round(high))
-                current_config["block"] = int(round(block))
-
-                # --- VALIDATION POST-CALCUL (Python Security Verification & Rollback) ---
-                evaluator = OptimizationOperators.create_full_security_config_evaluator(sanitized_data)
-
-                temp_config = {
-                    "thresholds": copy.deepcopy(self.security_config.get("thresholds", {})),
-                    "weights": copy.deepcopy(self.security_config.get("weights", {})),
-                    "patterns": copy.deepcopy(self.security_config.get("patterns", {}))
-                }
-
-                apply_inertial_update(temp_config["thresholds"], new_config["thresholds"], "thresholds", traffic_confidence)
-                apply_inertial_update(temp_config["weights"], new_config["weights"], "weights", traffic_confidence)
-                apply_inertial_update(temp_config["patterns"], new_config["patterns"], "patterns", traffic_confidence)
-
-                current_objectives = evaluator(self.security_config)
-                proposed_objectives = evaluator(temp_config)
-
-                current_fpr, current_fnr = current_objectives[0], current_objectives[1]
-                proposed_fpr, proposed_fnr = proposed_objectives[0], proposed_objectives[1]
-
-                validation_tolerance = self.security_config.get("autotuning", {}).get("validationTolerance") or self.validation_tolerance
-
-                if proposed_fpr > current_fpr + validation_tolerance or proposed_fnr > current_fnr + validation_tolerance:
-                    print(f"[AutoTuning] [SECURITY ALERT] Proposed configuration rejected due to instability/poisoning risk! "
-                          f"Proposed FPR: {proposed_fpr:.4f} (Current: {current_fpr:.4f}), Proposed FNR: {proposed_fnr:.4f} (Current: {current_fnr:.4f})")
-                    logger = self.security_config.get("logger")
-                    if logger and callable(logger):
-                        logger({
-                            "type": "autotuning_instability_alert",
-                            "proposedFPR": proposed_fpr,
-                            "currentFPR": current_fpr,
-                            "proposedFNR": proposed_fnr,
-                            "currentFNR": current_fnr,
-                            "timestamp": int(time.time() * 1000)
-                        })
-                    return  # Rollback automatique : On arrête l'application
-
-                apply_inertial_update(self.security_config["thresholds"], new_config["thresholds"], "thresholds", traffic_confidence)
-                apply_inertial_update(self.security_config["weights"], new_config["weights"], "weights", traffic_confidence)
-                apply_inertial_update(self.security_config["patterns"], new_config["patterns"], "patterns", traffic_confidence)
-
-        AutoTuner._last_best_solution = best_solution
-
-        print("[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.")
-        print(f"[AutoTuning] Objectifs atteints : {json.dumps({'falsePositiveRate': round(best_solution['objectives'][0], 4), 'falseNegativeRate': round(best_solution['objectives'][1], 4)})}")
-        print(f"[AutoTuning] Nouveaux seuils : {json.dumps(self.security_config['thresholds'])}")
-        print(f"[AutoTuning] Nouveaux poids : {json.dumps(self.security_config['weights'])}")
-        print(f"[AutoTuning] Nouveaux patterns : {json.dumps(self.security_config['patterns'])}")
+        if self.save_path:
+            try:
+                with open(self.save_path, 'w') as f:
+                    json.dump(self.last_best_solution, f, indent=2)
+            except Exception as e:
+                logging.error(f"[AutoTuning] Failed to save optimized config: {e}")
 
         if self.clear_after_tuning:
-            cleared = list(self.traffic_data)
-            self.traffic_data.clear()
-            on_cleanup = self.options.get("onCleanup")
-            if on_cleanup and callable(on_cleanup) and cleared:
+            self.store.clear()
+            if self.on_cleanup and callable(self.on_cleanup):
                 try:
-                    on_cleanup(cleared)
+                    self.on_cleanup(raw_logs)
                 except Exception as e:
-                    print(f"[AutoTuning] Error in onCleanup callback after clearing: {e}")
-            print(f"[AutoTuning] Explicitly cleared {len(cleared)} processed traffic data points.")
+                    logging.error(f"[AutoTuning] Error in on_cleanup callback after clearing: {e}")
+
+    async def _run_optimization_cycle_async(self) -> None:
+        raw_logs = await self.store.get("traffic_logs") or []
+        if not raw_logs:
+            return
+
+        self._prune_logs(raw_logs)
+        await self.store.set("traffic_logs", raw_logs)
+        sanitized_data = self.sanitize_traffic_data(raw_logs)
+
+        high_confidence_logs = sum(
+            log.get("instancesCount", 1) for log in sanitized_data 
+            if log.get("type") in ("challenge_solved", "trap_triggered")
+        )
+        total_sanitized_instances = sum(log.get("instancesCount", 1) for log in sanitized_data)
+        high_confidence_ratio = (
+            high_confidence_logs / total_sanitized_instances if total_sanitized_instances else 0.0
+        )
+        min_confidence_ratio = 0.05
+        min_high_confidence_count = 10
+
+        has_enough_signal = (
+            high_confidence_ratio >= min_confidence_ratio 
+            or high_confidence_logs >= min_high_confidence_count
+        )
+
+        if total_sanitized_instances < self.min_data_points or not has_enough_signal:
+            return
+
+        # Execute genetic algorithm
+        pareto_front = self.solve_full_security_tuning(sanitized_data)
+        if not pareto_front:
+            return
+
+        # Security guardrails check
+        filtered_front = [
+            ind for ind in pareto_front 
+            if self.is_valid_security_config(ind.thresholds, ind.weights)
+        ]
+        
+        if not filtered_front:
+            filtered_front = pareto_front
+
+        # Select the most balanced solution (closest to origin)
+        best_solution = filtered_front[0]
+        min_distance = math.sqrt(best_solution.objectives[0]**2 + best_solution.objectives[1]**2)
+        for ind in filtered_front[1:]:
+            dist = math.sqrt(ind.objectives[0]**2 + ind.objectives[1]**2)
+            if dist < min_distance:
+                min_distance = dist
+                best_solution = ind
+
+        traffic_confidence = min(1.5, max(0.3, high_confidence_ratio * 4.0))
+
+        # Cross validation
+        temp_thresholds = dict(self.security_config.get("thresholds", {}))
+        temp_weights = dict(self.security_config.get("weights", {}))
+        temp_patterns = dict(self.security_config.get("patterns", {}))
+
+        self.apply_inertial_update(temp_thresholds, best_solution.thresholds, "thresholds", traffic_confidence)
+        self.apply_inertial_update(temp_weights, best_solution.weights, "weights", traffic_confidence)
+        self.apply_inertial_update(temp_patterns, best_solution.patterns, "patterns", traffic_confidence)
+
+        current_obj = self.evaluate_fitness(
+            self.security_config.get("thresholds", {}), 
+            self.security_config.get("weights", {}),
+            sanitized_data
+        )
+        proposed_obj = self.evaluate_fitness(temp_thresholds, temp_weights, sanitized_data)
+
+        if (proposed_obj[0] > current_obj[0] + self.validation_tolerance or 
+            proposed_obj[1] > current_obj[1] + self.validation_tolerance):
+            # Reject due to poisoning/instability
+            return
+
+        # Apply permanently
+        self.apply_inertial_update(self.security_config["thresholds"], best_solution.thresholds, "thresholds", traffic_confidence)
+        self.apply_inertial_update(self.security_config["weights"], best_solution.weights, "weights", traffic_confidence)
+        self.security_config.setdefault("patterns", {})
+        self.apply_inertial_update(self.security_config["patterns"], best_solution.patterns, "patterns", traffic_confidence)
+
+        self.last_best_solution = {
+            "thresholds": self.security_config["thresholds"],
+            "weights": self.security_config["weights"],
+            "patterns": self.security_config["patterns"],
+            "objectives": best_solution.objectives
+        }
+        AutoTuner._last_best_solution = self.last_best_solution
+
+        if self.save_path:
+            try:
+                with open(self.save_path, 'w') as f:
+                    json.dump(self.last_best_solution, f, indent=2)
+            except Exception as e:
+                logging.error(f"[AutoTuning] Failed to save optimized config: {e}")
+
+        if self.clear_after_tuning:
+            await self.store.delete("traffic_logs")
+            if self.on_cleanup and callable(self.on_cleanup):
+                try:
+                    self.on_cleanup(raw_logs)
+                except Exception as e:
+                    logging.error(f"[AutoTuning] Error in on_cleanup callback after clearing: {e}")
+
+    def _prune_logs(self, logs: List[Dict[str, Any]]) -> None:
+        now = int(time.time() * 1000)
+        removed = []
+        if hasattr(self, "max_age_ms") and self.max_age_ms and self.max_age_ms > 0:
+            threshold = now - self.max_age_ms
+            i = 0
+            while i < len(logs):
+                log = logs[i]
+                log_ts = log.get("timestamp") or log.get("requestTimestamp") or now
+                if log_ts < threshold:
+                    removed.append(logs.pop(i))
+                else:
+                    i += 1
+        if self.max_data_points and len(logs) > self.max_data_points:
+            overflow_count = len(logs) - self.max_data_points
+            removed.extend(logs[:overflow_count])
+            del logs[:overflow_count]
+        if self.on_cleanup and callable(self.on_cleanup) and removed:
+            try:
+                self.on_cleanup(removed)
+            except Exception as e:
+                logging.error(f"[AutoTuning] Error in on_cleanup callback: {e}")
+
+    def get_ip_subnet(self, ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> str:
+        if not ip or ip == "unknown":
+            return "unknown-subnet"
+        if ":" in ip:
+            parts = ip.split(":")
+            return ":".join(parts[:3]) + f"/{ipv6_prefix}"
+        else:
+            parts = ip.split(".")
+            if len(parts) == 4:
+                return ".".join(parts[:3]) + f"/{ipv4_prefix}"
+        return "unknown-subnet"
+
+    def get_vector_distance(self, v1: Dict[str, float], v2: Dict[str, float]) -> float:
+        if not v1 or not v2:
+            return float('inf')
+        all_keys = set(v1.keys()).union(v2.keys())
+        sum_sq = 0.0
+        for key in all_keys:
+            sum_sq += (v1.get(key, 0.0) - v2.get(key, 0.0)) ** 2
+        return math.sqrt(sum_sq)
+
+    def get_hardware_cluster(self, log: Dict[str, Any]) -> str:
+        fp = log.get("deviceHash") or log.get("fingerprint") or log.get("deviceFingerprint") or ""
+        if not fp or not isinstance(fp, str):
+            return log.get("deviceId") or "anonymous-cluster"
+        parts = fp.split("|")
+        hw_components = []
+        for part in parts:
+            pair = part.split(":", 1)
+            if len(pair) == 2 and pair[0] in ("gpu", "cvs", "hw"):
+                hw_components.append(part)
+        if hw_components:
+            hw_components.sort()
+            return "|".join(hw_components)
+        return log.get("deviceId") or "anonymous-cluster"
+
+    def sanitize_traffic_data(self, traffic_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not traffic_data:
+            return []
+
+        raw_logs = list(traffic_data)
+        total_count = len(raw_logs)
+
+        max_logs_per_device = max(3, int(math.floor(total_count * 0.02)))
+        max_logs_per_ip = max(3, int(math.floor(total_count * 0.02)))
+        max_logs_per_subnet = max(5, int(math.floor(total_count * 0.05)))
+        max_logs_per_hw_cluster = max(3, int(math.floor(total_count * 0.02)))
+
+        # Cohort compression
+        clustered_logs = []
+        for log in raw_logs:
+            matched_cluster = None
+            log_vector = log.get("vector", {})
+            log_type = log.get("type", "")
+
+            for cluster in clustered_logs:
+                cluster_vector = cluster.get("vector", {})
+                cluster_type = cluster.get("type", "")
+
+                if log_type == cluster_type and self.get_vector_distance(log_vector, cluster_vector) < 5.0:
+                    matched_cluster = cluster
+                    break
+
+            if matched_cluster is not None:
+                matched_cluster["instancesCount"] = matched_cluster.get("instancesCount", 1) + 1
+                matched_cluster["weight"] = 1.0 + math.log(matched_cluster["instancesCount"])
+            else:
+                log_copy = dict(log)
+                log_copy["instancesCount"] = 1
+                log_copy["weight"] = 1.0
+                clustered_logs.append(log_copy)
+
+        suspicious_logs = []
+        passed_logs = []
+        device_counts = {}
+        ip_counts = {}
+        subnet_counts = {}
+        hw_cluster_counts = {}
+
+        for log in clustered_logs:
+            dev_id = log.get("deviceId", "anonymous")
+            ip = log.get("clientIp", "unknown")
+            subnet = self.get_ip_subnet(ip)
+            hw_cluster = self.get_hardware_cluster(log)
+            type_ = log.get("type", "")
+
+            cur_dev_count = device_counts.get(dev_id, 0)
+            cur_ip_count = ip_counts.get(ip, 0)
+            cur_subnet_count = subnet_counts.get(subnet, 0)
+            cur_hw_count = hw_cluster_counts.get(hw_cluster, 0)
+
+            if (cur_dev_count < max_logs_per_device
+                    and (ip == "unknown" or cur_ip_count < max_logs_per_ip)
+                    and (subnet == "unknown-subnet" or cur_subnet_count < max_logs_per_subnet)
+                    and cur_hw_count < max_logs_per_hw_cluster):
+
+                device_counts[dev_id] = cur_dev_count + 1
+                if ip != "unknown":
+                    ip_counts[ip] = cur_ip_count + 1
+                if subnet != "unknown-subnet":
+                    subnet_counts[subnet] = cur_subnet_count + 1
+                hw_cluster_counts[hw_cluster] = cur_hw_count + 1
+
+                if type_ == "request_passed":
+                    passed_logs.append(log)
+                else:
+                    suspicious_logs.append(log)
+
+        max_passed_allowed = max(self.min_data_points, len(suspicious_logs) * 9)
+        if len(passed_logs) > max_passed_allowed:
+            random.shuffle(passed_logs)
+            passed_logs = passed_logs[:max_passed_allowed]
+
+        return suspicious_logs + passed_logs
+
+    def is_valid_security_config(self, thresholds: Dict[str, float], weights: Dict[str, float]) -> bool:
+        active_weights_sum = (
+            weights.get("inconsistencyScore", 0.0) +
+            weights.get("tlsSpoofingScore", 0.0) +
+            weights.get("requestPatternScore", 0.0) +
+            weights.get("behaviorScore", 0.0) +
+            weights.get("botScore", 0.0)
+        )
+        if active_weights_sum < 1.5:
+            return False
+
+        low = thresholds.get("low", 0.0)
+        medium = thresholds.get("medium", 0.0)
+        high = thresholds.get("high", 0.0)
+        block = thresholds.get("block", 0.0)
+
+        return (low >= 10 and low <= 35 and
+                medium >= low + 5 and medium <= 70 and
+                high >= medium + 5 and high <= 90 and
+                block >= high + 5 and block <= 99)
+
+    def apply_inertial_update(self, current: Dict[str, Any], target: Dict[str, float], type_: str, confidence: float) -> None:
+        base_learning_rate = 0.15
+        learning_rate = max(0.02, min(0.40, base_learning_rate * confidence))
+
+        for key in current.keys():
+            if key in target:
+                cur_val = float(current[key])
+                tar_val = float(target[key])
+                updated = cur_val + (tar_val - cur_val) * learning_rate
+
+                if type_ == "weights":
+                    updated = max(0.05, min(1.8, updated))
+                    current[key] = updated
+                elif type_ == "thresholds":
+                    current[key] = int(round(updated))
+                elif type_ == "patterns":
+                    if key == 'benfordThreshold':
+                        updated = max(0.05, min(0.30, updated))
+                    elif key == 'decayFactor':
+                        updated = max(0.70, min(0.98, updated))
+                    elif key == 'minSamples':
+                        updated = max(3, min(15, int(round(updated))))
+                    elif key == 'historySize':
+                        updated = max(5, min(30, int(round(updated))))
+                    elif key.endswith('Threshold'):
+                        updated = max(50, min(3000, int(round(updated))))
+                    current[key] = updated
+        if type_ == "thresholds":
+            low = max(10, min(35, int(current.get("low", 20))))
+            medium = max(low + 8, min(65, int(current.get("medium", 45))))
+            high = max(medium + 8, min(85, int(current.get("high", 75))))
+            block = max(high + 8, min(98, int(current.get("block", 95))))
+
+            current["low"] = low
+            current["medium"] = medium
+            current["high"] = high
+            current["block"] = block
+
+    def evaluate_fitness(self, thresholds: Dict[str, Any], weights: Dict[str, Any], traffic_data: List[Dict[str, Any]]) -> List[float]:
+        false_positives = 0.0
+        false_negatives = 0.0
+        total_humans = 0.0
+        total_bots = 0.0
+
+        low_threshold = float(thresholds.get("low", 20.0))
+
+        for log in traffic_data:
+            type_ = log.get("type")
+            vector = log.get("vector", {})
+
+            score = 0.0
+            for w_key in weights.keys():
+                score += float(vector.get(w_key, 0.0)) * float(weights[w_key])
+
+            is_likely_bot = type_ in ("request_blocked", "trap_triggered")
+            is_likely_human = type_ in ("request_passed", "challenge_solved")
+
+            if is_likely_bot:
+                total_bots += 1.0
+                if score < low_threshold:
+                    false_negatives += 1.0
+            elif is_likely_human:
+                total_humans += 1.0
+                if score >= low_threshold:
+                    false_positives += 1.0
+
+        fpr = false_positives / total_humans if total_humans > 0.0 else 0.0
+        fnr = false_negatives / total_bots if total_bots > 0.0 else 0.0
+        return [fpr, fnr]
+
+    def solve_full_security_tuning(self, traffic_data: List[Dict[str, Any]]) -> List[Individual]:
+        population_size = 50
+        generations = 50
+        mutation_rate = 0.1
+
+        population = []
+        for _ in range(population_size):
+            population.append(self.random_individual())
+
+        for ind in population:
+            ind.objectives = self.evaluate_fitness(ind.thresholds, ind.weights, traffic_data)
+
+        for _ in range(generations):
+            offspring = []
+            for _ in range(population_size):
+                p1 = random.choice(population)
+                p2 = random.choice(population)
+                child = self.crossover(p1, p2)
+                if random.random() < mutation_rate:
+                    self.mutate(child)
+                child.objectives = self.evaluate_fitness(child.thresholds, child.weights, traffic_data)
+                offspring.append(child)
+
+            combined = population + offspring
+            fronts = self.non_dominated_sort(combined)
+
+            next_pop = []
+            for front in fronts:
+                if len(next_pop) + len(front) <= population_size:
+                    next_pop.extend(front)
+                else:
+                    self.calculate_crowding_distance(front)
+                    front.sort(key=lambda x: x.crowding_distance, reverse=True)
+                    remaining = population_size - len(next_pop)
+                    next_pop.extend(front[:remaining])
+                    break
+            population = next_pop
+
+        return self.non_dominated_sort(population)[0]
+
+    def random_individual(self) -> Individual:
+        ind = Individual()
+        low = random.randint(10, 35)
+        medium = low + 10 + random.randint(0, 25)
+        high = medium + 10 + random.randint(0, 20)
+        block = high + 8 + random.randint(0, 10)
+
+        ind.thresholds = {"low": low, "medium": medium, "high": high, "block": block}
+        weights_config = self.security_config.get("weights", {})
+        for w_key in weights_config.keys():
+            ind.weights[w_key] = 0.1 + random.random() * 1.3
+        patterns_config = self.security_config.get("patterns", {})
+        for p_key, p_val in patterns_config.items():
+            if isinstance(p_val, (int, float)):
+                ind.patterns[p_key] = p_val * (0.5 + random.random())
+            else:
+                ind.patterns[p_key] = p_val
+        return ind
+
+    def crossover(self, p1: Individual, p2: Individual) -> Individual:
+        child = Individual()
+        for key in p1.thresholds.keys():
+            child.thresholds[key] = int(round((p1.thresholds[key] + p2.thresholds[key]) / 2.0))
+        for key in p1.weights.keys():
+            child.weights[key] = (p1.weights[key] + p2.weights[key]) / 2.0
+        for key in p1.patterns.keys():
+            if isinstance(p1.patterns[key], (int, float)) and isinstance(p2.patterns[key], (int, float)):
+                child.patterns[key] = (p1.patterns[key] + p2.patterns[key]) / 2.0
+            else:
+                child.patterns[key] = p1.patterns[key]
+        return child
+
+    def mutate(self, ind: Individual) -> None:
+        mutation_target = random.choice(["thresholds", "weights", "patterns"])
+        if mutation_target == "thresholds":
+            k = random.choice(list(ind.thresholds.keys()))
+            ind.thresholds[k] = max(10, ind.thresholds[k] + random.choice([2, -2]))
+        elif mutation_target == "weights" and ind.weights:
+            k = random.choice(list(ind.weights.keys()))
+            ind.weights[k] = max(0.05, min(1.8, ind.weights[k] + (random.random() - 0.5) * 0.2))
+        elif mutation_target == "patterns" and ind.patterns:
+            numeric_keys = [k for k, v in ind.patterns.items() if isinstance(v, (int, float))]
+            if numeric_keys:
+                k = random.choice(numeric_keys)
+                ind.patterns[k] = max(0.05, ind.patterns[k] + (random.random() - 0.5) * 0.2 * ind.patterns[k])
+
+    def non_dominated_sort(self, population: List[Individual]) -> List[List[Individual]]:
+        fronts = [[]]
+        for p1 in population:
+            p1.domination_count = 0
+            p1.dominated_solutions = []
+            for p2 in population:
+                if p1 is p2:
+                    continue
+                if self.pareto_dominates(p1.objectives, p2.objectives):
+                    p1.dominated_solutions.append(p2)
+                elif self.pareto_dominates(p2.objectives, p1.objectives):
+                    p1.domination_count += 1
+            if p1.domination_count == 0:
+                p1.rank = 0
+                fronts[0].append(p1)
+
+        i = 0
+        while len(fronts[i]) > 0:
+            next_front = []
+            for p1 in fronts[i]:
+                for p2 in p1.dominated_solutions:
+                    p2.domination_count -= 1
+                    if p2.domination_count == 0:
+                        p2.rank = i + 1
+                        next_front.append(p2)
+            i += 1
+            if not next_front:
+                break
+            fronts.append(next_front)
+        return fronts
+
+    def pareto_dominates(self, objA: List[float], objB: List[float]) -> bool:
+        better = False
+        for i in range(len(objA)):
+            if objA[i] > objB[i]:
+                return False
+            if objA[i] < objB[i]:
+                better = True
+        return better
+
+    def calculate_crowding_distance(self, front: List[Individual]) -> None:
+        if not front:
+            return
+        l = len(front)
+        for p in front:
+            p.crowding_distance = 0.0
+
+        for i in range(2):
+            obj_idx = i
+            front.sort(key=lambda x: x.objectives[obj_idx])
+            front[0].crowding_distance = float('inf')
+            front[-1].crowding_distance = float('inf')
+
+            min_val = front[0].objectives[obj_idx]
+            max_val = front[-1].objectives[obj_idx]
+            if max_val == min_val:
+                continue
+
+            for j in range(1, l - 1):
+                front[j].crowding_distance += (front[j + 1].objectives[obj_idx] - front[j - 1].objectives[obj_idx]) / (max_val - min_val)
 
     @staticmethod
     def get_best_tuning_solution() -> Optional[Dict[str, Any]]:
