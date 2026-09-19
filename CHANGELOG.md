@@ -1,8 +1,9 @@
 ## Version 0.6.6
 
-- 🛡️ **Medium Threshold & Subnet Score Fixes**:
+- 🛡️ **Medium Threshold, Subnet Score & Decay Persistence Fixes**:
   - Resolved an issue where restrictive actions were not properly applied when crossing the medium threshold (`medium_threshold`).
   - Improved and corrected the subnet reputation calculation (`subnetScore`): anomaly metrics are now anchored to a stable, unique hardware identifier (`stable_fp_id`). This neutralizes bypass tactics like cookie dropping without penalizing legitimate users sharing the same network block. (Contributed by @anonympins)
+  - **Fixed Sliding Temporal Decay Persistence**: Corrected the subnet metrics decay calculation across PHP, Java, and Python versions, ensuring that decayed metrics are immediately persisted in the active data store (`IStore`) instead of being lost on subsequent evaluations, preventing old activity spikes from overwriting calm history. (Contributed by @anonympins)
 
 - 🌐 **Protocol Anomaly Scoring**:
   - Integrated a comprehensive protocol anomaly evaluation module (`protocolAnomalyScore`) that jointly analyzes low-level signatures (TLS handshakes, HTTP/2 stream settings, and QUIC/HTTP/3 behaviors) to detect transport mismatches common in automated browsers and scraping tools. (Contributed by @anonympins)
