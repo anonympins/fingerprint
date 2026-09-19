@@ -4,6 +4,8 @@ import hmac
 import hashlib
 from unittest.mock import MagicMock
 
+from engine import RequestUtils, InMemoryStore, get_ip_subnet
+
 # On importe la bibliothèque standard cryptography pour Ed25519 (Zero-Trust peer validations)
 try:
     from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -13,8 +15,10 @@ except ImportError:
     HAS_CRYPTOGRAPHY = False
 
 
-class TestFingerprintEngine(unittest.TestCase):
+class TestFingerprintEngine(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+
+        self.store = InMemoryStore()
         self.default_config = {
             'fail_safe': 'fail_open',  # 'fail_open' ou 'fail_closed'
             'threshold': 0.7,
@@ -184,6 +188,36 @@ class TestFingerprintEngine(unittest.TestCase):
         import re
         match = re.search(waf_pattern, malicious_input, re.IGNORECASE)
         self.assertIsNotNone(match, "L'injection SQL classique n'a pas été détectée par le filtre WAF.")
+
+    async def test_subnet_decay_persistence(self):
+        client_ip = "192.168.1.100"
+        device_id = "device_1"
+
+        # Initial update to register subnet metrics
+        await RequestUtils.update_subnet_metrics(self.store, client_ip, device_id, 80.0)
+
+        # Check initially stored metrics
+        subnet = get_ip_subnet(client_ip)
+        key = f"subnet:{subnet}"
+        subnet_data = await self.store.get(key)
+
+        self.assertIsNotNone(subnet_data)
+        self.assertEqual(subnet_data["highScoreCount"], 1)
+        self.assertIn(device_id, subnet_data["deviceIds"])
+
+        # Manually backdate the last activity by 1 hour (3600 seconds = 2 half-lives of 30 minutes)
+        now = int(time.time())
+        subnet_data["lastActivity"] = now - 3600
+        await self.store.set(key, subnet_data)
+
+        # Retrieve subnet score which triggers decay and persists it
+        await RequestUtils.get_subnet_score(self.store, client_ip, device_id)
+
+        # Verify the score represents decayed metrics
+        # Decayed count: 1 / (2^2) = 0.25 -> floored to 0
+        decayed_data = await self.store.get(key)
+        self.assertEqual(decayed_data["highScoreCount"], 0)
+        self.assertEqual(len(decayed_data["deviceIds"]), 0)
 
 if __name__ == '__main__':
     unittest.main()

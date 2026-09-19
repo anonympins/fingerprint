@@ -1268,6 +1268,8 @@ class RequestUtils
         if (!isset($subnetData['uas'])) {
             $subnetData['uas'] = [];
         }
+        $now = time();
+        self::decaySubnetData($subnetData, $now);
 
         // Utilisation de la partie stable du fingerprint matériel plutôt que l'ID de cookie volatil
         $currentDeviceHash = self::getCompositeDeviceHash($context);
@@ -1291,8 +1293,7 @@ class RequestUtils
         if (!empty($userAgent) && !in_array($userAgent, $subnetData['uas'], true)) {
             $subnetData['uas'][] = $userAgent;
         }
-
-        $subnetData['lastActivity'] = time();
+        $subnetData['lastActivity'] = $now;
 
         // Limiter la taille du tableau des deviceIds pour éviter une consommation mémoire excessive.
         if (count($subnetData['deviceIds']) > 100) {
@@ -1340,18 +1341,15 @@ class RequestUtils
         $inactivitySec = $now - ($subnetData['lastActivity'] ?? $now);
         $halfLives = (int)floor($inactivitySec / 1800);
 
+        if ($halfLives > 0) {
+            self::decaySubnetData($subnetData, $now);
+            $store->set($key, $subnetData, 86400);
+        }
+
         $highScoreCount = $subnetData['highScoreCount'] ?? 0;
         $deviceCount = isset($subnetData['deviceIds']) ? count($subnetData['deviceIds']) : 0;
         $ipCount = isset($subnetData['ips']) ? count($subnetData['ips']) : 1;
         $uaCount = isset($subnetData['uas']) ? count($subnetData['uas']) : 1;
-
-        if ($halfLives > 0) {
-            $decay = pow(2, $halfLives);
-            $highScoreCount = max(0, (int)floor($highScoreCount / $decay));
-            $deviceCount = max(0, (int)floor($deviceCount / $decay));
-            $ipCount = max(1, (int)floor($ipCount / $decay));
-            $uaCount = max(1, (int)floor($uaCount / $decay));
-        }
 
         if ($deviceCount === 0) {
             return ['subnetScore' => 0.0];
@@ -1368,6 +1366,42 @@ class RequestUtils
         $finalScore = min(100.0, round($baseScore * $densityMultiplier * $distributionMultiplier * 10.0) / 10.0);
 
         return ['subnetScore' => $finalScore];
+    }
+    /**
+     * Applies temporal decay (half-life of 30 minutes) to subnet metrics.
+     *
+     * @param array &$subnetData Subnet data passed by reference.
+     * @param int $now Current timestamp.
+     */
+    private static function decaySubnetData(array &$subnetData, int $now): void
+    {
+        $inactivitySec = $now - ($subnetData['lastActivity'] ?? $now);
+        $halfLives = (int)floor($inactivitySec / 1800);
+
+        if ($halfLives > 0) {
+            $decay = pow(2, $halfLives);
+            $subnetData['highScoreCount'] = max(0, (int)floor(($subnetData['highScoreCount'] ?? 0) / $decay));
+
+            if (isset($subnetData['highScoreDevices'])) {
+                foreach ($subnetData['highScoreDevices'] as $fpId => $val) {
+                    $decayedVal = (int)floor($val / $decay);
+                    if ($decayedVal <= 0) {
+                        unset($subnetData['highScoreDevices'][$fpId]);
+                    } else {
+                        $subnetData['highScoreDevices'][$fpId] = $decayedVal;
+                    }
+                }
+            }
+
+            foreach (['deviceIds', 'ips', 'uas'] as $field) {
+                if (isset($subnetData[$field])) {
+                    $newLen = max(0, (int)floor(count($subnetData[$field]) / $decay));
+                    $subnetData[$field] = array_slice($subnetData[$field], 0, $newLen);
+                }
+            }
+
+            $subnetData['lastActivity'] = $now - ($inactivitySec % 1800);
+        }
     }
 
     /**

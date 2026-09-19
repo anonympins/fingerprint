@@ -152,6 +152,54 @@ public class RequestUtils {
     }
 
     @SuppressWarnings("unchecked")
+    private static void applySubnetDecay(IStore store, String subnet, Map<String, Object> subnetData, long now) {
+        long lastActivity = ((Number) subnetData.getOrDefault("lastActivity", now)).longValue();
+        if (lastActivity == 0L) {
+            subnetData.put("lastActivity", now);
+            return;
+        }
+        long inactivityMs = now - lastActivity;
+        long halfLives = inactivityMs / (30 * 60 * 1000L); // 30 minutes half-life
+
+        if (halfLives > 0) {
+            double decay = Math.pow(2, halfLives);
+
+            int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
+            highScoreCount = Math.max(0, (int) Math.floor(highScoreCount / decay));
+            subnetData.put("highScoreCount", highScoreCount);
+
+            List<String> deviceIdsList = (List<String>) subnetData.getOrDefault("deviceIds", new ArrayList<String>());
+            int deviceCount = Math.max(0, (int) Math.floor(deviceIdsList.size() / decay));
+            if (deviceIdsList.size() > deviceCount) {
+                deviceIdsList = new ArrayList<>(deviceIdsList.subList(deviceIdsList.size() - deviceCount, deviceIdsList.size()));
+                subnetData.put("deviceIds", deviceIdsList);
+            }
+
+            List<String> ipsList = (List<String>) subnetData.getOrDefault("ips", new ArrayList<String>());
+            int ipCount = Math.max(1, (int) Math.floor(ipsList.size() / decay));
+            if (ipsList.size() > ipCount) {
+                ipsList = new ArrayList<>(ipsList.subList(ipsList.size() - ipCount, ipsList.size()));
+                subnetData.put("ips", ipsList);
+            }
+
+            Map<String, Integer> highScoreDevices = (Map<String, Integer>) subnetData.get("highScoreDevices");
+            if (highScoreDevices != null) {
+                Map<String, Integer> decayedDevices = new HashMap<>();
+                for (Map.Entry<String, Integer> entry : highScoreDevices.entrySet()) {
+                    int decayedVal = Math.max(0, (int) Math.floor(entry.getValue() / decay));
+                    if (decayedVal > 0) {
+                        decayedDevices.put(entry.getKey(), decayedVal);
+                    }
+                }
+                subnetData.put("highScoreDevices", decayedDevices);
+            }
+
+            subnetData.put("lastActivity", now);
+            store.set("subnet:" + subnet, subnetData, 86400);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
     public static Map<String, Double> getRequestPatternScore(RequestContext context, Map<String, Object> deviceData, Map<String, Object> patternsConfig) {
         Map<String, Double> result = new HashMap<>();
         double score = 0.0;
@@ -637,25 +685,13 @@ public class RequestUtils {
         }
 
         long now = System.currentTimeMillis();
-        long lastActivity = (Long) subnetData.getOrDefault("lastActivity", now);
-        long inactivityMs = now - lastActivity;
-        long halfLives = inactivityMs / (30 * 60 * 1000L); // 30 minutes half-life
+        applySubnetDecay(store, subnet, subnetData, now);
 
-        int highScoreCount = (Integer) subnetData.getOrDefault("highScoreCount", 0);
+        int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
         List<String> deviceIdsList = (List<String>) subnetData.getOrDefault("deviceIds", new ArrayList<String>());
         int deviceCount = deviceIdsList.size();
         List<String> ipsList = (List<String>) subnetData.getOrDefault("ips", new ArrayList<String>());
         int ipCount = ipsList.size();
-        // List<String> uasList = (List<String>) subnetData.getOrDefault("uas", new ArrayList<String>()); // Not used in score calculation
-        // int uaCount = uasList.size(); // Not used in score calculation
-
-        if (halfLives > 0) {
-            double decay = Math.pow(2, halfLives);
-            highScoreCount = Math.max(0, (int) Math.floor(highScoreCount / decay));
-            deviceCount = Math.max(0, (int) Math.floor(deviceCount / decay));
-            ipCount = Math.max(1, (int) Math.floor(ipCount / decay)); // Ensure ipCount is at least 1
-            // uaCount = Math.max(1, (int) Math.floor(uaCount / decay)); // Not used in score calculation
-        }
 
         if (deviceCount == 0) {
             result.put("subnetScore", 0.0);
@@ -1329,7 +1365,7 @@ public class RequestUtils {
     public static void updateSubnetMetrics(IStore store, RequestContext context, String deviceId, double finalScore) {
         String subnet = getIpSubnet(context.clientIp, 24, 48);
         if (subnet == null) return;
-
+        long now = System.currentTimeMillis();
         String key = "subnet:" + subnet;
         @SuppressWarnings("unchecked")
         Map<String, Object> subnetData = (Map<String, Object>) store.get(key);
@@ -1338,9 +1374,11 @@ public class RequestUtils {
             subnetData.put("highScoreCount", 0);
             subnetData.put("deviceIds", new ArrayList<String>());
             subnetData.put("highScoreDevices", new HashMap<String, Integer>());
-            subnetData.put("lastActivity", 0L);
+            subnetData.put("lastActivity", now);
             subnetData.put("ips", new ArrayList<String>());
             subnetData.put("uas", new ArrayList<String>());
+        }else {
+            applySubnetDecay(store, subnet, subnetData, now);
         }
 
         @SuppressWarnings("unchecked")
@@ -1374,7 +1412,7 @@ public class RequestUtils {
             uas.add(userAgent);
         }
 
-        subnetData.put("lastActivity", System.currentTimeMillis());
+        subnetData.put("lastActivity", now);
 
         // Pruning logic
         if (deviceIds.size() > 100) {

@@ -2897,6 +2897,58 @@ function getIpSubnet(ip, ipv4Prefix = 24, ipv6Prefix = 48) { // eslint-disable-l
 }
 
 /**
+ * Applies temporal decay (half-life of 30 minutes) to subnet metrics.
+ * @private
+ * @param {object} subnetData The subnet data.
+ * @param {number} now The current timestamp.
+ * @returns {object} The decayed subnet data.
+ */
+function decaySubnetData(subnetData, now) {
+    const inactivityMs = now - (subnetData.lastActivity || now);
+    const halfLives = Math.floor(inactivityMs / (30 * 60 * 1000));
+
+    if (halfLives > 0) {
+        const decay = Math.pow(2, halfLives);
+        subnetData.highScoreCount = Math.max(0, Math.floor((subnetData.highScoreCount || 0) / decay));
+
+        if (subnetData.highScoreDevices) {
+            for (const fpId in subnetData.highScoreDevices) {
+                const decayedVal = Math.floor(subnetData.highScoreDevices[fpId] / decay);
+                if (decayedVal <= 0) {
+                    delete subnetData.highScoreDevices[fpId];
+                } else {
+                    subnetData.highScoreDevices[fpId] = decayedVal;
+                }
+            }
+        }
+
+        if (subnetData.deviceIds) {
+            const newLen = Math.max(0, Math.floor(subnetData.deviceIds.length / decay));
+            subnetData.deviceIds = subnetData.deviceIds.slice(0, newLen);
+        }
+
+        if (subnetData.ips) {
+            const currentLen = subnetData.ips instanceof Set ? subnetData.ips.size : (subnetData.ips.length || 0);
+            const newLen = Math.max(0, Math.floor(currentLen / decay));
+            if (subnetData.ips instanceof Set) {
+                const arr = Array.from(subnetData.ips).slice(0, newLen);
+                subnetData.ips = new Set(arr);
+            } else {
+                subnetData.ips = subnetData.ips.slice(0, newLen);
+            }
+        }
+
+        if (subnetData.uas) {
+            const newLen = Math.max(0, Math.floor(subnetData.uas.length / decay));
+            subnetData.uas = subnetData.uas.slice(0, newLen);
+        }
+
+        subnetData.lastActivity = now - (inactivityMs % (30 * 60 * 1000));
+    }
+    return subnetData;
+}
+
+/**
  * Updates aggregated metrics for an IP subnet.
  * @param {object} context The request context.
  * @param {string} deviceId The device ID.
@@ -2926,6 +2978,9 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
     }
     if (!subnetData.uas) subnetData.uas = [];
 
+    const now = Date.now();
+    decaySubnetData(subnetData, now);
+
     // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
     const currentDeviceHash = getCompositeDeviceHash(context);
     const stableFpId = cyrb53(extractStablePart(currentDeviceHash)).toString();
@@ -2949,7 +3004,7 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
         subnetData.uas.push(userAgent);
     }
 
-    subnetData.lastActivity = Date.now();
+    subnetData.lastActivity = now;
 
     if (subnetData.deviceIds.length > 100) {
         const oldDeviceId = subnetData.deviceIds.shift();
@@ -2977,10 +3032,14 @@ async function getSubnetScore(context) {
     const subnetData = await store.get(`subnet:${subnet}`);
     if (!subnetData) return { subnetScore: 0 };
 
-    // Application d'une décroissance temporelle (demi-vie de 30 minutes)
     const now = Date.now();
     const inactivityMs = now - (subnetData.lastActivity || now);
     const halfLives = Math.floor(inactivityMs / (30 * 60 * 1000));
+
+    if (halfLives > 0) {
+        decaySubnetData(subnetData, now);
+        await store.set(key, subnetData, 86400);
+    }
 
     let highScoreCount = subnetData.highScoreCount || 0;
     let deviceCount = subnetData.deviceIds ? subnetData.deviceIds.length : 0;
@@ -2989,14 +3048,6 @@ async function getSubnetScore(context) {
         ipCount = subnetData.ips instanceof Set ? subnetData.ips.size : (subnetData.ips.length || 1);
     }
     let uaCount = subnetData.uas ? subnetData.uas.length : 1;
-
-    if (halfLives > 0) {
-        const decay = Math.pow(2, halfLives);
-        highScoreCount = Math.max(0, Math.floor(highScoreCount / decay));
-        deviceCount = Math.max(0, Math.floor(deviceCount / decay));
-        ipCount = Math.max(1, Math.floor(ipCount / decay));
-        uaCount = Math.max(1, Math.floor(uaCount / decay));
-    }
 
     if (deviceCount === 0) {
         return { subnetScore: 0.0 };

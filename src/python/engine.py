@@ -1872,13 +1872,50 @@ class RequestUtils:
         await store.set(key, {"score": new_score, "lastUpdate": time.time()}, 86400 * 7)
 
     @staticmethod
+    def _decay_subnet_data(subnet_data: dict, now: int) -> bool:
+        inactivity_sec = now - subnet_data.get("lastActivity", now)
+        half_lives = int(math.floor(inactivity_sec / 1800))
+        if half_lives > 0:
+            decay = 2 ** half_lives
+            subnet_data["highScoreCount"] = max(0, int(math.floor(subnet_data.get("highScoreCount", 0) / decay)))
+
+            if "highScoreDevices" in subnet_data:
+                to_remove = []
+                for fp_id, val in subnet_data["highScoreDevices"].items():
+                    decayed_val = int(math.floor(val / decay))
+                    if decayed_val <= 0:
+                        to_remove.append(fp_id)
+                    else:
+                        subnet_data["highScoreDevices"][fp_id] = decayed_val
+                for fp_id in to_remove:
+                    del subnet_data["highScoreDevices"][fp_id]
+
+            if "deviceIds" in subnet_data:
+                new_len = max(0, int(math.floor(len(subnet_data["deviceIds"]) / decay)))
+                subnet_data["deviceIds"] = subnet_data["deviceIds"][:new_len]
+
+            if "ips" in subnet_data:
+                new_len = max(0, int(math.floor(len(subnet_data["ips"]) / decay)))
+                subnet_data["ips"] = subnet_data["ips"][:new_len]
+
+            if "uas" in subnet_data:
+                new_len = max(0, int(math.floor(len(subnet_data["uas"]) / decay)))
+                subnet_data["uas"] = subnet_data["uas"][:new_len]
+
+            subnet_data["lastActivity"] = now - (inactivity_sec % 1800)
+            return True
+        return False
+
+    @staticmethod
     async def update_subnet_metrics(store, client_ip: str, device_id: str, final_score: float) -> None:
         subnet = get_ip_subnet(client_ip)
         if not subnet: return
         key = f"subnet:{subnet}"
         subnet_data = await store.get(key) or {"highScoreCount": 0, "deviceIds": [], "highScoreDevices": {}, "lastActivity": 0}
         subnet_data.setdefault("highScoreDevices", {})
-        
+        now = int(time.time())
+        RequestUtils._decay_subnet_data(subnet_data, now)
+
         current_contributions = subnet_data["highScoreDevices"].get(device_id, 0)
 
         # OPTIMISATION : Cap strict à 1 pénalité maximum par appareil unique stable
@@ -1889,7 +1926,7 @@ class RequestUtils:
 
         if device_id not in subnet_data["deviceIds"]:
             subnet_data["deviceIds"].append(device_id)
-        subnet_data["lastActivity"] = int(time.time())
+        subnet_data["lastActivity"] = now
         if len(subnet_data["deviceIds"]) > 100:
             old_device_id = subnet_data["deviceIds"].pop(0)
             if old_device_id in subnet_data["highScoreDevices"]:
@@ -1905,13 +1942,10 @@ class RequestUtils:
         subnet_data = await store.get(key)
         if not subnet_data: return {"subnetScore": 0.0}
         now = int(time.time())
-        inactivity_sec = now - subnet_data.get("lastActivity", now)
-        half_lives = int(math.floor(inactivity_sec / 1800))
+        if RequestUtils._decay_subnet_data(subnet_data, now):
+            await store.set(key, subnet_data, 86400)
         high_score_count = subnet_data.get("highScoreCount", 0)
         device_count = len(subnet_data.get("deviceIds", []))
-        if half_lives > 0:
-            high_score_count = max(0, int(math.floor(high_score_count / (2 ** half_lives))))
-            device_count = max(0, int(math.floor(device_count / (2 ** half_lives))))
         score = 0.0
         if device_count > 10:
             score += min(80.0, (device_count - 10) * 5)
