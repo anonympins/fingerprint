@@ -32,6 +32,25 @@ function cyrb53(str, seed = 0) {
     return 4294967296 * (2097151 & h2) + (h1 >>> 0);
 }
 
+async function loadTfjs() {
+    if (typeof tf !== 'undefined') return tf;
+    if (typeof window !== 'undefined') {
+        if (window.tf) return window.tf;
+        return new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js';
+            script.onload = () => resolve(window.tf);
+            script.onerror = () => reject(new Error('Failed to load TensorFlow.js'));
+            document.head.appendChild(script);
+        });
+    }
+    try {
+        return await import('@tensorflow/tfjs');
+    } catch (e) {
+        throw new Error("TensorFlow.js is not available.");
+    }
+}
+
 function openDb() {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open("pospace-db", 1);
@@ -896,6 +915,72 @@ async function solveUsefulWorkTask(task) {
             // On appelle le solveur en lui passant le payload et les options.
             // La fonction `solveOptimalCPC` attend le payload comme premier argument.
             return solverFunction(task.payload, { generations: task.generations, initialFront: task.initialFront });
+        }
+
+        case 'pytorch_onnx_learning': {
+            // Dans un environnement de production réel avec ONNX Runtime Web, on chargerait le modèle .onnx 
+            // et on exécuterait un calcul de gradient (backward pass).
+            // Ici, nous simulons le calcul de gradient mathématique équivalent pour la régression/classification.
+            const { weights, payload } = task;
+            const inputs = payload.inputs || [];
+            const labels = payload.labels || [];
+            const gradients = new Array(weights.length).fill(0);
+            for (let i = 0; i < inputs.length; i++) {
+                const x = inputs[i];
+                const y = labels[i];
+                let pred = 0;
+                for (let j = 0; j < weights.length; j++) {
+                    pred += x[j] * weights[j];
+                }
+                const error = pred - y;
+                for (let j = 0; j < weights.length; j++) {
+                    gradients[j] += error * x[j] / inputs.length;
+                }
+            }
+            return { gradients };
+        }
+
+        case 'tfjs_learning': {
+            const { weights, payload, modelPath } = task;
+            const inputs = payload.inputs || [];
+            const labels = payload.labels || [];
+            try {
+                const tf = await loadTfjs();
+                // Chargement non-bloquant du modèle au format JSON
+                const model = await tf.loadLayersModel(modelPath);
+                
+                const xs = tf.tensor2d(inputs);
+                const ys = tf.tensor2d(labels);
+                
+                const trainableVars = model.trainableWeights.map(w => w.read());
+                const lossFn = () => {
+                    const preds = model.predict(xs);
+                    return tf.losses.meanSquaredError(ys, preds);
+                };
+                
+                // Dérivation automatique pour le calcul exact des gradients
+                const gFn = tf.grad(lossFn);
+                const grads = gFn(trainableVars);
+                
+                const flatGradients = [];
+                const arr = await grads.array();
+                flatGradients.push(...arr.flat());
+                
+                tf.dispose([xs, ys, grads]);
+                return { gradients: flatGradients };
+            } catch (err) {
+                console.warn('[Useful Work Solver] Real TFJS loading failed, using fallback simulation:', err);
+                const gradients = new Array(weights.length).fill(0);
+                for (let i = 0; i < inputs.length; i++) {
+                    const x = inputs[i];
+                    const y = labels[i][0] !== undefined ? labels[i][0] : labels[i];
+                    let pred = 0;
+                    for (let j = 0; j < weights.length; j++) pred += x[j] * weights[j];
+                    const error = pred - y;
+                    for (let j = 0; j < weights.length; j++) gradients[j] += error * x[j] / inputs.length;
+                }
+                return { gradients };
+            }
         }
 
         default:

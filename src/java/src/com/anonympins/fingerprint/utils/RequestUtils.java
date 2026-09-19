@@ -1356,7 +1356,7 @@ public class RequestUtils {
         String stableFpId = FingerprintBuilder.cyrb53(extractStablePart(currentDeviceHash), 0);
 
         int currentDeviceContributions = highScoreDevices.getOrDefault(stableFpId, 0);
-        if (currentDeviceContributions < 5 && finalScore < 95.0) { // Limit contributions per device
+        if (currentDeviceContributions < 1) { // Limit contributions per device
             highScoreDevices.put(stableFpId, currentDeviceContributions + 1);
             subnetData.put("highScoreCount", ((Number) subnetData.get("highScoreCount")).intValue() + 1);
         }

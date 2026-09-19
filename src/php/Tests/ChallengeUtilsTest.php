@@ -40,7 +40,8 @@ class ChallengeUtilsTest extends TestCase
         };
 
         for ($idx = 0; $idx < 64; $idx++) {
-            $x = $fround($numericSeed + $idx * 0.015);
+            $x = $fround(fmod($numericSeed + $idx * 0.015, 1.0));
+            $x = $fround(fmod($numericSeed + $idx * 0.015, 1.0));
             $rFloat = $fround($r);
             for ($i = 0; $i < $iterations; $i++) {
                 $x = $fround($rFloat * $x * $fround(1.0 - $x));
@@ -78,7 +79,7 @@ class ChallengeUtilsTest extends TestCase
             return unpack('f', pack('f', $value))[1];
         };
         for ($idx = 0; $idx < 64; $idx++) {
-            $x = $fround($numericSeed + $idx * 0.015);
+            $x = $fround(fmod($numericSeed + $idx * 0.015, 1.0));
             $rFloat = $fround($r);
             for ($i = 0; $i < $iterations; $i++) {
                 $x = $fround($rFloat * $x * $fround(1.0 - $x));

@@ -1878,10 +1878,15 @@ class RequestUtils:
         key = f"subnet:{subnet}"
         subnet_data = await store.get(key) or {"highScoreCount": 0, "deviceIds": [], "highScoreDevices": {}, "lastActivity": 0}
         subnet_data.setdefault("highScoreDevices", {})
+        
         current_contributions = subnet_data["highScoreDevices"].get(device_id, 0)
-        if current_contributions < 5 and final_score < 95:
+
+        # OPTIMISATION : Cap strict à 1 pénalité maximum par appareil unique stable
+        # pour éviter qu'une seule machine mal configurée ne sature le sous-réseau.
+        if current_contributions < 1 and final_score < 95:
             subnet_data["highScoreDevices"][device_id] = current_contributions + 1
             subnet_data["highScoreCount"] += 1
+
         if device_id not in subnet_data["deviceIds"]:
             subnet_data["deviceIds"].append(device_id)
         subnet_data["lastActivity"] = int(time.time())
@@ -2558,7 +2563,7 @@ class FingerprintEngine:
 
         self.config = config
         self.store = store
-        self.thresholds = config.get("thresholds", {"low": 20, "high": 75, "block": 95})
+        self.thresholds = config.get("thresholds", {"low": 20, "medium": 45, "high": 75, "block": 95})
         self.weights = config.get("weights", {})
         self.dry_run = config.get("dryRun", False)
         self._allowlist = self._build_allowlist()
@@ -3461,10 +3466,11 @@ class FingerprintEngine:
         score = self.calculate_final_score(suspicion_vector)
 
         low_threshold = self.thresholds.get("low", 20)
+        medium_threshold = self.thresholds.get("medium", 45)
         high_threshold = self.thresholds.get("high", 75)
         block_threshold = self.thresholds.get("block", 95)
 
-        if score > low_threshold and score < block_threshold:
+        if score >= medium_threshold and score < block_threshold:
             # Utilise l'identifiant matériel stable pour éviter les faux positifs lors du cookie dropping
             current_hash = self.get_composite_device_hash(context)
             stable_fp_id = str(cyrb53(self._extract_stable_part(current_hash)))

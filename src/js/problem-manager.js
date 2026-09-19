@@ -318,6 +318,12 @@ class ProblemManager {
                 task.initialFront = problem.state.paretoFront;
                 task.solverName = problem.workUnit.solverName; // Le nom du solveur à utiliser (ex: 'cpc.solve')
                 break;
+
+            case 'tfjs_learning':
+                task.modelPath = problem.workUnit.modelPath;
+                task.payload = problem.payload;
+                task.weights = problem.state.weights || [];
+                break;
         }
 
         return { problemId: problem.id, task };

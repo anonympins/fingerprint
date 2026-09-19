@@ -1274,7 +1274,7 @@ class RequestUtils
         $stableFpId = FingerprintBuilder::cyrb53(self::extractStablePart($currentDeviceHash));
 
         $currentDeviceContributions = $subnetData['highScoreDevices'][$stableFpId] ?? 0;
-        if ($currentDeviceContributions < 5 && $finalScore < 95) {
+        if ($currentDeviceContributions < 1 && $finalScore < 95) {
             $subnetData['highScoreDevices'][$stableFpId] = $currentDeviceContributions + 1;
             $subnetData['highScoreCount']++;
         }

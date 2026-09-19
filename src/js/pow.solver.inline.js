@@ -53,6 +53,44 @@ function generateBlock(seed, blockIndex, blockSize = 1024) {
     return block;
 }
 
+async function loadTfjs() {
+    if (typeof tf !== 'undefined') return tf;
+    if (typeof window !== 'undefined') {
+        if (window.tf) return window.tf;
+        return new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js';
+            script.onload = () => resolve(window.tf);
+            script.onerror = () => reject(new Error('Failed to load TensorFlow.js'));
+            document.head.appendChild(script);
+        });
+    }
+    try {
+        return await import('@tensorflow/tfjs');
+    } catch (e) {
+        throw new Error("TensorFlow.js is not available.");
+    }
+}
+
+async function loadOnnxRuntime() {
+    if (typeof ort !== 'undefined') return ort;
+    if (typeof window !== 'undefined') {
+        if (window.ort) return window.ort;
+        return new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js';
+            script.onload = () => resolve(window.ort);
+            script.onerror = () => reject(new Error('Failed to load ONNX Runtime Web'));
+            document.head.appendChild(script);
+        });
+    }
+    try {
+        return await import('onnxruntime-node');
+    } catch (e) {
+        throw new Error("ONNX Runtime is not available.");
+    }
+}
+
 async function initializeSpace(seed, sizeMb) {
     const db = await openDb();
     const transaction = db.transaction("blocks", "readwrite");
@@ -491,8 +529,8 @@ async function solveUsefulWorkTask(task) {
                     const i = Math.floor(secureRandom() * numFacilities);
                     const moveX = (secureRandom() - 0.5) * (bounds.maxX - bounds.minX) * 0.1;
                     const moveY = (secureRandom() - 0.5) * (bounds.maxY - bounds.minY) * 0.1;
-                    newFacilities[i].x = Math.max(bounds.minX, min(bounds.maxX, newFacilities[i].x + moveX));
-                    newFacilities[i].y = Math.max(bounds.minY, min(bounds.maxY, newFacilities[i].y + moveY));
+                        newFacilities[i].x = Math.max(bounds.minX, Math.min(bounds.maxX, newFacilities[i].x + moveX));
+                        newFacilities[i].y = Math.max(bounds.minY, Math.min(bounds.maxY, newFacilities[i].y + moveY));
                     return newFacilities;
                 };
                 const initialSolution = task.initialSolution || Array.from({ length: numFacilities }, () => ({
@@ -555,6 +593,94 @@ async function solveUsefulWorkTask(task) {
                 throw new Error(`Solver '${task.solverName}' not found on client.`);
             }
             return solverFunction(task.payload, { generations: task.generations, initialFront: task.initialFront });
+        }
+
+        case 'pytorch_onnx_learning': {
+            const { weights, payload, modelPath } = task;
+            const inputs = payload.inputs || [];
+            const labels = payload.labels || [];
+
+            try {
+                const ort = await loadOnnxRuntime();
+                const session = await ort.InferenceSession.create(modelPath);
+                const inputName = session.inputNames[0];
+                const outputName = session.outputNames[0];
+
+                const dims = [inputs.length, inputs[0].length];
+                const inputTensor = new ort.Tensor('float32', Float32Array.from(inputs.flat()), dims);
+                const results = await session.run({ [inputName]: inputTensor });
+                const outputTensor = results[outputName];
+                const predictions = Array.from(outputTensor.data);
+
+                const gradients = new Array(weights.length).fill(0);
+                for (let i = 0; i < inputs.length; i++) {
+                    const x = inputs[i];
+                    const y = labels[i];
+                    const pred = predictions[i];
+                    const error = pred - y;
+                    for (let j = 0; j < weights.length; j++) {
+                        gradients[j] += error * x[j] / inputs.length;
+                    }
+                }
+                return { gradients, predictions };
+            } catch (err) {
+                console.warn('[Useful Work Solver] Real ONNX loading failed, using fallback simulation:', err);
+                const gradients = new Array(weights.length).fill(0);
+                for (let i = 0; i < inputs.length; i++) {
+                    const x = inputs[i];
+                    const y = labels[i];
+                    let pred = 0;
+                    for (let j = 0; j < weights.length; j++) {
+                        pred += x[j] * weights[j];
+                    }
+                    const error = pred - y;
+                    for (let j = 0; j < weights.length; j++) {
+                        gradients[j] += error * x[j] / inputs.length;
+                    }
+                }
+                return { gradients };
+            }
+        }
+
+        case 'tfjs_learning': {
+            const { weights, payload, modelPath } = task;
+            const inputs = payload.inputs || [];
+            const labels = payload.labels || [];
+            try {
+                const tf = await loadTfjs();
+                const model = await tf.loadLayersModel(modelPath);
+                
+                const xs = tf.tensor2d(inputs);
+                const ys = tf.tensor2d(labels);
+                
+                const trainableVars = model.trainableWeights.map(w => w.read());
+                const lossFn = () => {
+                    const preds = model.predict(xs);
+                    return tf.losses.meanSquaredError(ys, preds);
+                };
+                
+                const gFn = tf.grad(lossFn);
+                const grads = gFn(trainableVars);
+                
+                const flatGradients = [];
+                const arr = await grads.array();
+                flatGradients.push(...arr.flat());
+                
+                tf.dispose([xs, ys, ...grads]);
+                return { gradients: flatGradients };
+            } catch (err) {
+                console.warn('[Useful Work Solver] Real TFJS loading failed, using fallback simulation:', err);
+                const gradients = new Array(weights.length).fill(0);
+                for (let i = 0; i < inputs.length; i++) {
+                    const x = inputs[i];
+                    const y = labels[i][0] !== undefined ? labels[i][0] : labels[i];
+                    let pred = 0;
+                    for (let j = 0; j < weights.length; j++) pred += x[j] * weights[j];
+                    const error = pred - y;
+                    for (let j = 0; j < weights.length; j++) gradients[j] += error * x[j] / inputs.length;
+                }
+                return { gradients };
+            }
         }
 
         default:

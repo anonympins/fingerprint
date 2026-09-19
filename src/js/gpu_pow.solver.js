@@ -156,7 +156,7 @@ export class GpuPowSolver {
 
         const inputData = new Float32Array(64);
         for (let i = 0; i < 64; i++) {
-            inputData[i] = seed + (i * 0.015);
+            inputData[i] = (seed + (i * 0.015)) % 1;
         }
 
         const gpuBuffer = device.createBuffer({
@@ -210,7 +210,8 @@ export class GpuPowSolver {
             uniform int uIterations;
             void main() {
                 float index = gl_FragCoord.x + (gl_FragCoord.y * 8.0);
-                float x = uSeed + (index * 0.015);
+            float x = mod(uSeed + (index * 0.015), 1.0);
+            float x = mod(uSeed + (index * 0.015), 1.0);
                 float r = 3.9999;
                 for(int i = 0; i < uIterations; i++) {
                     x = r * x * (1.0 - x);

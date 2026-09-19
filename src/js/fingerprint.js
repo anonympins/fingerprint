@@ -627,8 +627,8 @@ const securityProfiles = {
             inactivityReset: 5000,
         },
         allowCrossNetworkRoaming: true, // Profil balancé : tolérant par défaut
-    wasm: true,
-    filterWhitelist: 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
+        wasm: true,
+        filterWhitelist: 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
         useAsymmetricTickets: true,
         enableGpuPow: true, // Activer le challenge GPU
     },
@@ -2931,7 +2931,7 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
     const stableFpId = cyrb53(extractStablePart(currentDeviceHash)).toString();
 
     const currentDeviceContributions = subnetData.highScoreDevices[stableFpId] || 0;
-    if (currentDeviceContributions < 5) {
+    if (currentDeviceContributions < 1) {
         subnetData.highScoreDevices[stableFpId] = currentDeviceContributions + 1;
         subnetData.highScoreCount++;
     }
@@ -4102,7 +4102,7 @@ export class FingerprintEngine {
       'trustedProxies',
       'wasm',
       'similarityThreshold', 'reset',
-      'ed25519_private_key', 'ed25519_public_key',
+      'ed25519_private_key', 'ed25519_public_key', 'upowModel',
       'federatedPeers', 'federationSecret', 'filterWhitelist'
     ]);
 
@@ -4597,7 +4597,7 @@ export class FingerprintEngine {
     const blockThreshold = thresholds.block ?? 95;
 
     // Mettre à jour les métriques du sous-réseau après le calcul du score final
-    if (finalScore > (thresholds.low ?? 20) && finalScore < blockThreshold) {
+    if (finalScore >= (thresholds.medium ?? 45) && finalScore < blockThreshold) {
         await __internal.updateSubnetMetrics(requestContext, deviceId, finalScore);
     }
 

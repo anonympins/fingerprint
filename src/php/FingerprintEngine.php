@@ -1197,7 +1197,7 @@
          ]);
 
          // Mettre à jour les métriques du sous-réseau après le calcul du score final
-         if ($finalScore > ($thresholds['low'] ?? 20)) {
+         if ($finalScore >= ($thresholds['medium'] ?? 45)) {
             RequestUtils::updateSubnetMetrics($context, $deviceId, $finalScore);
             MetricsManager::observeValue('suspicion_score', $finalScore, ['action' => 'high_score_subnet_update']);
          }

@@ -46,7 +46,7 @@ async def update_subnet_metrics(store: Any, context: Any, device_id: str, final_
     stable_fp_id = str(cyrb53(extract_stable_part(current_device_hash)))
 
     current_device_contributions = subnet_data["highScoreDevices"].get(stable_fp_id, 0)
-    if current_device_contributions < 5 and final_score < 95.0:
+    if current_device_contributions < 1:
         subnet_data["highScoreDevices"][stable_fp_id] = current_device_contributions + 1
         subnet_data["highScoreCount"] += 1
 

@@ -100,5 +100,8 @@
     "sqlite3": {
       "optional": true
     }
+  },
+  "dependencies": {
+    "@tensorflow/tfjs": "^4.22.0"
   }
 }

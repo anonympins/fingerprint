@@ -65,7 +65,7 @@ class ChallengeUtils
             if ($idx < 0 || $idx >= 64) {
                 return false;
             }
-            $x = self::fround($numericSeed + $idx * 0.015);
+            $x = self::fround(fmod($numericSeed + $idx * 0.015, 1.0));
             $rFloat = self::fround($r);
             for ($i = 0; $i < $iterations; $i++) {
                 $x = self::fround($rFloat * $x * self::fround(1.0 - $x));

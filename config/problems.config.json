@@ -188,5 +188,39 @@
       ],
       "lastUpdate": null
     }
+  },
+  {
+    "id": "pytorch_onnx_self_learning",
+    "workUnit": {
+      "type": "pytorch_onnx_learning",
+      "modelPath": "/assets/models/autotuner_classifier.onnx",
+      "scalingFactor": 1.2
+    },
+    "payload": {
+      "learningRate": 0.01,
+      "inputs": [[1.0, 0.5, 0.0, 1.2], [0.0, 1.0, -0.5, 0.8]],
+      "labels": [1, 0]
+    },
+    "state": {
+      "weights": [0.1, -0.2, 0.8, 0.5],
+      "lastUpdate": null
+    }
+  },
+  {
+    "id": "tfjs_self_learning",
+    "workUnit": {
+      "type": "tfjs_learning",
+      "modelPath": "/assets/models/autotuner_tfjs/model.json",
+      "scalingFactor": 1.2
+    },
+    "payload": {
+      "learningRate": 0.01,
+      "inputs": [[1.0, 0.5, 0.0, 1.2], [0.0, 1.0, -0.5, 0.8]],
+      "labels": [[1], [0]]
+    },
+    "state": {
+      "weights": [0.1, -0.2, 0.8, 0.5],
+      "lastUpdate": null
+    }
   }
 ]

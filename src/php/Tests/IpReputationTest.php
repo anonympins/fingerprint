@@ -155,7 +155,7 @@ class IpReputationTest extends TestCase
         $this->assertEquals(0.0, $score['subnetScore']);
 
         for ($i = 1; $i <= 12; $i++) {
-            RequestUtils::updateSubnetMetrics($context, "device-{$i}", 30.0);
+            RequestUtils::updateSubnetMetrics($context, "device-{$i}", 50.0);
         }
 
         $scoreWithHistory = RequestUtils::getSubnetScore($context, 'device-1');

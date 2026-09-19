@@ -222,7 +222,7 @@ void generate_gpu_pow_trajectory(const std::string& seed, int iterations, float*
     float numeric_seed = hash_seed_to_float(seed);
     float r = 3.9999f;
     for (int idx = 0; idx < 64; idx++) {
-        float x = numeric_seed + idx * 0.015f;
+        float x = std::fmod(numeric_seed + idx * 0.015f, 1.0f);
         for (int i = 0; i < iterations; i++) {
             x = r * x * (1.0f - x);
         }

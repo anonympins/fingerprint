@@ -633,8 +633,10 @@ public class FingerprintEngine {
         }
 
         // Update subnet metrics
-        int lowThreshold = ((Number) thresholds.getOrDefault("low", 20)).intValue();
-        if (finalScore > lowThreshold) {
+        int mediumThreshold = ((Number) thresholds.getOrDefault("medium", 45)).intValue();
+        int highThreshold = ((Number) thresholds.getOrDefault("high", 75)).intValue();
+        int blockThreshold = ((Number) thresholds.getOrDefault("block", 95)).intValue();
+        if (finalScore >= mediumThreshold && finalScore < blockThreshold) {
             RequestUtils.updateSubnetMetrics(store, context, deviceId, finalScore);
         }
 
@@ -649,9 +651,6 @@ public class FingerprintEngine {
         response.put("score", finalScore);
         response.put("vector", suspicionVector);
 
-        int blockThreshold = ((Number) thresholds.getOrDefault("block", 95)).intValue();
-        int highThreshold = ((Number) thresholds.getOrDefault("high", 75)).intValue();
-        int mediumThreshold = ((Number) thresholds.getOrDefault("medium", 45)).intValue();
 
         String action = "next";
         if (finalScore >= blockThreshold) {
