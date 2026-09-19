@@ -1820,52 +1820,75 @@ class RequestUtils
     }
 
     /**
-     * Détecte les anomalies de flux QUIC/HTTP3 par rapport au User-Agent.
+     * Détecte les anomalies de protocole (HTTP/2 et QUIC/HTTP3) par rapport au User-Agent.
      * @param RequestContext $context
-     * @return array{'quicAnomalyScore': float}
+     * @return array{'protocolAnomalyScore': float}
      */
-    public static function getQuicAnomalyScore(RequestContext $context): array
+    public static function getProtocolAnomalyScore(RequestContext $context): array
     {
-        $quicFp = $context->getHeader('x-quic-fp') ?? $context->quicFingerprint ?? null;
-        if (empty($quicFp) || !is_string($quicFp)) {
-            return ['quicAnomalyScore' => 0.0];
-        }
-
-        $parts = explode(';', $quicFp);
-        if (count($parts) < 2) {
-            return ['quicAnomalyScore' => 0.0];
-        }
-
-        $params = [];
-        foreach (explode(',', $parts[1]) as $p) {
-            $kv = explode('=', $p, 2);
-            if (count($kv) === 2) {
-                $params[$kv[0]] = $kv[1];
-            }
-        }
-        $priorityOrder = $parts[2] ?? '';
+        $http2Anomaly = 0.0;
+        $quicAnomaly = 0.0;
 
         $ua = $context->getHeader('user-agent') ?? '';
         $uaParts = self::parseUserAgent($ua);
         $browser = $uaParts['browser'] ?? null;
 
-        if (empty($browser)) {
-            return ['quicAnomalyScore' => 0.0];
+        // HTTP/2 Anomaly logic
+        $h2Fp = $context->getHeader('x-http2-fingerprint') ?? $context->http2Fingerprint ?? null;
+        if ($h2Fp && is_string($h2Fp) && $browser) {
+            $parts = explode('|', $h2Fp);
+            if (count($parts) >= 4) {
+                $connWindow = (int)$parts[1];
+                $headerOrder = $parts[3];
+                $isChromium = str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge');
+                $isFirefox = str_starts_with($browser, 'Firefox');
+                $isSafari = str_starts_with($browser, 'Safari');
+
+                if ($isChromium) {
+                    if ($headerOrder && $headerOrder !== 'm,a,s,p') $http2Anomaly += 60.0;
+                    if ($connWindow === 65535 || $connWindow === 65536) $http2Anomaly += 40.0;
+                } elseif ($isFirefox) {
+                    if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
+                } elseif ($isSafari) {
+                    if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
+                }
+            }
         }
 
-        $anomaly = 0.0;
-        if (str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge')) {
-            $maxData = isset($params['1']) ? (int)$params['1'] : 0;
-            $maxStreams = isset($params['4']) ? (int)$params['4'] : 0;
-            if ($maxData > 0 && $maxData < 1048576) $anomaly += 40.0;
-            if ($maxStreams > 0 && $maxStreams !== 100) $anomaly += 30.0;
-            if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $anomaly += 30.0;
-        } elseif (str_starts_with($browser, 'Firefox')) {
-            $maxData = isset($params['1']) ? (int)$params['1'] : 0;
-            if ($maxData > 0 && $maxData > 5000000) $anomaly += 40.0;
+        // QUIC Anomaly logic
+        $quicFp = $context->getHeader('x-quic-fp') ?? $context->quicFingerprint ?? null;
+        if ($quicFp && is_string($quicFp) && $browser) {
+            $parts = explode(';', $quicFp);
+            if (count($parts) >= 2) {
+                $params = [];
+                foreach (explode(',', $parts[1]) as $p) {
+                    $kv = explode('=', $p, 2);
+                    if (count($kv) === 2) {
+                        $params[$kv[0]] = $kv[1];
+                    }
+                }
+                $priorityOrder = $parts[2] ?? '';
+
+                if (str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge')) {
+                    $maxData = isset($params['1']) ? (int)$params['1'] : 0;
+                    $maxStreams = isset($params['4']) ? (int)$params['4'] : 0;
+                    if ($maxData > 0 && $maxData < 1048576) $quicAnomaly += 40.0;
+                    if ($maxStreams > 0 && $maxStreams !== 100) $quicAnomaly += 30.0;
+                    if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $quicAnomaly += 30.0;
+                } elseif (str_starts_with($browser, 'Firefox')) {
+                    $maxData = isset($params['1']) ? (int)$params['1'] : 0;
+                    if ($maxData > 0 && $maxData > 5000000) $quicAnomaly += 40.0;
+                }
+            }
         }
 
-        return ['quicAnomalyScore' => max(0.0, min(100.0, $anomaly))];
+        return [
+            'protocolAnomalyScore' => max(
+                0.0,
+                min(100.0, $http2Anomaly),
+                min(100.0, $quicAnomaly)
+            )
+        ];
     }
 
     /**

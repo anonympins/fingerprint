@@ -863,7 +863,7 @@ public class FingerprintEngine {
         double botnetClusterScore = RequestUtils.getBotnetClusterScore(store, context, stableFpHash).getOrDefault("botnetClusterScore", 0.0);
 
         double tcpAnomalyScore = RequestUtils.getTcpAnomalyScore(context).getOrDefault("tcpAnomalyScore", 0.0);
-        double quicAnomalyScore = RequestUtils.getQuicAnomalyScore(context).getOrDefault("quicAnomalyScore", 0.0);
+        double protocolAnomalyScore = RequestUtils.getProtocolAnomalyScore(context).getOrDefault("protocolAnomalyScore", 0.0);
         double renderingAnomalyScore = RequestUtils.getRenderingAnomalyScore(context).getOrDefault("renderingAnomalyScore", 0.0);
         double ipReputationScore = RequestUtils.getIpReputationScore(store, context.clientIp);
         double threatIntelScore = RequestUtils.getThreatIntelScore(store, context.zkpY).getOrDefault("threatIntelScore", 0.0);
@@ -885,7 +885,7 @@ public class FingerprintEngine {
         suspicionVector.put("subnetScore", subnetScore);
         suspicionVector.put("botnetClusterScore", botnetClusterScore);
         suspicionVector.put("tcpAnomalyScore", tcpAnomalyScore);
-        suspicionVector.put("quicAnomalyScore", quicAnomalyScore);
+        suspicionVector.put("protocolAnomalyScore", protocolAnomalyScore);
         suspicionVector.put("renderingAnomalyScore", renderingAnomalyScore);
         suspicionVector.put("ipReputationScore", ipReputationScore);
 

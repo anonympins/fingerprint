@@ -10,15 +10,15 @@ use PHPUnit\Framework\TestCase;
 
 class QuicFingerprintTest extends TestCase
 {
-    public function testGetQuicAnomalyScoreReturnsZeroIfNoFp(): void
+    public function testGetProtocolAnomalyScoreReturnsZeroIfNoFp(): void
     {
         $context = $this->createMock(RequestContext::class);
         $context->method('getHeader')->willReturn(null);
-        $res = RequestUtils::getQuicAnomalyScore($context);
-        $this->assertEquals(0.0, $res['quicAnomalyScore']);
+        $res = RequestUtils::getProtocolAnomalyScore($context);
+        $this->assertEquals(0.0, $res['protocolAnomalyScore']);
     }
 
-    public function testGetQuicAnomalyScoreDetectsSpoofedChrome(): void
+    public function testGetProtocolAnomalyScoreDetectsSpoofedChrome(): void
     {
         $context = $this->createMock(RequestContext::class);
         $context->method('getHeader')->willReturnCallback(function($name) {
@@ -31,11 +31,11 @@ class QuicFingerprintTest extends TestCase
             return null;
         });
 
-        $res = RequestUtils::getQuicAnomalyScore($context);
-        $this->assertEquals(100.0, $res['quicAnomalyScore']);
+        $res = RequestUtils::getProtocolAnomalyScore($context);
+        $this->assertEquals(100.0, $res['protocolAnomalyScore']);
     }
 
-    public function testGetQuicAnomalyScoreAllowsLegitChrome(): void
+    public function testGetProtocolAnomalyScoreAllowsLegitChrome(): void
     {
         $context = $this->createMock(RequestContext::class);
         $context->method('getHeader')->willReturnCallback(function($name) {
@@ -48,7 +48,7 @@ class QuicFingerprintTest extends TestCase
             return null;
         });
 
-        $res = RequestUtils::getQuicAnomalyScore($context);
-        $this->assertEquals(0.0, $res['quicAnomalyScore']);
+        $res = RequestUtils::getProtocolAnomalyScore($context);
+        $this->assertEquals(0.0, $res['protocolAnomalyScore']);
     }
 }

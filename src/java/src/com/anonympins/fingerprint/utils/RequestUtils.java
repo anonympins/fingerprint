@@ -1054,6 +1054,110 @@ public class RequestUtils {
         return result;
     }
 
+    public static Map<String, Double> getProtocolAnomalyScore(RequestContext context) {
+        Map<String, Double> result = new HashMap<>();
+        double http2Anomaly = 0.0;
+        double quicAnomaly = 0.0;
+
+        String ua = context.getHeader("user-agent");
+        if (ua == null) {
+            ua = "";
+        }
+        Map<String, String> uaParts = parseUserAgent(ua);
+        String browser = uaParts.get("browser");
+
+        if (browser != null && !browser.isEmpty()) {
+            // HTTP/2 Anomaly Logic
+            String h2Fp = context.getHeader("x-http2-fingerprint");
+            if (h2Fp == null) {
+                h2Fp = context.http2Fingerprint;
+            }
+            if (h2Fp != null && !h2Fp.isEmpty()) {
+                String[] parts = h2Fp.split("\\|");
+                if (parts.length >= 4) {
+                    try {
+                        int connWindow = Integer.parseInt(parts[1]);
+                        String headerOrder = parts[3];
+                        boolean isChromium = browser.startsWith("Chrome") || browser.startsWith("Edge");
+                        boolean isFirefox = browser.startsWith("Firefox");
+                        boolean isSafari = browser.startsWith("Safari");
+
+                        if (isChromium) {
+                            if (headerOrder != null && !headerOrder.equals("m,a,s,p")) {
+                                http2Anomaly += 60.0;
+                            }
+                            if (connWindow == 65535 || connWindow == 65536) {
+                                http2Anomaly += 40.0;
+                            }
+                        } else if (isFirefox) {
+                            if (headerOrder != null && !headerOrder.equals("m,s,p,a")) {
+                                http2Anomaly += 60.0;
+                            }
+                        } else if (isSafari) {
+                            if (headerOrder != null && !headerOrder.equals("m,s,p,a")) {
+                                http2Anomaly += 60.0;
+                            }
+                        }
+                    } catch (NumberFormatException e) {
+                        // ignore
+                    }
+                }
+            }
+
+            // QUIC Anomaly Logic
+            String quicFp = context.getHeader("x-quic-fp");
+            if (quicFp == null) {
+                quicFp = context.quicFingerprint;
+            }
+            if (quicFp != null && !quicFp.isEmpty()) {
+                String[] parts = quicFp.split(";");
+                if (parts.length >= 2) {
+                    Map<String, String> params = new HashMap<>();
+                    for (String p : parts[1].split(",")) {
+                        String[] kv = p.split("=", 2);
+                        if (kv.length == 2) {
+                            params.put(kv[0], kv[1]);
+                        }
+                    }
+                    String priorityOrder = parts.length > 2 ? parts[2] : "";
+
+                    boolean isChromium = browser.startsWith("Chrome") || browser.startsWith("Edge");
+                    boolean isFirefox = browser.startsWith("Firefox");
+
+                    if (isChromium) {
+                        try {
+                            int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
+                            int maxStreams = params.containsKey("4") ? Integer.parseInt(params.get("4")) : 0;
+                            if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
+                            if (maxStreams > 0 && maxStreams != 100) quicAnomaly += 30.0;
+                            if (priorityOrder != null && !priorityOrder.isEmpty() && !priorityOrder.contains("u=")) quicAnomaly += 30.0;
+                        } catch (NumberFormatException e) {
+                            // ignore
+                        }
+                    } else if (isFirefox) {
+                        try {
+                            int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
+                            if (maxData > 0 && maxData > 5000000) quicAnomaly += 40.0;
+                        } catch (NumberFormatException e) {
+                            // ignore
+                        }
+                    }
+                }
+            }
+        }
+
+        double score = Math.max(
+            0.0,
+            Math.max(
+                Math.min(100.0, http2Anomaly),
+                Math.min(100.0, quicAnomaly)
+            )
+        );
+
+        result.put("protocolAnomalyScore", score);
+        return result;
+    }
+
     public static Map<String, Double> getRenderingAnomalyScore(RequestContext context) {
         Map<String, Double> result = new HashMap<>();
         result.put("renderingAnomalyScore", 0.0);
