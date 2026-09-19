@@ -385,9 +385,16 @@ class ProblemManager {
                 case 'genetic_algorithm_generations':
                     // VÉRIFICATION PAR ÉCHANTILLONNAGE pour équilibrer sécurité et performance.
                     const fitnessFunction = FunctionRegistry['portfolio.calculateMetrics']; // Ou une fonction plus générique
-                    if (!fitnessFunction || !Array.isArray(solutionData.population) || solutionData.population.length === 0) {
-                        console.error(`[ProblemManager] Impossible de vérifier la population pour ${problemId}.`);
-                        return; // Ne rien faire si la vérification est impossible.
+                    if (!solutionData || !Array.isArray(solutionData.population)) {
+                        console.error(`[ProblemManager] Propriété 'population' manquante ou invalide dans solutionData pour ${problemId}.`);
+                        return;
+                    }
+                    if (solutionData.population.length === 0) {
+                        return; // Retour gracieux si la population est vide (ex: fallback de redirection)
+                    }
+                    if (!fitnessFunction) {
+                        console.error(`[ProblemManager] Impossible de vérifier la population pour ${problemId} (fonction de fitness manquante).`);
+                        return;
                     }
 
             if (solutionData.population.length > 150) {

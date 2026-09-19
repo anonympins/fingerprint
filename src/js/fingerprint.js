@@ -5210,8 +5210,15 @@ export class FingerprintEngine {
             if (isApi) {
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
+                const taskType = challengePayload.challenge.usefulWorkTask.task.type;
+                let dummyResult = { solution: [], energy: 0 };
+                if (taskType === 'multi_objective_genetic_algorithm') {
+                    dummyResult = { paretoFront: [] };
+                } else if (taskType === 'genetic_algorithm_generations') {
+                    dummyResult = { population: [] };
+                }
                 const html = `<html><body><script>
-                    window.location.href = "${path}?pow_type=useful_work_task&pow_nonce=${nonce}&pow_problem_id=${challengePayload.challenge.usefulWorkTask.problemId}&pow_solution_work_result=" + encodeURIComponent(JSON.stringify({ solution: [], energy: 0 }));
+                    window.location.href = "${path}?pow_type=useful_work_task&pow_nonce=${nonce}&pow_problem_id=${challengePayload.challenge.usefulWorkTask.problemId}&pow_solution_work_result=" + encodeURIComponent(JSON.stringify(${JSON.stringify(dummyResult)}));
                 </script></body></html>`;
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: html };
             }
