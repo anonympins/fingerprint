@@ -1,5 +1,6 @@
 package com.anonympins.fingerprint;
 
+import com.anonympins.fingerprint.utils.RequestUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -508,5 +509,46 @@ public class FingerprintEngineTest {
             response.put("reason", isFailOpen ? "fail-safe backup" : "security fallback");
             return response;
         }
+    }
+
+
+    @Test
+    public void testNoFingerprint() {
+        RequestContext context = new RequestContext("127.0.0.1", "/", new HashMap<>(), null, null, null, "1.1");
+        Map<String, Double> score = RequestUtils.getProtocolAnomalyScore(context);
+        assertEquals(0.0, score.getOrDefault("protocolAnomalyScore", 0.0));
+    }
+
+    @Test
+    public void testSpoofedChromeQuic() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers.put("x-quic-fp", "1;1=65536,4=50;i=0");
+
+        RequestContext context = new RequestContext("127.0.0.1", "/", headers, null, null, null, "2.0");
+        Map<String, Double> score = RequestUtils.getProtocolAnomalyScore(context);
+        assertEquals(100.0, score.getOrDefault("protocolAnomalyScore", 0.0));
+    }
+
+    @Test
+    public void testLegitChromeQuic() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers.put("x-quic-fp", "1;1=1572864,4=100;u=2,i");
+
+        RequestContext context = new RequestContext("127.0.0.1", "/", headers, null, null, null, "2.0");
+        Map<String, Double> score = RequestUtils.getProtocolAnomalyScore(context);
+        assertEquals(0.0, score.getOrDefault("protocolAnomalyScore", 0.0));
+    }
+
+    @Test
+    public void testChromiumH2HeaderAnomaly() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers.put("x-http2-fingerprint", "1|65535|0|invalid_order");
+
+        RequestContext context = new RequestContext("127.0.0.1", "/", headers, null, null, null, "2.0");
+        Map<String, Double> score = RequestUtils.getProtocolAnomalyScore(context);
+        assertEquals(100.0, score.getOrDefault("protocolAnomalyScore", 0.0));
     }
 }

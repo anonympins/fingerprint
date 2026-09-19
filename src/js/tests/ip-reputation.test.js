@@ -134,7 +134,7 @@ describe('IP Reputation Local System (Node.js)', () => {
         let score = await __internal.getSubnetScore(mockContext);
         expect(score.subnetScore).toBe(0);
         for (let i = 1; i <= 12; i++) {
-            await __internal.updateSubnetMetrics(mockContext, `dev-${i}`, 40);
+            await __internal.updateSubnetMetrics(mockContext, `dev-${i}`, 50);
         }
         score = await __internal.getSubnetScore(mockContext);
         expect(score.subnetScore).toBeGreaterThan(0);

@@ -40,8 +40,8 @@ class SecurityProfiles
                 'clickVarianceScore' => 0.6, // Poids pour la variance des clics
                 'subnetScore' => 0.5, // Pénalise les sous-réseaux IP avec une activité suspecte agrégée
                 'botnetClusterScore' => 0.6, // NOUVEAU: Poids pour le clustering botnet
-                'tcpAnomalyScore' => 0.8, // NEW: Anomalie de pile TCP/IP
-                'quicAnomalyScore' => 0.8, // NEW: Anomalie QUIC
+                'tcpAnomalyScore' => 0.8,
+                'protocolAnomalyScore' => 0.8, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 0.8, // NEW: Anomalie de rendu
                 'ipReputationScore' => 0.5, // NOUVEAU: Poids pour la réputation IP
             ],
@@ -90,7 +90,7 @@ class SecurityProfiles
                 'subnetScore' => 0.7, // Poids plus élevé en mode strict
                 'botnetClusterScore' => 0.8, // NOUVEAU: Poids pour le clustering botnet
                 'tcpAnomalyScore' => 1.0, // NEW: Anomalie de pile TCP/IP
-                'quicAnomalyScore' => 1.0, // NEW: Anomalie QUIC
+                'protocolAnomalyScore' => 1.0, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 1.0, // NEW: Anomalie de rendu
 
             ],
@@ -139,7 +139,7 @@ class SecurityProfiles
                 'subnetScore' => 0.8, // Très important pour les API pour détecter les botnets
                 'botnetClusterScore' => 0.7, // NOUVEAU: Poids pour le clustering botnet
                 'tcpAnomalyScore' => 0.8, // NEW: Anomalie de pile TCP/IP
-                'quicAnomalyScore' => 0.8, // NEW: Anomalie QUIC
+                'protocolAnomalyScore' => 0.8, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
 
             ],
             'thresholds' => ['low' => 25, 'medium' => 50, 'high' => 80, 'block' => 95],
@@ -190,7 +190,7 @@ class SecurityProfiles
                 'ipReputationScore' => 0.3, // NOUVEAU: Poids pour la réputation IP
                 'botnetClusterScore' => 0.5, // NOUVEAU: Poids pour le clustering botnet
                 'tcpAnomalyScore' => 0.5, // NEW: Anomalie de pile TCP/IP
-                'quicAnomalyScore' => 0.5, // NEW: Anomalie QUIC
+                'protocolAnomalyScore' => 0.5, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 0.5, // NEW: Anomalie de rendu
 
             ],
@@ -240,7 +240,7 @@ class SecurityProfiles
                 'subnetScore' => 0.9, // Crucial contre les attaques de scalping distribuées
                 'botnetClusterScore' => 0.9, // NOUVEAU: Poids pour le clustering botnet
                 'tcpAnomalyScore' => 0.9, // NEW: Anomalie de pile TCP/IP
-                'quicAnomalyScore' => 0.9, // NEW: Anomalie QUIC
+                'protocolAnomalyScore' => 0.9, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 0.9, // NEW: Anomalie de rendu
 
             ],

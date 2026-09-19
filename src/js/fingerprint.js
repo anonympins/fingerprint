@@ -9,6 +9,7 @@ import {DynamicWasmGenerator} from "./dynamic-wasm.js";
 import {writeFileSync, readFileSync, existsSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
+import {GpuPowSolver} from "./gpu_pow.solver.js";
 import {
     verifyZkpProof,
     sanitizeRedirectPath,
@@ -354,46 +355,75 @@ export function generateStatelessTicket(payload) {
   return `${base64UrlEncode(iv)}.${base64UrlEncode(encrypted)}.${base64UrlEncode(signature)}`;
 }
 /**
- * Détecte les anomalies de flux QUIC/HTTP3 par rapport au User-Agent.
+ * Détecte les anomalies de protocole (HTTP/2 et QUIC/HTTP3) par rapport au User-Agent.
  * @private
  * @param {object} context - Le contexte de la requête.
- * @returns {{quicAnomalyScore: number}}
+ * @returns {{protocolAnomalyScore: number}}
  */
-function getQuicAnomalyScore(context) {
-    const quicFp = context.headers?.['x-quic-fp'] || context.quicFingerprint || null;
-    if (!quicFp || typeof quicFp !== 'string') {
-        return { quicAnomalyScore: 0.0 };
-    }
-
-    const parts = quicFp.split(';');
-    if (parts.length < 2) return { quicAnomalyScore: 0.0 };
-
-    const params = {};
-    parts[1].split(',').forEach(p => {
-        const kv = p.split('=');
-        if (kv.length === 2) params[kv[0]] = kv[1];
-    });
-    const priorityOrder = parts[2] || '';
+function getProtocolAnomalyScore(context) {
+    let http2Anomaly = 0.0;
+    let quicAnomaly = 0.0;
 
     const ua = context.headers?.['user-agent'] || '';
     const uaParts = parseUserAgent(ua);
     const browser = uaParts.browser;
 
-    if (!browser) return { quicAnomalyScore: 0.0 };
+    if (browser) {
+        // HTTP/2 Anomaly Logic
+        const h2Fp = context.headers?.['x-http2-fingerprint'] || context.http2Fingerprint || null;
+        if (h2Fp && typeof h2Fp === 'string') {
+            const parts = h2Fp.split('|');
+            if (parts.length >= 4) {
+                const connWindow = parseInt(parts[1], 10);
+                const headerOrder = parts[3];
+                const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
+                const isFirefox = browser.startsWith('Firefox');
+                const isSafari = browser.startsWith('Safari');
 
-    let anomaly = 0.0;
-    if (browser.startsWith('Chrome') || browser.startsWith('Edge')) {
-        const maxData = parseInt(params['1'] || '0', 10);
-        const maxStreams = parseInt(params['4'] || '0', 10);
-        if (maxData > 0 && maxData < 1048576) anomaly += 40.0;
-        if (maxStreams > 0 && maxStreams !== 100) anomaly += 30.0;
-        if (priorityOrder && !priorityOrder.includes('u=')) anomaly += 30.0;
-    } else if (browser.startsWith('Firefox')) {
-        const maxData = parseInt(params['1'] || '0', 10);
-        if (maxData > 0 && maxData > 5000000) anomaly += 40.0;
+                if (isChromium) {
+                    if (headerOrder && headerOrder !== 'm,a,s,p') http2Anomaly += 60.0;
+                    if (connWindow === 65535 || connWindow === 65536) http2Anomaly += 40.0;
+                } else if (isFirefox) {
+                    if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
+                } else if (isSafari) {
+                    if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
+                }
+            }
+        }
+
+        // QUIC Anomaly Logic
+        const quicFp = context.headers?.['x-quic-fp'] || context.quicFingerprint || null;
+        if (quicFp && typeof quicFp === 'string') {
+            const parts = quicFp.split(';');
+            if (parts.length >= 2) {
+                const params = {};
+                parts[1].split(',').forEach(p => {
+                    const kv = p.split('=');
+                    if (kv.length === 2) params[kv[0]] = kv[1];
+                });
+                const priorityOrder = parts[2] || '';
+
+                if (browser.startsWith('Chrome') || browser.startsWith('Edge')) {
+                    const maxData = parseInt(params['1'] || '0', 10);
+                    const maxStreams = parseInt(params['4'] || '0', 10);
+                    if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
+                    if (maxStreams > 0 && maxStreams !== 100) quicAnomaly += 30.0;
+                    if (priorityOrder && !priorityOrder.includes('u=')) quicAnomaly += 30.0;
+                } else if (browser.startsWith('Firefox')) {
+                    const maxData = parseInt(params['1'] || '0', 10);
+                    if (maxData > 0 && maxData > 5000000) quicAnomaly += 40.0;
+                }
+            }
+        }
     }
 
-    return { quicAnomalyScore: Math.max(0.0, Math.min(100.0, anomaly)) };
+    return {
+        protocolAnomalyScore: Math.max(
+            0.0,
+            Math.min(100.0, http2Anomaly),
+            Math.min(100.0, quicAnomaly)
+        )
+    };
 }
 /**
  * Détecte les anomalies de rendu (V-Sync, FPS, gigue) à partir des métriques d'affichage.
@@ -523,6 +553,39 @@ async function checkChallengeRateLimit(clientIp) {
   return true;
 }
 
+/**
+ * Génère la page HTML de challenge GPU basée sur la trajectoire d'une carte logistique chaotique.
+ * @private
+ * @param {object} challengeDetails - Les détails du challenge.
+ * @returns {string}
+ */
+function generateGpuChallengePage(challengeDetails) {
+  const { nonce, iterations, path } = challengeDetails;
+  const safePath = sanitizeRedirectPath(path);
+  const solverCode = getPowSolverCode();
+  return `
+    <html><head><title>GPU Hardware Verification</title></head>
+    <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
+      <h1>Hardware Performance Check</h1>
+      <p>Please wait while we verify your graphics card's math precision to ensure you are a human...</p>
+      <div id="loader" style="margin:20px;">⚙️ Running parallel chaotic iterations...</div>
+      <script>${solverCode}</script>
+      <script type="module">
+        import { GpuPowSolver } from './gpu_pow.solver.js';
+        async function solve() {
+          const nonce = ${safeJsonStringify(nonce)};
+          const iterations = ${iterations};
+          try {
+            const result = await GpuPowSolver.solve(nonce, iterations);
+            window.location.href = ${safeJsonStringify(safePath)} + "?pow_type=gpu&pow_nonce=" + nonce + "&pow_solution=" + result.solution;
+          } catch(e) {
+            document.getElementById('loader').innerText = "GPU hardware acceleration is required to complete this verification.";
+          }
+        }
+        solve();
+      </script>
+    </body></html>`;
+}
 
 const securityProfiles = {
     /**
@@ -546,6 +609,7 @@ const securityProfiles = {
             botnetClusterScore: 0.6, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
             quicAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie QUIC
+            protocolAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
@@ -563,9 +627,10 @@ const securityProfiles = {
             inactivityReset: 5000,
         },
         allowCrossNetworkRoaming: true, // Profil balancé : tolérant par défaut
-    wasm: true,
-    filterWhitelist: 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
+        wasm: true,
+        filterWhitelist: 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
         useAsymmetricTickets: true,
+        enableGpuPow: true, // Activer le challenge GPU
     },
     /**
      * @summary **Strict Profile**
@@ -587,6 +652,7 @@ const securityProfiles = {
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.8, // NOUVEAU: Poids pour le clustering botnet
             renderingAnomalyScore: 1.0, // NOUVEAU: Poids pour l'anomalie de rendu
+            protocolAnomalyScore: 1.0, // NOUVEAU
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
@@ -607,6 +673,7 @@ const securityProfiles = {
     filterWhitelist: true, // Tout comportement d'attaque certain bypass immédiatement la liste blanche
     wasm: true,
         useAsymmetricTickets: true,
+        enableGpuPow: true,
     },
     /**
      * @summary **API Profile**
@@ -628,6 +695,7 @@ const securityProfiles = {
             ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.7, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
+            protocolAnomalyScore: 0.8,
             quicAnomalyScore: 0.8 // NOUVEAU: Poids pour l'anomalie QUIC
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
@@ -675,6 +743,7 @@ const securityProfiles = {
             ipReputationScore: 0.3, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.5, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.5, // NEW: Anomalie de pile TCP/IP
+            protocolAnomalyScore: 0.5,
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
         },
@@ -722,6 +791,7 @@ const securityProfiles = {
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.9, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.9, // NEW: Anomalie de pile TCP/IP
+            protocolAnomalyScore: 0.9,
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie de rendu,threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
         },
@@ -2298,6 +2368,7 @@ function getTimeInconsistencyScore(context, metrics, deviceData = null) {
 function getCrossLayerInconsistency(context) {
     try {
         const clientFpString = context.headers['x-device-fingerprint'];
+        const h2Fingerprint = context.headers['x-http2-fingerprint'] || context.http2Fingerprint || null;
         if (!clientFpString) return { crossLayerInconsistencyScore: 0 };
 
         const clientFpMap = new Map(clientFpString.split("|").map(part => part.split(":")));
@@ -2360,6 +2431,40 @@ function getCrossLayerInconsistency(context) {
                     score += 30;
                 }
             }
+        }
+
+        // 4. Incohérence des paramètres HTTP/2 (SETTINGS & WINDOW_UPDATE)
+        // Les bots de spoofing TLS oublient souvent de modifier la signature de la couche HTTP/2
+        if (h2Fingerprint && serverOsParts.browser) {
+            const claimedBrowser = serverOsParts.browser.split('/')[0];
+            
+            // Profils de paramètres HTTP/2 Settings attendus (Format standard type Akamai)
+            // Chrome :SETTINGS_HEADER_TABLE_SIZE=65536, SETTINGS_MAX_CONCURRENT_STREAMS=1000, etc.
+            const isChromium = ['Chrome', 'Edge'].includes(claimedBrowser);
+            const isFirefox = claimedBrowser === 'Firefox';
+            
+            if (isChromium) {
+                // Chrome envoie typiquement : "1:65536;3:1000;4:6291456;6:65536" ou similaire
+                const hasChromiumSettings = h2Fingerprint.includes('1:65536') && h2Fingerprint.includes('4:6291456');
+                const isGoDefaultH2 = h2Fingerprint.includes('3:100') && h2Fingerprint.includes('4:1048576'); // Signature Go net/http par défaut
+                
+                if (isGoDefaultH2) {
+                    score += 90; // Très forte suspicion d'un bot Go (tls-client) usurpant Chrome
+                } else if (!hasChromiumSettings) {
+                    score += 40; // Anomalie de configuration HTTP/2
+                }
+            } else if (isFirefox) {
+                // Firefox utilise des valeurs de fenêtres initiales et de paramètres différentes
+                const isPythonH2 = h2Fingerprint.includes('1:4096') && h2Fingerprint.includes('4:65536'); // Signature hyper-générique type Python hyper/h2
+                if (isPythonH2) {
+                    score += 90; // Bot Python usurpant Firefox
+                }
+            }
+        }
+
+        // 5. Corrélation stricte OS Réseau (TCP/IP) vs OS Applicatif (User-Agent)
+        if (context.tcpAnomalyScore && context.tcpAnomalyScore > 70) {
+            score += 40; // Augmente drastiquement la pénalité si l'OS réseau ne correspond pas à l'OS applicatif
         }
 
         return { crossLayerInconsistencyScore: Math.min(100, score) };
@@ -2792,6 +2897,58 @@ function getIpSubnet(ip, ipv4Prefix = 24, ipv6Prefix = 48) { // eslint-disable-l
 }
 
 /**
+ * Applies temporal decay (half-life of 30 minutes) to subnet metrics.
+ * @private
+ * @param {object} subnetData The subnet data.
+ * @param {number} now The current timestamp.
+ * @returns {object} The decayed subnet data.
+ */
+function decaySubnetData(subnetData, now) {
+    const inactivityMs = now - (subnetData.lastActivity || now);
+    const halfLives = Math.floor(inactivityMs / (30 * 60 * 1000));
+
+    if (halfLives > 0) {
+        const decay = Math.pow(2, halfLives);
+        subnetData.highScoreCount = Math.max(0, Math.floor((subnetData.highScoreCount || 0) / decay));
+
+        if (subnetData.highScoreDevices) {
+            for (const fpId in subnetData.highScoreDevices) {
+                const decayedVal = Math.floor(subnetData.highScoreDevices[fpId] / decay);
+                if (decayedVal <= 0) {
+                    delete subnetData.highScoreDevices[fpId];
+                } else {
+                    subnetData.highScoreDevices[fpId] = decayedVal;
+                }
+            }
+        }
+
+        if (subnetData.deviceIds) {
+            const newLen = Math.max(0, Math.floor(subnetData.deviceIds.length / decay));
+            subnetData.deviceIds = subnetData.deviceIds.slice(0, newLen);
+        }
+
+        if (subnetData.ips) {
+            const currentLen = subnetData.ips instanceof Set ? subnetData.ips.size : (subnetData.ips.length || 0);
+            const newLen = Math.max(0, Math.floor(currentLen / decay));
+            if (subnetData.ips instanceof Set) {
+                const arr = Array.from(subnetData.ips).slice(0, newLen);
+                subnetData.ips = new Set(arr);
+            } else {
+                subnetData.ips = subnetData.ips.slice(0, newLen);
+            }
+        }
+
+        if (subnetData.uas) {
+            const newLen = Math.max(0, Math.floor(subnetData.uas.length / decay));
+            subnetData.uas = subnetData.uas.slice(0, newLen);
+        }
+
+        subnetData.lastActivity = now - (inactivityMs % (30 * 60 * 1000));
+    }
+    return subnetData;
+}
+
+/**
  * Updates aggregated metrics for an IP subnet.
  * @param {object} context The request context.
  * @param {string} deviceId The device ID.
@@ -2821,12 +2978,15 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
     }
     if (!subnetData.uas) subnetData.uas = [];
 
+    const now = Date.now();
+    decaySubnetData(subnetData, now);
+
     // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
     const currentDeviceHash = getCompositeDeviceHash(context);
     const stableFpId = cyrb53(extractStablePart(currentDeviceHash)).toString();
 
     const currentDeviceContributions = subnetData.highScoreDevices[stableFpId] || 0;
-    if (currentDeviceContributions < 5) {
+    if (currentDeviceContributions < 1) {
         subnetData.highScoreDevices[stableFpId] = currentDeviceContributions + 1;
         subnetData.highScoreCount++;
     }
@@ -2844,7 +3004,7 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
         subnetData.uas.push(userAgent);
     }
 
-    subnetData.lastActivity = Date.now();
+    subnetData.lastActivity = now;
 
     if (subnetData.deviceIds.length > 100) {
         const oldDeviceId = subnetData.deviceIds.shift();
@@ -2872,10 +3032,14 @@ async function getSubnetScore(context) {
     const subnetData = await store.get(`subnet:${subnet}`);
     if (!subnetData) return { subnetScore: 0 };
 
-    // Application d'une décroissance temporelle (demi-vie de 30 minutes)
     const now = Date.now();
     const inactivityMs = now - (subnetData.lastActivity || now);
     const halfLives = Math.floor(inactivityMs / (30 * 60 * 1000));
+
+    if (halfLives > 0) {
+        decaySubnetData(subnetData, now);
+        await store.set(key, subnetData, 86400);
+    }
 
     let highScoreCount = subnetData.highScoreCount || 0;
     let deviceCount = subnetData.deviceIds ? subnetData.deviceIds.length : 0;
@@ -2884,14 +3048,6 @@ async function getSubnetScore(context) {
         ipCount = subnetData.ips instanceof Set ? subnetData.ips.size : (subnetData.ips.length || 1);
     }
     let uaCount = subnetData.uas ? subnetData.uas.length : 1;
-
-    if (halfLives > 0) {
-        const decay = Math.pow(2, halfLives);
-        highScoreCount = Math.max(0, Math.floor(highScoreCount / decay));
-        deviceCount = Math.max(0, Math.floor(deviceCount / decay));
-        ipCount = Math.max(1, Math.floor(ipCount / decay));
-        uaCount = Math.max(1, Math.floor(uaCount / decay));
-    }
 
     if (deviceCount === 0) {
         return { subnetScore: 0.0 };
@@ -3483,8 +3639,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
       const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   const { tcpAnomalyScore } = getTcpAnomalyScore(context);
-  const { quicAnomalyScore } = getQuicAnomalyScore(context);
-  const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+    const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
+    const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -3496,7 +3652,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, renderingAnomalyScore, threatIntelScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -3997,7 +4153,7 @@ export class FingerprintEngine {
       'trustedProxies',
       'wasm',
       'similarityThreshold', 'reset',
-      'ed25519_private_key', 'ed25519_public_key',
+      'ed25519_private_key', 'ed25519_public_key', 'upowModel',
       'federatedPeers', 'federationSecret', 'filterWhitelist'
     ]);
 
@@ -4058,6 +4214,7 @@ export class FingerprintEngine {
             (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
             (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
             (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
+            (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) + // NOUVEAU: HTTP/2 Anomaly
             (suspicionVector.threatIntelScore || 0) * (weights.threatIntelScore || 0) + // NOUVEAU: QUIC Anomaly
             (suspicionVector.renderingAnomalyScore || 0) * (weights.renderingAnomalyScore || 0); // NOUVEAU: Rendering Anomaly
 
@@ -4491,7 +4648,7 @@ export class FingerprintEngine {
     const blockThreshold = thresholds.block ?? 95;
 
     // Mettre à jour les métriques du sous-réseau après le calcul du score final
-    if (finalScore > (thresholds.low ?? 20) && finalScore < blockThreshold) {
+    if (finalScore >= (thresholds.medium ?? 45) && finalScore < blockThreshold) {
         await __internal.updateSubnetMetrics(requestContext, deviceId, finalScore);
     }
 
@@ -4610,6 +4767,18 @@ export class FingerprintEngine {
                 } else if (pow_type === "pospace" && pow_solution_space) {
                     const isSpaceValid = await verifySpacePoW(pow_nonce, pow_solution_space, challengeContext.queries, pow_nonce + ":" + challengeContext.clientSecret, challengeContext.clientSecret);
                     isValid = isSpaceValid;
+                    if (isValid) {
+                        const ttl = finalTtl || 3600000;
+                        ticket = generateStatelessTicket({
+                            expiry: Date.now() + ttl,
+                            originalIp: clientIp,
+                            deviceId,
+                            deviceHash: currentDeviceHash
+                        });
+                    }
+                } else if (pow_type === "gpu" && pow_solution) {
+                    const isGpuValid = GpuPowSolver.verify(pow_nonce, challengeContext.iterations || 200000, pow_solution, clientIp, getPowSecret());
+                    isValid = isGpuValid;
                     if (isValid) {
                         const ttl = finalTtl || 3600000;
                         ticket = generateStatelessTicket({
@@ -5082,6 +5251,28 @@ export class FingerprintEngine {
                 }
                 return decision;
             }
+
+            // NOUVEAU : Challenge matériel GPU (Logistic Map floating point parity check)
+            const shouldUseGpu = this.securityConfig.enableGpuPow && finalScore >= thresholds.high;
+            if (shouldUseGpu) {
+                const iterations = this.securityConfig.gpuPowIterations || 200000;
+                await store.set(`secret:${nonce}`, {
+                    clientSecret,
+                    iterations,
+                    fingerprint: originalFingerprint,
+                    originalPath: path
+                }, this.securityConfig.challengeTtl || 300);
+
+                if (isApi) {
+                    decision.body = {
+                        challenge: { type: "gpu", nonce, clientSecret, iterations }
+                    };
+                } else {
+                    decision.body = generateGpuChallengePage({ nonce, iterations, path });
+                }
+                return decision;
+            }
+
             // Generate some trap URLs to embed in the challenge page.
             // These links are visually hidden but present in the DOM to trap bots.
             const trapUrls = Array.from({ length: 3 }, () => generateTrapUrl(nonce)); // Génère les URL
@@ -6303,9 +6494,9 @@ export const __internal = {
     parseTcpSyn, // Expose for testing
     classifyTcpOs, // Expose for testing
     getTcpAnomalyScore, // Expose for testing,
-    getQuicAnomalyScore, // NOUVEAU: Expose pour les tests
     getRenderingAnomalyScore, // NOUVEAU: Expose pour les tests
     dnsCircuitBreaker,
+    getProtocolAnomalyScore,
     recordDnsSuccess,
     recordDnsFailure,
     canAttemptDns,

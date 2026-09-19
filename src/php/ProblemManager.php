@@ -238,6 +238,28 @@ class ProblemManager
                         return;
                     }
                 }
+
+                    // VÉRIFICATION PAR ÉCHANTILLONNAGE (Parité avec JS)
+                    $fitnessFunction = FunctionRegistry::get('portfolio.calculateMetrics');
+                    if ($fitnessFunction) {
+                        $sampleSize = min(5, count($solutionData['population']));
+                        $sampleKeys = (array)array_rand($solutionData['population'], $sampleSize);
+                        
+                        foreach ($sampleKeys as $key) {
+                            $individual = $solutionData['population'][$key];
+                            if (isset($individual['chromosome'])) {
+                                $recalculated = $fitnessFunction($individual['chromosome'], $problem['payload'] ?? []);
+                                if (isset($individual['fitness']) && $individual['fitness'] !== -1) {
+                                    if (abs($individual['fitness'] - $recalculated) > 1e-4) {
+                                        error_log("[ProblemManager] Triche détectée pour {$problemId}! Fitness déclaré: {$individual['fitness']}, recalculé: {$recalculated}");
+                                        return; // Rejeter en cas d'incohérence
+                                    }
+                                }
+                                $solutionData['population'][$key]['fitness'] = $recalculated;
+                            }
+                        }
+                    }
+
                     $problem['state']['population'] = $solutionData['population'];
                     $problem['state']['lastUpdate'] = (new \DateTime())->format(\DateTime::ATOM);
                     $stateChanged = true;

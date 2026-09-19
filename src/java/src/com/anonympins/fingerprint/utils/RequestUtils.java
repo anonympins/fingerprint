@@ -152,6 +152,54 @@ public class RequestUtils {
     }
 
     @SuppressWarnings("unchecked")
+    private static void applySubnetDecay(IStore store, String subnet, Map<String, Object> subnetData, long now) {
+        long lastActivity = ((Number) subnetData.getOrDefault("lastActivity", now)).longValue();
+        if (lastActivity == 0L) {
+            subnetData.put("lastActivity", now);
+            return;
+        }
+        long inactivityMs = now - lastActivity;
+        long halfLives = inactivityMs / (30 * 60 * 1000L); // 30 minutes half-life
+
+        if (halfLives > 0) {
+            double decay = Math.pow(2, halfLives);
+
+            int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
+            highScoreCount = Math.max(0, (int) Math.floor(highScoreCount / decay));
+            subnetData.put("highScoreCount", highScoreCount);
+
+            List<String> deviceIdsList = (List<String>) subnetData.getOrDefault("deviceIds", new ArrayList<String>());
+            int deviceCount = Math.max(0, (int) Math.floor(deviceIdsList.size() / decay));
+            if (deviceIdsList.size() > deviceCount) {
+                deviceIdsList = new ArrayList<>(deviceIdsList.subList(deviceIdsList.size() - deviceCount, deviceIdsList.size()));
+                subnetData.put("deviceIds", deviceIdsList);
+            }
+
+            List<String> ipsList = (List<String>) subnetData.getOrDefault("ips", new ArrayList<String>());
+            int ipCount = Math.max(1, (int) Math.floor(ipsList.size() / decay));
+            if (ipsList.size() > ipCount) {
+                ipsList = new ArrayList<>(ipsList.subList(ipsList.size() - ipCount, ipsList.size()));
+                subnetData.put("ips", ipsList);
+            }
+
+            Map<String, Integer> highScoreDevices = (Map<String, Integer>) subnetData.get("highScoreDevices");
+            if (highScoreDevices != null) {
+                Map<String, Integer> decayedDevices = new HashMap<>();
+                for (Map.Entry<String, Integer> entry : highScoreDevices.entrySet()) {
+                    int decayedVal = Math.max(0, (int) Math.floor(entry.getValue() / decay));
+                    if (decayedVal > 0) {
+                        decayedDevices.put(entry.getKey(), decayedVal);
+                    }
+                }
+                subnetData.put("highScoreDevices", decayedDevices);
+            }
+
+            subnetData.put("lastActivity", now);
+            store.set("subnet:" + subnet, subnetData, 86400);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
     public static Map<String, Double> getRequestPatternScore(RequestContext context, Map<String, Object> deviceData, Map<String, Object> patternsConfig) {
         Map<String, Double> result = new HashMap<>();
         double score = 0.0;
@@ -637,25 +685,13 @@ public class RequestUtils {
         }
 
         long now = System.currentTimeMillis();
-        long lastActivity = (Long) subnetData.getOrDefault("lastActivity", now);
-        long inactivityMs = now - lastActivity;
-        long halfLives = inactivityMs / (30 * 60 * 1000L); // 30 minutes half-life
+        applySubnetDecay(store, subnet, subnetData, now);
 
-        int highScoreCount = (Integer) subnetData.getOrDefault("highScoreCount", 0);
+        int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
         List<String> deviceIdsList = (List<String>) subnetData.getOrDefault("deviceIds", new ArrayList<String>());
         int deviceCount = deviceIdsList.size();
         List<String> ipsList = (List<String>) subnetData.getOrDefault("ips", new ArrayList<String>());
         int ipCount = ipsList.size();
-        // List<String> uasList = (List<String>) subnetData.getOrDefault("uas", new ArrayList<String>()); // Not used in score calculation
-        // int uaCount = uasList.size(); // Not used in score calculation
-
-        if (halfLives > 0) {
-            double decay = Math.pow(2, halfLives);
-            highScoreCount = Math.max(0, (int) Math.floor(highScoreCount / decay));
-            deviceCount = Math.max(0, (int) Math.floor(deviceCount / decay));
-            ipCount = Math.max(1, (int) Math.floor(ipCount / decay)); // Ensure ipCount is at least 1
-            // uaCount = Math.max(1, (int) Math.floor(uaCount / decay)); // Not used in score calculation
-        }
 
         if (deviceCount == 0) {
             result.put("subnetScore", 0.0);
@@ -1054,6 +1090,110 @@ public class RequestUtils {
         return result;
     }
 
+    public static Map<String, Double> getProtocolAnomalyScore(RequestContext context) {
+        Map<String, Double> result = new HashMap<>();
+        double http2Anomaly = 0.0;
+        double quicAnomaly = 0.0;
+
+        String ua = context.getHeader("user-agent");
+        if (ua == null) {
+            ua = "";
+        }
+        Map<String, String> uaParts = parseUserAgent(ua);
+        String browser = uaParts.get("browser");
+
+        if (browser != null && !browser.isEmpty()) {
+            // HTTP/2 Anomaly Logic
+            String h2Fp = context.getHeader("x-http2-fingerprint");
+            if (h2Fp == null) {
+                h2Fp = context.http2Fingerprint;
+            }
+            if (h2Fp != null && !h2Fp.isEmpty()) {
+                String[] parts = h2Fp.split("\\|");
+                if (parts.length >= 4) {
+                    try {
+                        int connWindow = Integer.parseInt(parts[1]);
+                        String headerOrder = parts[3];
+                        boolean isChromium = browser.startsWith("Chrome") || browser.startsWith("Edge");
+                        boolean isFirefox = browser.startsWith("Firefox");
+                        boolean isSafari = browser.startsWith("Safari");
+
+                        if (isChromium) {
+                            if (headerOrder != null && !headerOrder.equals("m,a,s,p")) {
+                                http2Anomaly += 60.0;
+                            }
+                            if (connWindow == 65535 || connWindow == 65536) {
+                                http2Anomaly += 40.0;
+                            }
+                        } else if (isFirefox) {
+                            if (headerOrder != null && !headerOrder.equals("m,s,p,a")) {
+                                http2Anomaly += 60.0;
+                            }
+                        } else if (isSafari) {
+                            if (headerOrder != null && !headerOrder.equals("m,s,p,a")) {
+                                http2Anomaly += 60.0;
+                            }
+                        }
+                    } catch (NumberFormatException e) {
+                        // ignore
+                    }
+                }
+            }
+
+            // QUIC Anomaly Logic
+            String quicFp = context.getHeader("x-quic-fp");
+            if (quicFp == null) {
+                quicFp = context.quicFingerprint;
+            }
+            if (quicFp != null && !quicFp.isEmpty()) {
+                String[] parts = quicFp.split(";");
+                if (parts.length >= 2) {
+                    Map<String, String> params = new HashMap<>();
+                    for (String p : parts[1].split(",")) {
+                        String[] kv = p.split("=", 2);
+                        if (kv.length == 2) {
+                            params.put(kv[0], kv[1]);
+                        }
+                    }
+                    String priorityOrder = parts.length > 2 ? parts[2] : "";
+
+                    boolean isChromium = browser.startsWith("Chrome") || browser.startsWith("Edge");
+                    boolean isFirefox = browser.startsWith("Firefox");
+
+                    if (isChromium) {
+                        try {
+                            int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
+                            int maxStreams = params.containsKey("4") ? Integer.parseInt(params.get("4")) : 0;
+                            if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
+                            if (maxStreams > 0 && maxStreams != 100) quicAnomaly += 30.0;
+                            if (priorityOrder != null && !priorityOrder.isEmpty() && !priorityOrder.contains("u=")) quicAnomaly += 30.0;
+                        } catch (NumberFormatException e) {
+                            // ignore
+                        }
+                    } else if (isFirefox) {
+                        try {
+                            int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
+                            if (maxData > 0 && maxData > 5000000) quicAnomaly += 40.0;
+                        } catch (NumberFormatException e) {
+                            // ignore
+                        }
+                    }
+                }
+            }
+        }
+
+        double score = Math.max(
+            0.0,
+            Math.max(
+                Math.min(100.0, http2Anomaly),
+                Math.min(100.0, quicAnomaly)
+            )
+        );
+
+        result.put("protocolAnomalyScore", score);
+        return result;
+    }
+
     public static Map<String, Double> getRenderingAnomalyScore(RequestContext context) {
         Map<String, Double> result = new HashMap<>();
         result.put("renderingAnomalyScore", 0.0);
@@ -1225,7 +1365,7 @@ public class RequestUtils {
     public static void updateSubnetMetrics(IStore store, RequestContext context, String deviceId, double finalScore) {
         String subnet = getIpSubnet(context.clientIp, 24, 48);
         if (subnet == null) return;
-
+        long now = System.currentTimeMillis();
         String key = "subnet:" + subnet;
         @SuppressWarnings("unchecked")
         Map<String, Object> subnetData = (Map<String, Object>) store.get(key);
@@ -1234,9 +1374,11 @@ public class RequestUtils {
             subnetData.put("highScoreCount", 0);
             subnetData.put("deviceIds", new ArrayList<String>());
             subnetData.put("highScoreDevices", new HashMap<String, Integer>());
-            subnetData.put("lastActivity", 0L);
+            subnetData.put("lastActivity", now);
             subnetData.put("ips", new ArrayList<String>());
             subnetData.put("uas", new ArrayList<String>());
+        }else {
+            applySubnetDecay(store, subnet, subnetData, now);
         }
 
         @SuppressWarnings("unchecked")
@@ -1252,7 +1394,7 @@ public class RequestUtils {
         String stableFpId = FingerprintBuilder.cyrb53(extractStablePart(currentDeviceHash), 0);
 
         int currentDeviceContributions = highScoreDevices.getOrDefault(stableFpId, 0);
-        if (currentDeviceContributions < 5 && finalScore < 95.0) { // Limit contributions per device
+        if (currentDeviceContributions < 1) { // Limit contributions per device
             highScoreDevices.put(stableFpId, currentDeviceContributions + 1);
             subnetData.put("highScoreCount", ((Number) subnetData.get("highScoreCount")).intValue() + 1);
         }
@@ -1270,7 +1412,7 @@ public class RequestUtils {
             uas.add(userAgent);
         }
 
-        subnetData.put("lastActivity", System.currentTimeMillis());
+        subnetData.put("lastActivity", now);
 
         // Pruning logic
         if (deviceIds.size() > 100) {

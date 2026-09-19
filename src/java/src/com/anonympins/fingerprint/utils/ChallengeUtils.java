@@ -3,6 +3,8 @@ package com.anonympins.fingerprint.utils;
 import com.anonympins.fingerprint.FingerprintBuilder;
 import com.anonympins.fingerprint.IStore;
 import com.anonympins.fingerprint.InMemoryStore;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -569,6 +571,19 @@ public class ChallengeUtils {
         }
         sb.append("}");
         return sb.toString();
+    }
+
+    static ObjectMapper objectMapper = new ObjectMapper();
+    /**
+     * Analyse une chaîne JSON en liste de Maps.
+     */
+    public static List<Map<String, Object>> simpleJsonParseList(String json) {
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) {
+            System.err.println("[ChallengeUtils] Error parsing JSON list: " + e.getMessage());
+            return new ArrayList<>();
+        }
     }
 
     public static Map<String, Object> simpleJsonParse(String json) {

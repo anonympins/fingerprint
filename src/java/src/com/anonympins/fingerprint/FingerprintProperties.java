@@ -293,7 +293,7 @@ public class FingerprintProperties {
         private double subnetScore = 0.5;
         private double botnetClusterScore = 0.6;
         private double tcpAnomalyScore = 0.8;
-        private double quicAnomalyScore = 0.8;
+            private double protocolAnomalyScore = 0.8;
         private double renderingAnomalyScore = 0.8;
         private double ipReputationScore = 0.5;
 
@@ -331,8 +331,7 @@ public class FingerprintProperties {
         public void setBotnetClusterScore(double botnetClusterScore) { this.botnetClusterScore = botnetClusterScore; }
         public double getTcpAnomalyScore() { return tcpAnomalyScore; }
         public void setTcpAnomalyScore(double tcpAnomalyScore) { this.tcpAnomalyScore = tcpAnomalyScore; }
-        public double getQuicAnomalyScore() { return quicAnomalyScore; }
-        public void setQuicAnomalyScore(double quicAnomalyScore) { this.quicAnomalyScore = quicAnomalyScore; }
+            public double getProtocolAnomalyScore() { return protocolAnomalyScore; }
         public double getRenderingAnomalyScore() { return renderingAnomalyScore; }
         public void setRenderingAnomalyScore(double renderingAnomalyScore) { this.renderingAnomalyScore = renderingAnomalyScore; }
         public double getIpReputationScore() { return ipReputationScore; }
@@ -360,7 +359,7 @@ public class FingerprintProperties {
             map.put("subnetScore", subnetScore);
             map.put("botnetClusterScore", botnetClusterScore);
             map.put("tcpAnomalyScore", tcpAnomalyScore);
-            map.put("quicAnomalyScore", quicAnomalyScore);
+                map.put("protocolAnomalyScore", protocolAnomalyScore);
             map.put("threatIntelScore", threatIntelScore);
             map.put("renderingAnomalyScore", renderingAnomalyScore);
             map.put("ipReputationScore", ipReputationScore);

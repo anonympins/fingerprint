@@ -2487,7 +2487,7 @@ describe('FingerprintEngine.processRequest - updateSubnetMetrics call logic', ()
     beforeEach(() => {
         inMemoryStore._map.clear();
         configureStore(inMemoryStore);
-
+        // Add a default mock for getTlsFingerprint to stabilize these tests.
         securityConfig = {
             weights: { historyScore: 1.0 },
             thresholds: { low: 20, medium: 45, high: 75, block: 95 }, // Default blockThreshold
@@ -2508,14 +2508,23 @@ describe('FingerprintEngine.processRequest - updateSubnetMetrics call logic', ()
         calculateFinalScoreSpy.mockRestore();
     });
 
-    it('should call updateSubnetMetrics if finalScore is between lowThreshold and blockThreshold', async () => {
-        calculateFinalScoreSpy.mockReturnValue(50); // Score between 20 and 95
+    it('should call updateSubnetMetrics if finalScore is between mediumThreshold and blockThreshold', async () => {
+        calculateFinalScoreSpy.mockReturnValue(50); // Score between 45 and 95
         const requestContext = { clientIp: '192.168.1.1', cookies: {}, query: {}, headers: {} };
 
         await engine.processRequest(requestContext);
 
         expect(updateSubnetMetricsSpy).toHaveBeenCalledTimes(1);
         expect(updateSubnetMetricsSpy).toHaveBeenCalledWith(requestContext, expect.any(String), 50);
+    });
+
+    it('should NOT call updateSubnetMetrics if finalScore is below mediumThreshold', async () => {
+        calculateFinalScoreSpy.mockReturnValue(30); // Score below 45
+        const requestContext = { clientIp: '192.168.1.1', cookies: {}, query: {}, headers: {} };
+
+        await engine.processRequest(requestContext);
+
+        expect(updateSubnetMetricsSpy).not.toHaveBeenCalled();
     });
 
     it('should NOT call updateSubnetMetrics if finalScore is equal to or above blockThreshold', async () => {

@@ -803,8 +803,8 @@
          // Score d'anomalie de pile TCP/IP
          $tcpAnomaly = RequestUtils::getTcpAnomalyScore($context);
 
-         // Score d'anomalie de flux QUIC/HTTP3
-         $quicAnomaly = RequestUtils::getQuicAnomalyScore($context);
+         // Score d'anomalie de protocole (HTTP/2 et QUIC)
+         $protocolAnomaly = RequestUtils::getProtocolAnomalyScore($context);
 
          // Score d'anomalie de rendu d'affichage (V-Sync)
          $renderingAnomaly = RequestUtils::getRenderingAnomalyScore($context);
@@ -828,7 +828,7 @@
              'subnetScore' => $subnetScore['subnetScore'],
              'botnetClusterScore' => $botnetCluster['botnetClusterScore'],
              'tcpAnomalyScore' => $tcpAnomaly['tcpAnomalyScore'],
-             'quicAnomalyScore' => $quicAnomaly['quicAnomalyScore'],
+             'protocolAnomalyScore' => $protocolAnomaly['protocolAnomalyScore'],
              'renderingAnomalyScore' => $renderingAnomaly['renderingAnomalyScore'],
          ]);
  
@@ -1197,7 +1197,7 @@
          ]);
 
          // Mettre à jour les métriques du sous-réseau après le calcul du score final
-         if ($finalScore > ($thresholds['low'] ?? 20)) {
+         if ($finalScore >= ($thresholds['medium'] ?? 45)) {
             RequestUtils::updateSubnetMetrics($context, $deviceId, $finalScore);
             MetricsManager::observeValue('suspicion_score', $finalScore, ['action' => 'high_score_subnet_update']);
          }

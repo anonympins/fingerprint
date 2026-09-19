@@ -49,6 +49,19 @@ class OptimizationOperators
     }
 
     /**
+     * Évalue un portefeuille pour un payload donné.
+     * 
+     * @param array $weights
+     * @param array $payload
+     * @return float
+     */
+    public static function calculatePortfolioMetrics(array $weights, array $payload): float
+    {
+        $fitnessFunction = self::createPortfolioAllocator($payload);
+        return $fitnessFunction($weights);
+    }
+
+    /**
      * Crée un évaluateur pour l'optimisation de portefeuille.
      * @param array $config
      * @return callable

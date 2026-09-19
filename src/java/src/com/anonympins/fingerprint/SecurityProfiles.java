@@ -38,8 +38,7 @@ public class SecurityProfiles {
         balancedWeights.put("subnetScore", 0.5);
         balancedWeights.put("botnetClusterScore", 0.6);
         balancedWeights.put("tcpAnomalyScore", 0.8);
-        balancedWeights.put("quicAnomalyScore", 0.8);
-        balancedWeights.put("renderingAnomalyScore", 0.8);
+        balancedWeights.put("protocolAnomalyScore", 0.8);
         balancedWeights.put("ipReputationScore", 0.5);
         balanced.put("weights", balancedWeights);
 
@@ -93,8 +92,7 @@ public class SecurityProfiles {
         strictWeights.put("subnetScore", 0.7);
         strictWeights.put("botnetClusterScore", 0.8);
         strictWeights.put("tcpAnomalyScore", 1.0);
-        strictWeights.put("quicAnomalyScore", 1.0);
-        strictWeights.put("renderingAnomalyScore", 1.0);
+        strictWeights.put("protocolAnomalyScore", 1.0);
         strict.put("weights", strictWeights);
 
         Map<String, Integer> strictThresholds = new HashMap<>();
@@ -148,7 +146,7 @@ public class SecurityProfiles {
         apiWeights.put("subnetScore", 0.8);
         apiWeights.put("botnetClusterScore", 0.7);
         apiWeights.put("tcpAnomalyScore", 0.8);
-        apiWeights.put("quicAnomalyScore", 0.8);
+        apiWeights.put("protocolAnomalyScore", 0.8);
         api.put("weights", apiWeights);
 
         Map<String, Integer> apiThresholds = new HashMap<>();
@@ -185,8 +183,7 @@ public class SecurityProfiles {
         
         Map<String, Double> blogWeights = new HashMap<>();
         blogWeights.put("historyScore", 0.2);
-        blogWeights.put("rotationScore", 0.3);
-        blogWeights.put("headerAnomalyScore", 0.1);
+        blogWeights.put("protocolAnomalyScore", 0.5);
         blogWeights.put("requestPatternScore", 0.8); // High weight to detect content scraping
         blogWeights.put("inconsistencyScore", 0.7);
         blogWeights.put("behaviorScore", 0.5); // Less emphasis on complex interactions

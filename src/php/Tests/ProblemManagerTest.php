@@ -372,6 +372,6 @@ class ProblemManagerTest extends TestCase
             );
 
         $manager = ProblemManager::getInstance($this->configPath, $storeMock);
-        $manager->integrateSolution($problemId, ['population' => [['chromosome' => [1.0], 'fitness' => -0.15]]]);
+        $manager->integrateSolution($problemId, ['population' => [['chromosome' => [1.0], 'fitness' => -1.0]]]);
     }
 }

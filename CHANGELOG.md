@@ -1,3 +1,21 @@
+## Version 0.6.6
+
+- 🛡️ **Medium Threshold, Subnet Score & Decay Persistence Fixes**:
+  - Resolved an issue where restrictive actions were not properly applied when crossing the medium threshold (`medium_threshold`).
+  - Improved and corrected the subnet reputation calculation (`subnetScore`): anomaly metrics are now anchored to a stable, unique hardware identifier (`stable_fp_id`). This neutralizes bypass tactics like cookie dropping without penalizing legitimate users sharing the same network block. (Contributed by @anonympins)
+  - **Fixed Sliding Temporal Decay Persistence**: Corrected the subnet metrics decay calculation across PHP, Java, and Python versions, ensuring that decayed metrics are immediately persisted in the active data store (`IStore`) instead of being lost on subsequent evaluations, preventing old activity spikes from overwriting calm history. (Contributed by @anonympins)
+
+- 🌐 **Protocol Anomaly Scoring**:
+  - Integrated a comprehensive protocol anomaly evaluation module (`protocolAnomalyScore`) that jointly analyzes low-level signatures (TLS handshakes, HTTP/2 stream settings, and QUIC/HTTP/3 behaviors) to detect transport mismatches common in automated browsers and scraping tools. (Contributed by @anonympins)
+
+  - 🧠 **Machine Learning uPoW Tasks (JS/Node.js Only)**:
+    - Integrated distributed model training and evaluation tasks (`tfjs_learning` via TensorFlow.js) into the Useful Proof-of-Work (uPoW) pipeline. This allows utilizing client GPU/CPU resources for federated learning optimization, while protecting against data poisoning using gradient clipping verification. (Contributed by @anonympins)
+
+  - 🐍 **Python Engine Parity & Useful Work (uPoW) Hardening**:
+    - Integrated a robust, fully asynchronous `ProblemManager` matching the JavaScript implementation, featuring dynamic payload initializers (`generate:randomPoints`, `generate:randomAssets`) and a modular `FunctionRegistry`.
+    - Implemented strict anti-poisoning, size constraints validation, and sampling-based verification (with dynamic cheat detection) inside Python's solution integration pipeline.
+    - Hardened the `portfolio_calculate_metrics` logic to safely handle optional volatility thresholds without triggering false-positive cheating flags when `maxVolatility` is omitted.
+
 ## Version 0.6.5
 
 - 🧬 **Auto-Tuner Upgrades & Threat Profiles**:

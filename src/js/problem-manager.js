@@ -318,6 +318,12 @@ class ProblemManager {
                 task.initialFront = problem.state.paretoFront;
                 task.solverName = problem.workUnit.solverName; // Le nom du solveur à utiliser (ex: 'cpc.solve')
                 break;
+
+            case 'tfjs_learning':
+                task.modelPath = problem.workUnit.modelPath;
+                task.payload = problem.payload;
+                task.weights = problem.state.weights || [];
+                break;
         }
 
         return { problemId: problem.id, task };
@@ -408,7 +414,16 @@ class ProblemManager {
                         if (!individual || !individual.chromosome) {
                             throw new Error("Structure d'individu ou chromosome invalide dans la population.");
                         }
-                        totalRecalculatedFitness += fitnessFunction(individual.chromosome, problem.payload);
+                        const recalculated = fitnessFunction(individual.chromosome, problem.payload);
+                        
+                        if (individual.fitness !== undefined && individual.fitness !== -1) {
+                            if (Math.abs(individual.fitness - recalculated) > 1e-4) {
+                                console.error(`[ProblemManager] Triche détectée pour ${problemId}! Fitness déclaré: ${individual.fitness}, recalculé: ${recalculated}`);
+                                return; // Rejeter immédiatement toute la population
+                            }
+                        }
+                        individual.fitness = recalculated; // Forcer la valeur exacte recalculée
+                        totalRecalculatedFitness += recalculated;
                     }
 
                     problem.state.population = solutionData.population; // On accepte la population

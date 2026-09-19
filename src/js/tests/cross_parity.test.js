@@ -58,7 +58,7 @@ describe('Cross-Parity Chaos PoW Floating Point Parity (JS vs WASM vs PHP)', () 
         const rFloat = Math.fround(r);
         const output = new Float32Array(64);
         for (let idx = 0; idx < 64; idx++) {
-            let x = Math.fround(numericSeed + idx * 0.015);
+            let x = Math.fround((numericSeed + idx * 0.015) % 1);
             for (let i = 0; i < iterations; i++) {
                 x = Math.fround(rFloat * x * Math.fround(1.0 - x));
             }
@@ -96,7 +96,7 @@ describe('Cross-Parity Chaos PoW Floating Point Parity (JS vs WASM vs PHP)', () 
         \$r = 3.9999;
         \$solutions = [];
         for (\$idx = 0; \$idx < 64; \$idx++) {
-            \$x = fround(\$numericSeed + \$idx * 0.015);
+            \$x = fround(fmod(\$numericSeed + \$idx * 0.015, 1.0));
             \$rFloat = fround(\$r);
             for (\$i = 0; \$i < \$iterations; \$i++) {
                 \$x = fround(\$rFloat * \$x * fround(1.0 - \$x));
