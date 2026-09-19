@@ -20,7 +20,7 @@ class FunctionRegistry
         if (empty(self::$functions)) {
             // Fonctions de "Scoring"
             self::$functions['tsp.calculateEnergy'] = [OptimizationUtils::class, 'evaluatePathDistance'];
-            self::$functions['portfolio.calculateMetrics'] = [OptimizationOperators::class, 'createPortfolioAllocator'];
+            self::$functions['portfolio.calculateMetrics'] = [OptimizationOperators::class, 'calculatePortfolioMetrics'];
             self::$functions['facility.calculateEnergy'] = [OptimizationOperators::class, 'evaluateFacilityLocation'];
 
             // Fonctions de "Résolution"

@@ -13,6 +13,7 @@ import os
 import asyncio
 import base64
 import ipaddress
+from problem_manager import ProblemManager
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.backends import default_backend
@@ -2607,26 +2608,14 @@ class FingerprintEngine:
         self._fast_path_cache: Dict[str, tuple] = {}
         self._last_prune_time: float = time.time()
         self._prune_interval: float = 10.0 # secondes
+        self.problem_manager = None
 
         if config.get("enableUsefulWork"):
             try:
-                default_path = os.path.join(os.getcwd(), "problems.config.json")
+                default_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config/problems.config.json"))
                 config_path = config.get("usefulWorkConfigPath") or (default_path if os.path.exists(default_path) else None)
                 if config_path:
-                    pm = ProblemManager.get_instance(config_path, self.store)
-                    if not pm.initialized:
-                        try:
-                            loop = asyncio.get_running_loop()
-                            loop.create_task(pm.load_problems())
-                        except RuntimeError:
-                            try:
-                                loop = asyncio.get_event_loop()
-                                if loop.is_running():
-                                    loop.create_task(pm.load_problems())
-                                else:
-                                    loop.run_until_complete(pm.load_problems())
-                            except Exception:
-                                pass
+                    self.problem_manager = ProblemManager.get_instance(config_path, self.store)
             except Exception as e:
                 print(f"[FingerprintEngine] Background initialization of ProblemManager failed: {e}")
 
@@ -3334,6 +3323,33 @@ class FingerprintEngine:
             if challenge_context:
                 try:
                     work_result = json.loads(pow_solution_work_result)
+                    if self.problem_manager is not None:
+                        await self.problem_manager.integrate_solution(pow_problem_id, work_result)
+
+                        # Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
+                        # on applique directement la meilleure solution calculée au moteur en direct.
+                        if pow_problem_id == "security_auto_tuning" and self.config.get("autotuning", {}).get("enabled", False):
+                            pareto_front = work_result.get("paretoFront")
+                            if isinstance(pareto_front, list) and len(pareto_front) > 0:
+                                best_solution = pareto_front[0]
+                                min_distance = math.sqrt(
+                                    float(best_solution['objectives'][0])**2 +
+                                    float(best_solution['objectives'][1])**2
+                                )
+
+                                for item in pareto_front[1:]:
+                                    distance = math.sqrt(
+                                        float(item['objectives'][0])**2 +
+                                        float(item['objectives'][1])**2
+                                    )
+                                    if distance < min_distance:
+                                        min_distance = distance
+                                        best_solution = item
+
+                                if "solution" in best_solution:
+                                    self.update_config(best_solution["solution"])
+                                    print("[FingerprintEngine] Useful Work auto-tuning applied successfully to live config.")
+
                     default_path = os.path.join(os.getcwd(), "problems.config.json")
                     config_path = self.config.get("usefulWorkConfigPath") or (default_path if os.path.exists(default_path) else None)
                     pm = ProblemManager.get_instance(config_path, self.store)
@@ -3674,172 +3690,6 @@ class FingerprintEngine:
         MetricsManager.increment_counter("requests_total", {"status": "passed"})
         MetricsManager.observe_value("suspicion_score", score, {"action": "passed"})
         return {"action": "next"}
-
-    # --- CORE: ProblemManager for uPoW ---
-class ProblemManager:
-    _instance = None
-
-    @classmethod
-    def get_instance(cls, config_path: Optional[str] = None, store: Optional[Any] = None) -> "ProblemManager":
-        if cls._instance is None:
-            if config_path is None:
-                default_path = os.path.join(os.getcwd(), "problems.config.json")
-                config_path = default_path if os.path.exists(default_path) else None
-            if config_path is None or store is None:
-                raise RuntimeError("ProblemManager must be initialized with config_path and store.")
-            cls._instance = cls(config_path, store)
-        return cls._instance
-
-    def __init__(self, config_path: str, store: Any):
-        self.config_path = config_path
-        self.store = store
-        self.problems: List[Dict[str, Any]] = []
-        self.current_problem_index = 0
-        self.initialized = False
-
-    async def load_problems(self):
-        if not os.path.exists(self.config_path):
-            print(f"[ProblemManager] Problem config file not found: {self.config_path}")
-            return
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                problems_from_file = json.load(f)
-        except Exception as e:
-            print(f"[ProblemManager] Failed to read/parse problem config file: {e}")
-            return
-
-        for problem in problems_from_file:
-            store_key = f"problem-state:{problem['id']}"
-            stored_state = await self.store.get(store_key)
-
-            if stored_state is None:
-                stored_state = problem.get("state", {})
-                await self.store.set(store_key, stored_state)
-            problem["state"] = stored_state
-
-            # Resolve dynamic initializers
-            payload = problem.get("payload", {})
-            if isinstance(payload, dict):
-                for key, value in payload.items():
-                    if isinstance(value, dict) and "$init" in value:
-                        init_type = value["$init"]
-                        params = value.get("params", {})
-                        if init_type == "generate:randomPoints":
-                            count = params.get("count", 0)
-                            bounds = params.get("bounds", {"x": 1000, "y": 1000})
-                            points = []
-                            for _ in range(count):
-                                points.append({
-                                    "x": random.random() * bounds.get("x", 1000),
-                                    "y": random.random() * bounds.get("y", 1000)
-                                })
-                            payload[key] = points
-                        elif init_type == "generate:randomAssets":
-                            count = params.get("count", 0)
-                            assets = []
-                            for i in range(count):
-                                assets.append({
-                                    "name": f"Asset {i + 1}",
-                                    "expectedReturn": random.random() * 0.2,
-                                    "volatility": 0.1 + random.random() * 0.3
-                                })
-                            payload[key] = assets
-            self.problems.append(problem)
-        self.initialized = True
-
-    async def dispatch_work(self, suspicion_factor: float) -> Optional[Dict[str, Any]]:
-        if not self.problems:
-            return None
-        problem = self.problems[self.current_problem_index]
-        self.current_problem_index = (self.current_problem_index + 1) % len(self.problems)
-
-        work_unit = problem.get("workUnit", {})
-        task_type = work_unit.get("type")
-        task = {"type": task_type}
-        scaling_factor = work_unit.get("scalingFactor")
-
-        if task_type == "simulated_annealing_iterations":
-            base_iterations = work_unit.get("baseIterations", 15000)
-            if scaling_factor:
-                task["iterations"] = int(math.floor(base_iterations * math.pow(scaling_factor, suspicion_factor)))
-            else:
-                task["iterations"] = int(math.floor(base_iterations * (0.5 + suspicion_factor)))
-            task["payload"] = problem.get("payload", {})
-            task["initialSolution"] = problem.get("state", {}).get("bestSolution")
-        elif task_type == "genetic_algorithm_generations":
-            base_generations = max(50, work_unit.get("baseGenerations", 0))
-            if scaling_factor:
-                task["generations"] = int(math.floor(base_generations * math.pow(scaling_factor, suspicion_factor)))
-            else:
-                task["generations"] = int(math.floor(base_generations * (0.5 + suspicion_factor)))
-            task["payload"] = problem.get("payload", {})
-            task["initialPopulation"] = problem.get("state", {}).get("population")
-        elif task_type == "multi_objective_genetic_algorithm":
-            base_generations_multi = max(30, work_unit.get("baseGenerations", 0))
-            if scaling_factor:
-                task["generations"] = int(math.floor(base_generations_multi * math.pow(scaling_factor, suspicion_factor)))
-            else:
-                task["generations"] = int(math.floor(base_generations_multi * (0.5 + suspicion_factor)))
-            task["payload"] = problem.get("payload", {})
-            task["initialFront"] = problem.get("state", {}).get("paretoFront")
-            task["solverName"] = work_unit.get("solverName")
-        else:
-            print(f"[ProblemManager] Unknown useful work type: {task_type}")
-            return None
-
-        return {"problemId": problem["id"], "task": task}
-
-    async def integrate_solution(self, problem_id: str, solution_data: Dict[str, Any]) -> None:
-        problem = None
-        for p in self.problems:
-            if p["id"] == problem_id:
-                problem = p
-                break
-        if not problem:
-            return
-
-        state_changed = False
-        store_key = f"problem-state:{problem['id']}"
-        work_unit_type = problem.get("workUnit", {}).get("type")
-
-        if work_unit_type == "simulated_annealing_iterations":
-            if "solution" in solution_data and "energy" in solution_data:
-                score_function_name = problem.get("workUnit", {}).get("scoreFunction")
-                recalculated_energy = float("inf")
-                if score_function_name == "facility.calculateEnergy":
-                    recalculated_energy = OptimizationOperators.evaluate_facility_location(
-                        solution_data["solution"], problem.get("payload", {})
-                    )
-                else:
-                    recalculated_energy = float(solution_data["energy"])
-
-                current_best = float(problem.get("state", {}).get("bestEnergy", float("inf")))
-                if recalculated_energy < current_best:
-                    problem["state"]["bestSolution"] = solution_data["solution"]
-                    problem["state"]["bestEnergy"] = recalculated_energy
-                    problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    state_changed = True
-                    print(f"[ProblemManager] New best solution for {problem_id}: {recalculated_energy}")
-        elif work_unit_type == "genetic_algorithm_generations":
-            if "population" in solution_data and isinstance(solution_data["population"], list):
-                problem["state"]["population"] = solution_data["population"]
-                problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                state_changed = True
-        elif work_unit_type == "multi_objective_genetic_algorithm":
-            if "paretoFront" in solution_data and isinstance(solution_data["paretoFront"], list):
-                state_changed = await self._integrate_pareto_front(problem, solution_data["paretoFront"])
-
-        if state_changed:
-            await self.store.set(store_key, problem["state"])
-
-    async def _integrate_pareto_front(self, problem: Dict[str, Any], new_front: List[Dict[str, Any]]) -> bool:
-        current_front = problem.get("state", {}).get("paretoFront", [])
-        if new_front and json.dumps(new_front, sort_keys=True) != json.dumps(current_front, sort_keys=True):
-            problem["state"]["paretoFront"] = new_front
-            problem["state"]["lastUpdate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            print(f"[ProblemManager] New Pareto front for {problem['id']} with {len(new_front)} solutions.")
-            return True
-        return False
 
 # --- CORE: Optimization & AutoTuning ---
 class Optimization:

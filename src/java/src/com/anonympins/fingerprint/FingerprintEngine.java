@@ -15,6 +15,7 @@ public class FingerprintEngine {
     private final Map<String, Object> thresholds;
     private final Map<String, Object> weights;
 
+    private ProblemManager problemManager;
     @SuppressWarnings("unchecked")
     public FingerprintEngine(Map<String, Object> config, IStore store) {
         this.config = config != null ? config : new HashMap<>();
@@ -156,6 +157,13 @@ public class FingerprintEngine {
                 }
             }
         }
+
+            // Initialize ProblemManager if useful work is enabled
+            if (Boolean.TRUE.equals(this.config.get("enableUsefulWork"))) {
+                String usefulWorkConfigPath = (String) this.config.get("usefulWorkConfigPath");
+                // Ensure ProblemManager is initialized with the correct path and store
+                this.problemManager = ProblemManager.getInstance(usefulWorkConfigPath, store);
+            }
     }
 
     private Map<String, Object> createDefaultThresholds() {
@@ -499,6 +507,7 @@ public class FingerprintEngine {
         String powSolutionWorkResult = rawPowSolutionWorkResult instanceof String ? (String) rawPowSolutionWorkResult : null;
         Object rawPowProblemId = context.queryParams.get("pow_problem_id");
         String powProblemId = rawPowProblemId instanceof String ? (String) rawPowProblemId : null;
+        
 
         if (powNonce != null && "useful_work_task".equals(powType) && powSolutionWorkResult != null && powProblemId != null) {
             Object challengeContextObj = store.get("secret:" + powNonce);
@@ -506,38 +515,41 @@ public class FingerprintEngine {
                 try {
                     Map<String, Object> workResult = ChallengeUtils.simpleJsonParse(powSolutionWorkResult);
                     store.delete("secret:" + powNonce);
+                    if (problemManager != null) {
+                        problemManager.integrateSolution(powProblemId, workResult);
 
-                    Map<String, Object> autotuningConfig = (Map<String, Object>) config.get("autotuning");
-                    boolean autotuningEnabled = autotuningConfig != null && Boolean.TRUE.equals(autotuningConfig.get("enabled"));
-                    
-                    if ("security_auto_tuning".equals(powProblemId) && autotuningEnabled) {
-                        Object paretoFrontObj = workResult.get("paretoFront");
-                        if (paretoFrontObj instanceof List) {
-                            List<Map<String, Object>> paretoFront = (List<Map<String, Object>>) paretoFrontObj;
-                            if (!paretoFront.isEmpty()) {
-                                Map<String, Object> bestSolution = paretoFront.get(0);
-                                List<Object> objs0 = (List<Object>) bestSolution.get("objectives");
-                                double minDistance = Math.sqrt(
-                                    Math.pow(Double.parseDouble(objs0.get(0).toString()), 2) + 
-                                    Math.pow(Double.parseDouble(objs0.get(1).toString()), 2)
-                                );
-                                
-                                for (int i = 1; i < paretoFront.size(); i++) {
-                                    Map<String, Object> item = paretoFront.get(i);
-                                    List<Object> objsI = (List<Object>) item.get("objectives");
-                                    double distance = Math.sqrt(
-                                        Math.pow(Double.parseDouble(objsI.get(0).toString()), 2) + 
-                                        Math.pow(Double.parseDouble(objsI.get(1).toString()), 2)
+                        Map<String, Object> autotuningConfig = (Map<String, Object>) config.get("autotuning");
+                        boolean autotuningEnabled = autotuningConfig != null && Boolean.TRUE.equals(autotuningConfig.get("enabled"));
+                        
+                        if ("security_auto_tuning".equals(powProblemId) && autotuningEnabled) {
+                            Object paretoFrontObj = workResult.get("paretoFront");
+                            if (paretoFrontObj instanceof List) {
+                                List<Map<String, Object>> paretoFront = (List<Map<String, Object>>) paretoFrontObj;
+                                if (!paretoFront.isEmpty()) {
+                                    Map<String, Object> bestSolution = paretoFront.get(0);
+                                    List<Object> objs0 = (List<Object>) bestSolution.get("objectives");
+                                    double minDistance = Math.sqrt(
+                                        Math.pow(Double.parseDouble(objs0.get(0).toString()), 2) + 
+                                        Math.pow(Double.parseDouble(objs0.get(1).toString()), 2)
                                     );
-                                    if (distance < minDistance) {
-                                        minDistance = distance;
-                                        bestSolution = item;
+                                    
+                                    for (int i = 1; i < paretoFront.size(); i++) {
+                                        Map<String, Object> item = paretoFront.get(i);
+                                        List<Object> objsI = (List<Object>) item.get("objectives");
+                                        double distance = Math.sqrt(
+                                            Math.pow(Double.parseDouble(objsI.get(0).toString()), 2) + 
+                                            Math.pow(Double.parseDouble(objsI.get(1).toString()), 2)
+                                        );
+                                        if (distance < minDistance) {
+                                            minDistance = distance;
+                                            bestSolution = item;
+                                        }
                                     }
-                                }
-                                
-                                if (bestSolution.containsKey("solution")) {
-                                    updateConfig((Map<String, Object>) bestSolution.get("solution"));
-                                    System.out.println("[FingerprintEngine] Useful Work auto-tuning applied successfully to live config.");
+                                    
+                                    if (bestSolution.containsKey("solution")) {
+                                        updateConfig((Map<String, Object>) bestSolution.get("solution"));
+                                        System.out.println("[FingerprintEngine] Useful Work auto-tuning applied successfully to live config.");
+                                    }
                                 }
                             }
                         }
