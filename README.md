@@ -77,12 +77,12 @@ npm install @anonympins/fingerprint
 ### PHP
 
 ```bash
-composer install
+composer require @anonympins/fingerprint
 ```
 
 ### Python
 ```bash
-pip install -e .
+pip install anonympins-fingerprint
 ```
 
 ### Java
