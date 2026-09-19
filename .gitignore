@@ -11,3 +11,5 @@ report.md
 test.js
 fingerprint-engine.iml
 /target
+/.pypirc
+/dist
