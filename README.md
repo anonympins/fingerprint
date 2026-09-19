@@ -86,7 +86,11 @@ pip install -e .
 ```
 
 ### Java
-In your **pom.xml**, add :
+```bash
+mvn clean install
+```
+
+The, in your **pom.xml**, add :
 ```xml
 <dependency>
     <groupId>com.anonympins</groupId>
