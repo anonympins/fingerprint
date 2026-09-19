@@ -85,6 +85,15 @@ composer install
 pip install -e .
 ```
 
+### Java
+In your **pom.xml**, add :
+```xml
+<dependency>
+    <groupId>com.anonympins</groupId>
+    <artifactId>fingerprint</artifactId>
+    <version>0.6.6</version>
+</dependency>
+```
 ## Documentation
 
 To prevent documentation drift, all detailed guides and reference materials are maintained in the `doc/` directory. Please refer to [these resources](https://github.com/anonympins/fingerprint/wiki/home) to configure and integrate the engine:
