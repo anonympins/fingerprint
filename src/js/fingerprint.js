@@ -5044,9 +5044,9 @@ export class FingerprintEngine {
           }
       }
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked && finalScore > 0;
-    const isSuspiciousMedium = finalScore >= thresholds.medium;
-    const isSuspicious = finalScore >= thresholds.low;
-    const isVerySuspicious = finalScore >= thresholds.medium; // Seuil pour le challenge d'optimisation
+    const isSuspiciousMedium = finalScore >= thresholds.medium && finalScore > 0;
+    const isSuspicious = finalScore >= thresholds.low && finalScore > 0;
+    const isVerySuspicious = finalScore >= thresholds.medium && finalScore > 0; // Seuil pour le challenge d'optimisation
 
     // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
     const suspicionFactor = isSuspicious // eslint-disable-line no-nested-ternary
