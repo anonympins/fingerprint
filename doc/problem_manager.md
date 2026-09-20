@@ -110,6 +110,17 @@ $solutionData = [
 
 $problemManager->integrateSolution($problemId, $solutionData);
 ```
+#### Retrieving Results (getBestSolutions) 
+To consume the optimal solutions computed in a distributed manner in your PHP backend:
+```php
+// For a specific 
+$bestTsp = $problemManager->getBestSolutions('tsp_10_cities');
+if ($bestTsp !== null) {
+    echo "Best distance found: {$bestTsp['score']} for the path: " . json_encode($bestTsp['solution']) . "\n";
+}
+// To get an overview of all single- or multi-objective problems
+$allBests = $problemManager->getBestSolutions();
+```
 
 ---
 
@@ -179,9 +190,22 @@ Map<String, Object> task = (Map<String, Object>) work.get("task");
 ```java
 Map<String, Object> solutionData = new HashMap<>();
 solutionData.put("solution", Arrays.asList(0, 2, 1, 3));
-        solutionData.put("energy", 324.5);
+solutionData.put("energy", 324.5);
 
 problemManager.integrateSolution(problemId, solutionData);
+```
+
+#### Retrieving Results (`getBestSolutions`)
+To consume the optimal solutions computed in a distributed manner in your backend:
+```java
+// For a specific problem
+Map<String, Object> bestTsp = (Map<String, Object>) problemManager.getBestSolutions("tsp_10_cities");
+if (bestTsp != null) {
+    System.out.println("Best distance found: " + bestTsp.get("score") + " for the path: " + bestTsp.get("solution"));
+}
+
+// To get an overview of all single- or multi-objective problems
+List<Map<String, Object>> allBests = (List<Map<String, Object>>) problemManager.getBestSolutions();
 ```
 
 ---
