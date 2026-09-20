@@ -1363,7 +1363,11 @@ class RequestUtils
         $densityMultiplier = 0.4 + (1.6 * $suspicionDensity);
         $distributionMultiplier = 0.5 + (1.0 * $ipDeviceRatio);
 
-        $finalScore = min(100.0, round($baseScore * $densityMultiplier * $distributionMultiplier * 10.0) / 10.0);
+        $dampening = 1.0;
+        if( $highScoreCount < 3 ){
+            $dampening = $highScoreCount / 3.0;
+        }
+        $finalScore = min(100.0, round($baseScore * $densityMultiplier * $distributionMultiplier * $dampening * 10.0) / 10.0);
 
         return ['subnetScore' => $finalScore];
     }

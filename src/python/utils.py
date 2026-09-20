@@ -110,8 +110,10 @@ async def get_subnet_score(store: Any, context: Any, device_id: str) -> Dict[str
 
     density_multiplier = 0.4 + (1.6 * suspicion_density)
     distribution_multiplier = 0.5 + (1.0 * ip_device_ratio)
-
-    final_score = min(100.0, round(base_score * density_multiplier * distribution_multiplier * 10.0) / 10.0)
+    dampening = 1.0
+    if high_score_count < 3:
+        dampening = high_score_count / 3.0
+    final_score = min(100.0, round(base_score * density_multiplier * distribution_multiplier * dampening * 10.0) / 10.0)
     return {"subnetScore": final_score}
 
 async def get_botnet_cluster_score(store: Any, context: Any, stable_fp_hash: str) -> Dict[str, float]:

@@ -3028,8 +3028,9 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
 async function getSubnetScore(context) {
     const subnet = getIpSubnet(context.clientIp);
     if (!subnet) return { subnetScore: 0 };
+    const key = `subnet:${subnet}`;
 
-    const subnetData = await store.get(`subnet:${subnet}`);
+    const subnetData = await store.get(key);
     if (!subnetData) return { subnetScore: 0 };
 
     const now = Date.now();
@@ -3064,7 +3065,13 @@ async function getSubnetScore(context) {
     const densityMultiplier = 0.4 + (1.6 * suspicionDensity); // Favorise les densités de suspicion élevées
     const distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio); // NAT (faible ratio IP/Device) vs Proxy distribué (fort ratio)
 
-    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * 10) / 10);
+    // Amortissement pour éviter les faux positifs sur les réseaux NAT résidentiels (petits nombres d'appareils suspects)
+    let dampening = 1.0;
+    if (highScoreCount < 3) {
+        dampening = highScoreCount / 3.0; // 0.33 pour 1 appareil, 0.66 pour 2 appareils
+    }
+
+    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * dampening * 10) / 10);
     return { subnetScore: finalScore };
 }
 

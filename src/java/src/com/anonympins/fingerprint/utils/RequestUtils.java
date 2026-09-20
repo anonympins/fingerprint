@@ -706,7 +706,12 @@ public class RequestUtils {
         double densityMultiplier = 0.4 + (1.6 * suspicionDensity);
         double distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio);
 
-        double finalScore = Math.min(100.0, Math.round(baseScore * densityMultiplier * distributionMultiplier * 10.0) / 10.0);
+        double dampening = 1.0;
+        if (highScoreCount < 3) {
+            dampening = (double) highScoreCount / 3.0;
+        }
+        double finalScore = Math.min(100.0, Math.round(baseScore * densityMultiplier * distributionMultiplier * dampening * 10.0) / 10.0);
+
         result.put("subnetScore", finalScore);
         return result;
     }
