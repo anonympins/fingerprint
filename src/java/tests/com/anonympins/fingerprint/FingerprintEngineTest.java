@@ -551,4 +551,37 @@ public class FingerprintEngineTest {
         Map<String, Double> score = RequestUtils.getProtocolAnomalyScore(context);
         assertEquals(100.0, score.getOrDefault("protocolAnomalyScore", 0.0));
     }
+
+
+    @Test
+    void testCombinedChallengePageMemSeedPrefix() {
+        // 1. Initialisation triviale du Store (InMemoryStore par défaut)
+        IStore store = new InMemoryStore();
+        // Configure engine to trigger a challenge
+        Map<String, Object> testConfig = SecurityProfiles.createSecurityProfile("balanced", new HashMap<String, Object>() {{
+            put("thresholds", new HashMap<String, Object>() {{
+                put("low", 10); put("medium", 20); put("high", 30); put("block", 95);
+            }});
+            put("weights", new HashMap<String, Object>() {{
+                put("headerAnomalyScore", 1.0); // Ensure a score is generated
+            }});
+            put("challengeNewDevices", true); // Ensure new devices are challenged
+        }});
+        FingerprintEngine testEngine = new FingerprintEngine(testConfig, store);
+
+        // Simulate a request that triggers a challenge
+        RequestContext context = new RequestContext(
+                "127.0.0.1", "/sensitive", new HashMap<>(), new HashMap<>(), null, new HashMap<>(), "1.1"
+        );
+        context.headers.put("user-agent", "TestBrowser");
+        context.preCalculatedScore = 35.0; // Utilise le score pré-calculé pour éviter l'usage de Mockito.spy
+
+        Map<String, Object> decision = testEngine.processRequest(context);
+
+        assertEquals("challenge", decision.get("action"));
+        String htmlBody = (String) decision.get("body");
+
+        // Assert that the memSeed is constructed with the correct leading colon
+        assertTrue(htmlBody.contains("const memSeed = \":\" + nonce + \":\" + clientSecret;"), "The generated HTML should contain the correct memSeed prefix.");
+    }
 }

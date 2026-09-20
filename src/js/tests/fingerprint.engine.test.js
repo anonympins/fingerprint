@@ -130,6 +130,31 @@ describe('FingerprintEngine Challenge Validation', () => {
         expect(await inMemoryStore.has(`secret:${nonce}`)).toBe(false);
     }, 20000);
 
+    it('should generate a combined challenge page containing the correct prefix for the memory seed', async () => {
+        const originalRequestContext = {
+            clientIp: '127.0.0.1',
+            path: '/sensitive-data',
+            cookies: {},
+            query: {},
+            headers: {
+                'user-agent': 'A-Legit-Browser/1.0',
+                'x-device-fingerprint': 'fingerprint-A'
+            },
+            isStatic: false,
+            rawReq: { headers: { accept: 'text/html' } }
+        };
+
+        // Force a high score to trigger a challenge
+        vi.spyOn(engine, 'calculateFinalScore').mockReturnValueOnce(20);
+
+        const challengeDecision = await engine.processRequest(originalRequestContext);
+
+        expect(challengeDecision.action).toBe('challenge');
+        const body = challengeDecision.body;
+        // Verify that the memory seed is constructed with the correct leading colon
+        expect(body).toContain('const memSeed = ":" + nonce + ":" + clientSecret;');
+    });
+
     it('should reject a challenge solution with a mismatched fingerprint', async () => {
         // --- 1. First request: Challenge is issued to "Machine A" ---
         const originalRequestContext = {

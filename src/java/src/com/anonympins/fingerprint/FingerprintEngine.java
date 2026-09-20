@@ -743,6 +743,58 @@ public class FingerprintEngine {
                     }
                 }
             }
+        } else if ("challenge".equals(action)) {
+            response.put("status", 403);
+            String nonce = UUID.randomUUID().toString().replace("-", "");
+            String clientSecret = UUID.randomUUID().toString().replace("-", "");
+
+            int lowThreshold = ((Number) thresholds.getOrDefault("low", 20)).intValue();
+
+            double denominator = highThreshold - lowThreshold;
+            double suspicionFactor = denominator == 0 ? 0.0 : (finalScore - lowThreshold) / denominator;
+            suspicionFactor = Math.max(0.0, Math.min(1.5, suspicionFactor));
+
+            int memDifficulty = (int) Math.round(suspicionFactor * 48);
+
+            String originalFingerprint = RequestUtils.getCompositeDeviceHash(context);
+            String baseBlock = ChallengeUtils.createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint);
+
+            Map<String, Object> cpuChallengeDetails = new HashMap<>();
+            cpuChallengeDetails.put("nonce", nonce);
+            cpuChallengeDetails.put("target", ChallengeUtils.calculateCpuTarget(suspicionFactor, config));
+            cpuChallengeDetails.put("path", context.path);
+
+            Map<String, Object> challengeContext = new HashMap<>();
+            challengeContext.put("clientSecret", clientSecret);
+            challengeContext.put("cpuTarget", cpuChallengeDetails.get("target"));
+            challengeContext.put("suspicionScore", finalScore);
+            challengeContext.put("fingerprint", originalFingerprint);
+            challengeContext.put("memDifficulty", memDifficulty);
+            challengeContext.put("baseBlock", baseBlock);
+            challengeContext.put("originalPath", context.path);
+
+            int challengeTtl = ((Number) config.getOrDefault("challengeTtl", 300)).intValue();
+            store.set("secret:" + nonce, challengeContext, challengeTtl);
+
+            if (deviceData != null) {
+                deviceData.put("lastChallengeNonce", nonce);
+                store.set("device:" + deviceId, deviceData, deviceTtl);
+            }
+
+            List<String> trapUrls = Arrays.asList(
+                ChallengeUtils.generateTrapUrl(nonce),
+                ChallengeUtils.generateTrapUrl(nonce)
+            );
+
+            String pageBody = ChallengeUtils.generateCombinedPoWChallengePage(
+                cpuChallengeDetails,
+                memDifficulty,
+                clientSecret,
+                config,
+                trapUrls,
+                originalFingerprint
+            );
+            response.put("body", pageBody);
         }
 
         if (dryRun) {

@@ -3902,7 +3902,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         await new Promise(r => setTimeout(r, 10)); // Yield to update UI        
         let memSolution = 0;
         try {
-            const memSeed = nonce + ":" + clientSecret;
+            const memSeed = ":" + nonce + ":" + clientSecret;
             memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);
         } catch(e) {
             document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
