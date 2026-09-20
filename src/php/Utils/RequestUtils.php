@@ -1358,6 +1358,10 @@ class RequestUtils
         $suspicionDensity = $highScoreCount / $deviceCount;
         $ipDeviceRatio = $ipCount / $deviceCount;
 
+        // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
+        $uaDeviceRatio = (double)max(1, $uaCount) / $deviceCount;
+        $uaMultiplier = 0.6 + (0.4 * min(2.5, $uaDeviceRatio));
+
         $baseScore = 100.0 * (1.0 - exp(-0.15 * $highScoreCount));
 
         $densityMultiplier = 0.4 + (1.6 * $suspicionDensity);
@@ -1367,7 +1371,7 @@ class RequestUtils
         if( $highScoreCount < 3 ){
             $dampening = $highScoreCount / 3.0;
         }
-        $finalScore = min(100.0, round($baseScore * $densityMultiplier * $distributionMultiplier * $dampening * 10.0) / 10.0);
+        $finalScore = min(100.0, round($baseScore * $densityMultiplier * $distributionMultiplier * $uaMultiplier * $dampening * 10.0) / 10.0);
 
         return ['subnetScore' => $finalScore];
     }

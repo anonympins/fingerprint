@@ -3058,6 +3058,10 @@ async function getSubnetScore(context) {
     const suspicionDensity = highScoreCount / deviceCount;
     const ipDeviceRatio = ipCount / deviceCount;
 
+    // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
+    const uaDeviceRatio = Math.max(1, uaCount) / deviceCount;
+    const uaMultiplier = 0.6 + (0.4 * Math.min(2.5, uaDeviceRatio));
+
     // Base score continu basé sur le volume de menaces
     const baseScore = 100 * (1 - Math.exp(-0.15 * highScoreCount));
 
@@ -3071,7 +3075,7 @@ async function getSubnetScore(context) {
         dampening = highScoreCount / 3.0; // 0.33 pour 1 appareil, 0.66 pour 2 appareils
     }
 
-    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * dampening * 10) / 10);
+    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * uaMultiplier * dampening * 10) / 10);
     return { subnetScore: finalScore };
 }
 
@@ -5129,10 +5133,10 @@ export class FingerprintEngine {
     // Un challenge est nécessaire si :
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
-    // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
+    // 2. La requête est moyennement suspecte (dépasse le seuil 'medium'), ce qui annule la validité du ticket actuel.
     const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
     const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
-    const mustReChallenge = isSuspiciousHigh && hasValidTicket;
+    const mustReChallenge = isSuspiciousMedium && !isBlocked && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
         if (mustReChallenge) {

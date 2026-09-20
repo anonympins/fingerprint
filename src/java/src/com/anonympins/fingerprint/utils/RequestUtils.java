@@ -182,6 +182,13 @@ public class RequestUtils {
                 subnetData.put("ips", ipsList);
             }
 
+            List<String> uasList = (List<String>) subnetData.getOrDefault("uas", new ArrayList<String>());
+            int uaCountDecayed = Math.max(1, (int) Math.floor(uasList.size() / decay));
+            if (uasList.size() > uaCountDecayed) {
+                uasList = new ArrayList<>(uasList.subList(uasList.size() - uaCountDecayed, uasList.size()));
+                subnetData.put("uas", uasList);
+            }
+
             Map<String, Integer> highScoreDevices = (Map<String, Integer>) subnetData.get("highScoreDevices");
             if (highScoreDevices != null) {
                 Map<String, Integer> decayedDevices = new HashMap<>();
@@ -668,6 +675,120 @@ public class RequestUtils {
         return result;
     }
 
+    @SuppressWarnings("unchecked")
+    private static void decaySubnetData(Map<String, Object> subnetData, long now) {
+        long lastActivity = ((Number) subnetData.getOrDefault("lastActivity", now)).longValue();
+        long inactivitySec = now - lastActivity;
+        long halfLives = inactivitySec / 1800L; // Demi-vie de 30 minutes
+
+        if (halfLives > 0) {
+            double decay = Math.pow(2, halfLives);
+            int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
+            subnetData.put("highScoreCount", Math.max(0, (int) Math.floor(highScoreCount / decay)));
+
+            Map<String, Object> highScoreDevices = (Map<String, Object>) subnetData.get("highScoreDevices");
+            if (highScoreDevices != null) {
+                List<String> toRemove = new ArrayList<>();
+                for (Map.Entry<String, Object> entry : highScoreDevices.entrySet()) {
+                    int val = ((Number) entry.getValue()).intValue();
+                    int decayedVal = (int) Math.floor(val / decay);
+                    if (decayedVal <= 0) {
+                        toRemove.add(entry.getKey());
+                    } else {
+                        entry.setValue(decayedVal);
+                    }
+                }
+                for (String key : toRemove) {
+                    highScoreDevices.remove(key);
+                }
+            }
+
+            for (String field : Arrays.asList("deviceIds", "ips", "uas")) {
+                List<Object> list = (List<Object>) subnetData.get(field);
+                if (list != null) {
+                    int newLen = Math.max(0, (int) Math.floor(list.size() / decay));
+                    if (newLen < list.size()) {
+                        subnetData.put(field, new ArrayList<>(list.subList(0, newLen)));
+                    }
+                }
+            }
+
+            subnetData.put("lastActivity", now - (inactivitySec % 1800L));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void updateSubnetMetrics(IStore store, RequestContext context, String deviceId, double finalScore) {
+        String subnet = getIpSubnet(context.clientIp, 24, 48);
+        if (subnet == null) return;
+
+        String key = "subnet:" + subnet;
+        Map<String, Object> subnetData = (Map<String, Object>) store.get(key);
+        if (subnetData == null) {
+            subnetData = new HashMap<>();
+            subnetData.put("highScoreCount", 0);
+            subnetData.put("deviceIds", new ArrayList<String>());
+            subnetData.put("highScoreDevices", new HashMap<String, Integer>());
+            subnetData.put("lastActivity", 0L);
+            subnetData.put("ips", new ArrayList<String>());
+            subnetData.put("uas", new ArrayList<String>());
+        }
+
+        if (!subnetData.containsKey("highScoreDevices")) {
+            subnetData.put("highScoreDevices", new HashMap<String, Integer>());
+        }
+        if (!subnetData.containsKey("ips")) {
+            subnetData.put("ips", new ArrayList<String>());
+        }
+        if (!subnetData.containsKey("uas")) {
+            subnetData.put("uas", new ArrayList<String>());
+        }
+
+        long now = System.currentTimeMillis() / 1000L;
+        decaySubnetData(subnetData, now);
+
+        String currentDeviceHash = getCompositeDeviceHash(context);
+        String stableFpId = FingerprintBuilder.cyrb53(extractStablePart(currentDeviceHash), 0);
+
+        Map<String, Object> highScoreDevices = (Map<String, Object>) subnetData.get("highScoreDevices");
+        int currentDeviceContributions = ((Number) highScoreDevices.getOrDefault(stableFpId, 0)).intValue();
+        if (currentDeviceContributions < 1 && finalScore < 95) {
+            highScoreDevices.put(stableFpId, currentDeviceContributions + 1);
+            int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
+            subnetData.put("highScoreCount", highScoreCount + 1);
+        }
+
+        List<String> deviceIds = (List<String>) subnetData.get("deviceIds");
+        if (!deviceIds.contains(stableFpId)) {
+            deviceIds.add(stableFpId);
+        }
+
+        List<String> ips = (List<String>) subnetData.get("ips");
+        if (!ips.contains(context.clientIp)) {
+            ips.add(context.clientIp);
+        }
+
+        String userAgent = context.getHeader("user-agent");
+        List<String> uas = (List<String>) subnetData.get("uas");
+        if (userAgent != null && !userAgent.isEmpty() && !uas.contains(userAgent)) {
+            uas.add(userAgent);
+        }
+
+        subnetData.put("lastActivity", now);
+
+        if (deviceIds.size() > 100) {
+            String oldDeviceId = deviceIds.remove(0);
+            if (highScoreDevices.containsKey(oldDeviceId)) {
+                int oldContributions = ((Number) highScoreDevices.remove(oldDeviceId)).intValue();
+                int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
+                subnetData.put("highScoreCount", Math.max(0, highScoreCount - oldContributions));
+            }
+        }
+        if (ips.size() > 100) ips.remove(0);
+        if (uas.size() > 50) uas.remove(0);
+
+        store.set(key, subnetData, 86400);
+    }
 
     @SuppressWarnings("unchecked")
     public static Map<String, Double> getSubnetScore(IStore store, RequestContext context, String currentDeviceId) {
@@ -678,20 +799,23 @@ public class RequestUtils {
             return result;
         }
 
-        Map<String, Object> subnetData = (Map<String, Object>) store.get("subnet:" + subnet);
+        String key = "subnet:" + subnet;
+        Map<String, Object> subnetData = (Map<String, Object>) store.get(key);
         if (subnetData == null) {
             result.put("subnetScore", 0.0);
             return result;
         }
 
-        long now = System.currentTimeMillis();
-        applySubnetDecay(store, subnet, subnetData, now);
+        long now = System.currentTimeMillis() / 1000L;
+        decaySubnetData(subnetData, now);
 
         int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
-        List<String> deviceIdsList = (List<String>) subnetData.getOrDefault("deviceIds", new ArrayList<String>());
-        int deviceCount = deviceIdsList.size();
-        List<String> ipsList = (List<String>) subnetData.getOrDefault("ips", new ArrayList<String>());
-        int ipCount = ipsList.size();
+        List<?> deviceIds = (List<?>) subnetData.get("deviceIds");
+        int deviceCount = deviceIds != null ? deviceIds.size() : 0;
+        List<?> ips = (List<?>) subnetData.get("ips");
+        int ipCount = ips != null ? ips.size() : 1;
+        List<?> uas = (List<?>) subnetData.get("uas");
+        int uaCount = uas != null ? uas.size() : 1;
 
         if (deviceCount == 0) {
             result.put("subnetScore", 0.0);
@@ -701,6 +825,10 @@ public class RequestUtils {
         double suspicionDensity = (double) highScoreCount / deviceCount;
         double ipDeviceRatio = (double) ipCount / deviceCount;
 
+        // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
+        double uaDeviceRatio = (double) Math.max(1, uaCount) / deviceCount;
+        double uaMultiplier = 0.6 + (0.4 * Math.min(2.5, uaDeviceRatio));
+
         double baseScore = 100.0 * (1.0 - Math.exp(-0.15 * highScoreCount));
 
         double densityMultiplier = 0.4 + (1.6 * suspicionDensity);
@@ -708,10 +836,10 @@ public class RequestUtils {
 
         double dampening = 1.0;
         if (highScoreCount < 3) {
-            dampening = (double) highScoreCount / 3.0;
+            dampening = highScoreCount / 3.0;
         }
-        double finalScore = Math.min(100.0, Math.round(baseScore * densityMultiplier * distributionMultiplier * dampening * 10.0) / 10.0);
 
+        double finalScore = Math.min(100.0, Math.round(baseScore * densityMultiplier * distributionMultiplier * uaMultiplier * dampening * 10.0) / 10.0);
         result.put("subnetScore", finalScore);
         return result;
     }
@@ -1365,76 +1493,6 @@ public class RequestUtils {
 
     public static double getIpReputationScore(IStore store, String clientIp) {
         return 0.0;
-    }
-
-    public static void updateSubnetMetrics(IStore store, RequestContext context, String deviceId, double finalScore) {
-        String subnet = getIpSubnet(context.clientIp, 24, 48);
-        if (subnet == null) return;
-        long now = System.currentTimeMillis();
-        String key = "subnet:" + subnet;
-        @SuppressWarnings("unchecked")
-        Map<String, Object> subnetData = (Map<String, Object>) store.get(key);
-        if (subnetData == null) {
-            subnetData = new HashMap<>();
-            subnetData.put("highScoreCount", 0);
-            subnetData.put("deviceIds", new ArrayList<String>());
-            subnetData.put("highScoreDevices", new HashMap<String, Integer>());
-            subnetData.put("lastActivity", now);
-            subnetData.put("ips", new ArrayList<String>());
-            subnetData.put("uas", new ArrayList<String>());
-        }else {
-            applySubnetDecay(store, subnet, subnetData, now);
-        }
-
-        @SuppressWarnings("unchecked")
-        Map<String, Integer> highScoreDevices = (Map<String, Integer>) subnetData.get("highScoreDevices");
-        @SuppressWarnings("unchecked")
-        List<String> deviceIds = (List<String>) subnetData.get("deviceIds");
-        @SuppressWarnings("unchecked")
-        List<String> ips = (List<String>) subnetData.get("ips");
-        @SuppressWarnings("unchecked")
-        List<String> uas = (List<String>) subnetData.get("uas");
-
-        String currentDeviceHash = getCompositeDeviceHash(context);
-        String stableFpId = FingerprintBuilder.cyrb53(extractStablePart(currentDeviceHash), 0);
-
-        int currentDeviceContributions = highScoreDevices.getOrDefault(stableFpId, 0);
-        if (currentDeviceContributions < 1) { // Limit contributions per device
-            highScoreDevices.put(stableFpId, currentDeviceContributions + 1);
-            subnetData.put("highScoreCount", ((Number) subnetData.get("highScoreCount")).intValue() + 1);
-        }
-
-        if (!deviceIds.contains(stableFpId)) {
-            deviceIds.add(stableFpId);
-        }
-
-        if (!ips.contains(context.clientIp)) {
-            ips.add(context.clientIp);
-        }
-
-        String userAgent = context.getHeader("user-agent");
-        if (userAgent != null && !userAgent.isEmpty() && !uas.contains(userAgent)) {
-            uas.add(userAgent);
-        }
-
-        subnetData.put("lastActivity", now);
-
-        // Pruning logic
-        if (deviceIds.size() > 100) {
-            String oldDeviceId = deviceIds.remove(0);
-            if (highScoreDevices.containsKey(oldDeviceId)) {
-                int oldContributions = highScoreDevices.remove(oldDeviceId);
-                subnetData.put("highScoreCount", ((Number) subnetData.get("highScoreCount")).intValue() - oldContributions);
-            }
-        }
-        if (ips.size() > 100) {
-            ips.remove(0);
-        }
-        if (uas.size() > 50) {
-            uas.remove(0);
-        }
-
-        store.set(key, subnetData, 86400); // 24-hour TTL
     }
 
     /**

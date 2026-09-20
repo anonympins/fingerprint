@@ -1908,12 +1908,29 @@ class RequestUtils:
         return False
 
     @staticmethod
-    async def update_subnet_metrics(store, client_ip: str, device_id: str, final_score: float) -> None:
+    async def update_subnet_metrics(store, context: RequestContext, device_id: str, final_score: float) -> None:
+        if isinstance(context, str):
+            client_ip = context
+            user_agent = ""
+        else:
+            client_ip = getattr(context, "client_ip", "")
+            headers = getattr(context, "headers", None)
+            user_agent = headers.get("user-agent", "") if (headers and hasattr(headers, "get")) else ""
+
         subnet = get_ip_subnet(client_ip)
         if not subnet: return
         key = f"subnet:{subnet}"
-        subnet_data = await store.get(key) or {"highScoreCount": 0, "deviceIds": [], "highScoreDevices": {}, "lastActivity": 0}
+        subnet_data = await store.get(key) or {
+            "highScoreCount": 0,
+            "deviceIds": [],
+            "highScoreDevices": {},
+            "lastActivity": 0,
+            "ips": [],
+            "uas": []
+        }
         subnet_data.setdefault("highScoreDevices", {})
+        subnet_data.setdefault("ips", [])
+        subnet_data.setdefault("uas", [])
         now = int(time.time())
         RequestUtils._decay_subnet_data(subnet_data, now)
 
@@ -1927,16 +1944,32 @@ class RequestUtils:
 
         if device_id not in subnet_data["deviceIds"]:
             subnet_data["deviceIds"].append(device_id)
+
+        if client_ip not in subnet_data["ips"]:
+            subnet_data["ips"].append(client_ip)
+
+        if user_agent and user_agent not in subnet_data["uas"]:
+            subnet_data["uas"].append(user_agent)
+
         subnet_data["lastActivity"] = now
         if len(subnet_data["deviceIds"]) > 100:
             old_device_id = subnet_data["deviceIds"].pop(0)
             if old_device_id in subnet_data["highScoreDevices"]:
                 old_contrib = subnet_data["highScoreDevices"].pop(old_device_id)
                 subnet_data["highScoreCount"] = max(0, subnet_data["highScoreCount"] - old_contrib)
+        if len(subnet_data["ips"]) > 100:
+            subnet_data["ips"].pop(0)
+        if len(subnet_data["uas"]) > 50:
+            subnet_data["uas"].pop(0)
         await store.set(key, subnet_data, 86400)
 
     @staticmethod
-    async def get_subnet_score(store, client_ip: str, current_device_id: str) -> Dict[str, float]:
+    async def get_subnet_score(store, client_ip_or_context: str, current_device_id: str) -> Dict[str, float]:
+        if isinstance(client_ip_or_context, str):
+            client_ip = client_ip_or_context
+        else:
+            client_ip = getattr(client_ip_or_context, "client_ip", "")
+
         subnet = get_ip_subnet(client_ip)
         if not subnet: return {"subnetScore": 0.0}
         key = f"subnet:{subnet}"
@@ -1945,13 +1978,39 @@ class RequestUtils:
         now = int(time.time())
         if RequestUtils._decay_subnet_data(subnet_data, now):
             await store.set(key, subnet_data, 86400)
+            
         high_score_count = subnet_data.get("highScoreCount", 0)
-        device_count = len(subnet_data.get("deviceIds", []))
-        score = 0.0
-        if device_count > 10:
-            score += min(80.0, (device_count - 10) * 5)
-        score += min(40.0, high_score_count * 2)
-        return {"subnetScore": min(100.0, score)}
+        device_ids = subnet_data.get("deviceIds", [])
+        device_count = len(device_ids)
+        ips = subnet_data.get("ips", [])
+        ip_count = len(ips) if ips else 1
+        uas = subnet_data.get("uas", [])
+        ua_count = len(uas) if uas else 1
+
+        if device_count == 0:
+            return {"subnetScore": 0.0}
+
+        suspicion_density = high_score_count / device_count
+        ip_device_ratio = ip_count / device_count
+
+        # Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
+        ua_device_ratio = max(1, ua_count) / device_count
+        ua_multiplier = 0.6 + (0.4 * min(2.5, ua_device_ratio))
+
+        # Base score continu basé sur le volume de menaces
+        base_score = 100.0 * (1.0 - math.exp(-0.15 * high_score_count))
+
+        # Multiplicateurs continus
+        density_multiplier = 0.4 + (1.6 * suspicion_density)
+        distribution_multiplier = 0.5 + (1.0 * ip_device_ratio)
+
+        # Amortissement pour éviter les faux positifs sur les réseaux NAT résidentiels
+        dampening = 1.0
+        if high_score_count < 3:
+            dampening = high_score_count / 3.0
+
+        final_score = min(100.0, round(base_score * density_multiplier * distribution_multiplier * ua_multiplier * dampening * 10.0) / 10.0)
+        return {"subnetScore": final_score}
 
     @staticmethod
     def get_tcp_anomaly_score(context: RequestContext) -> Dict[str, float]:
@@ -3524,7 +3583,7 @@ class FingerprintEngine:
             # Utilise l'identifiant matériel stable pour éviter les faux positifs lors du cookie dropping
             current_hash = self.get_composite_device_hash(context)
             stable_fp_id = str(cyrb53(self._extract_stable_part(current_hash)))
-            await RequestUtils.update_subnet_metrics(self.store, client_ip, stable_fp_id, score)
+            await RequestUtils.update_subnet_metrics(self.store, context, stable_fp_id, score)
             MetricsManager.observe_value("suspicion_score", score, {"action": "high_score_subnet_update"})
 
 
@@ -3540,7 +3599,9 @@ class FingerprintEngine:
             return {"action": "block", "status": 403, "body": "Forbidden"}
 
         high_threshold = self.thresholds.get("high", 75)
-        must_rechallenge = score >= high_threshold and has_valid_ticket and score > 0
+        medium_threshold = self.thresholds.get("medium", 45)
+        must_rechallenge = score >= medium_threshold and has_valid_ticket and score > 0 and not is_blocked
+
         low_threshold = self.thresholds.get("low", 20)
 
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
