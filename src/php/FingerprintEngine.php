@@ -1233,7 +1233,8 @@
 
          // 5. Prendre une décision basée sur le score - Vérifier le blocage d'abord.
          $blockThreshold = $thresholds['block'] ?? 95;
-         if ($finalScore >= $blockThreshold) {
+         $isBlocked = $finalScore >= $blockThreshold;
+         if ($isBlocked) {
              if ($this->logger) {
                 MetricsManager::incrementCounter('requests_total', ['status' => 'blocked']);
                  $this->logger->log('info', 'request_blocked', ['deviceId' => $deviceId, 'score' => $finalScore, 'vector' => $suspicionVector]);
@@ -1296,7 +1297,7 @@
              }
 
              $highThreshold = $thresholds['high'] ?? 75;
-             $mustReChallenge = $finalScore >= $highThreshold && $hasValidTicket && $finalScore > 0;
+             $mustReChallenge = $finalScore >= $highThreshold && $hasValidTicket && $finalScore > 0 && !$isBlocked;
 
              $lowThreshold = $thresholds['low'] ?? 20;
              if (($finalScore >= $lowThreshold && !$hasValidTicket) || $mustReChallenge) {

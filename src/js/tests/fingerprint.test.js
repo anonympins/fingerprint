@@ -2414,7 +2414,7 @@ describe('Subnet Scoring (Node.js)', () => {
             deviceIds: deviceIds, // count = 20. score += (20-10)*5 = 50
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-        expect(subnetScore).toBe(100);
+            expect(subnetScore).toBe(94.4);
     });
 });
 

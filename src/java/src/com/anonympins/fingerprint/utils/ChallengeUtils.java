@@ -1280,4 +1280,167 @@ public class ChallengeUtils {
         }
         return false;
     }
+
+
+    private static final String[] TRAP_URL_TEMPLATES = {
+            "/includes/config-{RANDOM}.php",
+            "/.env.{RANDOM}",
+            "/backups/db_backup_{RANDOM}.sql.gz",
+            "/api/v1/internal/status?trace={RANDOM}",
+            "/_private/deploy_key_{RANDOM}.pem",
+            "/logs/app_error_{RANDOM}.log",
+            "/.git/config_{RANDOM}"
+    };
+
+    public static String generateTrapUrl(String nonce) {
+        String template = TRAP_URL_TEMPLATES[new java.util.Random().nextInt(TRAP_URL_TEMPLATES.length)];
+        byte[] randomBytes = new byte[8];
+        new java.security.SecureRandom().nextBytes(randomBytes);
+        StringBuilder sb = new StringBuilder();
+        for (byte b : randomBytes) {
+            sb.append(String.format("%02x", b));
+        }
+        String randomPart = sb.toString();
+        String path = template.replace("{RANDOM}", randomPart);
+        String signature = hmacSha256(nonce + path, getPowSecret()).substring(0, 16);
+        return path + "?sig=" + signature;
+    }
+
+    public static String generateCombinedPoWChallengePage(
+            Map<String, Object> cpuChallengeDetails,
+            int memoryDifficulty,
+            String clientSecret,
+            Map<String, Object> securityConfig,
+            List<String> trapUrls,
+            String originalFingerprint
+    ) {
+        String nonce = (String) cpuChallengeDetails.get("nonce");
+        String target = (String) cpuChallengeDetails.get("target");
+        String path = (String) cpuChallengeDetails.get("path");
+        String solverCode = getPowSolverCode();
+        String baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint);
+        byte[] baseBlockBytes = baseBlock.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        StringBuilder sbBytes = new StringBuilder("[");
+        for (int i = 0; i < baseBlockBytes.length; i++) {
+            sbBytes.append(baseBlockBytes[i] & 0xFF);
+            if (i < baseBlockBytes.length - 1) {
+                sbBytes.append(",");
+            }
+        }
+        sbBytes.append("]");
+        String[] trapTags = {"div", "span", "p", "section"};
+        String selectedTrapTag = trapTags[new java.util.Random().nextInt(trapTags.length)];
+        String[] layoutProps = {
+                "position:absolute;left:-9999px;top:-9999px;transform:scale(0);pointer-events:none;",
+                "position:fixed;left:-8888px;top:-8888px;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden;",
+                "display:none;visibility:hidden;pointer-events:none;"
+        };
+        String selectedLayout = layoutProps[new java.util.Random().nextInt(layoutProps.length)];
+        StringBuilder trapLinks = new StringBuilder();
+        for (int i = 0; i < trapUrls.size(); i++) {
+            int nestingType = new java.util.Random().nextInt(3);
+            String innerHtml = (nestingType == 1) ? "<b>&gt; " + (i + 1) + "</b>" :
+                    ((nestingType == 2) ? "<i>&gt; " + (i + 1) + "</i>" :
+                            "<span>&gt; " + (i + 1) + "</span>");
+            trapLinks.append("<a href=\"").append(trapUrls.get(i)).append("\" tabindex=\"-1\">").append(innerHtml).append("</a> ");
+        }
+        String trapContainerHtml = "<" + selectedTrapTag + " style=\"" + selectedLayout + "\" aria-hidden=\"true\">" + trapLinks.toString().trim() + "</" + selectedTrapTag + ">";
+        String safePath = escapeJson(path);
+        String safeNonce = escapeJson(nonce);
+        String safeClientSecret = escapeJson(clientSecret);
+        String challengeScript =
+                "          async function solve() {\n" +
+                        "            const nonce = " + safeNonce + ";\n" +
+                        "            const path = " + safePath + ";\n" +
+                        "            const clientSecret = " + safeClientSecret + ";\n" +
+                        "            const cpuTarget = BigInt(\"0x\" + \"" + target + "\");\n" +
+                        "            const memDifficulty = " + memoryDifficulty + ";\n" +
+                        "            const baseBlock = new Uint8Array(" + sbBytes.toString() + ");\n\n" +
+                        "            document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';\n" +
+                        "            const cpuSolution = await window.solveCpuChallengeInline(baseBlock, cpuTarget, (progress) => {});\n\n" +
+                        "            if (memDifficulty > 0) {\n" +
+                        "                document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';\n" +
+                        "                await new Promise(r => setTimeout(r, 10));\n" +
+                        "            }\n" +
+                        "            let memSolution = 0;\n" +
+                        "            try {\n" +
+                        "                const memSeed = \":\" + nonce + \":\" + clientSecret;\n" +
+                        "                memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);\n" +
+                        "            } catch(e) {\n" +
+                        "                document.getElementById('loader').innerText = \"Error: Insufficient memory. Please refresh.\";\n" +
+                        "                return;\n" +
+                        "            }\n\n" +
+                        "            const finalUrl = path + \"?pow_type=cpu_mem&pow_nonce=\" + nonce + \"&pow_solution_cpu=\" + cpuSolution + \"&pow_solution_mem=\" + encodeURIComponent(JSON.stringify(memSolution));\n" +
+                        "            window.location.href = finalUrl;\n" +
+                        "          }\n" +
+                        "          solve();\n";
+        String htmlTemplate = "<html><head><title>Advanced Security Check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>";
+        String customTemplatePath = (String) securityConfig.get("challengePagePath");
+        if (customTemplatePath != null) {
+            try {
+                java.nio.file.Path p = java.nio.file.Paths.get(customTemplatePath);
+                if (java.nio.file.Files.exists(p)) {
+                    htmlTemplate = java.nio.file.Files.readString(p, java.nio.charset.StandardCharsets.UTF_8);
+                }
+            } catch (Exception e) {}
+        }
+        return htmlTemplate
+                .replace("<!-- FINGERPRINT_SOLVER_SCRIPT -->", solverCode)
+                .replace("<!-- FINGERPRINT_CHALLENGE_SCRIPT -->", challengeScript)
+                .replace("<!-- FINGERPRINT_TRAPS -->", trapContainerHtml);
+    }
+
+    private static String getPowSolverCode() {
+        try {
+            java.nio.file.Path[] paths = {
+                    java.nio.file.Paths.get("..", "public", "pow.solver.inline.js"),
+                    java.nio.file.Paths.get("js", "pow.solver.inline.js"),
+                    java.nio.file.Paths.get("src", "js", "pow.solver.inline.js"),
+                    java.nio.file.Paths.get("src", "main", "resources", "pow.solver.inline.js")
+            };
+            for (java.nio.file.Path p : paths) {
+                if (java.nio.file.Files.exists(p)) {
+                    return new String(java.nio.file.Files.readAllBytes(p), java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+            try (java.io.InputStream is = ChallengeUtils.class.getResourceAsStream("/pow.solver.inline.js")) {
+                if (is != null) {
+                    java.io.ByteArrayOutputStream buffer = new java.io.ByteArrayOutputStream();
+                    int nRead;
+                    byte[] data = new byte[1024];
+                    while ((nRead = is.read(data, 0, data.length)) != -1) {
+                        buffer.write(data, 0, nRead);
+                    }
+                    buffer.flush();
+                    return new String(buffer.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+        } catch (Exception e) {}
+        return "";
+    }
+
+    private static String hmacSha256(String data, String key) {
+        try {
+            javax.crypto.Mac sha256HMAC = javax.crypto.Mac.getInstance("HmacSHA256");
+            javax.crypto.spec.SecretKeySpec secretKey = new javax.crypto.spec.SecretKeySpec(key.getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256");
+            sha256HMAC.init(secretKey);
+            byte[] hash = sha256HMAC.doFinal(data.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : hash) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static String escapeJson(String input) {
+        if (input == null) return "null";
+        return "\"" + input.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t") + "\"";
+    }
 }

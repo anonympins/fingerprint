@@ -304,6 +304,89 @@ class ProblemManager
     }
 
     /**
+     * S'assure qu'un problème a une solution initiale. Si non, en génère une.
+     *
+     * @param array &$problem Le problème à vérifier (passé par référence).
+     */
+    private function ensureInitialSolution(array &$problem): void
+    {
+        if (!empty($problem['state']['bestSolution'])) {
+            return;
+        }
+
+        $scoreFunction = $problem['workUnit']['scoreFunction'] ?? null;
+        $initialSolutionSourceKey = $problem['workUnit']['initialSolutionSource'] ?? '';
+        $initialSolution = $problem['payload'][$initialSolutionSourceKey] ?? null;
+
+        if ($scoreFunction && is_array($initialSolution)) {
+            $score = $scoreFunction($initialSolution, $problem['payload'] ?? []);
+            $problem['state']['bestSolution'] = $initialSolution;
+            $problem['state']['bestEnergy'] = $score;
+            $problem['state']['lastUpdate'] = (new \DateTime())->format(\DateTime::ATOM);
+            $this->store->set("problem-state:{$problem['id']}", $problem['state']);
+        }
+    }
+
+    /**
+     * Formate l'état d'un problème pour l'export externe.
+     */
+    private function formatSolution(array $problem): ?array
+    {
+        if (!isset($problem['state'])) {
+            return null;
+        }
+
+        if (($problem['workUnit']['type'] ?? '') === 'multi_objective_genetic_algorithm') {
+            return [
+                'id' => $problem['id'],
+                'solution' => $problem['state']['paretoFront'] ?? [],
+                'score' => count($problem['state']['paretoFront'] ?? []),
+                'lastUpdate' => $problem['state']['lastUpdate'] ?? null,
+            ];
+        }
+
+        return [
+            'id' => $problem['id'],
+            'solution' => $problem['state']['bestSolution'] ?? null,
+            'score' => $problem['state']['bestEnergy'] ?? null,
+            'lastUpdate' => $problem['state']['lastUpdate'] ?? null,
+        ];
+    }
+
+    /**
+     * Récupère la meilleure solution actuellement connue pour un ou plusieurs problèmes.
+     *
+     * @param string|null $problemId L'ID optionnel du problème à consulter.
+     * @return array|null Un tableau associatif ou une liste de tableaux associatifs.
+     */
+    public function getBestSolutions(?string $problemId = null): ?array
+    {
+        $problemsToProcess = [];
+        foreach ($this->problems as &$p) {
+            if ($problemId === null || $p['id'] === $problemId) {
+                if (($p['workUnit']['type'] ?? '') !== 'multi_objective_genetic_algorithm') {
+                    $this->ensureInitialSolution($p);
+                }
+                $problemsToProcess[] = $p;
+            }
+        }
+        unset($p);
+
+        if ($problemId !== null) {
+            return !empty($problemsToProcess) ? $this->formatSolution($problemsToProcess[0]) : null;
+        }
+
+        $results = [];
+        foreach ($this->problems as $p) {
+            $formatted = $this->formatSolution($p);
+            if ($formatted && $formatted['solution'] !== null) {
+                $results[] = $formatted;
+            }
+        }
+        return $results;
+    }
+
+    /**
      * Réinitialise l'instance singleton.
      * @internal Uniquement pour les tests.
      */

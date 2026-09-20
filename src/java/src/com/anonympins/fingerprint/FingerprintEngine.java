@@ -615,6 +615,25 @@ public class FingerprintEngine {
         String deviceId = (String) identity.get("deviceId");
         Map<String, Object> deviceData = (Map<String, Object>) identity.get("deviceData");
         Map<String, Object> newCookie = (Map<String, Object>) identity.get("newCookie");
+            String currentDeviceHash = (String) identity.get("currentDeviceHash");
+
+            // Ticket validation
+            boolean hasValidTicket = false;
+            String powCookie = context.cookies.get("pow_clearance");
+            String zkpProof = context.getHeader("x-zkp-proof");
+            if (zkpProof == null || zkpProof.isEmpty()) {
+                Object rawZkp = context.queryParams.get("pow_zkp");
+                if (rawZkp instanceof String) {
+                    zkpProof = (String) rawZkp;
+                } else if (rawZkp instanceof List && !((List<?>) rawZkp).isEmpty()) {
+                    zkpProof = ((List<?>) rawZkp).get(0).toString();
+                }
+            }
+            boolean allowRoaming = Boolean.TRUE.equals(config.get("allowCrossNetworkRoaming"));
+            String powSecret = (String) config.getOrDefault("powSecret", ChallengeUtils.getPowSecret());
+            if (powCookie != null) {
+                hasValidTicket = ChallengeUtils.isTicketValid(context.clientIp, powCookie, deviceId, currentDeviceHash, powSecret, allowRoaming, store, zkpProof);
+            }
 
         if (deviceData != null && Boolean.TRUE.equals(deviceData.get("webauthnVerified"))) {
             Map<String, Object> res = new HashMap<>();
@@ -652,6 +671,26 @@ public class FingerprintEngine {
             RequestUtils.updateSubnetMetrics(store, context, deviceId, finalScore);
         }
 
+        boolean mustReChallenge = finalScore >= highThreshold && hasValidTicket && finalScore > 0 && finalScore < blockThreshold;
+
+            if (hasValidTicket && !mustReChallenge) {
+                int deviceTtl = 2592000; // 30 jours par défaut en secondes
+                if (config.containsKey("deviceIdCookieMaxAge")) {
+                    deviceTtl = (int) (((Number) config.get("deviceIdCookieMaxAge")).longValue() / 1000);
+                }
+                store.set("device:" + deviceId, deviceData, deviceTtl);
+                recordTrafficLog(context, finalScore, suspicionVector);
+
+                Map<String, Object> response = new HashMap<>();
+                response.put("score", 0.0);
+                response.put("vector", suspicionVector);
+                response.put("action", "next");
+                if (newCookie != null) {
+                    response.put("cookie", newCookie);
+                }
+                return response;
+            }
+
         int deviceTtl = 2592000; // 30 jours par défaut en secondes
         if (config.containsKey("deviceIdCookieMaxAge")) {
             deviceTtl = (int) (((Number) config.get("deviceIdCookieMaxAge")).longValue() / 1000);
@@ -667,7 +706,7 @@ public class FingerprintEngine {
         String action = "next";
         if (finalScore >= blockThreshold) {
             action = "block";
-        } else if (finalScore >= highThreshold) {
+            } else if (finalScore >= highThreshold || mustReChallenge) {
             action = "challenge";
         } else if (finalScore >= mediumThreshold) {
             action = "flag";
@@ -679,17 +718,17 @@ public class FingerprintEngine {
             response.put("body", "Forbidden");
 
             // Federated Threat Intelligence & ZKP Synchronization
-            String zkpProof = context.getHeader("x-zkp-proof");
-            if (zkpProof == null || zkpProof.isEmpty()) {
+            String zkpProof2 = context.getHeader("x-zkp-proof");
+            if (zkpProof2 == null || zkpProof2.isEmpty()) {
                 Object rawZkp = context.queryParams.get("pow_zkp");
                 if (rawZkp instanceof String) {
-                    zkpProof = (String) rawZkp;
+                    zkpProof2 = (String) rawZkp;
                 } else if (rawZkp instanceof List && !((List<?>) rawZkp).isEmpty()) {
-                    zkpProof = ((List<?>) rawZkp).get(0).toString();
+                    zkpProof2 = ((List<?>) rawZkp).get(0).toString();
                 }
             }
-            if (zkpProof != null && !zkpProof.isEmpty()) {
-                String[] parts = zkpProof.split(":");
+            if (zkpProof2 != null && !zkpProof2.isEmpty()) {
+                String[] parts = zkpProof2.split(":");
                 if (parts.length == 3) {
                     String zkpY = parts[0];
                     String zkpT = parts[1];
@@ -704,6 +743,58 @@ public class FingerprintEngine {
                     }
                 }
             }
+        } else if ("challenge".equals(action)) {
+            response.put("status", 403);
+            String nonce = UUID.randomUUID().toString().replace("-", "");
+            String clientSecret = UUID.randomUUID().toString().replace("-", "");
+
+            int lowThreshold = ((Number) thresholds.getOrDefault("low", 20)).intValue();
+
+            double denominator = highThreshold - lowThreshold;
+            double suspicionFactor = denominator == 0 ? 0.0 : (finalScore - lowThreshold) / denominator;
+            suspicionFactor = Math.max(0.0, Math.min(1.5, suspicionFactor));
+
+            int memDifficulty = (int) Math.round(suspicionFactor * 48);
+
+            String originalFingerprint = RequestUtils.getCompositeDeviceHash(context);
+            String baseBlock = ChallengeUtils.createCpuChallengeBaseBlock(nonce, clientSecret, originalFingerprint);
+
+            Map<String, Object> cpuChallengeDetails = new HashMap<>();
+            cpuChallengeDetails.put("nonce", nonce);
+            cpuChallengeDetails.put("target", ChallengeUtils.calculateCpuTarget(suspicionFactor, config));
+            cpuChallengeDetails.put("path", context.path);
+
+            Map<String, Object> challengeContext = new HashMap<>();
+            challengeContext.put("clientSecret", clientSecret);
+            challengeContext.put("cpuTarget", cpuChallengeDetails.get("target"));
+            challengeContext.put("suspicionScore", finalScore);
+            challengeContext.put("fingerprint", originalFingerprint);
+            challengeContext.put("memDifficulty", memDifficulty);
+            challengeContext.put("baseBlock", baseBlock);
+            challengeContext.put("originalPath", context.path);
+
+            int challengeTtl = ((Number) config.getOrDefault("challengeTtl", 300)).intValue();
+            store.set("secret:" + nonce, challengeContext, challengeTtl);
+
+            if (deviceData != null) {
+                deviceData.put("lastChallengeNonce", nonce);
+                store.set("device:" + deviceId, deviceData, deviceTtl);
+            }
+
+            List<String> trapUrls = Arrays.asList(
+                ChallengeUtils.generateTrapUrl(nonce),
+                ChallengeUtils.generateTrapUrl(nonce)
+            );
+
+            String pageBody = ChallengeUtils.generateCombinedPoWChallengePage(
+                cpuChallengeDetails,
+                memDifficulty,
+                clientSecret,
+                config,
+                trapUrls,
+                originalFingerprint
+            );
+            response.put("body", pageBody);
         }
 
         if (dryRun) {

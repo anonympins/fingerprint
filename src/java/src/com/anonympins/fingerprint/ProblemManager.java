@@ -293,4 +293,101 @@ public class ProblemManager {
         result.put("task", task);
         return result;
     }
+
+        /**
+         * S'assure qu'un problème a une solution initiale. Si non, en génère une.
+         */
+        @SuppressWarnings("unchecked")
+        private void ensureInitialSolution(Map<String, Object> problem) {
+            Map<String, Object> state = (Map<String, Object>) problem.get("state");
+            if (state == null) {
+                state = new HashMap<>();
+                problem.put("state", state);
+            }
+            if (state.get("bestSolution") != null) {
+                return;
+            }
+
+            Map<String, Object> workUnit = (Map<String, Object>) problem.get("workUnit");
+            if (workUnit == null) return;
+            BiFunction<Object, Map<String, Object>, Double> scoreFunction = 
+                (BiFunction<Object, Map<String, Object>, Double>) workUnit.get("resolvedScoreFunction");
+
+            String initialSolutionSourceKey = (String) workUnit.get("initialSolutionSource");
+            Map<String, Object> payload = (Map<String, Object>) problem.get("payload");
+            if (payload == null) return;
+            Object initialSolution = payload.get(initialSolutionSourceKey);
+
+            if (scoreFunction != null && initialSolution instanceof List) {
+                Double score = scoreFunction.apply(initialSolution, payload);
+                state.put("bestSolution", initialSolution);
+                state.put("bestEnergy", score);
+                state.put("lastUpdate", new java.util.Date().toInstant().toString());
+                store.set("problem-state:" + problem.get("id"), state, null);
+            }
+        }
+
+        /**
+         * Formate l'état d'un problème pour l'export externe.
+         */
+        @SuppressWarnings("unchecked")
+        private Map<String, Object> formatSolution(Map<String, Object> problem) {
+            Map<String, Object> state = (Map<String, Object>) problem.get("state");
+            if (state == null) {
+                return null;
+            }
+
+            Map<String, Object> workUnit = (Map<String, Object>) problem.get("workUnit");
+            String type = workUnit != null ? (String) workUnit.get("type") : "";
+
+            Map<String, Object> formatted = new HashMap<>();
+            formatted.put("id", problem.get("id"));
+            formatted.put("lastUpdate", state.get("lastUpdate"));
+
+            if ("multi_objective_genetic_algorithm".equals(type)) {
+                List<?> paretoFront = (List<?>) state.getOrDefault("paretoFront", new ArrayList<>());
+                formatted.put("solution", paretoFront);
+                formatted.put("score", paretoFront != null ? (double) paretoFront.size() : 0.0);
+            } else {
+                formatted.put("solution", state.get("bestSolution"));
+                formatted.put("score", state.get("bestEnergy"));
+            }
+            return formatted;
+        }
+
+        /**
+         * Récupère la meilleure solution actuellement connue pour un ou plusieurs problèmes.
+         */
+        @SuppressWarnings("unchecked")
+        public Object getBestSolutions(String problemId) {
+            for (Map<String, Object> p : this.problems) {
+                if (problemId == null || problemId.equals(p.get("id"))) {
+                    Map<String, Object> workUnit = (Map<String, Object>) p.get("workUnit");
+                    String type = workUnit != null ? (String) workUnit.get("type") : "";
+                    if (!"multi_objective_genetic_algorithm".equals(type)) {
+                        ensureInitialSolution(p);
+                    }
+                    if (problemId != null) {
+                        return formatSolution(p);
+                    }
+                }
+            }
+
+            if (problemId != null) {
+                return null;
+            }
+
+            List<Map<String, Object>> results = new ArrayList<>();
+            for (Map<String, Object> p : this.problems) {
+                Map<String, Object> formatted = formatSolution(p);
+                if (formatted != null && formatted.get("solution") != null) {
+                    results.add(formatted);
+                }
+            }
+            return results;
+        }
+
+        public Object getBestSolutions() {
+            return getBestSolutions(null);
+        }
 }

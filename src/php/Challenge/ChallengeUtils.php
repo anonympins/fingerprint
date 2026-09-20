@@ -1134,7 +1134,7 @@ JS;
             }
             let memSolution = 0;
             try {
-                const memSeed = nonce + ":" + clientSecret;
+                const memSeed = ":" + nonce + ":" + clientSecret;
                 memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);
             } catch(e) {
                 document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";

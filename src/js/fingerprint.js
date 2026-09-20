@@ -3028,8 +3028,9 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
 async function getSubnetScore(context) {
     const subnet = getIpSubnet(context.clientIp);
     if (!subnet) return { subnetScore: 0 };
+    const key = `subnet:${subnet}`;
 
-    const subnetData = await store.get(`subnet:${subnet}`);
+    const subnetData = await store.get(key);
     if (!subnetData) return { subnetScore: 0 };
 
     const now = Date.now();
@@ -3057,6 +3058,10 @@ async function getSubnetScore(context) {
     const suspicionDensity = highScoreCount / deviceCount;
     const ipDeviceRatio = ipCount / deviceCount;
 
+    // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
+    const uaDeviceRatio = Math.max(1, uaCount) / deviceCount;
+    const uaMultiplier = 0.6 + (0.4 * Math.min(2.5, uaDeviceRatio));
+
     // Base score continu basé sur le volume de menaces
     const baseScore = 100 * (1 - Math.exp(-0.15 * highScoreCount));
 
@@ -3064,7 +3069,13 @@ async function getSubnetScore(context) {
     const densityMultiplier = 0.4 + (1.6 * suspicionDensity); // Favorise les densités de suspicion élevées
     const distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio); // NAT (faible ratio IP/Device) vs Proxy distribué (fort ratio)
 
-    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * 10) / 10);
+    // Amortissement pour éviter les faux positifs sur les réseaux NAT résidentiels (petits nombres d'appareils suspects)
+    let dampening = 1.0;
+    if (highScoreCount < 3) {
+        dampening = highScoreCount / 3.0; // 0.33 pour 1 appareil, 0.66 pour 2 appareils
+    }
+
+    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * uaMultiplier * dampening * 10) / 10);
     return { subnetScore: finalScore };
 }
 
@@ -3891,7 +3902,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
         await new Promise(r => setTimeout(r, 10)); // Yield to update UI        
         let memSolution = 0;
         try {
-            const memSeed = nonce + ":" + clientSecret;
+            const memSeed = ":" + nonce + ":" + clientSecret;
             memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);
         } catch(e) {
             document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
@@ -5033,9 +5044,9 @@ export class FingerprintEngine {
           }
       }
     const isSuspiciousHigh = finalScore >= thresholds.high && !isBlocked && finalScore > 0;
-    const isSuspiciousMedium = finalScore >= thresholds.medium;
-    const isSuspicious = finalScore >= thresholds.low;
-    const isVerySuspicious = finalScore >= thresholds.medium; // Seuil pour le challenge d'optimisation
+    const isSuspiciousMedium = finalScore >= thresholds.medium && finalScore > 0;
+    const isSuspicious = finalScore >= thresholds.low && finalScore > 0;
+    const isVerySuspicious = finalScore >= thresholds.medium && finalScore > 0; // Seuil pour le challenge d'optimisation
 
     // Calculate an analog "suspicion factor" (0 to 1+) for progressive difficulty
     const suspicionFactor = isSuspicious // eslint-disable-line no-nested-ternary
@@ -5122,10 +5133,10 @@ export class FingerprintEngine {
     // Un challenge est nécessaire si :
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
-    // 2. La requête est *très* suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
+    // 2. La requête est très suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
     const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
     const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
-    const mustReChallenge = isSuspiciousHigh && hasValidTicket;
+    const mustReChallenge = isSuspiciousHigh && !isBlocked && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
         if (mustReChallenge) {
@@ -5210,8 +5221,15 @@ export class FingerprintEngine {
             if (isApi) {
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
+                const taskType = challengePayload.challenge.usefulWorkTask.task.type;
+                let dummyResult = { solution: [], energy: 0 };
+                if (taskType === 'multi_objective_genetic_algorithm') {
+                    dummyResult = { paretoFront: [] };
+                } else if (taskType === 'genetic_algorithm_generations') {
+                    dummyResult = { population: [] };
+                }
                 const html = `<html><body><script>
-                    window.location.href = "${path}?pow_type=useful_work_task&pow_nonce=${nonce}&pow_problem_id=${challengePayload.challenge.usefulWorkTask.problemId}&pow_solution_work_result=" + encodeURIComponent(JSON.stringify({ solution: [], energy: 0 }));
+                    window.location.href = "${path}?pow_type=useful_work_task&pow_nonce=${nonce}&pow_problem_id=${challengePayload.challenge.usefulWorkTask.problemId}&pow_solution_work_result=" + encodeURIComponent(JSON.stringify(${JSON.stringify(dummyResult)}));
                 </script></body></html>`;
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: html };
             }
