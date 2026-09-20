@@ -5133,10 +5133,10 @@ export class FingerprintEngine {
     // Un challenge est nécessaire si :
     // 1. La requête est suspecte ET il n'y a pas de ticket valide.
     // OU
-    // 2. La requête est moyennement suspecte (dépasse le seuil 'medium'), ce qui annule la validité du ticket actuel.
+    // 2. La requête est très suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
     const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
     const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
-    const mustReChallenge = isSuspiciousMedium && !isBlocked && hasValidTicket;
+    const mustReChallenge = isSuspiciousHigh && !isBlocked && hasValidTicket;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
         if (mustReChallenge) {

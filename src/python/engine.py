@@ -3600,7 +3600,7 @@ class FingerprintEngine:
 
         high_threshold = self.thresholds.get("high", 75)
         medium_threshold = self.thresholds.get("medium", 45)
-        must_rechallenge = score >= medium_threshold and has_valid_ticket and score > 0
+        must_rechallenge = score >= high_threshold and has_valid_ticket and score > 0 and not is_blocked
 
         low_threshold = self.thresholds.get("low", 20)
 

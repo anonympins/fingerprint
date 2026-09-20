@@ -671,7 +671,7 @@ public class FingerprintEngine {
             RequestUtils.updateSubnetMetrics(store, context, deviceId, finalScore);
         }
 
-            boolean mustReChallenge = finalScore >= mediumThreshold && hasValidTicket && finalScore > 0 && finalScore < blockThreshold;
+        boolean mustReChallenge = finalScore >= highThreshold && hasValidTicket && finalScore > 0 && finalScore < blockThreshold;
 
             if (hasValidTicket && !mustReChallenge) {
                 int deviceTtl = 2592000; // 30 jours par défaut en secondes
