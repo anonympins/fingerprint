@@ -1,3 +1,19 @@
+## Version 0.6.7
+
+- 🧬 **WebAssembly (WASM)** : new client version
+- 🛡️ **Subnet Reputation & Hardware Dampening Adjustments**:
+  - **User Agent-Weighted Subnet Scoring**: Refined the `subnetScore` algorithm by introducing a continuous User Agent-to-Device ratio tracking (`uaDeviceRatio`). This precisely identifies User Agent rotation and browser spoofing originating from the same physical devices within a network block.
+  - **Hardware Change Dampening**: Enhanced identity shift tracking to apply refined dampening rules on hardware profile modifications, preventing volatile transient headers from triggering false-positive rotation penalties.
+
+- 🧠 **uPoW & Problem Manager Hardening**:
+  - Pareto front integration fixed
+  - Best solutions available for PHP/Java
+  - **Expanded Test Coverage**: Significantly increased unit test coverage for the `ProblemManager` and memory-hard seed validation across both Node.js and Java (via Mockito) environments.
+
+- 📝 **Documentation & Infrastructure**:
+  - Added `problem_manager.md` providing comprehensive architectural documentation, configuration reference, and setup guides for the distributed uPoW system.
+  - Updated Maven dependencies (`pom.xml`) and aligned main branch deployment scripts.
+
 ## Version 0.6.6
 
 - 🛡️ **Medium Threshold, Subnet Score & Decay Persistence Fixes**:
