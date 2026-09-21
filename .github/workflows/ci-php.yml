@@ -39,3 +39,16 @@ jobs:
 
       - name: Run Tests
         run: vendor/bin/phpunit
+
+  deploy:
+    name: Trigger Packagist Sync
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Packagist update
+        run: |
+          curl -XPOST -H "Content-Type: application/json" \
+            -d '{"repository":{"url":"https://github.com/${{ github.repository }}"}}' \
+            "https://packagist.org/api/update-package?username=${{ secrets.PACKAGIST_USERNAME }}&apiToken=${{ secrets.PACKAGIST_API_TOKEN }}"
+        # Note : Vous devez définir PACKAGIST_USERNAME et PACKAGIST_API_TOKEN dans les secrets de votre dépôt.
