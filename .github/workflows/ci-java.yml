@@ -63,5 +63,6 @@ jobs:
 
     - name: Publish to GitHub Packages
       run: mvn --batch-mode deploy -DskipTests
+      continue-on-error: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
