@@ -17,5 +17,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/anonympins/fingerprint"
+Repository = "https://github.com/anonympins/fingerprint"
+Issues = "https://github.com/anonympins/fingerprint/issues"
+
 [tool.setuptools.packages.find]
 where = ["."]
