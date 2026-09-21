@@ -5155,14 +5155,7 @@ export class FingerprintEngine {
     const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
     // Correction : Pour éviter une boucle infinie de challenges (qui mène à l'erreur 429),
     // on fait confiance au ticket valide tant qu'il n'a pas expiré.
-        const mustReChallenge = hasValidTicket && !isBlocked && (
-            ((suspicionVector.behaviorScore ?? 0) >= (thresholds.high ?? 75) && (suspicionVector.behaviorScore ?? 0) > 0) ||
-            ((suspicionVector.honeypotScore ?? 0) >= (thresholds.medium ?? 45) && (suspicionVector.honeypotScore ?? 0) > 0) ||
-            ((suspicionVector.botScore ?? 0) >= (thresholds.medium ?? 45) && (suspicionVector.botScore ?? 0) > 0) ||
-            ((suspicionVector.inconsistencyScore ?? 0) >= (thresholds.high ?? 75) && (suspicionVector.inconsistencyScore ?? 0) > 0) ||
-            ((suspicionVector.requestPatternScore ?? 0) >= (thresholds.high ?? 75) && (suspicionVector.requestPatternScore ?? 0) > 0) ||
-            ((suspicionVector.tlsSpoofingScore ?? 0) >= (thresholds.high ?? 75) && (suspicionVector.tlsSpoofingScore ?? 0) > 0)
-        );
+    const mustReChallenge = false;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
         if (mustReChallenge) {

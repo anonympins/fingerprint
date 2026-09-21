@@ -3605,40 +3605,6 @@ class FingerprintEngine:
 
         low_threshold = self.thresholds.get("low", 20)
 
-        zkp_proof = context.headers.get("x-zkp-proof") or context.query_params.get("pow_zkp") or ""
-        if isinstance(zkp_proof, list) and zkp_proof:
-            zkp_proof = zkp_proof[0]
-
-        current_device_hash = identity.get("currentDeviceHash") or identity.get("current_hash") or self.get_composite_device_hash(context)
-        allow_roaming = self.config.get("allowCrossNetworkRoaming", False)
-
-        has_valid_ticket = await ChallengeUtils.is_ticket_valid(
-            ip=context.client_ip,
-            ticket=pow_cookie,
-            device_id=device_id,
-            device_hash=current_device_hash,
-            secret=self.config.get("powSecret") or os.environ.get("POW_SECRET") or "fallback-dev-secret-32-chars-minimum",
-            allow_cross_network_roaming=allow_roaming,
-            store=self.store,
-            zkp_proof=zkp_proof
-        )
-
-        # Correction : Pour éviter une boucle infinie de challenges (qui mène à l'erreur 429),
-        # on fait confiance au ticket valide tant qu'il n'a pas expiré.
-        must_re_challenge = has_valid_ticket and not is_blocked and (
-                ((suspicion_vector.get("behaviorScore") or 0.0) >= (self.thresholds.get("high") or 75.0) and (suspicion_vector.get("behaviorScore") or 0.0) > 0) or
-                ((suspicion_vector.get("honeypotScore") or 0.0) >= (self.thresholds.get("medium") or 45.0) and (suspicion_vector.get("honeypotScore") or 0.0) > 0) or
-                ((suspicion_vector.get("botScore") or 0.0) >= (self.thresholds.get("medium") or 45.0) and (suspicion_vector.get("botScore") or 0.0) > 0) or
-                ((suspicion_vector.get("inconsistencyScore") or 0.0) >= (self.thresholds.get("high") or 75.0) and (suspicion_vector.get("inconsistencyScore") or 0.0) > 0) or
-                ((suspicion_vector.get("requestPatternScore") or 0.0) >= (self.thresholds.get("high") or 75.0) and (suspicion_vector.get("requestPatternScore") or 0.0) > 0) or
-                ((suspicion_vector.get("tlsSpoofingScore") or 0.0) >= (self.thresholds.get("high") or 75.0) and (suspicion_vector.get("tlsSpoofingScore") or 0.0) > 0)
-        )
-
-        is_suspicious = score >= low_threshold
-        if is_suspicious and (not has_valid_ticket or must_re_challenge):
-            if must_re_challenge:
-                self.log('High suspicion score detected - overriding valid ticket to re-issue challenge', {"finalScore": score, "deviceId": device_id})
-
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
             # --- AJOUT: Limiteur de débit (Token Bucket) ---
             rate_limit_passed = await ChallengeUtils.check_challenge_rate_limit(self.store, client_ip)

@@ -671,15 +671,7 @@ public class FingerprintEngine {
             RequestUtils.updateSubnetMetrics(store, context, deviceId, finalScore);
         }
 
-        boolean isBlocked = finalScore >= blockThreshold;
-        boolean mustReChallenge = hasValidTicket && !isBlocked && (
-            (suspicionVector.getOrDefault("behaviorScore", 0.0) >= highThreshold && suspicionVector.getOrDefault("behaviorScore", 0.0) > 0) ||
-            (suspicionVector.getOrDefault("honeypotScore", 0.0) >= mediumThreshold && suspicionVector.getOrDefault("honeypotScore", 0.0) > 0) ||
-            (suspicionVector.getOrDefault("botScore", 0.0) >= mediumThreshold && suspicionVector.getOrDefault("botScore", 0.0) > 0) ||
-            (suspicionVector.getOrDefault("inconsistencyScore", 0.0) >= highThreshold && suspicionVector.getOrDefault("inconsistencyScore", 0.0) > 0) ||
-            (suspicionVector.getOrDefault("requestPatternScore", 0.0) >= highThreshold && suspicionVector.getOrDefault("requestPatternScore", 0.0) > 0) ||
-            (suspicionVector.getOrDefault("tlsSpoofingScore", 0.0) >= highThreshold && suspicionVector.getOrDefault("tlsSpoofingScore", 0.0) > 0)
-        );
+        boolean mustReChallenge = false;
 
             if (hasValidTicket && !mustReChallenge) {
                 int deviceTtl = 2592000; // 30 jours par défaut en secondes

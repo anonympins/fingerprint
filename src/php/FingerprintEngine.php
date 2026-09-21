@@ -1245,14 +1245,7 @@
              }
 
              $highThreshold = $thresholds['high'] ?? 75;
-            $mustReChallenge = $hasValidTicket && !$isBlocked && (
-                (($suspicionVector['behaviorScore'] ?? 0) >= ($thresholds['high'] ?? 75) && ($suspicionVector['behaviorScore'] ?? 0) > 0) ||
-                (($suspicionVector['honeypotScore'] ?? 0) >= ($thresholds['medium'] ?? 45) && ($suspicionVector['honeypotScore'] ?? 0) > 0) ||
-                (($suspicionVector['botScore'] ?? 0) >= ($thresholds['medium'] ?? 45) && ($suspicionVector['botScore'] ?? 0) > 0) ||
-                (($suspicionVector['inconsistencyScore'] ?? 0) >= ($thresholds['high'] ?? 75) && ($suspicionVector['inconsistencyScore'] ?? 0) > 0) ||
-                (($suspicionVector['requestPatternScore'] ?? 0) >= ($thresholds['high'] ?? 75) && ($suspicionVector['requestPatternScore'] ?? 0) > 0) ||
-                (($suspicionVector['tlsSpoofingScore'] ?? 0) >= ($thresholds['high'] ?? 75) && ($suspicionVector['tlsSpoofingScore'] ?? 0) > 0)
-            );
+             $mustReChallenge = $finalScore >= $highThreshold && $hasValidTicket && $finalScore > 0 && !$isBlocked;
 
              $lowThreshold = $thresholds['low'] ?? 20;
              if (($finalScore >= $lowThreshold && !$hasValidTicket) || $mustReChallenge) {
