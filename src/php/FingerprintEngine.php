@@ -1244,8 +1244,8 @@
                  return $decision;
              }
 
-             $highThreshold = $thresholds['high'] ?? 75;
-             $mustReChallenge = $finalScore >= $highThreshold && $hasValidTicket && $finalScore > 0 && !$isBlocked;
+             $mediumThreshold = $thresholds['medium'] ?? 45;
+             $mustReChallenge = ($suspicionVector['honeypotScore'] ?? 0.0) >= $mediumThreshold;
 
              $lowThreshold = $thresholds['low'] ?? 20;
              if (($finalScore >= $lowThreshold && !$hasValidTicket) || $mustReChallenge) {

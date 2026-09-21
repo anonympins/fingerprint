@@ -3601,7 +3601,7 @@ class FingerprintEngine:
         high_threshold = self.thresholds.get("high", 75)
         medium_threshold = self.thresholds.get("medium", 45)
         is_blocked = score >= block_threshold
-        must_rechallenge = False
+            must_rechallenge = suspicion_vector.get("honeypotScore", 0.0) >= medium_threshold
 
         low_threshold = self.thresholds.get("low", 20)
 
