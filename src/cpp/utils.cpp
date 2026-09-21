@@ -4,6 +4,10 @@
 #include <string>
 #include <cmath>
 
+#ifdef __wasm_simd128__
+#include <wasm_simd128.h>
+#endif
+
 namespace Fingerprint::Utils {
 
 namespace {
@@ -221,6 +225,27 @@ float hash_seed_to_float(const std::string& seed) {
 void generate_gpu_pow_trajectory(const std::string& seed, int iterations, float* output) {
     float numeric_seed = hash_seed_to_float(seed);
     float r = 3.9999f;
+#ifdef __wasm_simd128__
+    v128_t r_vec = wasm_f32x4_splat(r);
+    v128_t one_vec = wasm_f32x4_splat(1.0f);
+
+    for (int idx = 0; idx < 64; idx += 4) {
+        float x0 = std::fmod(numeric_seed + (idx + 0) * 0.015f, 1.0f);
+        float x1 = std::fmod(numeric_seed + (idx + 1) * 0.015f, 1.0f);
+        float x2 = std::fmod(numeric_seed + (idx + 2) * 0.015f, 1.0f);
+        float x3 = std::fmod(numeric_seed + (idx + 3) * 0.015f, 1.0f);
+
+        v128_t x_vec = wasm_f32x4_make(x0, x1, x2, x3);
+
+        for (int i = 0; i < iterations; i++) {
+            v128_t one_minus_x = wasm_f32x4_sub(one_vec, x_vec);
+            v128_t temp = wasm_f32x4_mul(x_vec, one_minus_x);
+            x_vec = wasm_f32x4_mul(r_vec, temp);
+        }
+
+        wasm_v128_store(output + idx, x_vec);
+    }
+#else
     for (int idx = 0; idx < 64; idx++) {
         float x = std::fmod(numeric_seed + idx * 0.015f, 1.0f);
         for (int i = 0; i < iterations; i++) {
@@ -228,6 +253,7 @@ void generate_gpu_pow_trajectory(const std::string& seed, int iterations, float*
         }
         output[idx] = x;
     }
+#endif
 }
 
 int32_t solve_cpu_target(const uint8_t* base_block, int base_block_len, const char* target_hex) {

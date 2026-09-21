@@ -1,3 +1,10 @@
+## Version 0.6.8
+
+- 🧹 **Removal of Arbitrary Re-challenging**: Removed the `mustReChallenge` feature which forced an arbitrary re-challenge even when a user presented a valid clearance ticket. The system now relies exclusively on a real-time calculated suspicion score, ensuring a predictable user journey without arbitrary blocks.
+- ⚙️ **WebAssembly & PoW Workers Optimization**: Drastic improvements to the WASM module loading routines and the execution of background threads (`pow.worker.js`). Parallel computations now run more smoothly, strictly adhere to restrictive Content Security Policy (CSP) directives, and benefit from a more robust fallback to the main thread in the absence of support.
+- 🐘 **Native DNS Support in PHP**: Integrated the native `resolveDnsNative` method into the PHP engine for DNS resolution. This method autonomously handles IPv4 (A) and IPv6 (AAAA/PTR) records without external system calls, guaranteeing better performance and increased compatibility with asynchronous environments.
+- 🔑 **Full Transition to Strong Cryptographic Randomness**: Migrated all random generation functions (`random()`, `secureRandomFloat()`) to native API CSPRNGs (`crypto.randomInt` and `crypto.randomBytes`). This permanently eliminates distribution bias (modulo bias) and resolves CodeQL static analysis warnings.
+
 ## Version 0.6.7
 
 - 🧬 **WebAssembly (WASM)** : new client version

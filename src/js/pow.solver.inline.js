@@ -7,10 +7,10 @@
 'use strict';
 
 function secureRandom() {
-    if (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) {
+    if (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.getRandomValues) {
         const array = new Uint32Array(1);
-        (window.crypto || window.msCrypto).getRandomValues(array);
-        return array[0] / 0x100000000;
+        globalThis.crypto.getRandomValues(array);
+        return array[0] / 0xffffffff;
     }
     return Math.random();
 }
@@ -475,7 +475,7 @@ const ClientOptimizers = {
 
         const mutate = (solution) => {
             const newSolution = [...solution];
-            const i = Math.floor(Math.random() * 4);
+            const i = Math.floor(secureRandom() * 4);
             const mutationFactors = [500, 1000, 0.1, 2];
             newSolution[i] += (secureRandom() - 0.5) * mutationFactors[i];
             return newSolution;
@@ -741,18 +741,44 @@ async function solveCpuTargetInline(baseBlock, target, progressCallback) {
         const targetStr = typeof target === 'string' ? target : target.toString(16);
         const targetPtr = wasmModule._malloc(targetStr.length + 1);
         for (let i = 0; i < targetStr.length; i++) {
-            wasmModule.HEAP8[targetPtr + i] = targetStr.charCodeAt(i);
+            wasmModule.HEAPU8[targetPtr + i] = targetStr.charCodeAt(i);
         }
-        wasmModule.HEAP8[targetPtr + targetStr.length] = 0;
-        const solution = wasmModule._solve_cpu_target(ptr, len, targetPtr);
-        wasmModule._free(ptr);
-        wasmModule._free(targetPtr);
-        return solution;
+        wasmModule.HEAPU8[targetPtr + targetStr.length] = 0; // Null-terminator
+        try {
+            const solution = wasmModule._solve_cpu_target(ptr, len, targetPtr);
+            return solution;
+        } finally {
+            wasmModule._free(ptr);
+            wasmModule._free(targetPtr);
+        }
     }
 
         // Try Web Worker execution first if supported and not blocked by CSP
         if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
             try {
+                const staticWorkerPath = window.ClientLibrary?.workerPath || (window.ClientConfig && window.ClientConfig.workerPath);
+                if (staticWorkerPath) {
+                    return await new Promise((resolve, reject) => {
+                        const worker = new Worker(staticWorkerPath);
+                        worker.onmessage = (event) => {
+                            if (event.data.type === 'progress') {
+                                if (progressCallback) progressCallback(event.data.solution);
+                            } else if (event.data.type === 'success') {
+                                resolve(event.data.solution);
+                                worker.terminate();
+                            } else if (event.data.solution !== undefined) {
+                                // Fallback pour compatibilité avec l'ancienne signature
+                                resolve(event.data.solution);
+                                worker.terminate();
+                            }
+                        };
+                        worker.onerror = (err) => {
+                            worker.terminate();
+                            reject(err);
+                        };
+                        worker.postMessage({ baseBlock, target: cpuTarget.toString() });
+                    });
+                }
                 return await new Promise((resolve, reject) => {
                     const workerCode = `
                         self.onmessage = async (e) => {

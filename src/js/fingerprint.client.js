@@ -2,10 +2,10 @@ import {cyrb53 as jsCyrb53, FingerprintBuilder} from './fingerprint.builder.js';
 import {solveChallenge} from './pow.solver.js';
 
 function secureRandom() {
-    if (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) {
+    if (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.getRandomValues) {
         const array = new Uint32Array(1);
-        (window.crypto || window.msCrypto).getRandomValues(array);
-        return array[0] / 0x100000000;
+        globalThis.crypto.getRandomValues(array);
+        return array[0] / 0xffffffff;
     }
     return Math.random();
 }
@@ -1189,6 +1189,7 @@ const ClientLibrary = {
         honeypots = [],
         trapUrls = [], // Nouveau paramètre pour les URL pièges
         wasmPath, // Nouveau paramètre
+        workerPath, // NOUVEAU
         fetch: fetchConfig = {}
     } = config;
 
@@ -1200,6 +1201,9 @@ const ClientLibrary = {
 
     if (mouse) {
         this.startMouseEntropyTracker();
+    }
+    if (workerPath) {
+        this.workerPath = workerPath;
     }
     if (keystrokes) {
         this.startKeystrokeDynamicsTracker();
@@ -1248,10 +1252,22 @@ const ClientLibrary = {
         try {
             // Direct standalone polymorphic WebAssembly loading
             if (wasmPath.endsWith('.wasm')) {
-                const response = await fetch(wasmPath);
-                const arrayBuffer = await response.arrayBuffer();
-                const module = await WebAssembly.compile(arrayBuffer);
-                const instance = await WebAssembly.instantiate(module, {});
+                let instance;
+                if (typeof WebAssembly.instantiateStreaming === 'function') {
+                    try {
+                        const response = await fetch(wasmPath);
+                        const result = await WebAssembly.instantiateStreaming(response, {});
+                        instance = result.instance;
+                    } catch (streamingError) {
+                        console.warn('[Fingerprint] WebAssembly.instantiateStreaming failed, falling back to compile:', streamingError);
+                    }
+                }
+                if (!instance) {
+                    const response = await fetch(wasmPath);
+                    const arrayBuffer = await response.arrayBuffer();
+                    const module = await WebAssembly.compile(arrayBuffer);
+                    instance = await WebAssembly.instantiate(module, {});
+                }
                 const exports = instance.exports;
                 const memory = exports.memory;
                 activeCyrb53 = (str) => {

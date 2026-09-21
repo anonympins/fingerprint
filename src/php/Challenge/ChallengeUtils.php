@@ -15,9 +15,13 @@ use Anonympins\Fingerprint\Utils\RequestUtils;
  */
 class ChallengeUtils
 {
+    /** @var array<string, float> Cache local des floats convertis pour éviter les appels système pack/unpack */
+    private static array $froundCache = [];
+
     private static function fround(float $value): float
     {
-        return unpack('f', pack('f', $value))[1];
+        $key = (string)$value;
+        return self::$froundCache[$key] ?? (self::$froundCache[$key] = unpack('f', pack('f', $value))[1]);
     }
 
     public static function hashSeedToFloat(string $seed): float

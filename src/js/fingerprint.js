@@ -6,7 +6,7 @@ import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
 import {DynamicWasmGenerator} from "./dynamic-wasm.js";
-import {writeFileSync, readFileSync, existsSync} from "node:fs";
+import {writeFileSync, readFileSync, existsSync, promises as fsPromises} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {dirname, join, resolve} from "node:path";
 import {GpuPowSolver} from "./gpu_pow.solver.js";
@@ -28,6 +28,8 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+const secureRandomFloat = () => crypto.randomInt(0, 4294967296) / 4294967296;
 
 let dnsCircuitBreaker = {
   state: 'CLOSED', // 'CLOSED', 'OPEN', 'HALF-OPEN'
@@ -277,9 +279,7 @@ async function ensureLatestMapping() {
             mapping.timestamp = now;
 
             activeMappings.unshift(mapping);
-            if (activeMappings.length > 5) {
-                activeMappings.pop();
-            }
+            activeMappings = activeMappings.slice(0, 5);
             lastMappingTime = now;
 
             try {
@@ -840,17 +840,28 @@ const getPowSecret = () => {
   return secret || "fallback-dev-secret-32-chars-minimum";
 };
 
-let cachedPowSolverCode = null;
 /**
  * Loads the pow.solver.js content for inlining in HTML pages.
  * @returns {string} The solver JavaScript code.
  */
+let cachedPowSolverCode = "";
+async function preloadPowSolverCode() {
+    if (!cachedPowSolverCode) {
+        try {
+            const solverPath = join(__dirname, 'pow.solver.inline.js');
+            cachedPowSolverCode = await fsPromises.readFile(solverPath, 'utf-8');
+        } catch (e) {
+            console.error('[Fingerprint] Failed to pre-load inline solver:', e.message);
+        }
+    }
+}
+
 const getPowSolverCode = () => {
-  if (!cachedPowSolverCode) {
-    const solverPath = join(__dirname, 'pow.solver.inline.js'); // Utilise la version inline
-    cachedPowSolverCode = readFileSync(solverPath, 'utf-8');
-  }
-  return cachedPowSolverCode;
+    if (!cachedPowSolverCode) {
+        const solverPath = join(__dirname, 'pow.solver.inline.js');
+        cachedPowSolverCode = readFileSync(solverPath, 'utf-8');
+    }
+    return cachedPowSolverCode;
 };
 /**
  * Extracts the "stable" part of a fingerprint string.
@@ -1807,7 +1818,7 @@ export async function generateSpaceChallenge(clientIp, nonce, suspicionFactor, o
   const queries = [];
   const maxBlocks = sizeMb * 1024;
   while (queries.length < numQueries) {
-    const idx = Math.floor(Math.random() * maxBlocks);
+    const idx = crypto.randomInt(0, maxBlocks);
     if (!queries.includes(idx)) {
       queries.push(idx);
     }
@@ -1824,7 +1835,7 @@ export async function generateSpaceChallenge(clientIp, nonce, suspicionFactor, o
   const peer = await findPeerInSubnet(clientIp, nonce);
   if (peer) {
     challenge.peerId = peer.nodeId;
-    challenge.peerBlockIdx = Math.floor(Math.random() * maxBlocks);
+    challenge.peerBlockIdx = crypto.randomInt(0, maxBlocks);
 
     await store.set(`coop-assoc:${nonce}`, {
       peerNodeId: peer.nodeId,
@@ -3879,6 +3890,8 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     const clientInitConfig = {
         mouse: true,
         keystrokes: true,
+        wasmPath: securityConfig?.wasmPath || '/fp.wasm',
+        workerPath: securityConfig?.workerPath || '/pow.worker.js',
         trapUrls: trapUrls // On passe directement le tableau d'URL
     };
 
@@ -4116,6 +4129,10 @@ export class FingerprintEngine {
     this._validateConfig(finalConfig); // Validate the configuration
     this.verbose = finalConfig.verbose || false;
     this.dryRun = finalConfig.dryRun || false;
+    
+    // Preload solver file asynchronously to liberate event loop during run
+    preloadPowSolverCode().catch(() => {});
+
     if (finalConfig.reset) {
       this.resetStore().catch(err => {
         console.error('[FingerprintEngine] Failed to reset store on startup:', err.message);
@@ -5136,7 +5153,9 @@ export class FingerprintEngine {
     // 2. La requête est très suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
     const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
     const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
-    const mustReChallenge = isSuspiciousHigh && !isBlocked && hasValidTicket;
+    // Correction : Pour éviter une boucle infinie de challenges (qui mène à l'erreur 429),
+    // on fait confiance au ticket valide tant qu'il n'a pas expiré.
+    const mustReChallenge = false;
 
     if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
         if (mustReChallenge) {
@@ -5489,7 +5508,7 @@ export async function findPeerInSubnet(clientIp, excludeNodeId) {
     if (activePeers.length === 0) return null;
 
     // Select a random peer
-    const randomIndex = Math.floor(Math.random() * activePeers.length);
+    const randomIndex = crypto.randomInt(0, activePeers.length);
     return activePeers[randomIndex];
 }
 
@@ -6646,7 +6665,7 @@ export function sanitizeTrafficData(trafficData) {
   const minDataPoints = 200; // Seuil par défaut
   const maxPassedAllowed = Math.max(minDataPoints, suspiciousLogs.length * 9);
   if (passedLogs.length > maxPassedAllowed) {
-    const shuffledPassed = passedLogs.sort(() => 0.5 - Math.random());
+    const shuffledPassed = passedLogs.sort(() => 0.5 - secureRandomFloat());
     return [...suspiciousLogs, ...shuffledPassed.slice(0, maxPassedAllowed)];
   }
   return [...suspiciousLogs, ...passedLogs];
