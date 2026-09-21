@@ -41,29 +41,14 @@ jobs:
         run: vendor/bin/phpunit
 
   deploy:
-    name: Create GitHub Release
+    name: Trigger Packagist Sync
     needs: build-and-test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
-    permissions:
-      contents: write
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Extract version from CHANGELOG
-      id: get_version
-      run: |
-        VERSION=$(grep -m 1 -oP '(?<=## Version )[0-9.]+' CHANGELOG.md)
-        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
-      continue-on-error: true
-      with:
-        tag_name: v${{ steps.get_version.outputs.VERSION }}
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Trigger Packagist update
+        run: |
+          curl -XPOST -H "Content-Type: application/json" \
+            -d '{"repository":{"url":"https://github.com/${{ github.repository }}"}}' \
+            "https://packagist.org/api/update-package?username=${{ secrets.PACKAGIST_USERNAME }}&apiToken=${{ secrets.PACKAGIST_API_TOKEN }}"
+        # Note : Vous devez définir PACKAGIST_USERNAME et PACKAGIST_API_TOKEN dans les secrets de votre dépôt.
