@@ -81,83 +81,31 @@
          return null;
      }
 
-     private static function dnsResolveUdp(string $query, string $type, float $timeout = 0.5): ?array
+     private static function resolveDnsNative(string $query, string $type): ?array
      {
-         $dnsServer = '8.8.8.8';
-         $port = 53;
-         $fp = @stream_socket_client("udp://$dnsServer:$port", $errno, $errstr, $timeout);
-         if (!$fp) return null;
-         stream_set_timeout($fp, 0, (int)($timeout * 1000000));
-         
-         $id = rand(10000, 65000);
-         $header = pack('n6', $id, 0x0100, 1, 0, 0, 0);
-         
-         $qType = ($type === 'PTR') ? 12 : (($type === 'AAAA') ? 28 : 1);
-         $parts = explode('.', $query);
-         $qName = '';
-         foreach ($parts as $part) {
-             $qName .= chr(strlen($part)) . $part;
-         }
-         $qName .= chr(0);
-         $question = $qName . pack('n2', $qType, 1);
-         
-         if (!@fwrite($fp, $header . $question)) {
-             fclose($fp);
+         $typeMap = [
+             'PTR' => DNS_PTR,
+             'A' => DNS_A,
+             'AAAA' => DNS_AAAA
+         ];
+         $dnsType = $typeMap[$type] ?? null;
+         if ($dnsType === null) {
              return null;
          }
-         
-         $response = @fread($fp, 512);
-         fclose($fp);
-         if (!$response || strlen($response) < 12) return null;
-         
-         $resHeader = unpack('n6', substr($response, 0, 12));
-         if ($resHeader[1] !== $id) return null;
-         
-         $answersCount = $resHeader[4];
-         if ($answersCount <= 0) return [];
-         
-         $offset = 12 + strlen($question);
+
+         $records = @dns_get_record($query, $dnsType);
+         if ($records === false) {
+             return null;
+         }
+
          $results = [];
-         for ($i = 0; $i < $answersCount; $i++) {
-             if ($offset + 12 > strlen($response)) break;
-             if ((ord($response[$offset]) & 0xc0) === 0xc0) {
-                 $offset += 2;
-             } else {
-                 while ($offset < strlen($response) && ord($response[$offset]) !== 0) {
-                     $offset += 1 + ord($response[$offset]);
-                 }
-                 $offset++;
-             }
-             if ($offset + 10 > strlen($response)) break;
-             $typeAndClass = unpack('n2type_class/Nttl/nlen', substr($response, $offset, 10));
-             $rType = $typeAndClass['type_class1'];
-             $rLen = $typeAndClass['len'];
-             $offset += 10;
-             if ($offset + $rLen > strlen($response)) break;
-             $rData = substr($response, $offset, $rLen);
-             $offset += $rLen;
-             
-             if ($rType === 12) {
-                 $ptrName = '';
-                 $p = 0;
-                 while ($p < strlen($rData)) {
-                     $l = ord($rData[$p]);
-                     if ($l === 0) break;
-                     if (($l & 0xc0) === 0xc0) {
-                         break;
-                     }
-                     $ptrName .= substr($rData, $p + 1, $l) . '.';
-                     $p += 1 + $l;
-                 }
-                 $results[] = rtrim($ptrName, '.');
-             } elseif ($rType === 1) {
-                 if ($rLen === 4) {
-                     $results[] = long2ip(unpack('N', $rData)[1]);
-                 }
-             } elseif ($rType === 28) {
-                 if ($rLen === 16) {
-                     $results[] = inet_ntop($rData);
-                 }
+         foreach ($records as $record) {
+             if ($type === 'PTR' && isset($record['target'])) {
+                 $results[] = $record['target'];
+             } elseif ($type === 'A' && isset($record['ip'])) {
+                 $results[] = $record['ip'];
+             } elseif ($type === 'AAAA' && isset($record['ipv6'])) {
+                 $results[] = $record['ipv6'];
              }
          }
          return $results;
@@ -1666,12 +1614,12 @@
 
          try {
              // 1. Reverse DNS lookup with strict 500ms timeout using our custom UDP DNS Client
-             $revName = self::getReverseDnsName($context->client_ip);
+             $revName = self::getReverseDnsName($context->clientIp);
              if (!$revName) {
                  $store->set($cacheKey, 'failed', 300); // 5 min negative caching
                  return false;
              }
-             $hostnames = self::dnsResolveUdp($revName, 'PTR', 0.5);
+             $hostnames = self::resolveDnsNative($revName, 'PTR');
              if ($hostnames === null || empty($hostnames)) {
                  self::recordDnsFailure();
                  $store->set($cacheKey, 'failed', 300); // 5 min negative caching
@@ -1693,7 +1641,7 @@
 
              // 2. Forward DNS lookup with strict 500ms timeout
              $ips = [];
-             $resolvedA = self::dnsResolveUdp($validHostname, 'A', 0.5);
+             $resolvedA = self::resolveDnsNative($validHostname, 'A');
              if ($resolvedA === null) {
                  self::recordDnsFailure();
                  $store->set($cacheKey, 'failed', 300); // 5 min negative caching
@@ -1701,7 +1649,7 @@
              }
              $ips = array_merge($ips, $resolvedA);
 
-             $resolvedAaaa = self::dnsResolveUdp($validHostname, 'AAAA', 0.5);
+             $resolvedAaaa = self::resolveDnsNative($validHostname, 'AAAA');
              if ($resolvedAaaa === null) {
                  self::recordDnsFailure();
                  $store->set($cacheKey, 'failed', 300); // 5 min negative caching
@@ -1709,7 +1657,7 @@
              }
              $ips = array_merge($ips, $resolvedAaaa);
 
-             if (in_array($context->client_ip, $ips, true)) {
+             if (in_array($context->clientIp, $ips, true)) {
                  self::recordDnsSuccess();
                  $store->set($cacheKey, 'verified', 86400);
                  return true;

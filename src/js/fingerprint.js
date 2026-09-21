@@ -3888,6 +3888,8 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     const clientInitConfig = {
         mouse: true,
         keystrokes: true,
+        wasmPath: securityConfig?.wasmPath || '/fp.wasm',
+        workerPath: securityConfig?.workerPath || '/pow.worker.js',
         trapUrls: trapUrls // On passe directement le tableau d'URL
     };
 

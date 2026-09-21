@@ -14,7 +14,7 @@ const __dirname = dirname(__filename);
 function buildWasm() {
   return new Promise((resolve) => {
     console.log('Attempting to build WASM module (optional)...');
-    const command = "em++ src/cpp/main.cpp src/cpp/utils.cpp -o public/fp.js -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='createFingerprintModule' -s \"EXPORTED_FUNCTIONS=['_malloc','_free','_hash_string','_solve_cpu_target','_solve_memory_challenge','_generate_gpu_pow_trajectory']\" -O3 --no-entry";
+    const command = "em++ -msimd128 src/cpp/main.cpp src/cpp/utils.cpp -o public/fp.js -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='createFingerprintModule' -s \"EXPORTED_FUNCTIONS=['_malloc','_free','_hash_string','_solve_cpu_target','_solve_memory_challenge','_generate_gpu_pow_trajectory']\" -O3 --no-entry";
     
     exec(command, (error, stdout, stderr) => {
       if (error) {
