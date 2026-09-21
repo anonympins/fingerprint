@@ -47,8 +47,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Packagist update
+        env:
+          PACKAGIST_USERNAME: ${{ secrets.PACKAGIST_USERNAME }}
+          PACKAGIST_API_TOKEN: ${{ secrets.PACKAGIST_API_TOKEN }}
         run: |
           curl -XPOST -H "Content-Type: application/json" \
-            -d '{"repository":{"url":"https://github.com/${{ github.repository }}"}}' \
-            "https://packagist.org/api/update-package?username=${{ secrets.PACKAGIST_USERNAME }}&apiToken=${{ secrets.PACKAGIST_API_TOKEN }}"
+            -d "{\"repository\":{\"url\":\"https://github.com/${{ github.repository }}\"}}" \
+            "https://packagist.org/api/update-package?username=${PACKAGIST_USERNAME}&apiToken=${PACKAGIST_API_TOKEN}"
         # Note : Vous devez définir PACKAGIST_USERNAME et PACKAGIST_API_TOKEN dans les secrets de votre dépôt.
