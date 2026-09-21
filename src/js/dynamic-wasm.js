@@ -31,19 +31,19 @@ function getRandomNonTrivialOpcodes(tempLocal) {
     const insts = [];
     const ops = [
         // local.get tempLocal, i32.const rand, rotl, local.set tempLocal
-        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(Math.floor(Math.random() * 31) + 1), 0x77, 0x21, tempLocal],
+        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(crypto.randomInt(1, 32)), 0x77, 0x21, tempLocal],
         // local.get tempLocal, i32.const rand, rotr, local.set tempLocal
-        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(Math.floor(Math.random() * 31) + 1), 0x78, 0x21, tempLocal],
+        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(crypto.randomInt(1, 32)), 0x78, 0x21, tempLocal],
         // local.get tempLocal, i32.const rand, xor, local.set tempLocal
-        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(Math.floor(Math.random() * 10000)), 0x73, 0x21, tempLocal],
+        () => [0x20, tempLocal, 0x41, ...encodeSLEB128(crypto.randomInt(0, 10000)), 0x73, 0x21, tempLocal],
         // local.get tempLocal, popcnt, i32.const rand, mul, local.set tempLocal
-        () => [0x20, tempLocal, 0x69, 0x41, ...encodeSLEB128(Math.floor(Math.random() * 1000) + 1), 0x6c, 0x21, tempLocal],
+        () => [0x20, tempLocal, 0x69, 0x41, ...encodeSLEB128(crypto.randomInt(1, 1001)), 0x6c, 0x21, tempLocal],
         // local.get tempLocal, clz, local.get tempLocal, ctz, add, local.set tempLocal
         () => [0x20, tempLocal, 0x67, 0x20, tempLocal, 0x68, 0x6a, 0x21, tempLocal]
     ];
-    const count = 2 + Math.floor(Math.random() * 3);
+    const count = crypto.randomInt(2, 5);
     for (let i = 0; i < count; i++) {
-        const op = ops[Math.floor(Math.random() * ops.length)];
+        const op = ops[crypto.randomInt(0, ops.length)];
         insts.push(...op());
     }
     return insts;
@@ -53,7 +53,7 @@ function generatePolymorphicInstructions(stateLocal = 4, tempLocal = 5) {
     const insts = [];
     
     // Initialize tempLocal with a random value
-    const initVal = Math.floor(Math.random() * 1000) - 500;
+    const initVal = crypto.randomInt(-500, 500);
     insts.push(0x41, ...encodeSLEB128(initVal), 0x21, tempLocal);
 
     // Initialize stateLocal to 0

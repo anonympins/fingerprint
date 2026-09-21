@@ -10,10 +10,10 @@
 'use strict';
 
 function secureRandom() {
-    if (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) {
+    if (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.getRandomValues) {
         const array = new Uint32Array(1);
-        (window.crypto || window.msCrypto).getRandomValues(array);
-        return array[0] / 0x100000000;
+        globalThis.crypto.getRandomValues(array);
+        return array[0] / 0xffffffff;
     }
     return Math.random();
 }
@@ -807,7 +807,7 @@ const ClientOptimizers = {
 
         const mutate = (solution) => {
             const newSolution = [...solution];
-            const i = Math.floor(Math.random() * 4);
+            const i = Math.floor(secureRandom() * 4);
             const mutationFactors = [500, 1000, 0.1, 2];
             newSolution[i] += (secureRandom() - 0.5) * mutationFactors[i];
             return newSolution;

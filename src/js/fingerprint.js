@@ -29,6 +29,8 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+const secureRandomFloat = () => crypto.randomBytes(4).readUInt32BE(0) / 0xffffffff;
+
 let dnsCircuitBreaker = {
   state: 'CLOSED', // 'CLOSED', 'OPEN', 'HALF-OPEN'
   failureCount: 0,
@@ -1816,7 +1818,7 @@ export async function generateSpaceChallenge(clientIp, nonce, suspicionFactor, o
   const queries = [];
   const maxBlocks = sizeMb * 1024;
   while (queries.length < numQueries) {
-    const idx = Math.floor(Math.random() * maxBlocks);
+    const idx = crypto.randomInt(0, maxBlocks);
     if (!queries.includes(idx)) {
       queries.push(idx);
     }
@@ -1833,7 +1835,7 @@ export async function generateSpaceChallenge(clientIp, nonce, suspicionFactor, o
   const peer = await findPeerInSubnet(clientIp, nonce);
   if (peer) {
     challenge.peerId = peer.nodeId;
-    challenge.peerBlockIdx = Math.floor(Math.random() * maxBlocks);
+    challenge.peerBlockIdx = crypto.randomInt(0, maxBlocks);
 
     await store.set(`coop-assoc:${nonce}`, {
       peerNodeId: peer.nodeId,
@@ -5506,7 +5508,7 @@ export async function findPeerInSubnet(clientIp, excludeNodeId) {
     if (activePeers.length === 0) return null;
 
     // Select a random peer
-    const randomIndex = Math.floor(Math.random() * activePeers.length);
+    const randomIndex = crypto.randomInt(0, activePeers.length);
     return activePeers[randomIndex];
 }
 
@@ -6663,7 +6665,7 @@ export function sanitizeTrafficData(trafficData) {
   const minDataPoints = 200; // Seuil par défaut
   const maxPassedAllowed = Math.max(minDataPoints, suspiciousLogs.length * 9);
   if (passedLogs.length > maxPassedAllowed) {
-    const shuffledPassed = passedLogs.sort(() => 0.5 - Math.random());
+    const shuffledPassed = passedLogs.sort(() => 0.5 - secureRandomFloat());
     return [...suspiciousLogs, ...shuffledPassed.slice(0, maxPassedAllowed)];
   }
   return [...suspiciousLogs, ...passedLogs];

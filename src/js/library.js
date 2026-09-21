@@ -19,7 +19,9 @@ import crypto from "node:crypto";
  * Génère un nombre flottant aléatoire entre 0 (inclus) et 1 (exclus).
  * @returns {number}
  */
-const random = () => Math.random();
+const random = () => {
+  return crypto.randomBytes(4).readUInt32BE(0) / 0xffffffff;
+};
 
 const Optimization = {
   // eslint-disable-line no-unused-vars

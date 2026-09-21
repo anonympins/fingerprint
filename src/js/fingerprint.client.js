@@ -2,10 +2,10 @@ import {cyrb53 as jsCyrb53, FingerprintBuilder} from './fingerprint.builder.js';
 import {solveChallenge} from './pow.solver.js';
 
 function secureRandom() {
-    if (typeof window !== 'undefined' && (window.crypto || window.msCrypto)) {
+    if (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.getRandomValues) {
         const array = new Uint32Array(1);
-        (window.crypto || window.msCrypto).getRandomValues(array);
-        return array[0] / 0x100000000;
+        globalThis.crypto.getRandomValues(array);
+        return array[0] / 0xffffffff;
     }
     return Math.random();
 }
