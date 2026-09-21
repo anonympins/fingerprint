@@ -20,7 +20,7 @@ import crypto from "node:crypto";
  * @returns {number}
  */
 const random = () => {
-  return crypto.randomBytes(4).readUInt32BE(0) / 0xffffffff;
+  return crypto.randomInt(0, 4294967296) / 4294967296;
 };
 
 const Optimization = {

@@ -29,7 +29,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const secureRandomFloat = () => crypto.randomBytes(4).readUInt32BE(0) / 0xffffffff;
+const secureRandomFloat = () => crypto.randomInt(0, 4294967296) / 4294967296;
 
 let dnsCircuitBreaker = {
   state: 'CLOSED', // 'CLOSED', 'OPEN', 'HALF-OPEN'
