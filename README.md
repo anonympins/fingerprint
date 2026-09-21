@@ -86,15 +86,11 @@ pip install anonympins-fingerprint
 ```
 
 ### Java
-```bash
-mvn clean install
-```
-
-Then, in your **pom.xml**, add :
+In your **pom.xml**, add :
 ```xml
 <dependency>
     <groupId>com.anonympins</groupId>
-    <artifactId>fingerprint</artifactId>
+    <artifactId>fingerprint-engine</artifactId>
     <version>0.6.8</version>
 </dependency>
 ```
