@@ -476,7 +476,9 @@ function getProtocolAnomalyScore(context) {
             0.0,
             Math.min(100.0, http2Anomaly),
             Math.min(100.0, quicAnomaly)
-        )
+        ),
+        http2AnomalyScore: Math.min(100.0, http2Anomaly),
+        quicAnomalyScore: Math.min(100.0, quicAnomaly)
     };
 }
 /**
