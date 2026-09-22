@@ -1025,13 +1025,20 @@ class RequestUtils
 
     public static function getThreatIntelScore(RequestContext $context, array $threatIntelConfig): array
     {
+        $score = 0.0;
         $zkpY = $context->zkpY;
-        if (empty($zkpY)) {
-            return ['threatIntelScore' => 0.0];
+        if (!empty($zkpY)) {
+            $store = StoreManager::getStore();
+            $isBanned = $store->has("banned-zkp-y:{$zkpY}");
+            if ($isBanned) {
+                $score = 100.0;
+            }
         }
-        $store = StoreManager::getStore();
-        $isBanned = $store->has("banned-zkp-y:{$zkpY}");
-        return ['threatIntelScore' => $isBanned ? 100.0 : 0.0];
+
+        $rttProxyScore = \Anonympins\Fingerprint\Ja3AnomalyDetector::getRttProxyScore($context);
+        $score = max($score, (float)$rttProxyScore);
+
+        return ['threatIntelScore' => $score];
     }
 
     /**
@@ -2030,5 +2037,73 @@ class RequestUtils
         }
 
         return !empty($deviceId) && !empty($deviceHash); // Match d'identité matérielle stricte (deviceId + deviceHash validés par HMAC)
+    }
+
+    private static function imul(int $a, int $b): int
+    {
+        return ($a * $b) & 0xffffffff;
+    }
+
+    public static function cyrb53(string $str, int $seed = 0): int
+    {
+        $h1 = (0xdeadbeef ^ $seed) & 0xffffffff;
+        $h2 = (0x41c6ce57 ^ $seed) & 0xffffffff;
+        for ($i = 0; $i < strlen($str); $i++) {
+            $ch = ord($str[$i]);
+            $h1 = self::imul($h1 ^ $ch, 2654435761);
+            $h2 = self::imul($h2 ^ $ch, 1597334677);
+        }
+        $h1 = self::imul($h1 ^ ($h1 >> 16), 2246822507) ^ self::imul($h2 ^ ($h2 >> 13), 3266489909);
+        $h2 = self::imul($h2 ^ ($h2 >> 16), 2246822507) ^ self::imul($h1 ^ ($h1 >> 13), 3266489909);
+        $unsigned_h1 = $h1 & 0xffffffff;
+        return 4294967296 * (2097151 & $h2) + $unsigned_h1;
+    }
+
+    public static function getVirtualizationAnomalyScore(RequestContext $context): float
+    {
+        $clientFp = $context->headers['x-device-fingerprint'] ?? null;
+        if (!$clientFp) {
+            return 0.0;
+        }
+
+        $fpMap = [];
+        foreach (explode('|', $clientFp) as $part) {
+            $pair = explode(':', $part, 2);
+            if (count($pair) === 2) {
+                $fpMap[$pair[0]] = $pair[1];
+            }
+        }
+
+        $score = 0.0;
+        $clientGpuHash = $fpMap['gpu'] ?? null;
+        if ($clientGpuHash) {
+            $virtualGpus = [
+                "Google SwiftShader", "SwiftShader",
+                "Mesa llvmpipe", "llvmpipe", "Mesa Gallium",
+                "Microsoft Basic Render Driver", "HeadlessChrome",
+                "Intel(R) HD Graphics"
+            ];
+            $virtualGpuHashes = [];
+            foreach ($virtualGpus as $gpu) {
+                $virtualGpuHashes[] = (string)self::cyrb53($gpu);
+            }
+            if (in_array($clientGpuHash, $virtualGpuHashes, true)) {
+                $score += 75.0;
+            }
+        }
+
+        $clientScreenHash = $fpMap['scr'] ?? null;
+        if ($clientScreenHash) {
+            $headlessResolutions = ["800x600_24", "1024x768_24"];
+            $headlessHashes = [];
+            foreach ($headlessResolutions as $res) {
+                $headlessHashes[] = (string)self::cyrb53($res);
+            }
+            if (in_array($clientScreenHash, $headlessHashes, true)) {
+                $score += 25.0;
+            }
+        }
+
+        return min(100.0, $score);
     }
 }

@@ -435,9 +435,9 @@ public class AutoTuner {
         Map<String, List<String>> threatIndicators = new HashMap<>();
         threatIndicators.put("account_takeover", Arrays.asList("requestPatternScore", "behaviorScore", "timeInconsistencyScore", "clickVarianceScore"));
         threatIndicators.put("active_exploitation", Arrays.asList("honeypotScore", "headerAnomalyScore"));
-        threatIndicators.put("mass_scraping", Arrays.asList("requestPatternScore", "renderingAnomalyScore", "clientHintsInconsistencyScore"));
+        threatIndicators.put("mass_scraping", Arrays.asList("requestPatternScore", "renderingAnomalyScore", "clientHintsInconsistencyScore", "virtualizationScore"));
         threatIndicators.put("distributed_botnets", Arrays.asList("subnetScore", "botnetClusterScore", "ipReputationScore", "tlsSpoofingScore"));
-        threatIndicators.put("basic_automation", Arrays.asList("botScore", "tlsSpoofingScore", "tcpAnomalyScore"));
+        threatIndicators.put("basic_automation", Arrays.asList("botScore", "tlsSpoofingScore", "tcpAnomalyScore", "virtualizationScore"));
 
         Map<String, String> threatTargetThreshold = new HashMap<>();
         threatTargetThreshold.put("account_takeover", "block");

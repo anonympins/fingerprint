@@ -537,6 +537,9 @@ class RequestContext:
         if not self.quic_fingerprint:
             self.quic_fingerprint = self.headers.get("x-quic-fp")
 
+    def get_header(self, name: str) -> Optional[str]:
+        return self.headers.get(name.lower())
+
 class InMemoryStore:
     """
     A simple in-memory key-value store implementation with TTL support.
@@ -1795,6 +1798,53 @@ class RequestUtils:
         if len(mouse_analysis["segments"]) > 10:
             benford_deviation = Optimization.benford_test(mouse_analysis["segments"])
             if benford_deviation > 0.18: score += 35.0
+        return min(100.0, score)
+
+    @staticmethod
+    def get_virtualization_anomaly_score(context: RequestContext) -> float:
+        """
+        Détecte si le navigateur s'exécute dans un environnement virtuel ou headless
+        (commun pour les bots hébergés directement sur des serveurs proxy résidentiels).
+        """
+        client_fp = context.headers.get("x-device-fingerprint")
+        if not client_fp:
+            return 0.0
+            
+        try:
+            fp_map = dict(part.split(":", 1) for part in client_fp.split("|") if ":" in part)
+        except Exception:
+            return 0.0
+            
+        score = 0.0
+        client_gpu_hash = fp_map.get("gpu")
+        
+        if client_gpu_hash:
+            # Liste de renderers virtuels ou logiciels couramment utilisés en environnement automatisé / VPS
+            virtual_gpus = [
+                "Google SwiftShader",
+                "SwiftShader",
+                "Mesa llvmpipe",
+                "llvmpipe",
+                "Mesa Gallium",
+                "Microsoft Basic Render Driver",
+                "HeadlessChrome",
+                "Intel(R) HD Graphics" # Souvent usurpé ou émulé par défaut
+            ]
+            # Génération dynamique des hashes cyrb53 correspondants pour comparaison sans faille
+            virtual_gpu_hashes = {str(cyrb53(gpu)) for gpu in virtual_gpus}
+            
+            if client_gpu_hash in virtual_gpu_hashes:
+                # Le client utilise un moteur de rendu graphique virtuel ou logiciel !
+                score += 75.0
+
+        # Détection de résolutions d'écran caractéristiques d'instances headless Docker/VNC (ex: 800x600 ou 1024x768 par défaut)
+        client_screen_hash = fp_map.get("scr")
+        if client_screen_hash:
+            headless_resolutions = {"800x600_24", "1024x768_24"}
+            headless_hashes = {str(cyrb53(res)) for res in headless_resolutions}
+            if client_screen_hash in headless_hashes:
+                score += 25.0
+                
         return min(100.0, score)
 
     @staticmethod
@@ -3176,12 +3226,19 @@ class FingerprintEngine:
         cross_layer_inconsistency_score = RequestUtils.get_cross_layer_inconsistency(context)
         click_variance_score = RequestUtils.get_click_variance_score(context)
         request_pattern_score = RequestUtils.get_request_pattern_score(context, device_data, self.config.get("patterns", {}))["requestPatternScore"]
-        threat_intel_score = RequestUtils.get_threat_intel_score(context, self.config.get("threatIntel"))
+        
+        # Extraction et validation de la clé publique ZKP du client
+        zkp_proof = context.headers.get("x-zkp-proof") or context.query_params.get("pow_zkp") or ""
+        zkp_y = zkp_proof.split(":")[0] if zkp_proof and ":" in zkp_proof else None
+        threat_intel_score = await self.calculate_threat_intel_score(context, zkp_y)
+
         ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
         subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id))["subnetScore"]
 
         tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
         tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
+
+        virtualization_score = RequestUtils.get_virtualization_anomaly_score(context)
 
         quic_anomaly = RequestUtils.get_quic_anomaly_score(context)
         quic_anomaly_score = quic_anomaly.get("quicAnomalyScore", 0.0)
@@ -3213,6 +3270,7 @@ class FingerprintEngine:
             "quicAnomalyScore": quic_anomaly_score,
             "tcpAnomalyScore": tcp_anomaly_score,
             "renderingAnomalyScore": rendering_anomaly_score,
+            "virtualizationScore": virtualization_score,
         })
         return suspicion_vector
 
@@ -3280,6 +3338,49 @@ class FingerprintEngine:
 
         await asyncio.gather(*(send_one(peer) for peer in peers), return_exceptions=True)
 
+    def get_rtt_proxy_score(self, context: RequestContext) -> float:
+        """
+        Feature 7 : Corrélation RTT & Latence de Proxy Résidentiel
+        Compare le RTT de transport TCP réel avec l'horodatage applicatif client
+        pour lever les masques des proxys résidentiels rotatifs.
+        """
+        tcp_rtt_header = context.get_header("x-tcp-rtt") or context.get_header("x-real-rtt")
+        tcp_rtt = None
+        if tcp_rtt_header:
+            try:
+                tcp_rtt = int(tcp_rtt_header)
+            except ValueError:
+                pass
+
+        behavior_header = context.get_header("x-behavior-metrics")
+        if behavior_header:
+            try:
+                metrics = json.loads(behavior_header)
+                client_timestamp = metrics.get("clientTimestamp")
+                if client_timestamp is not None:
+                    app_latency = context.request_timestamp - int(client_timestamp)
+
+                    if tcp_rtt is not None and tcp_rtt > 0:
+                        client_to_proxy_delta = app_latency - tcp_rtt
+                        # RTT très court vers le proxy de sortie, mais latence applicative totale anormale
+                        if tcp_rtt < 35 and client_to_proxy_delta > 150:
+                            return 85.0
+                    else:
+                        # Analyse de secours sans RTT TCP (latence brute élevée)
+                        if app_latency > 350:
+                            return 40.0
+            except Exception:
+                # Fail-safe silencieux
+                pass
+        return 0.0
+
+    async def calculate_threat_intel_score(self, context: RequestContext, zkp_y: Optional[str]) -> float:
+        # Récupération du score de base de Threat Intelligence (ZKP réputation)
+        is_banned = await self.store.has(f"banned-zkp-y:{zkp_y}") if zkp_y else False
+        base_score = 100.0 if is_banned else 0.0
+        rtt_score = self.get_rtt_proxy_score(context)
+        return max(base_score, rtt_score)
+    
     async def get_suspicion_score(self, context: RequestContext) -> float:
         await self.translate_polymorphic_headers(context)
         vector = await self.get_suspicion_vector(context)
@@ -3601,7 +3702,7 @@ class FingerprintEngine:
         high_threshold = self.thresholds.get("high", 75)
         medium_threshold = self.thresholds.get("medium", 45)
         is_blocked = score >= block_threshold
-            must_rechallenge = suspicion_vector.get("honeypotScore", 0.0) >= medium_threshold
+        must_rechallenge = suspicion_vector.get("honeypotScore", 0.0) >= medium_threshold
 
         low_threshold = self.thresholds.get("low", 20)
 

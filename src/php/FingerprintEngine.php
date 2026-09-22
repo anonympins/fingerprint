@@ -651,6 +651,7 @@
          // Score de spoofing TLS
          $tlsSpoofing = RequestUtils::getTlsSpoofingScore($context);
          $tlsSpoofingScore = (float)($tlsSpoofing['tlsSpoofingScore'] ?? 0.0);
+         $virtualizationScore = RequestUtils::getVirtualizationAnomalyScore($context);
 
          // Advanced JA4 TLS Inconsistency checks
          $ja4 = $context->getHeader('x-ja4-hash');
@@ -778,6 +779,7 @@
              'tcpAnomalyScore' => $tcpAnomaly['tcpAnomalyScore'],
              'protocolAnomalyScore' => $protocolAnomaly['protocolAnomalyScore'],
              'renderingAnomalyScore' => $renderingAnomaly['renderingAnomalyScore'],
+             'virtualizationScore' => $virtualizationScore
          ]);
  
          // Sauvegarder l'état mis à jour de l'appareil dans le store

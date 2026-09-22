@@ -1575,7 +1575,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       importance: 3.0,
       ux_vs_security_ratio: 0.8, // 80% FPR / 20% FNR (UX prioritaire)
       target_threshold: 'low',
-      indicators: ['requestPatternScore', 'renderingAnomalyScore', 'clientHintsInconsistencyScore']
+      indicators: ['requestPatternScore', 'renderingAnomalyScore', 'clientHintsInconsistencyScore', 'virtualizationScore']
     },
     distributed_botnets: {
       importance: 6.0,
@@ -1587,7 +1587,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       importance: 5.0,
       ux_vs_security_ratio: 0.4, // 40% FPR / 60% FNR
       target_threshold: 'medium',
-      indicators: ['botScore', 'tlsSpoofingScore', 'tcpAnomalyScore']
+      indicators: ['botScore', 'tlsSpoofingScore', 'tcpAnomalyScore', 'virtualizationScore']
     }
   };
 
@@ -1602,7 +1602,8 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
         crossLayerInconsistencyScore: 0, timeInconsistencyScore: 0, tlsSpoofingScore: 0,
         clickVarianceScore: 0, clientHintsInconsistencyScore: 0, subnetScore: 0,
         ipReputationScore: 0, botnetClusterScore: 0, tcpAnomalyScore: 0,
-        quicAnomalyScore: 0, renderingAnomalyScore: 0, threatIntelScore: 0
+        quicAnomalyScore: 0, renderingAnomalyScore: 0, threatIntelScore: 0,
+        virtualizationScore: 0
       }
     },
     {
@@ -1614,7 +1615,8 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
         crossLayerInconsistencyScore: 80, timeInconsistencyScore: 100, tlsSpoofingScore: 100,
         clickVarianceScore: 100, clientHintsInconsistencyScore: 90, subnetScore: 100,
         ipReputationScore: 100, botnetClusterScore: 100, tcpAnomalyScore: 100,
-        quicAnomalyScore: 100, renderingAnomalyScore: 100, threatIntelScore: 100
+        quicAnomalyScore: 100, renderingAnomalyScore: 100, threatIntelScore: 100,
+        virtualizationScore: 100
       }
     },
     {
@@ -1626,7 +1628,8 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
         crossLayerInconsistencyScore: 10, timeInconsistencyScore: 10, tlsSpoofingScore: 10,
         clickVarianceScore: 0, clientHintsInconsistencyScore: 10, subnetScore: 5,
         ipReputationScore: 5, botnetClusterScore: 5, tcpAnomalyScore: 10,
-        quicAnomalyScore: 10, renderingAnomalyScore: 5, threatIntelScore: 0
+        quicAnomalyScore: 10, renderingAnomalyScore: 5, threatIntelScore: 0,
+        virtualizationScore: 0
       }
     },
     {
@@ -1638,7 +1641,8 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
         crossLayerInconsistencyScore: 20, timeInconsistencyScore: 20, tlsSpoofingScore: 30,
         clickVarianceScore: 20, clientHintsInconsistencyScore: 20, subnetScore: 15,
         ipReputationScore: 15, botnetClusterScore: 20, tcpAnomalyScore: 30,
-        quicAnomalyScore: 20, renderingAnomalyScore: 20, threatIntelScore: 0
+        quicAnomalyScore: 20, renderingAnomalyScore: 20, threatIntelScore: 0,
+        virtualizationScore: 30
       }
     }
   ];
@@ -1815,7 +1819,8 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
       tcpAnomalyScore: 0.8,
       quicAnomalyScore: 0.8,
       renderingAnomalyScore: 0.8,
-      threatIntelScore: 1.0
+      threatIntelScore: 1.0,
+      virtualizationScore: 0.8
     };
 
     // Un "individu" est un objet de configuration complet

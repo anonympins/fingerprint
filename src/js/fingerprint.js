@@ -612,6 +612,7 @@ const securityProfiles = {
             protocolAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
+            virtualizationScore: 0.8,
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -3576,6 +3577,46 @@ async function getBehavioralIndicators(context, deviceData) {
   return { historyScore, rotationScore };
 }
 
+function getVirtualizationAnomalyScore(context) {
+    const clientFp = context.headers?.['x-device-fingerprint'];
+    if (!clientFp) return 0.0;
+
+    const fpMap = {};
+    clientFp.split('|').forEach(part => {
+        const pair = part.split(':');
+        if (pair.length === 2) {
+            fpMap[pair[0]] = pair[1];
+        }
+    });
+
+    let score = 0.0;
+    const clientGpuHash = fpMap['gpu'];
+    if (clientGpuHash) {
+        const virtualGpus = [
+            "Google SwiftShader", "SwiftShader",
+            "Mesa llvmpipe", "llvmpipe", "Mesa Gallium",
+            "Microsoft Basic Render Driver", "HeadlessChrome",
+            "Intel(R) HD Graphics"
+        ];
+        const virtualGpuHashes = new Set(virtualGpus.map(gpu => cyrb53(gpu).toString()));
+        if (virtualGpuHashes.has(clientGpuHash)) {
+            score += 75.0;
+        }
+    }
+
+    const clientScreenHash = fpMap['scr'];
+    if (clientScreenHash) {
+        const headlessResolutions = ["800x600_24", "1024x768_24"];
+        const headlessHashes = new Set(headlessResolutions.map(res => cyrb53(res).toString()));
+        if (headlessHashes.has(clientScreenHash)) {
+            score += 25.0;
+        }
+    }
+
+    return Math.min(100.0, score);
+}
+
+
 /**
  * Returns a vector of raw (unweighted) suspicion scores.
  * @param {object} context - The request context object.
@@ -3622,7 +3663,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         _ // store.set result
       ] = await Promise.all([
         getBehavioralIndicators(context, deviceData), // This modifies deviceData, so it must be done before saving deviceData
-        getThreatIntelScore(zkpY), // NOUVEAU: Score de Threat Intelligence Fédéré
+        getThreatIntelScore(context, zkpY), // NOUVEAU: Score de Threat Intelligence Fédéré
         getTlsSpoofingScore(context),
         getSubnetScore(context, deviceId),
         getIpReputationScore(clientIp),
@@ -3663,6 +3704,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const { tcpAnomalyScore } = getTcpAnomalyScore(context);
     const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
     const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+    const virtualizationScore = getVirtualizationAnomalyScore(context);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -3674,7 +3716,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, renderingAnomalyScore, threatIntelScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -4060,14 +4102,40 @@ function parseGraphQLQuery(body) {
  * @param {string} zkpY - The 'y' component of the ZKP proof (public key).
  * @returns {Promise<{threatIntelScore: number}>}
  */
-async function getThreatIntelScore(zkpY) {
-    if (!zkpY) return { threatIntelScore: 0 };
-
-    const isBanned = await store.has(`banned-zkp-y:${zkpY}`);
-    if (isBanned) {
-        return { threatIntelScore: 100 };
+async function getThreatIntelScore(context, zkpY) {
+    let score = 0;
+    if (zkpY) {
+        const isBanned = await store.has(`banned-zkp-y:${zkpY}`);
+        if (isBanned) {
+            score = 100;
+        }
     }
-    return { threatIntelScore: 0 };
+
+    const tcpRttHeader = context.headers?.['x-tcp-rtt'] || context.headers?.['x-real-rtt'];
+    const tcpRtt = tcpRttHeader ? parseInt(tcpRttHeader, 10) : null;
+
+    const behaviorHeader = context.headers?.['x-behavior-metrics'];
+    if (behaviorHeader) {
+        try {
+            const metrics = JSON.parse(behaviorHeader);
+            if (metrics && metrics.clientTimestamp && context.requestTimestamp) {
+                const appLatency = context.requestTimestamp - metrics.clientTimestamp;
+                if (tcpRtt !== null && !isNaN(tcpRtt) && tcpRtt > 0) {
+                    const clientToProxyDelta = appLatency - tcpRtt;
+                    if (tcpRtt < 35 && clientToProxyDelta > 150) {
+                        score = Math.max(score, 85);
+                    }
+                } else {
+                    if (appLatency > 350) {
+                        score = Math.max(score, 40);
+                    }
+                }
+            }
+        } catch (e) {
+            // Ignorer silencieusement
+        }
+    }
+    return { threatIntelScore: score };
 }
 
 export class FingerprintEngine {

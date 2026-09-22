@@ -209,6 +209,36 @@ class Ja3AnomalyDetector
 
         return $score;
     }
+
+    /**
+     * Feature 7 : Corrélation RTT & Latence de Proxy Résidentiel
+     * Calcule un score d'anomalie en corrélant le RTT TCP de bas niveau avec la latence applicative.
+     */
+    public static function getRttProxyScore(RequestContext $context): int
+    {
+        $tcpRttHeader = $context->headers['x-tcp-rtt'] ?? $context->headers['x-real-rtt'] ?? null;
+        $tcpRtt = $tcpRttHeader !== null ? (int)$tcpRttHeader : null;
+
+        $behaviorHeader = $context->headers['x-behavior-metrics'] ?? null;
+        if ($behaviorHeader) {
+            $metrics = json_decode($behaviorHeader, true);
+            if (json_last_error() === JSON_ERROR_NONE && isset($metrics['clientTimestamp'])) {
+                $clientTimestamp = (int)$metrics['clientTimestamp'];
+                $appLatency = $context->requestTimestamp - $clientTimestamp;
+                if ($tcpRtt !== null && $tcpRtt > 0) {
+                    $clientToProxyDelta = $appLatency - $tcpRtt;
+                    if ($tcpRtt < 35 && $clientToProxyDelta > 150) {
+                        return 85;
+                    }
+                } else {
+                    if ($appLatency > 350) {
+                        return 40;
+                    }
+                }
+            }
+        }
+        return 0;
+    }
 }
 
 // --- EXEMPLE D'UTILISATION PRATIQUE ---

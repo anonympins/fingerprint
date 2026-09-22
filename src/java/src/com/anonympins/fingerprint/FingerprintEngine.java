@@ -198,6 +198,7 @@ public class FingerprintEngine {
         map.put("quicAnomalyScore", 0.8);
         map.put("renderingAnomalyScore", 0.8);
         map.put("ipReputationScore", 0.5);
+        map.put("virtualizationScore", 0.8);
         return map;
     }
 
@@ -970,7 +971,13 @@ public class FingerprintEngine {
         double ipReputationScore = RequestUtils.getIpReputationScore(store, context.clientIp);
         double threatIntelScore = RequestUtils.getThreatIntelScore(store, context.zkpY).getOrDefault("threatIntelScore", 0.0);
 
+        double rttProxyScore = getRttProxyScore(context);
+        threatIntelScore = Math.max(threatIntelScore, rttProxyScore);
         suspicionVector.put("threatIntelScore", threatIntelScore);
+
+        double virtualizationScore = getVirtualizationAnomalyScore(context);
+        suspicionVector.put("virtualizationScore", virtualizationScore);
+
         suspicionVector.put("inconsistencyScore", inconsistencyScore);
         suspicionVector.put("historyScore", historyScore);
         suspicionVector.put("rotationScore", rotationScore);
@@ -999,6 +1006,50 @@ public class FingerprintEngine {
         return finalScore;
     }
 
+    /**
+     * Feature 7 : Calcule le score d'anomalie de proxy résidentiel en corrélant le RTT TCP
+     * avec la latence applicative détectée depuis les métriques comportementales.
+     */
+    @SuppressWarnings("unchecked")
+    private double getRttProxyScore(RequestContext context) {
+        String tcpRttHeader = context.getHeader("x-tcp-rtt");
+        if (tcpRttHeader == null) {
+            tcpRttHeader = context.getHeader("x-real-rtt");
+        }
+        Integer tcpRtt = null;
+        if (tcpRttHeader != null) {
+            try {
+                tcpRtt = Integer.parseInt(tcpRttHeader);
+            } catch (NumberFormatException e) {
+                // ignore
+            }
+        }
+
+        String behaviorHeader = context.getHeader("x-behavior-metrics");
+        if (behaviorHeader != null) {
+            try {
+                Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
+                if (metrics != null && metrics.containsKey("clientTimestamp")) {
+                    long clientTimestamp = ((Number) metrics.get("clientTimestamp")).longValue();
+                    long appLatency = context.requestTimestamp - clientTimestamp;
+                    if (tcpRtt != null && tcpRtt > 0) {
+                        long clientToProxyDelta = appLatency - tcpRtt;
+                        if (tcpRtt < 35 && clientToProxyDelta > 150) {
+                            return 85.0;
+                        }
+                    } else {
+                        if (appLatency > 350) {
+                            return 40.0;
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                // ignore
+            }
+        }
+        return 0.0;
+    }
+
     @SuppressWarnings("unchecked")
     private void recordTrafficLog(RequestContext context, double score, Map<String, Double> vector) {
         try {
@@ -1021,5 +1072,70 @@ public class FingerprintEngine {
         } catch (Exception e) {
             // fail-safe
         }
+    }
+
+    private static int imul(int a, int b) {
+        return a * b;
+    }
+
+    public static long cyrb53(String str, int seed) {
+        int h1 = (0xdeadbeef ^ seed);
+        int h2 = (0x41c6ce57 ^ seed);
+        for (int i = 0; i < str.length(); i++) {
+            int ch = str.charAt(i);
+            h1 = imul(h1 ^ ch, (int) 2654435761L);
+            h2 = imul(h2 ^ ch, (int) 1597334677L);
+        }
+        h1 = imul(h1 ^ (h1 >>> 16), (int) 2246822507L) ^ imul(h2 ^ (h2 >>> 13), (int) 3266489909L);
+        h2 = imul(h2 ^ (h2 >>> 16), (int) 2246822507L) ^ imul(h1 ^ (h1 >>> 13), (int) 3266489909L);
+        long unsignedH1 = ((long) h1) & 0xffffffffL;
+        return 4294967296L * (2097151 & h2) + unsignedH1;
+    }
+
+    private double getVirtualizationAnomalyScore(RequestContext context) {
+        String clientFp = context.getHeader("x-device-fingerprint");
+        if (clientFp == null) {
+            return 0.0;
+        }
+
+        Map<String, String> fpMap = new HashMap<>();
+        for (String part : clientFp.split("\\|")) {
+            String[] pair = part.split(":", 2);
+            if (pair.length == 2) {
+                fpMap.put(pair[0], pair[1]);
+            }
+        }
+
+        double score = 0.0;
+        String clientGpuHash = fpMap.get("gpu");
+        if (clientGpuHash != null) {
+            String[] virtualGpus = {
+                    "Google SwiftShader", "SwiftShader",
+                    "Mesa llvmpipe", "llvmpipe", "Mesa Gallium",
+                    "Microsoft Basic Render Driver", "HeadlessChrome",
+                    "Intel(R) HD Graphics"
+            };
+            Set<String> virtualGpuHashes = new HashSet<>();
+            for (String gpu : virtualGpus) {
+                virtualGpuHashes.add(String.valueOf(cyrb53(gpu, 0)));
+            }
+            if (virtualGpuHashes.contains(clientGpuHash)) {
+                score += 75.0;
+            }
+        }
+
+        String clientScreenHash = fpMap.get("scr");
+        if (clientScreenHash != null) {
+            String[] headlessResolutions = {"800x600_24", "1024x768_24"};
+            Set<String> headlessHashes = new HashSet<>();
+            for (String res : headlessResolutions) {
+                headlessHashes.add(String.valueOf(cyrb53(res, 0)));
+            }
+            if (headlessHashes.contains(clientScreenHash)) {
+                score += 25.0;
+            }
+        }
+
+        return Math.min(100.0, score);
     }
 }
