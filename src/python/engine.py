@@ -1471,34 +1471,77 @@ class RequestUtils:
             if len(kv) == 2:
                 params[kv[0]] = kv[1]
         priority_order = parts[2] if len(parts) > 2 else ""
+        frame_order_raw = parts[3] if len(parts) > 3 else (context.headers.get("x-quic-frame-order") or "")
+        frame_order = [s.strip().lower() for s in frame_order_raw.split(",") if s.strip()]
 
         ua = context.headers.get("user-agent", "")
         ua_parts = RequestUtils.parse_user_agent(ua)
-        browser = ua_parts.get("browser")
+        browser = ua_parts.get("browser") or ""
 
         if not browser:
             return {"quicAnomalyScore": 0.0}
 
+        is_chromium = browser.startswith("Chrome") or browser.startswith("Edge")
+        is_firefox = browser.startswith("Firefox")
+        is_safari = browser.startswith("Safari")
+
+        try:
+            max_data = int(params.get("1") or params.get("0x01") or "0")
+            max_streams = int(params.get("4") or params.get("8") or params.get("0x08") or "0")
+            bidi_local = int(params.get("5") or params.get("0x05") or "0")
+            bidi_remote = int(params.get("6") or params.get("0x06") or "0")
+        except ValueError:
+            max_data, max_streams, bidi_local, bidi_remote = 0, 0, 0, 0
+
         anomaly = 0.0
-        if browser.startswith("Chrome") or browser.startswith("Edge"):
-            try:
-                max_data = int(params.get("1", "0"))
-                max_streams = int(params.get("4", "0"))
-                if max_data > 0 and max_data < 1048576:
-                    anomaly += 40.0
-                if max_streams > 0 and max_streams != 100:
-                    anomaly += 30.0
-                if priority_order and "u=" not in priority_order:
-                    anomaly += 30.0
-            except ValueError:
-                pass
-        elif browser.startswith("Firefox"):
-            try:
-                max_data = int(params.get("1", "0"))
-                if max_data > 0 and max_data > 5000000:
-                    anomaly += 40.0
-            except ValueError:
-                pass
+        if is_chromium:
+            if max_data > 0 and max_data < 1048576:
+                anomaly += 40.0
+            if max_streams > 0 and max_streams != 100:
+                anomaly += 30.0
+            if priority_order and "u=" not in priority_order:
+                anomaly += 30.0
+
+            # Contrôle de flux bidi (Chromium alloue 6MB = 6291456 ou au minimum 512 Ko)
+            # curl-impersonate / quiche alloue 256 Ko (262144) ou 128 Ko (131072)
+            if bidi_local > 0 and (bidi_local < 524288 or bidi_local == 262144):
+                anomaly += 40.0
+            if bidi_remote > 0 and (bidi_remote < 524288 or bidi_remote == 262144):
+                anomaly += 30.0
+
+            # Ordre des trames de contrôle QUIC (SETTINGS, MAX_STREAMS, PRIORITY)
+            if len(frame_order) >= 2:
+                s_idx = next((i for i, f in enumerate(frame_order) if f in ("s", "settings", "4")), -1)
+                m_idx = next((i for i, f in enumerate(frame_order) if f in ("m", "max_streams", "18")), -1)
+                p_idx = next((i for i, f in enumerate(frame_order) if f in ("p", "priority", "priority_update", "15")), -1)
+
+                if s_idx != 0 and s_idx != -1:
+                    anomaly += 50.0  # SETTINGS doit impérativement être la 1ère trame
+                if m_idx != -1 and s_idx != -1 and m_idx < s_idx:
+                    anomaly += 60.0  # MAX_STREAMS envoyé avant SETTINGS (curl/quiche)
+                if p_idx != -1 and s_idx != -1 and p_idx < s_idx:
+                    anomaly += 60.0
+        elif is_firefox:
+            if max_data > 0 and max_data > 5000000:
+                anomaly += 40.0
+            if max_streams == 100:
+                anomaly += 50.0
+            if bidi_local == 6291456:
+                anomaly += 50.0
+            if len(frame_order) >= 2:
+                s_idx = next((i for i, f in enumerate(frame_order) if f in ("s", "settings", "4")), -1)
+                if s_idx != 0 and s_idx != -1:
+                    anomaly += 50.0
+        elif is_safari:
+            if max_streams == 100 and max_data == 1572864 and "u=2,i" in priority_order:
+                anomaly += 60.0  # Usurpation profil Cronet
+            if bidi_local == 6291456:
+                anomaly += 50.0
+            if len(frame_order) >= 2:
+                s_idx = next((i for i, f in enumerate(frame_order) if f in ("s", "settings", "4")), -1)
+                m_idx = next((i for i, f in enumerate(frame_order) if f in ("m", "max_streams")), -1)
+                if m_idx != -1 and (m_idx == 0 or (s_idx != -1 and m_idx < s_idx)):
+                    anomaly += 50.0
 
         return {"quicAnomalyScore": max(0.0, min(100.0, anomaly))}
 
@@ -2500,6 +2543,116 @@ class TLSClientHelloParser:
     }
 
     @staticmethod
+    def read_var_int(data: bytes, offset: int) -> tuple:
+        if offset >= len(data):
+            return None, offset
+        first = data[offset]
+        prefix = first >> 6
+        first_val = first & 0x3f
+        if prefix == 0:
+            return first_val, offset + 1
+        elif prefix == 1:
+            if offset + 2 > len(data):
+                return None, offset
+            val = (first_val << 8) | data[offset + 1]
+            return val, offset + 2
+        elif prefix == 2:
+            if offset + 4 > len(data):
+                return None, offset
+            val = (first_val << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]
+            return val, offset + 4
+        else:
+            if offset + 8 > len(data):
+                return None, offset
+            val = first_val
+            for i in range(1, 8):
+                val = (val << 8) | data[offset + i]
+            return val, offset + 8
+
+    @staticmethod
+    def parse_quic_transport_parameters(data: bytes) -> Dict[int, Any]:
+        params = {}
+        offset = 0
+        length = len(data)
+        while offset < length:
+            param_id, offset = TLSClientHelloParser.read_var_int(data, offset)
+            if param_id is None:
+                break
+            param_len, offset = TLSClientHelloParser.read_var_int(data, offset)
+            if param_len is None or offset + param_len > length:
+                break
+            param_val_bytes = data[offset:offset + param_len]
+            offset += param_len
+            if param_len > 0 and param_id in (1, 3, 4, 5, 6, 7, 8, 9, 11, 14):
+                val, _ = TLSClientHelloParser.read_var_int(param_val_bytes, 0)
+                params[param_id] = val if val is not None else param_val_bytes.hex()
+            else:
+                params[param_id] = param_val_bytes.hex()
+        return params
+
+    @staticmethod
+    def parse_quic_control_frames(stream_data: bytes) -> Dict[str, Any]:
+        frames = []
+        frame_order = []
+        settings = {}
+        offset = 0
+        length = len(stream_data)
+        if length == 0:
+            return {"frames": [], "frame_order": "", "settings": {}}
+
+        if stream_data[0] == 0x00:
+            offset = 1
+
+        while offset < length:
+            frame_type, offset = TLSClientHelloParser.read_var_int(stream_data, offset)
+            if frame_type is None:
+                break
+            frame_len, offset = TLSClientHelloParser.read_var_int(stream_data, offset)
+            if frame_len is None or offset + frame_len > length:
+                break
+            payload = stream_data[offset:offset + frame_len]
+            offset += frame_len
+
+            abbr = "s" if frame_type == 0x04 else (
+                "m" if frame_type in (0x12, 0x02) else (
+                    "p" if frame_type in (0x0f, 0xaf, 0xf0700) else (
+                        "d" if frame_type in (0x10, 0x0d) else (
+                            "g" if frame_type == 0x07 else "u"
+                        )
+                    )
+                )
+            )
+            frames.append({"type": frame_type, "length": frame_len})
+            frame_order.append(abbr)
+
+            if frame_type == 0x04:
+                s_offset = 0
+                s_len = len(payload)
+                while s_offset < s_len:
+                    s_id, s_offset = TLSClientHelloParser.read_var_int(payload, s_offset)
+                    if s_id is None:
+                        break
+                    s_val, s_offset = TLSClientHelloParser.read_var_int(payload, s_offset)
+                    if s_val is None:
+                        break
+                    settings[s_id] = s_val
+
+        return {
+            "frames": frames,
+            "frame_order": ",".join(frame_order),
+            "settings": settings
+        }
+
+    @staticmethod
+    def format_quic_fingerprint(params: Dict[int, Any], priority: str = "", frame_order: str = "") -> str:
+        param_parts = [f"{k}={v}" for k, v in params.items()]
+        fp = "1;" + ",".join(param_parts)
+        if priority or frame_order:
+            fp += f";{priority}"
+        if frame_order:
+            fp += f";{frame_order}"
+        return fp
+    @staticmethod
     def parse(binary: bytes) -> Optional[Dict[str, str]]:
         length = len(binary)
         if length < 43:
@@ -2537,6 +2690,7 @@ class TLSClientHelloParser:
         sig_algs, supported_versions = [], []
         has_sni = False
         alpn_protocol = ""
+        quic_params = None
         ext_limit = offset + extensions_len
         while offset < ext_limit and offset + 4 <= length:
             ext_type = struct.unpack("!H", binary[offset:offset+2])[0]
@@ -2572,6 +2726,10 @@ class TLSClientHelloParser:
                     for j in range(1, versions_len + 1, 2):
                         if offset + j + 2 <= length and j + 2 <= ext_len:
                             supported_versions.append(struct.unpack("!H", binary[offset+j:offset+j+2])[0])
+            elif ext_type == 57 or ext_type == 0xffa5:
+                if ext_len > 0 and offset + ext_len <= length:
+                    quic_data = binary[offset:offset + ext_len]
+                    quic_params = TLSClientHelloParser.parse_quic_transport_parameters(quic_data)
             offset += ext_len
 
         filter_grease = lambda arr: [v for v in arr if v not in TLSClientHelloParser.GREASE_VALUES]
@@ -2632,11 +2790,15 @@ class TLSClientHelloParser:
         
         ja4_hash = f"{ja4_a}_{ja4_b}_{ja4_c}"
 
-        return {
+        result = {
             "ja3_string": ja3_string,
             "ja3_hash": hashlib.md5(ja3_string.encode("utf-8")).hexdigest(),
             "ja4_raw": ja4_hash
         }
+        if quic_params is not None:
+            result["quic_params"] = quic_params
+            result["quic_fp"] = TLSClientHelloParser.format_quic_fingerprint(quic_params)
+        return result
 
 
 class FingerprintClient:
@@ -4750,7 +4912,7 @@ class AutoTuner:
             "mass_scraping": {
                 "importance": 3.0,
                 "ux_vs_security_ratio": 0.8,
-                "indicators": ["requestPatternScore", "renderingAnomalyScore", "clientHintsInconsistencyScore"]
+                "indicators": ["requestPatternScore", "renderingAnomalyScore", "clientHintsInconsistencyScore", "virtualizationScore"]
             },
             "distributed_botnets": {
                 "importance": 6.0,
@@ -4760,7 +4922,7 @@ class AutoTuner:
             "basic_automation": {
                 "importance": 5.0,
                 "ux_vs_security_ratio": 0.4,
-                "indicators": ["botScore", "tlsSpoofingScore", "tcpAnomalyScore"]
+                "indicators": ["botScore", "tlsSpoofingScore", "tcpAnomalyScore", "virtualizationScore"]
             }
         }
 
@@ -5337,6 +5499,7 @@ if __name__ == "__main__":
                 "honeypotScore": 1.0,
                 "quicAnomalyScore": 0.8,
                 "renderingAnomalyScore": 0.8,
+                "virtualizationScore": 0.8,
             },
             "honeypot": {
                 "fields": ["email_confirm"],

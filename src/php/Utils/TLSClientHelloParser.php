@@ -15,6 +15,150 @@ class TLSClientHelloParser
     ];
 
     /**
+     * Lit un entier encodé en longueur variable QUIC (RFC 9000 section 16).
+     */
+    public static function readVarInt(string $data, int &$offset): ?int
+    {
+        $len = strlen($data);
+        if ($offset >= $len) {
+            return null;
+        }
+
+        $first = ord($data[$offset]);
+        $prefix = $first >> 6;
+        $firstVal = $first & 0x3f;
+
+        if ($prefix === 0) {
+            $offset += 1;
+            return $firstVal;
+        } elseif ($prefix === 1) {
+            if ($offset + 2 > $len) return null;
+            $val = ($firstVal << 8) | ord($data[$offset + 1]);
+            $offset += 2;
+            return $val;
+        } elseif ($prefix === 2) {
+            if ($offset + 4 > $len) return null;
+            $val = ($firstVal << 24) | (ord($data[$offset + 1]) << 16) | (ord($data[$offset + 2]) << 8) | ord($data[$offset + 3]);
+            $offset += 4;
+            return $val;
+        } else {
+            if ($offset + 8 > $len) return null;
+            $val = $firstVal;
+            for ($i = 1; $i < 8; $i++) {
+                $val = ($val << 8) | ord($data[$offset + $i]);
+            }
+            $offset += 8;
+            return $val;
+        }
+    }
+
+    /**
+     * Parse les paramètres de transport QUIC (RFC 9000 section 18.2).
+     */
+    public static function parseQuicTransportParameters(string $data): array
+    {
+        $params = [];
+        $offset = 0;
+        $len = strlen($data);
+
+        while ($offset < $len) {
+            $paramId = self::readVarInt($data, $offset);
+            if ($paramId === null) break;
+            $paramLen = self::readVarInt($data, $offset);
+            if ($paramLen === null || $offset + $paramLen > $len) break;
+
+            $paramValBytes = substr($data, $offset, $paramLen);
+            $offset += $paramLen;
+
+            if ($paramLen > 0 && in_array($paramId, [1, 3, 4, 5, 6, 7, 8, 9, 11, 14], true)) {
+                $valOffset = 0;
+                $numVal = self::readVarInt($paramValBytes, $valOffset);
+                $params[$paramId] = $numVal ?? $paramValBytes;
+            } else {
+                $params[$paramId] = bin2hex($paramValBytes);
+            }
+        }
+
+        return $params;
+    }
+
+    /**
+     * Analyse l'ordre des trames de contrôle QUIC / HTTP/3 (SETTINGS, MAX_STREAMS, PRIORITY).
+     */
+    public static function parseQuicControlFrames(string $streamData): array
+    {
+        $frames = [];
+        $frameOrder = [];
+        $settings = [];
+        $offset = 0;
+        $len = strlen($streamData);
+
+        if ($len === 0) {
+            return ['frames' => [], 'frame_order' => '', 'settings' => []];
+        }
+
+        if (ord($streamData[0]) === 0x00) {
+            $offset = 1; // Stream type Control Stream
+        }
+
+        while ($offset < $len) {
+            $frameType = self::readVarInt($streamData, $offset);
+            if ($frameType === null) break;
+            $frameLen = self::readVarInt($streamData, $offset);
+            if ($frameLen === null || $offset + $frameLen > $len) break;
+
+            $payload = substr($streamData, $offset, $frameLen);
+            $offset += $frameLen;
+
+            $abbr = match ($frameType) {
+                0x04 => 's', // SETTINGS
+                0x12, 0x02 => 'm', // MAX_STREAMS
+                0x0f, 0xaf, 0xf0700 => 'p', // PRIORITY_UPDATE
+                0x10, 0x0d => 'd', // MAX_DATA
+                0x07 => 'g', // GOAWAY
+                default => 'u'
+            };
+
+            $frames[] = ['type' => $frameType, 'length' => $frameLen];
+            $frameOrder[] = $abbr;
+
+            if ($frameType === 0x04) {
+                $sOffset = 0;
+                $sLen = strlen($payload);
+                while ($sOffset < $sLen) {
+                    $sId = self::readVarInt($payload, $sOffset);
+                    if ($sId === null) break;
+                    $sVal = self::readVarInt($payload, $sOffset);
+                    if ($sVal === null) break;
+                    $settings[$sId] = $sVal;
+                }
+            }
+        }
+
+        return [
+            'frames' => $frames,
+            'frame_order' => implode(',', $frameOrder),
+            'settings' => $settings
+        ];
+    }
+
+    public static function formatQuicFingerprint(array $params, string $priority = '', string $frameOrder = ''): string
+    {
+        $paramParts = [];
+        foreach ($params as $k => $v) {
+            $paramParts[] = "{$k}={$v}";
+        }
+        $fp = "1;" . implode(',', $paramParts);
+        if ($priority !== '' || $frameOrder !== '') {
+            $fp .= ";{$priority}";
+        }
+        if ($frameOrder !== '') {
+            $fp .= ";{$frameOrder}";
+        }
+        return $fp;
+    }
+
+    /**
      * Parse le Client Hello brut et retourne l'empreinte JA3 et une approximation JA4.
      * 
      * @param string $binary Le premier paquet TCP reçu sur la socket.
@@ -72,6 +216,7 @@ class TLSClientHelloParser
             $supportedVersions = [];
             $hasSni = false;
             $alpnProtocol = '';
+        $quicParams = null;
 
         $extLimit = $offset + $extensionsLen;
         while ($offset < $extLimit && $offset + 4 <= $len) {
@@ -126,6 +271,11 @@ class TLSClientHelloParser
                                 $supportedVersions[] = unpack('n', substr($binary, $offset + $j, 2))[1];
                             }
                         }
+                    }
+                } elseif ($extType === 57 || $extType === 0xffa5) { // quic_transport_parameters (RFC 9001 / draft)
+                    if ($extLen > 0 && $offset + $extLen <= $len) {
+                        $quicData = substr($binary, $offset, $extLen);
+                        $quicParams = self::parseQuicTransportParameters($quicData);
                     }
             }
             $offset += $extLen;
@@ -204,10 +354,17 @@ class TLSClientHelloParser
 
             $ja4_hash = $ja4_a . "_" . $ja4_b . "_" . $ja4_c;
 
-        return [
+        $result = [
             'ja3_string' => $ja3String,
                 'ja3_hash'   => md5($ja3String),
                 'ja4_raw'    => $ja4_hash
         ];
+
+        if ($quicParams !== null) {
+            $result['quic_params'] = $quicParams;
+            $result['quic_fp'] = self::formatQuicFingerprint($quicParams);
+        }
+
+        return $result;
     }
 }

@@ -402,16 +402,70 @@ function getProtocolAnomalyScore(context) {
                     if (kv.length === 2) params[kv[0]] = kv[1];
                 });
                 const priorityOrder = parts[2] || '';
+                const frameOrderRaw = parts[3] || context.headers?.['x-quic-frame-order'] || context.quicFrameOrder || '';
+                const frameOrder = frameOrderRaw.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
 
-                if (browser.startsWith('Chrome') || browser.startsWith('Edge')) {
-                    const maxData = parseInt(params['1'] || '0', 10);
-                    const maxStreams = parseInt(params['4'] || '0', 10);
+                const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
+                const isFirefox = browser.startsWith('Firefox');
+                const isSafari = browser.startsWith('Safari');
+
+                const maxData = parseInt(params['1'] || params['0x01'] || '0', 10);
+                const maxStreams = parseInt(params['4'] || params['8'] || params['0x08'] || '0', 10);
+                const bidiLocal = parseInt(params['5'] || params['0x05'] || '0', 10);
+                const bidiRemote = parseInt(params['6'] || params['0x06'] || '0', 10);
+
+                if (isChromium) {
+                    // Contrôle de flux global et nombre de flux bidirectionnels
                     if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
                     if (maxStreams > 0 && maxStreams !== 100) quicAnomaly += 30.0;
                     if (priorityOrder && !priorityOrder.includes('u=')) quicAnomaly += 30.0;
-                } else if (browser.startsWith('Firefox')) {
+
+                    // Contrôle de flux bidi (Chromium alloue 6MB = 6291456 ou au minimum 512 Ko)
+                    // curl-impersonate / quiche alloue 256 Ko (262144) ou 128 Ko (131072)
+                    if (bidiLocal > 0 && (bidiLocal < 524288 || bidiLocal === 262144)) quicAnomaly += 40.0;
+                    if (bidiRemote > 0 && (bidiRemote < 524288 || bidiRemote === 262144)) quicAnomaly += 30.0;
+
+                    // Ordre des trames de contrôle QUIC (SETTINGS, MAX_STREAMS, PRIORITY)
+                    if (frameOrder.length >= 2) {
+                        const sIdx = frameOrder.findIndex(f => f === 's' || f === 'settings' || f === '4');
+                        const mIdx = frameOrder.findIndex(f => f === 'm' || f === 'max_streams' || f === '18');
+                        const pIdx = frameOrder.findIndex(f => f === 'p' || f === 'priority' || f === 'priority_update' || f === '15');
+
+                        if (sIdx !== 0 && sIdx !== -1) {
+                            quicAnomaly += 50.0; // SETTINGS doit obligatoirement être la première trame
+                        }
+                        if (mIdx !== -1 && sIdx !== -1 && mIdx < sIdx) {
+                            quicAnomaly += 60.0; // MAX_STREAMS envoyé avant SETTINGS (défaut curl/quiche)
+                        }
+                        if (pIdx !== -1 && sIdx !== -1 && pIdx < sIdx) {
+                            quicAnomaly += 60.0;
+                        }
+                    }
+                } else if (isFirefox) {
                     const maxData = parseInt(params['1'] || '0', 10);
                     if (maxData > 0 && maxData > 5000000) quicAnomaly += 40.0;
+                    // Necko (Firefox) n'utilise pas 100 flux bidi par défaut ni un buffer bidi de 6 Mo
+                    if (maxStreams === 100) quicAnomaly += 50.0;
+                    if (bidiLocal === 6291456) quicAnomaly += 50.0;
+
+                    if (frameOrder.length >= 2) {
+                        const sIdx = frameOrder.findIndex(f => f === 's' || f === 'settings' || f === '4');
+                        if (sIdx !== 0 && sIdx !== -1) quicAnomaly += 50.0;
+                    }
+                } else if (isSafari) {
+                    // Safari Network.framework
+                    if (maxStreams === 100 && maxData === 1572864 && priorityOrder.includes('u=2,i')) {
+                        quicAnomaly += 60.0; // Usurpation par profil Cronet / curl-impersonate
+                    }
+                    if (bidiLocal === 6291456) quicAnomaly += 50.0;
+
+                    if (frameOrder.length >= 2) {
+                        const sIdx = frameOrder.findIndex(f => f === 's' || f === 'settings' || f === '4');
+                        const mIdx = frameOrder.findIndex(f => f === 'm' || f === 'max_streams');
+                        if (mIdx !== -1 && (mIdx === 0 || (sIdx !== -1 && mIdx < sIdx))) {
+                            quicAnomaly += 50.0;
+                        }
+                    }
                 }
             }
         }

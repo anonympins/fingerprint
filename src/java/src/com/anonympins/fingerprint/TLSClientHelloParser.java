@@ -15,6 +15,136 @@ public class TLSClientHelloParser {
         35466, 39578, 43690, 47802, 51914, 55926, 60038, 64150
     ));
 
+    public static Long readVarInt(ByteBuffer buffer) {
+        if (!buffer.hasRemaining()) return null;
+        int first = buffer.get() & 0xFF;
+        int prefix = first >> 6;
+        long firstVal = first & 0x3F;
+
+        if (prefix == 0) {
+            return firstVal;
+        } else if (prefix == 1) {
+            if (buffer.remaining() < 1) return null;
+            return (firstVal << 8) | (buffer.get() & 0xFF);
+        } else if (prefix == 2) {
+            if (buffer.remaining() < 3) return null;
+            long val = (firstVal << 24)
+                    | ((buffer.get() & 0xFF) << 16)
+                    | ((buffer.get() & 0xFF) << 8)
+                    | (buffer.get() & 0xFF);
+            return val;
+        } else {
+            if (buffer.remaining() < 7) return null;
+            long val = firstVal;
+            for (int i = 0; i < 7; i++) {
+                val = (val << 8) | (buffer.get() & 0xFF);
+            }
+            return val;
+        }
+    }
+
+    public static Map<Long, Object> parseQuicTransportParameters(byte[] data) {
+        Map<Long, Object> params = new LinkedHashMap<>();
+        if (data == null || data.length == 0) return params;
+        ByteBuffer buffer = ByteBuffer.wrap(data);
+
+        while (buffer.hasRemaining()) {
+            Long paramId = readVarInt(buffer);
+            if (paramId == null) break;
+            Long paramLenLong = readVarInt(buffer);
+            if (paramLenLong == null) break;
+            int paramLen = paramLenLong.intValue();
+            if (buffer.remaining() < paramLen) break;
+
+            byte[] paramBytes = new byte[paramLen];
+            buffer.get(paramBytes);
+
+            if (paramLen > 0 && Arrays.asList(1L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 11L, 14L).contains(paramId)) {
+                ByteBuffer valBuf = ByteBuffer.wrap(paramBytes);
+                Long val = readVarInt(valBuf);
+                params.put(paramId, val != null ? val : HexFormat.of().formatHex(paramBytes));
+            } else {
+                params.put(paramId, HexFormat.of().formatHex(paramBytes));
+            }
+        }
+        return params;
+    }
+
+    public static Map<String, Object> parseQuicControlFrames(byte[] streamData) {
+        Map<String, Object> result = new HashMap<>();
+        List<Map<String, Object>> frames = new ArrayList<>();
+        List<String> frameOrder = new ArrayList<>();
+        Map<Long, Long> settings = new HashMap<>();
+
+        if (streamData == null || streamData.length == 0) {
+            result.put("frames", frames);
+            result.put("frame_order", "");
+            result.put("settings", settings);
+            return result;
+        }
+
+        ByteBuffer buffer = ByteBuffer.wrap(streamData);
+        if (buffer.hasRemaining() && (buffer.get(0) & 0xFF) == 0x00) {
+            buffer.get();
+        }
+
+        while (buffer.hasRemaining()) {
+            Long frameType = readVarInt(buffer);
+            if (frameType == null) break;
+            Long frameLenLong = readVarInt(buffer);
+            if (frameLenLong == null) break;
+            int frameLen = frameLenLong.intValue();
+            if (buffer.remaining() < frameLen) break;
+
+            byte[] payload = new byte[frameLen];
+            buffer.get(payload);
+
+            String abbr = "u";
+            if (frameType == 0x04) abbr = "s";
+            else if (frameType == 0x12 || frameType == 0x02) abbr = "m";
+            else if (frameType == 0x0f || frameType == 0xaf || frameType == 0xf0700L) abbr = "p";
+            else if (frameType == 0x10 || frameType == 0x0d) abbr = "d";
+            else if (frameType == 0x07) abbr = "g";
+
+            Map<String, Object> frameInfo = new HashMap<>();
+            frameInfo.put("type", frameType);
+            frameInfo.put("length", frameLen);
+            frames.add(frameInfo);
+            frameOrder.add(abbr);
+
+            if (frameType == 0x04) {
+                ByteBuffer pBuf = ByteBuffer.wrap(payload);
+                while (pBuf.hasRemaining()) {
+                    Long sId = readVarInt(pBuf);
+                    if (sId == null) break;
+                    Long sVal = readVarInt(pBuf);
+                    if (sVal == null) break;
+                    settings.put(sId, sVal);
+                }
+            }
+        }
+
+        result.put("frames", frames);
+        result.put("frame_order", String.join(",", frameOrder));
+        result.put("settings", settings);
+        return result;
+    }
+
+    public static String formatQuicFingerprint(Map<Long, Object> params, String priority, String frameOrder) {
+        List<String> paramParts = new ArrayList<>();
+        for (Map.Entry<Long, Object> entry : params.entrySet()) {
+            paramParts.add(entry.getKey() + "=" + entry.getValue());
+        }
+        String fp = "1;" + String.join(",", paramParts);
+        if ((priority != null && !priority.isEmpty()) || (frameOrder != null && !frameOrder.isEmpty())) {
+            fp += ";" + (priority != null ? priority : "");
+        }
+        if (frameOrder != null && !frameOrder.isEmpty()) {
+            fp += ";" + frameOrder;
+        }
+        return fp;
+    }
+
     public static Map<String, String> parse(byte[] binary) {
         if (binary == null || binary.length < 43) return null;
         // Verifica record handshake (0x16) e ClientHello (0x01)
@@ -48,6 +178,7 @@ public class TLSClientHelloParser {
             List<Integer> supportedVersions = new ArrayList<>();
             boolean hasSni = false;
             String alpnProtocol = "";
+            Map<Long, Object> quicParams = null;
 
             while (buffer.position() < extLimit && buffer.remaining() >= 4) {
                 int extType = buffer.getShort() & 0xFFFF;
@@ -87,6 +218,12 @@ public class TLSClientHelloParser {
                     int versionsLen = buffer.get() & 0xFF;
                     for (int j = 0; j < versionsLen; j += 2) {
                         supportedVersions.add(buffer.getShort() & 0xFFFF);
+                    }
+                } else if (extType == 57 || extType == 0xffa5) { // quic_transport_parameters (RFC 9001 / draft)
+                    if (extLen > 0 && buffer.remaining() >= extLen) {
+                        byte[] quicData = new byte[extLen];
+                        buffer.get(quicData);
+                        quicParams = parseQuicTransportParameters(quicData);
                     }
                 }
                 buffer.position(nextPosition);
@@ -136,6 +273,9 @@ public class TLSClientHelloParser {
             result.put("ja3_string", ja3String);
             result.put("ja3_hash", md5(ja3String));
             result.put("ja4_raw", ja4_a + "_" + ja4_b + "_" + ja4_c);
+            if (quicParams != null) {
+                result.put("quic_fp", formatQuicFingerprint(quicParams, "", ""));
+            }
             return result;
         } catch (Exception e) {
             return null;
