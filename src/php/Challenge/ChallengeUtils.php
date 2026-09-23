@@ -265,6 +265,15 @@ class ChallengeUtils
             case 'register':
                 $expectedMsg = "{$clientSecret}:register:{$nodeId}:" . ($params['seed'] ?? '');
                 break;
+            case 'find_peer':
+                $expectedMsg = "{$clientSecret}:find_peer:{$nodeId}";
+                break;
+            case 'webrtc_signal':
+                $expectedMsg = "{$clientSecret}:webrtc_signal:{$nodeId}:" . ($params['target_peer_id'] ?? '') . ":" . ($params['signal_type'] ?? '') . ":" . ($params['signal_data'] ?? '');
+                break;
+            case 'poll_signals':
+                $expectedMsg = "{$clientSecret}:poll_signals:{$nodeId}";
+                break;
             case 'request_peer_block':
                 $expectedMsg = "{$clientSecret}:request_peer_block:{$nodeId}:" . ($params['peer_id'] ?? '') . ":" . ($params['block_idx'] ?? '0') . ":" . ($params['req_id'] ?? '');
                 break;
@@ -293,6 +302,38 @@ class ChallengeUtils
                 $seed = $params['seed'] ?? '';
                 self::registerCooperativeNode($clientIp, $nodeId, $seed);
                 return ['status' => 'registered'];
+
+            case 'find_peer':
+                $peer = self::findPeerInSubnet($clientIp, $nodeId);
+                if ($peer !== null) {
+                    return ['status' => 'peer_found', 'peer_id' => $peer['nodeId'], 'seed' => $peer['seed']];
+                }
+                return ['status' => 'no_peers'];
+
+            case 'webrtc_signal':
+                $targetPeerId = $params['target_peer_id'] ?? '';
+                $signalType = $params['signal_type'] ?? '';
+                $signalData = $params['signal_data'] ?? '';
+                if (empty($targetPeerId) || empty($signalType) || empty($signalData)) {
+                    return ['error' => 'Invalid parameters'];
+                }
+                $signalQueueKey = "coop-webrtc:signals:{$targetPeerId}";
+                $signals = $store->get($signalQueueKey) ?? [];
+                $signals[] = [
+                    'from_peer_id' => $nodeId,
+                    'signal_type' => $signalType,
+                    'signal_data' => $signalData
+                ];
+                $store->set($signalQueueKey, $signals, 30);
+                return ['status' => 'signal_queued'];
+
+            case 'poll_signals':
+                $pollSignalKey = "coop-webrtc:signals:{$nodeId}";
+                $signals = $store->get($pollSignalKey) ?? [];
+                if (!empty($signals)) {
+                    $store->delete($pollSignalKey);
+                }
+                return ['status' => 'ok', 'signals' => $signals];
 
             case 'request_peer_block':
                 $peerId = $params['peer_id'] ?? '';
@@ -1002,6 +1043,11 @@ class ChallengeUtils
               return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
             }
             
+            async function sendWebRtcSignal(targetId, type, data) {
+              const sig = await signCoop("webrtc_signal", nodeId, targetId + ":" + type + ":" + data);
+              await fetch(window.location.pathname + "?coop_op=webrtc_signal&node_id=" + nodeId + "&target_peer_id=" + targetId + "&signal_type=" + type + "&signal_data=" + encodeURIComponent(data) + "&coop_sig=" + sig);
+            }
+
             document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
             await new Promise(r => setTimeout(r, 10));
             
@@ -1013,9 +1059,50 @@ class ChallengeUtils
                     const sig = await signCoop("register", nodeId, nonce + ":" + clientSecret);
                     await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret) + "&coop_sig=" + sig);
                 }
+
+                const peerConnections = {};
                 
-                // Écoute des requêtes entrantes de nos pairs suspects
+                // Écoute des signaux WebRTC et requêtes entrantes
                 setInterval(async () => {
+                    try {
+                        const sigWebrtc = await signCoop("poll_signals", nodeId);
+                        const resWebrtc = await fetch(window.location.pathname + "?coop_op=poll_signals&node_id=" + nodeId + "&coop_sig=" + sigWebrtc);
+                        const dataWebrtc = await resWebrtc.json();
+                        if (dataWebrtc.signals && dataWebrtc.signals.length > 0) {
+                            for (const sig of dataWebrtc.signals) {
+                                const fromId = sig.from_peer_id;
+                                if (sig.signal_type === 'offer') {
+                                    const pc = new RTCPeerConnection({ iceServers: [] });
+                                    peerConnections[fromId] = pc;
+                                    pc.onicecandidate = (e) => {
+                                        if (e.candidate) sendWebRtcSignal(fromId, 'candidate', JSON.stringify(e.candidate));
+                                    };
+                                    pc.ondatachannel = (e) => {
+                                        const dc = e.channel;
+                                        dc.onmessage = async (evt) => {
+                                            try {
+                                                const req = JSON.parse(evt.data);
+                                                if (req.type === 'get_block') {
+                                                    document.getElementById('loader').innerText = '📤 Transfert direct P2P (WebRTC) du bloc vers le pair...';
+                                                    const blockData = await window.readSpaceBlock(req.block_idx);
+                                                    dc.send(JSON.stringify({ type: 'block_data', block_data: blockData }));
+                                                }
+                                            } catch (err) {}
+                                        };
+                                    };
+                                    await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
+                                    const answer = await pc.createAnswer();
+                                    await pc.setLocalDescription(answer);
+                                    await sendWebRtcSignal(fromId, 'answer', JSON.stringify(answer));
+                                } else if (sig.signal_type === 'answer' && peerConnections[fromId]) {
+                                    await peerConnections[fromId].setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
+                                } else if (sig.signal_type === 'candidate' && peerConnections[fromId]) {
+                                    await peerConnections[fromId].addIceCandidate(new RTCIceCandidate(JSON.parse(sig.signal_data)));
+                                }
+                            }
+                        }
+                    } catch (e) {}
+
                     try {
                         const sig = await signCoop("poll_requests", nodeId);
                         const res = await fetch(window.location.pathname + "?coop_op=poll_requests&node_id=" + nodeId + "&coop_sig=" + sig);
@@ -1031,30 +1118,65 @@ class ChallengeUtils
                     } catch (e) {
                         console.error("Cooperative polling error", e);
                     }
-                }, 1000);
+                }, 800);
                 
-                // Téléchargement du bloc du pair si configuré
                 let peerBlock = "";
                 if (peerId && peerBlockIdx !== -1) {
-                    document.getElementById('loader').innerText = '📥 Téléchargement du bloc de validation du pair (' + peerId + ')...';
-                    const reqId = Math.random().toString(36).substring(2);
-                    const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
-                    await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
-                    
-                    let attempts = 0;
-                    while (attempts < coopTimeout) {
-                        const pollSig = await signCoop("poll_response", nodeId, reqId);
-                        const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId + "&coop_sig=" + pollSig);
-                        const data = await res.json();
-                        if (data.status === 'ready') {
-                            peerBlock = data.block_data;
-                            break;
+                    document.getElementById('loader').innerText = '📥 Connexion WebRTC P2P directe au pair (' + peerId + ')...';
+
+                    // 1. Échange direct P2P via WebRTC DataChannel (charge serveur = 0)
+                    const webrtcTransferPromise = new Promise(async (resolve) => {
+                        if (!window.RTCPeerConnection) return resolve(null);
+                        try {
+                            const pc = new RTCPeerConnection({ iceServers: [] });
+                            peerConnections[peerId] = pc;
+                            const dc = pc.createDataChannel("pospace-transfer");
+                            pc.onicecandidate = (e) => {
+                                if (e.candidate) sendWebRtcSignal(peerId, 'candidate', JSON.stringify(e.candidate));
+                            };
+                            dc.onopen = () => {
+                                dc.send(JSON.stringify({ type: 'get_block', block_idx: peerBlockIdx }));
+                            };
+                            dc.onmessage = (e) => {
+                                try {
+                                    const msg = JSON.parse(e.data);
+                                    if (msg.type === 'block_data' && msg.block_data) {
+                                        resolve(msg.block_data);
+                                    }
+                                } catch (err) {}
+                            };
+                            const offer = await pc.createOffer();
+                            await pc.setLocalDescription(offer);
+                            await sendWebRtcSignal(peerId, 'offer', JSON.stringify(offer));
+                        } catch (err) {
+                            resolve(null);
                         }
-                        await new Promise(r => setTimeout(r, 1000));
-                        attempts++;
-                    }
-                    if (!peerBlock) {
-                        document.getElementById('loader').innerText = '⚠️ Peer de sous-réseau injoignable. Validation solo...';
+                    });
+
+                    const webrtcTimeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 5000));
+                    peerBlock = await Promise.race([webrtcTransferPromise, webrtcTimeoutPromise]);
+
+                    if (peerBlock) {
+                        document.getElementById('loader').innerText = '⚡ Bloc reçu en direct via WebRTC P2P sans transit serveur !';
+                    } else {
+                        // 2. Repli vers le relais HTTP si WebRTC échoue
+                        document.getElementById('loader').innerText = '⚠️ WebRTC indisponible. Téléchargement via relais HTTP...';
+                        const reqId = Math.random().toString(36).substring(2);
+                        const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
+                        await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
+                        
+                        let attempts = 0;
+                        while (attempts < coopTimeout) {
+                            const pollSig = await signCoop("poll_response", nodeId, reqId);
+                            const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId + "&coop_sig=" + pollSig);
+                            const data = await res.json();
+                            if (data.status === 'ready') {
+                                peerBlock = data.block_data;
+                                break;
+                            }
+                            await new Promise(r => setTimeout(r, 1000));
+                            attempts++;
+                        }
                     }
                 }
                 

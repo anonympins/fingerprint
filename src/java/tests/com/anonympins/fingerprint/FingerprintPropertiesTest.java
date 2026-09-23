@@ -39,11 +39,15 @@ public class FingerprintPropertiesTest {
         assertEquals(100, pospace.getSizeMb());
         assertEquals(10, pospace.getNumQueries());
         assertEquals(15, pospace.getCoopTimeout());
+        assertTrue(pospace.isEnableWebRtc());
+        assertNotNull(pospace.getIceServers());
 
         Map<String, Object> map = pospace.toMap();
         assertEquals(100, map.get("sizeMb"));
         assertEquals(10, map.get("numQueries"));
         assertEquals(15, map.get("coopTimeout"));
+        assertEquals(true, map.get("enableWebRtc"));
+        assertNotNull(map.get("iceServers"));
     }
 
     @Test

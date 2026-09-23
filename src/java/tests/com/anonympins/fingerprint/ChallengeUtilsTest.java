@@ -379,4 +379,62 @@ public class ChallengeUtilsTest {
         Map<String, Object> resInvalidOp = ChallengeUtils.handleCooperativeRequest(paramsInvalidOp, clientIp, config);
         assertEquals("Invalid cooperative operation", resInvalidOp.get("error"), "Request with unknown operation should fail.");
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void testWebRtcP2PSignalingFlow() {
+        String nodeIdA = "node-alpha-webrtc";
+        String nodeIdB = "node-beta-webrtc";
+        String clientSecretA = "secret-alpha";
+        String clientSecretB = "secret-beta";
+        String clientIp = "192.168.1.50";
+        Map<String, Object> config = new HashMap<>();
+
+        store.set("secret:" + nodeIdA, Collections.singletonMap("clientSecret", clientSecretA), 300);
+        store.set("secret:" + nodeIdB, Collections.singletonMap("clientSecret", clientSecretB), 300);
+
+        // Enregistrement des nœuds
+        ChallengeUtils.registerCooperativeNode(clientIp, nodeIdA, "seed-a");
+        ChallengeUtils.registerCooperativeNode(clientIp, nodeIdB, "seed-b");
+
+        // 1. Découverte d'un pair WebRTC dans le sous-réseau
+        String sigFindPeer = generateCoopSig("find_peer", nodeIdA, clientSecretA);
+        Map<String, String> findPeerParams = new HashMap<>();
+        findPeerParams.put("coop_op", "find_peer");
+        findPeerParams.put("node_id", nodeIdA);
+        findPeerParams.put("coop_sig", sigFindPeer);
+
+        Map<String, Object> findPeerRes = ChallengeUtils.handleCooperativeRequest(findPeerParams, clientIp, config);
+        assertEquals("peer_found", findPeerRes.get("status"));
+        assertEquals(nodeIdB, findPeerRes.get("peer_id"));
+
+        // 2. Envoi d'une offre SDP WebRTC (A -> B)
+        String sdpOffer = "{\"type\":\"offer\",\"sdp\":\"v=0...\"}";
+        String sigSignal = generateCoopSig("webrtc_signal", nodeIdA, clientSecretA, nodeIdB, "offer", sdpOffer);
+        Map<String, String> signalParams = new HashMap<>();
+        signalParams.put("coop_op", "webrtc_signal");
+        signalParams.put("node_id", nodeIdA);
+        signalParams.put("target_peer_id", nodeIdB);
+        signalParams.put("signal_type", "offer");
+        signalParams.put("signal_data", sdpOffer);
+        signalParams.put("coop_sig", sigSignal);
+
+        Map<String, Object> signalRes = ChallengeUtils.handleCooperativeRequest(signalParams, clientIp, config);
+        assertEquals("signal_queued", signalRes.get("status"));
+
+        // 3. Réception du signal par le nœud B (Poll signals)
+        String sigPoll = generateCoopSig("poll_signals", nodeIdB, clientSecretB);
+        Map<String, String> pollParams = new HashMap<>();
+        pollParams.put("coop_op", "poll_signals");
+        pollParams.put("node_id", nodeIdB);
+        pollParams.put("coop_sig", sigPoll);
+
+        Map<String, Object> pollRes = ChallengeUtils.handleCooperativeRequest(pollParams, clientIp, config);
+        assertEquals("ok", pollRes.get("status"));
+        List<Map<String, Object>> signals = (List<Map<String, Object>>) pollRes.get("signals");
+        assertEquals(1, signals.size());
+        assertEquals(nodeIdA, signals.get(0).get("from_peer_id"));
+        assertEquals("offer", signals.get(0).get("signal_type"));
+        assertEquals(sdpOffer, signals.get(0).get("signal_data"));
+    }
 }

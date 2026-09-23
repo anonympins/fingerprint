@@ -373,6 +373,10 @@ def generate_space_challenge_page(challenge_details: dict, client_secret: str, s
     safe_nonce = safe_json_dumps(nonce)
     safe_client_secret = safe_json_dumps(client_secret)
 
+    peer_id = challenge_details.get("peerId", "")
+    peer_block_idx = challenge_details.get("peerBlockIdx", -1)
+    coop_timeout = security_config.get("pospace", {}).get("coopTimeout", 15)
+
     challenge_script = f"""
     async function solve() {{
       const nonce = {safe_nonce};
@@ -380,16 +384,127 @@ def generate_space_challenge_page(challenge_details: dict, client_secret: str, s
       const clientSecret = {safe_client_secret};
       const queries = {queries_json};
       const sizeMb = {size_mb};
+      const nodeId = nonce;
+      const peerId = "{peer_id}";
+      const peerBlockIdx = {peer_block_idx};
+      const coopTimeout = {coop_timeout};
+
+      async function signCoop(op, nid, extra = "") {{
+        const msg = clientSecret + ":" + op + ":" + nid + (extra ? ":" + extra : "");
+        const encoder = new TextEncoder();
+        const data = encoder.encode(msg);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+      }}
+
+      async function sendWebRtcSignal(targetId, type, data) {{
+        const sig = await signCoop("webrtc_signal", nodeId, targetId + ":" + type + ":" + data);
+        await fetch(window.location.pathname + "?coop_op=webrtc_signal&node_id=" + nodeId + "&target_peer_id=" + targetId + "&signal_type=" + type + "&signal_data=" + encodeURIComponent(data) + "&coop_sig=" + sig);
+      }}
       
       document.getElementById('loader').innerText = '⚙&#xFE0F; Checking persistent local storage...';
       await new Promise(r => setTimeout(r, 10));
       
       try {{
           await window.initializeSpace(nonce + ":" + clientSecret, size_mb);
+
+          if (peerId && peerBlockIdx !== -1) {{
+              const sig = await signCoop("register", nodeId, nonce + ":" + clientSecret);
+              await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret) + "&coop_sig=" + sig);
+          }}
+
+          const peerConnections = {{}};
+
+          setInterval(async () => {{
+              try {{
+                  const sigWebrtc = await signCoop("poll_signals", nodeId);
+                  const resWebrtc = await fetch(window.location.pathname + "?coop_op=poll_signals&node_id=" + nodeId + "&coop_sig=" + sigWebrtc);
+                  const dataWebrtc = await resWebrtc.json();
+                  if (dataWebrtc.signals && dataWebrtc.signals.length > 0) {{
+                      for (const sig of dataWebrtc.signals) {{
+                          const fromId = sig.from_peer_id;
+                          if (sig.signal_type === 'offer') {{
+                              const pc = new RTCPeerConnection({{ iceServers: [] }});
+                              peerConnections[fromId] = pc;
+                              pc.onicecandidate = (e) => {{
+                                  if (e.candidate) sendWebRtcSignal(fromId, 'candidate', JSON.stringify(e.candidate));
+                              }};
+                              pc.ondatachannel = (e) => {{
+                                  const dc = e.channel;
+                                  dc.onmessage = async (evt) => {{
+                                      try {{
+                                          const req = JSON.parse(evt.data);
+                                          if (req.type === 'get_block') {{
+                                              document.getElementById('loader').innerText = '📤 Transfert direct P2P (WebRTC) du bloc vers le pair...';
+                                              const blockData = await window.readSpaceBlock(req.block_idx);
+                                              dc.send(JSON.stringify({{ type: 'block_data', block_data: blockData }}));
+                                          }}
+                                      }} catch (err) {{}}
+                                  }};
+                              }};
+                              await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
+                              const answer = await pc.createAnswer();
+                              await pc.setLocalDescription(answer);
+                              await sendWebRtcSignal(fromId, 'answer', JSON.stringify(answer));
+                          }} else if (sig.signal_type === 'answer' && peerConnections[fromId]) {{
+                              await peerConnections[fromId].setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
+                          }} else if (sig.signal_type === 'candidate' && peerConnections[fromId]) {{
+                              await peerConnections[fromId].addIceCandidate(new RTCIceCandidate(JSON.parse(sig.signal_data)));
+                          }}
+                      }}
+                  }}
+              }} catch (e) {{}}
+          }}, 800);
+
+          let peerBlock = "";
+          if (peerId && peerBlockIdx !== -1) {{
+              document.getElementById('loader').innerText = '📥 Connexion WebRTC P2P directe au pair (' + peerId + ')...';
+
+              const webrtcTransferPromise = new Promise(async (resolve) => {{
+                  if (!window.RTCPeerConnection) return resolve(null);
+                  try {{
+                      const pc = new RTCPeerConnection({{ iceServers: [] }});
+                      peerConnections[peerId] = pc;
+                      const dc = pc.createDataChannel("pospace-transfer");
+                      pc.onicecandidate = (e) => {{
+                          if (e.candidate) sendWebRtcSignal(peerId, 'candidate', JSON.stringify(e.candidate));
+                      }};
+                      dc.onopen = () => {{
+                          dc.send(JSON.stringify({{ type: 'get_block', block_idx: peerBlockIdx }}));
+                      }};
+                      dc.onmessage = (e) => {{
+                          try {{
+                              const msg = JSON.parse(e.data);
+                              if (msg.type === 'block_data' && msg.block_data) {{
+                                  resolve(msg.block_data);
+                              }}
+                          }} catch (err) {{}}
+                      }};
+                      const offer = await pc.createOffer();
+                      await pc.setLocalDescription(offer);
+                      await sendWebRtcSignal(peerId, 'offer', JSON.stringify(offer));
+                  }} catch (err) {{
+                      resolve(null);
+                  }}
+              }});
+
+              const webrtcTimeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 5000));
+              peerBlock = await Promise.race([webrtcTransferPromise, webrtcTimeoutPromise]);
+
+              if (peerBlock) {{
+                  document.getElementById('loader').innerText = '⚡ Bloc reçu en direct via WebRTC P2P sans transit serveur !';
+              }} else {{
+                  document.getElementById('loader').innerText = '⚠️ WebRTC indisponible. Téléchargement via relais HTTP...';
+                  const reqId = Math.random().toString(36).substring(2);
+                  const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
+                  await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
+              }}
+          }}
+
           document.getElementById('loader').innerText = '⚙&#xFE0F; Generating Proof of Space...';
-          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
+          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, peerBlock);
           
-          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash + (peerBlock ? "&pow_coop=1" : "");
       }} catch(e) {{
           document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
       }}
@@ -817,6 +932,41 @@ class ChallengeUtils:
             seed = params.get("seed") or ""
             await ChallengeUtils.register_cooperative_node(store, client_ip, node_id, seed)
             return {"status": "registered"}
+
+        elif op == "find_peer":
+            peer = await ChallengeUtils.find_peer_in_subnet(store, client_ip, node_id)
+            if not peer:
+                return {"status": "no_peers"}
+            return {
+                "status": "peer_found",
+                "peer_id": peer.get("nodeId"),
+                "seed": peer.get("seed", "")
+            }
+
+        elif op == "webrtc_signal":
+            target_peer_id = params.get("target_peer_id") or ""
+            signal_type = params.get("signal_type") or ""
+            signal_data = params.get("signal_data") or ""
+            if not target_peer_id or not signal_type or not signal_data:
+                return {"error": "Invalid parameters"}
+
+            signal_queue_key = f"coop-webrtc:signals:{target_peer_id}"
+            signals = await store.get(signal_queue_key) or []
+            signals.append({
+                "from_peer_id": node_id,
+                "signal_type": signal_type,
+                "signal_data": signal_data,
+                "timestamp": int(time.time() * 1000)
+            })
+            await store.set(signal_queue_key, signals, 30)
+            return {"status": "signal_queued"}
+
+        elif op == "poll_signals":
+            poll_signal_key = f"coop-webrtc:signals:{node_id}"
+            signals = await store.get(poll_signal_key) or []
+            if signals:
+                await store.delete(poll_signal_key)
+            return {"status": "ok", "signals": signals}
 
         elif op == "request_peer_block":
             peer_id = params.get("peer_id") or ""
