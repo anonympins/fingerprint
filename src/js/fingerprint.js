@@ -402,16 +402,70 @@ function getProtocolAnomalyScore(context) {
                     if (kv.length === 2) params[kv[0]] = kv[1];
                 });
                 const priorityOrder = parts[2] || '';
+                const frameOrderRaw = parts[3] || context.headers?.['x-quic-frame-order'] || context.quicFrameOrder || '';
+                const frameOrder = frameOrderRaw.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
 
-                if (browser.startsWith('Chrome') || browser.startsWith('Edge')) {
-                    const maxData = parseInt(params['1'] || '0', 10);
-                    const maxStreams = parseInt(params['4'] || '0', 10);
+                const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
+                const isFirefox = browser.startsWith('Firefox');
+                const isSafari = browser.startsWith('Safari');
+
+                const maxData = parseInt(params['1'] || params['0x01'] || '0', 10);
+                const maxStreams = parseInt(params['4'] || params['8'] || params['0x08'] || '0', 10);
+                const bidiLocal = parseInt(params['5'] || params['0x05'] || '0', 10);
+                const bidiRemote = parseInt(params['6'] || params['0x06'] || '0', 10);
+
+                if (isChromium) {
+                    // Contrôle de flux global et nombre de flux bidirectionnels
                     if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
                     if (maxStreams > 0 && maxStreams !== 100) quicAnomaly += 30.0;
                     if (priorityOrder && !priorityOrder.includes('u=')) quicAnomaly += 30.0;
-                } else if (browser.startsWith('Firefox')) {
+
+                    // Contrôle de flux bidi (Chromium alloue 6MB = 6291456 ou au minimum 512 Ko)
+                    // curl-impersonate / quiche alloue 256 Ko (262144) ou 128 Ko (131072)
+                    if (bidiLocal > 0 && (bidiLocal < 524288 || bidiLocal === 262144)) quicAnomaly += 40.0;
+                    if (bidiRemote > 0 && (bidiRemote < 524288 || bidiRemote === 262144)) quicAnomaly += 30.0;
+
+                    // Ordre des trames de contrôle QUIC (SETTINGS, MAX_STREAMS, PRIORITY)
+                    if (frameOrder.length >= 2) {
+                        const sIdx = frameOrder.findIndex(f => f === 's' || f === 'settings' || f === '4');
+                        const mIdx = frameOrder.findIndex(f => f === 'm' || f === 'max_streams' || f === '18');
+                        const pIdx = frameOrder.findIndex(f => f === 'p' || f === 'priority' || f === 'priority_update' || f === '15');
+
+                        if (sIdx !== 0 && sIdx !== -1) {
+                            quicAnomaly += 50.0; // SETTINGS doit obligatoirement être la première trame
+                        }
+                        if (mIdx !== -1 && sIdx !== -1 && mIdx < sIdx) {
+                            quicAnomaly += 60.0; // MAX_STREAMS envoyé avant SETTINGS (défaut curl/quiche)
+                        }
+                        if (pIdx !== -1 && sIdx !== -1 && pIdx < sIdx) {
+                            quicAnomaly += 60.0;
+                        }
+                    }
+                } else if (isFirefox) {
                     const maxData = parseInt(params['1'] || '0', 10);
                     if (maxData > 0 && maxData > 5000000) quicAnomaly += 40.0;
+                    // Necko (Firefox) n'utilise pas 100 flux bidi par défaut ni un buffer bidi de 6 Mo
+                    if (maxStreams === 100) quicAnomaly += 50.0;
+                    if (bidiLocal === 6291456) quicAnomaly += 50.0;
+
+                    if (frameOrder.length >= 2) {
+                        const sIdx = frameOrder.findIndex(f => f === 's' || f === 'settings' || f === '4');
+                        if (sIdx !== 0 && sIdx !== -1) quicAnomaly += 50.0;
+                    }
+                } else if (isSafari) {
+                    // Safari Network.framework
+                    if (maxStreams === 100 && maxData === 1572864 && priorityOrder.includes('u=2,i')) {
+                        quicAnomaly += 60.0; // Usurpation par profil Cronet / curl-impersonate
+                    }
+                    if (bidiLocal === 6291456) quicAnomaly += 50.0;
+
+                    if (frameOrder.length >= 2) {
+                        const sIdx = frameOrder.findIndex(f => f === 's' || f === 'settings' || f === '4');
+                        const mIdx = frameOrder.findIndex(f => f === 'm' || f === 'max_streams');
+                        if (mIdx !== -1 && (mIdx === 0 || (sIdx !== -1 && mIdx < sIdx))) {
+                            quicAnomaly += 50.0;
+                        }
+                    }
                 }
             }
         }
@@ -422,7 +476,9 @@ function getProtocolAnomalyScore(context) {
             0.0,
             Math.min(100.0, http2Anomaly),
             Math.min(100.0, quicAnomaly)
-        )
+        ),
+        http2AnomalyScore: Math.min(100.0, http2Anomaly),
+        quicAnomalyScore: Math.min(100.0, quicAnomaly)
     };
 }
 /**
@@ -612,6 +668,7 @@ const securityProfiles = {
             protocolAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
+            virtualizationScore: 0.8,
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -1872,7 +1929,12 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
         const hashBuffer = await crypto.subtle.digest("SHA-256", data);
         return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
       }
-      
+       
+       async function sendWebRtcSignal(targetId, type, data) {
+         const sig = await signCoop("webrtc_signal", nodeId, targetId + ":" + type + ":" + data);
+         await fetch(window.location.pathname + "?coop_op=webrtc_signal&node_id=" + nodeId + "&target_peer_id=" + targetId + "&signal_type=" + type + "&signal_data=" + encodeURIComponent(data) + "&coop_sig=" + sig);
+       }
+
       document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
       await new Promise(r => setTimeout(r, 10));
       
@@ -1885,47 +1947,110 @@ function generateSpaceChallengePage(challengeDetails, clientSecret, securityConf
               await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret) + "&coop_sig=" + sig);
           }
 
+        // Gestionnaire de connexions WebRTC P2P
+           const peerConnections = {};
+
           // Écoute des requêtes entrantes de nos pairs
           setInterval(async () => {
-              try {
-                  const sig = await signCoop("poll_requests", nodeId);
-                  const res = await fetch(window.location.pathname + "?coop_op=poll_requests&node_id=" + nodeId + "&coop_sig=" + sig);
-                  const data = await res.json();
-                  if (data.requests && data.requests.length > 0) {
-                      for (const req of data.requests) {
-                          document.getElementById('loader').innerText = '📤 Transfert coopératif de bloc vers le pair...';
-                          const blockData = await window.readSpaceBlock(req.block_idx);
-                          const respSig = await signCoop("respond_block", nodeId, req.requester_id + ":" + req.req_id + ":" + blockData);
-                          await fetch(window.location.pathname + "?coop_op=respond_block&node_id=" + nodeId + "&requester_id=" + req.requester_id + "&req_id=" + req.req_id + "&block_data=" + encodeURIComponent(blockData) + "&coop_sig=" + respSig);
-                      }
-                  }
-              } catch (e) {
-                  console.error("Cooperative polling error", e);
-              }
-          }, 1000);
+try {
+                   // 1. Récupération des signaux WebRTC P2P entrants
+                   const sigWebrtc = await signCoop("poll_signals", nodeId);
+                   const resWebrtc = await fetch(window.location.pathname + "?coop_op=poll_signals&node_id=" + nodeId + "&coop_sig=" + sigWebrtc);
+                   const dataWebrtc = await resWebrtc.json();
+                   if (dataWebrtc.signals && dataWebrtc.signals.length > 0) {
+                       for (const sig of dataWebrtc.signals) {
+                           const fromId = sig.from_peer_id;
+                           if (sig.signal_type === 'offer') {
+                               const pc = new RTCPeerConnection({ iceServers: [] });
+                               peerConnections[fromId] = pc;
+                               pc.onicecandidate = (e) => {
+                                   if (e.candidate) sendWebRtcSignal(fromId, 'candidate', JSON.stringify(e.candidate));
+                               };
+                               pc.ondatachannel = (e) => {
+                                   const dc = e.channel;
+                                   dc.onmessage = async (evt) => {
+                                       try {
+                                           const req = JSON.parse(evt.data);
+                                           if (req.type === 'get_block') {
+                                               document.getElementById('loader').innerText = '📤 Transfert direct P2P (WebRTC) du bloc vers le pair...';
+                                               const blockData = await window.readSpaceBlock(req.block_idx);
+                                               dc.send(JSON.stringify({ type: 'block_data', block_data: blockData }));
+                                           }
+                                       } catch (err) {}
+                                   };
+                               };
+                               await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
+                               const answer = await pc.createAnswer();
+                               await pc.setLocalDescription(answer);
+                               await sendWebRtcSignal(fromId, 'answer', JSON.stringify(answer));
+                           } else if (sig.signal_type === 'answer' && peerConnections[fromId]) {
+                               await peerConnections[fromId].setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
+                           } else if (sig.signal_type === 'candidate' && peerConnections[fromId]) {
+                               await peerConnections[fromId].addIceCandidate(new RTCIceCandidate(JSON.parse(sig.signal_data)));
+                           }
+                       }
+                   }
+               } catch (e) {}
+          }, 800);
 
           let peerBlock = "";
           if (peerId && peerBlockIdx !== -1) {
-              document.getElementById('loader').innerText = '📥 Téléchargement du bloc de validation du pair (' + peerId + ')...';
-              const reqId = Math.random().toString(36).substring(2);
-              const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
-              await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
-              
-              let attempts = 0;
-              while (attempts < coopTimeout) {
-                  const pollSig = await signCoop("poll_response", nodeId, reqId);
-                  const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId + "&coop_sig=" + pollSig);
-                  const data = await res.json();
-                  if (data.status === 'ready') {
-                      peerBlock = data.block_data;
-                      break;
-                  }
-                  await new Promise(r => setTimeout(r, 1000));
-                  attempts++;
-              }
-              if (!peerBlock) {
-                  document.getElementById('loader').innerText = '⚠️ Peer de sous-réseau injoignable. Validation solo...';
-              }
+               document.getElementById('loader').innerText = '📥 Connexion WebRTC P2P directe au pair (' + peerId + ')...';
+ 
+               // 1. Tentative d'échange direct via WebRTC DataChannel (charge serveur = 0)
+               const webrtcTransferPromise = new Promise(async (resolve) => {
+                   if (!window.RTCPeerConnection) return resolve(null);
+                   try {
+                       const pc = new RTCPeerConnection({ iceServers: [] });
+                       peerConnections[peerId] = pc;
+                       const dc = pc.createDataChannel("pospace-transfer");
+                       pc.onicecandidate = (e) => {
+                           if (e.candidate) sendWebRtcSignal(peerId, 'candidate', JSON.stringify(e.candidate));
+                       };
+                       dc.onopen = () => {
+                           dc.send(JSON.stringify({ type: 'get_block', block_idx: peerBlockIdx }));
+                       };
+                       dc.onmessage = (e) => {
+                           try {
+                               const msg = JSON.parse(e.data);
+                               if (msg.type === 'block_data' && msg.block_data) {
+                                   resolve(msg.block_data);
+                               }
+                           } catch (err) {}
+                       };
+                       const offer = await pc.createOffer();
+                       await pc.setLocalDescription(offer);
+                       await sendWebRtcSignal(peerId, 'offer', JSON.stringify(offer));
+                   } catch (err) {
+                       resolve(null);
+                   }
+               });
+ 
+               const webrtcTimeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 5000));
+               peerBlock = await Promise.race([webrtcTransferPromise, webrtcTimeoutPromise]);
+ 
+               if (peerBlock) {
+                   document.getElementById('loader').innerText = '⚡ Bloc reçu en direct via WebRTC P2P sans transit serveur !';
+               } else {
+                   // 2. Repli transparent vers la boîte aux lettres HTTP en cas de restriction réseau
+                   document.getElementById('loader').innerText = '⚠️ WebRTC P2P indisponible. Téléchargement via relais HTTP...';
+                   const reqId = Math.random().toString(36).substring(2);
+                   const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
+                   await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
+                   
+                   let attempts = 0;
+                   while (attempts < coopTimeout) {
+                       const pollSig = await signCoop("poll_response", nodeId, reqId);
+                       const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId + "&coop_sig=" + pollSig);
+                       const data = await res.json();
+                       if (data.status === 'ready') {
+                           peerBlock = data.block_data;
+                           break;
+                       }
+                       await new Promise(r => setTimeout(r, 1000));
+                       attempts++;
+                   }
+               }
           }
 
           document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';
@@ -3030,6 +3155,25 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
 
     await store.set(key, subnetData, 86400); // 24-hour TTL
 }
+/**
+ * Calcule un score d'incohérence analogique lisse plafonnant à une asymptote de 99.9.
+ * @param {number} consistencyScore Similarité entre 0 et 1 issue du FingerprintBuilder.
+ * @param {number} [inflectionPoint=0.72] Point d'inflexion où la suspicion accélère.
+ * @param {number} [steepness=12] Raideur de la transition sigmoïdale.
+ * @returns {number} Score de 0 à 99.9 sans saut de palier ni certitude absolue à 100.
+ */
+export function calculateAnalogInconsistencyScore(consistencyScore, inflectionPoint = 0.72, steepness = 12) {
+    const s = Math.max(0.0, Math.min(1.0, consistencyScore));
+    if (s >= 0.98) return 0.0;
+
+    const asymptote = 99.9;
+    const raw = 1.0 / (1.0 + Math.exp(steepness * (s - inflectionPoint)));
+    const minVal = 1.0 / (1.0 + Math.exp(steepness * (1.0 - inflectionPoint)));
+    const maxVal = 1.0 / (1.0 + Math.exp(steepness * (0.0 - inflectionPoint)));
+    const normalized = ((raw - minVal) / (maxVal - minVal)) * asymptote;
+
+    return Math.min(asymptote, Math.round(normalized * 10.0) / 10.0);
+}
 
 /**
  * Calculates a suspicion score based on the historical activity of the IP subnet.
@@ -3065,28 +3209,29 @@ async function getSubnetScore(context) {
         return { subnetScore: 0.0 };
     }
 
-    // Calculs analogues continus (sans sauts brusques)
-    const suspicionDensity = highScoreCount / deviceCount;
-    const ipDeviceRatio = ipCount / deviceCount;
+    // 1. Estimation Bayésienne de densité (évite les sur-réactions sur 1 ou 2 appareils)
+    // Prior: alpha=0.5, beta=2.0 (a priori réseau sain)
+    const bayesianDensity = (highScoreCount + 0.5) / (deviceCount + 2.5);
 
-    // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
-    const uaDeviceRatio = Math.max(1, uaCount) / deviceCount;
-    const uaMultiplier = 0.6 + (0.4 * Math.min(2.5, uaDeviceRatio));
+    // 2. Ratio IP / Terminal (distingue un proxy distribué d'un gros NAT / CGNAT)
+    // Sur un proxy distribué, chaque terminal utilise une IP différente (ratio >= 1.0)
+    // Sur un CGNAT, des dizaines de terminaux partagent peu d'IPs (ratio << 1.0)
+    const ipDispersion = Math.min(2.0, ipCount / deviceCount);
+    const ipMultiplier = 0.6 + 0.4 * Math.tanh(ipDispersion);
 
-    // Base score continu basé sur le volume de menaces
-    const baseScore = 100 * (1 - Math.exp(-0.15 * highScoreCount));
+    // 3. Volatilité des User-Agents (rotation de navigateurs sur matériel identique)
+    const uaDispersion = Math.min(3.0, Math.max(1, uaCount) / deviceCount);
+    const uaMultiplier = 0.7 + 0.3 * Math.tanh(uaDispersion - 1.0);
 
-    // Multiplicateurs continus
-    const densityMultiplier = 0.4 + (1.6 * suspicionDensity); // Favorise les densités de suspicion élevées
-    const distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio); // NAT (faible ratio IP/Device) vs Proxy distribué (fort ratio)
+    // 4. Intensité brute continue de la menace (sans discontinuité)
+    const rawThreatIntensity = highScoreCount * bayesianDensity * ipMultiplier * uaMultiplier;
 
-    // Amortissement pour éviter les faux positifs sur les réseaux NAT résidentiels (petits nombres d'appareils suspects)
-    let dampening = 1.0;
-    if (highScoreCount < 3) {
-        dampening = highScoreCount / 3.0; // 0.33 pour 1 appareil, 0.66 pour 2 appareils
-    }
+    // 5. Saturation asymptotique continue (Asymptote à 99.9)
+    // Même si rawThreatIntensity tend vers l'infini, tanh converge vers 1.0 sans jamais dépasser 85.0
+    const ASYMPTOTE = 99.9;
+    const scaleFactor = 4.0; // Sensibilité de la transition
+    const finalScore = Math.round(ASYMPTOTE * Math.tanh(rawThreatIntensity / scaleFactor) * 10) / 10;
 
-    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * uaMultiplier * dampening * 10) / 10);
     return { subnetScore: finalScore };
 }
 
@@ -3576,6 +3721,46 @@ async function getBehavioralIndicators(context, deviceData) {
   return { historyScore, rotationScore };
 }
 
+function getVirtualizationAnomalyScore(context) {
+    const clientFp = context.headers?.['x-device-fingerprint'];
+    if (!clientFp) return 0.0;
+
+    const fpMap = {};
+    clientFp.split('|').forEach(part => {
+        const pair = part.split(':');
+        if (pair.length === 2) {
+            fpMap[pair[0]] = pair[1];
+        }
+    });
+
+    let score = 0.0;
+    const clientGpuHash = fpMap['gpu'];
+    if (clientGpuHash) {
+        const virtualGpus = [
+            "Google SwiftShader", "SwiftShader",
+            "Mesa llvmpipe", "llvmpipe", "Mesa Gallium",
+            "Microsoft Basic Render Driver", "HeadlessChrome",
+            "Intel(R) HD Graphics"
+        ];
+        const virtualGpuHashes = new Set(virtualGpus.map(gpu => cyrb53(gpu).toString()));
+        if (virtualGpuHashes.has(clientGpuHash)) {
+            score += 75.0;
+        }
+    }
+
+    const clientScreenHash = fpMap['scr'];
+    if (clientScreenHash) {
+        const headlessResolutions = ["800x600_24", "1024x768_24"];
+        const headlessHashes = new Set(headlessResolutions.map(res => cyrb53(res).toString()));
+        if (headlessHashes.has(clientScreenHash)) {
+            score += 25.0;
+        }
+    }
+
+    return Math.min(100.0, score);
+}
+
+
 /**
  * Returns a vector of raw (unweighted) suspicion scores.
  * @param {object} context - The request context object.
@@ -3622,7 +3807,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         _ // store.set result
       ] = await Promise.all([
         getBehavioralIndicators(context, deviceData), // This modifies deviceData, so it must be done before saving deviceData
-        getThreatIntelScore(zkpY), // NOUVEAU: Score de Threat Intelligence Fédéré
+        getThreatIntelScore(context, zkpY), // NOUVEAU: Score de Threat Intelligence Fédéré
         getTlsSpoofingScore(context),
         getSubnetScore(context, deviceId),
         getIpReputationScore(clientIp),
@@ -3632,12 +3817,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
       // Synchronous calculations
       const { headerAnomalyScore } = getHeaderAnomalies(context);
-      let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
-
-      // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
-      if (consistencyScore < 0.7) { // Seuil de rupture
-          inconsistencyScore = 100;
-      }
+    const similarityThreshold = securityConfig?.similarityThreshold ?? 0.72;
+    const inconsistencyScore = calculateAnalogInconsistencyScore(consistencyScore, similarityThreshold);
 
       const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
 
@@ -3663,6 +3844,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
   const { tcpAnomalyScore } = getTcpAnomalyScore(context);
     const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
     const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
+    const virtualizationScore = getVirtualizationAnomalyScore(context);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -3674,7 +3856,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
   // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, renderingAnomalyScore, threatIntelScore };
+  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -4060,14 +4242,40 @@ function parseGraphQLQuery(body) {
  * @param {string} zkpY - The 'y' component of the ZKP proof (public key).
  * @returns {Promise<{threatIntelScore: number}>}
  */
-async function getThreatIntelScore(zkpY) {
-    if (!zkpY) return { threatIntelScore: 0 };
-
-    const isBanned = await store.has(`banned-zkp-y:${zkpY}`);
-    if (isBanned) {
-        return { threatIntelScore: 100 };
+async function getThreatIntelScore(context, zkpY) {
+    let score = 0;
+    if (zkpY) {
+        const isBanned = await store.has(`banned-zkp-y:${zkpY}`);
+        if (isBanned) {
+            score = 100;
+        }
     }
-    return { threatIntelScore: 0 };
+
+    const tcpRttHeader = context.headers?.['x-tcp-rtt'] || context.headers?.['x-real-rtt'];
+    const tcpRtt = tcpRttHeader ? parseInt(tcpRttHeader, 10) : null;
+
+    const behaviorHeader = context.headers?.['x-behavior-metrics'];
+    if (behaviorHeader) {
+        try {
+            const metrics = JSON.parse(behaviorHeader);
+            if (metrics && metrics.clientTimestamp && context.requestTimestamp) {
+                const appLatency = context.requestTimestamp - metrics.clientTimestamp;
+                if (tcpRtt !== null && !isNaN(tcpRtt) && tcpRtt > 0) {
+                    const clientToProxyDelta = appLatency - tcpRtt;
+                    if (tcpRtt < 35 && clientToProxyDelta > 150) {
+                        score = Math.max(score, 85);
+                    }
+                } else {
+                    if (appLatency > 350) {
+                        score = Math.max(score, 40);
+                    }
+                }
+            }
+        } catch (e) {
+            // Ignorer silencieusement
+        }
+    }
+    return { threatIntelScore: score };
 }
 
 export class FingerprintEngine {
@@ -5155,9 +5363,10 @@ export class FingerprintEngine {
     const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
     // Correction : Pour éviter une boucle infinie de challenges (qui mène à l'erreur 429),
     // on fait confiance au ticket valide tant qu'il n'a pas expiré.
-    const mustReChallenge = false;
+    const maxIndicatorsCount = Object.values(suspicionVector).filter(val => typeof val === 'number' && val >= 100).length;
+    const mustReChallenge = (suspicionVector.honeypotScore >= (thresholds.medium ?? 45)) || (maxIndicatorsCount >= 1);
 
-    if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
+    if ((isSuspicious && !hasValidTicket) || mustReChallenge) {
         if (mustReChallenge) {
             this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
         }
@@ -5204,7 +5413,7 @@ export class FingerprintEngine {
         let usefulWorkDispatched = false;
         let challengePayload = null;
 
-        if (isSuspicious && shouldUseUsefulWork) {
+        if ((isSuspicious || mustReChallenge) && shouldUseUsefulWork) {
             this._log('Issuing a useful work challenge', { finalScore });
 
             try {
@@ -5236,7 +5445,7 @@ export class FingerprintEngine {
             }
         }
 
-        if (isSuspicious && usefulWorkDispatched) {
+        if ((isSuspicious || mustReChallenge) && usefulWorkDispatched) {
             if (isApi) {
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
@@ -5252,7 +5461,7 @@ export class FingerprintEngine {
                 </script></body></html>`;
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: html };
             }
-        } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi / a échoué                
+        } else if (isSuspicious || mustReChallenge) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi / a échoué                
             const decision = { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404 };
                 if (this.dryRun) {
                     this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
@@ -5616,6 +5825,15 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
         case 'register':
             expectedMsg = `${clientSecret}:register:${nodeId}:${params.seed || ''}`;
             break;
+        case 'find_peer':
+            expectedMsg = `${clientSecret}:find_peer:${nodeId}`;
+            break;
+        case 'webrtc_signal':
+            expectedMsg = `${clientSecret}:webrtc_signal:${nodeId}:${params.target_peer_id || ''}:${params.signal_type || ''}:${params.signal_data || ''}`;
+            break;
+        case 'poll_signals':
+            expectedMsg = `${clientSecret}:poll_signals:${nodeId}`;
+            break;
         case 'request_peer_block':
             expectedMsg = `${clientSecret}:request_peer_block:${nodeId}:${params.peer_id || ''}:${params.block_idx || '0'}:${params.req_id || ''}`;
             break;
@@ -5644,14 +5862,49 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
             await registerCooperativeNode(clientIp, nodeId, seed);
             return { status: 'registered' };
 
+        case 'find_peer': {
+            const peer = await findPeerInSubnet(clientIp, nodeId);
+            if (!peer) {
+                return { status: 'no_peers' };
+            }
+            return { status: 'peer_found', peer_id: peer.nodeId };
+        }
+
+        case 'webrtc_signal': {
+            const targetPeerId = params.target_peer_id || '';
+            const signalType = params.signal_type || '';
+            const signalData = params.signal_data || '';
+            if (!targetPeerId || !signalType) {
+                return { error: 'Invalid parameters' };
+            }
+            const signalQueueKey = `coop-webrtc:signals:${targetPeerId}`;
+            const signals = (await store.get(signalQueueKey)) || [];
+            signals.push({
+                from_peer_id: nodeId,
+                signal_type: signalType,
+                signal_data: signalData
+            });
+            await store.set(signalQueueKey, signals, 30);
+            return { status: 'signal_queued' };
+        }
+
+        case 'poll_signals': {
+            const pollSignalKey = `coop-webrtc:signals:${nodeId}`;
+            const signals = (await store.get(pollSignalKey)) || [];
+            if (signals.length > 0) {
+                await store.delete(pollSignalKey);
+            }
+            return { status: 'ok', signals };
+        }
+
         case 'request_peer_block':
+        {
             const peerId = params.peer_id || '';
             const blockIdx = parseInt(params.block_idx || '0', 10);
             const requestId = params.req_id || '';
             if (!peerId || !requestId) {
-                return { error: 'Invalid parameters' };
+                return {error: 'Invalid parameters'};
             }
-
             const queueKey = `coop-mailbox:queue:${peerId}`;
             const requests = (await store.get(queueKey)) || [];
             requests.push({
@@ -5660,7 +5913,8 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
                 block_idx: blockIdx
             });
             await store.set(queueKey, requests, 30);
-            return { status: 'queued' };
+            return {status: 'queued'};
+        }
 
         case 'poll_requests':
             const pollQueueKey = `coop-mailbox:queue:${nodeId}`;
@@ -6500,6 +6754,7 @@ export const __internal = {
     calculateTarget,
     determineOptimalTicketTtl,
     runBackgroundTtlOptimization,
+    calculateAnalogInconsistencyScore,
     getRequestPatternScore, // Expose for testing
     getBehaviorScore, // Expose for testing
     getCrossLayerInconsistency, // Expose for testing

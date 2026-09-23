@@ -2,6 +2,7 @@ package com.anonympins.fingerprint;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -470,6 +471,8 @@ public class FingerprintProperties {
         private int sizeMb = 100;
         private int numQueries = 10;
         private int coopTimeout = 15;
+        private boolean enableWebRtc = true;
+        private List<String> iceServers = new ArrayList<>(Arrays.asList("stun:stun.l.google.com:19302"));
 
         public int getSizeMb() { return sizeMb; }
         public void setSizeMb(int sizeMb) { this.sizeMb = sizeMb; }
@@ -477,12 +480,18 @@ public class FingerprintProperties {
         public void setNumQueries(int numQueries) { this.numQueries = numQueries; }
         public int getCoopTimeout() { return coopTimeout; }
         public void setCoopTimeout(int coopTimeout) { this.coopTimeout = coopTimeout; }
+        public boolean isEnableWebRtc() { return enableWebRtc; }
+        public void setEnableWebRtc(boolean enableWebRtc) { this.enableWebRtc = enableWebRtc; }
+        public List<String> getIceServers() { return iceServers; }
+        public void setIceServers(List<String> iceServers) { this.iceServers = iceServers; }
 
         public Map<String, Object> toMap() {
             Map<String, Object> map = new HashMap<>();
             map.put("sizeMb", sizeMb);
             map.put("numQueries", numQueries);
             map.put("coopTimeout", coopTimeout);
+            map.put("enableWebRtc", enableWebRtc);
+            map.put("iceServers", iceServers);
             return map;
         }
     }

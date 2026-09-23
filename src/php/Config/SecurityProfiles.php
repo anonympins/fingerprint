@@ -44,6 +44,7 @@ class SecurityProfiles
                 'protocolAnomalyScore' => 0.8, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 0.8, // NEW: Anomalie de rendu
                 'ipReputationScore' => 0.5, // NOUVEAU: Poids pour la réputation IP
+                'virtualizationScore' => 0.8,
             ],
             'thresholds' => ['low' => 20, 'medium' => 45, 'high' => 75, 'block' => 95],
             'patterns' => [

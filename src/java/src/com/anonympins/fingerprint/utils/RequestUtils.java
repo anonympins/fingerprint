@@ -152,61 +152,6 @@ public class RequestUtils {
     }
 
     @SuppressWarnings("unchecked")
-    private static void applySubnetDecay(IStore store, String subnet, Map<String, Object> subnetData, long now) {
-        long lastActivity = ((Number) subnetData.getOrDefault("lastActivity", now)).longValue();
-        if (lastActivity == 0L) {
-            subnetData.put("lastActivity", now);
-            return;
-        }
-        long inactivityMs = now - lastActivity;
-        long halfLives = inactivityMs / (30 * 60 * 1000L); // 30 minutes half-life
-
-        if (halfLives > 0) {
-            double decay = Math.pow(2, halfLives);
-
-            int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
-            highScoreCount = Math.max(0, (int) Math.floor(highScoreCount / decay));
-            subnetData.put("highScoreCount", highScoreCount);
-
-            List<String> deviceIdsList = (List<String>) subnetData.getOrDefault("deviceIds", new ArrayList<String>());
-            int deviceCount = Math.max(0, (int) Math.floor(deviceIdsList.size() / decay));
-            if (deviceIdsList.size() > deviceCount) {
-                deviceIdsList = new ArrayList<>(deviceIdsList.subList(deviceIdsList.size() - deviceCount, deviceIdsList.size()));
-                subnetData.put("deviceIds", deviceIdsList);
-            }
-
-            List<String> ipsList = (List<String>) subnetData.getOrDefault("ips", new ArrayList<String>());
-            int ipCount = Math.max(1, (int) Math.floor(ipsList.size() / decay));
-            if (ipsList.size() > ipCount) {
-                ipsList = new ArrayList<>(ipsList.subList(ipsList.size() - ipCount, ipsList.size()));
-                subnetData.put("ips", ipsList);
-            }
-
-            List<String> uasList = (List<String>) subnetData.getOrDefault("uas", new ArrayList<String>());
-            int uaCountDecayed = Math.max(1, (int) Math.floor(uasList.size() / decay));
-            if (uasList.size() > uaCountDecayed) {
-                uasList = new ArrayList<>(uasList.subList(uasList.size() - uaCountDecayed, uasList.size()));
-                subnetData.put("uas", uasList);
-            }
-
-            Map<String, Integer> highScoreDevices = (Map<String, Integer>) subnetData.get("highScoreDevices");
-            if (highScoreDevices != null) {
-                Map<String, Integer> decayedDevices = new HashMap<>();
-                for (Map.Entry<String, Integer> entry : highScoreDevices.entrySet()) {
-                    int decayedVal = Math.max(0, (int) Math.floor(entry.getValue() / decay));
-                    if (decayedVal > 0) {
-                        decayedDevices.put(entry.getKey(), decayedVal);
-                    }
-                }
-                subnetData.put("highScoreDevices", decayedDevices);
-            }
-
-            subnetData.put("lastActivity", now);
-            store.set("subnet:" + subnet, subnetData, 86400);
-        }
-    }
-
-    @SuppressWarnings("unchecked")
     public static Map<String, Double> getRequestPatternScore(RequestContext context, Map<String, Object> deviceData, Map<String, Object> patternsConfig) {
         Map<String, Double> result = new HashMap<>();
         double score = 0.0;
@@ -822,24 +767,25 @@ public class RequestUtils {
             return result;
         }
 
-        double suspicionDensity = (double) highScoreCount / deviceCount;
-        double ipDeviceRatio = (double) ipCount / deviceCount;
+        // 1. Estimation Bayésienne de densité (évite les sur-réactions sur de faibles échantillons)
+        double bayesianDensity = ((double) highScoreCount + 0.5) / ((double) deviceCount + 2.5);
 
-        // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
-        double uaDeviceRatio = (double) Math.max(1, uaCount) / deviceCount;
-        double uaMultiplier = 0.6 + (0.4 * Math.min(2.5, uaDeviceRatio));
+        // 2. Dispersion IP / Terminal (CGNAT vs Proxy Pool distribué)
+        double ipDispersion = Math.min(2.0, (double) ipCount / (double) deviceCount);
+        double ipMultiplier = 0.6 + 0.4 * Math.tanh(ipDispersion);
 
-        double baseScore = 100.0 * (1.0 - Math.exp(-0.15 * highScoreCount));
+        // 3. Volatilité des User-Agents (rotation de navigateurs sur matériel identique)
+        double uaDispersion = Math.min(3.0, (double) Math.max(1, uaCount) / (double) deviceCount);
+        double uaMultiplier = 0.7 + 0.3 * Math.tanh(uaDispersion - 1.0);
 
-        double densityMultiplier = 0.4 + (1.6 * suspicionDensity);
-        double distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio);
+        // 4. Intensité continue de la menace (sans seuil abrupt ni dérivée nulle)
+        double rawThreatIntensity = (double) highScoreCount * bayesianDensity * ipMultiplier * uaMultiplier;
 
-        double dampening = 1.0;
-        if (highScoreCount < 3) {
-            dampening = highScoreCount / 3.0;
-        }
+        // 5. Saturation asymptotique continue (Asymptote à 99.9 maximum strict)
+        double asymptote = 99.9;
+        double scaleFactor = 4.0;
+        double finalScore = Math.round(asymptote * Math.tanh(rawThreatIntensity / scaleFactor) * 10.0) / 10.0;
 
-        double finalScore = Math.min(100.0, Math.round(baseScore * densityMultiplier * distributionMultiplier * uaMultiplier * dampening * 10.0) / 10.0);
         result.put("subnetScore", finalScore);
         return result;
     }
@@ -1196,25 +1142,95 @@ public class RequestUtils {
                     }
                 }
                 String priorityOrder = parts.length > 2 ? parts[2] : "";
+                String frameOrderRaw = parts.length > 3 ? parts[3] : (context.getHeader("x-quic-frame-order") != null ? context.getHeader("x-quic-frame-order") : "");
+                List<String> frameOrder = new ArrayList<>();
+                if (frameOrderRaw != null && !frameOrderRaw.isEmpty()) {
+                    for (String f : frameOrderRaw.split(",")) {
+                        String trimmed = f.trim().toLowerCase();
+                        if (!trimmed.isEmpty()) frameOrder.add(trimmed);
+                    }
+                }
 
                 String ua = context.getHeader("user-agent");
                 if (ua == null) {
                     ua = "";
                 }
                 Map<String, String> uaParts = parseUserAgent(ua);
-                String browser = uaParts.get("browser");
+                String browser = uaParts.get("browser") != null ? uaParts.get("browser") : "";
 
                 if (browser != null && !browser.isEmpty()) {
                     double anomaly = 0.0;
-                    if (browser.startsWith("Chrome") || browser.startsWith("Edge")) {
-                        int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
-                        int maxStreams = params.containsKey("4") ? Integer.parseInt(params.get("4")) : 0;
+                    boolean isChromium = browser.startsWith("Chrome") || browser.startsWith("Edge");
+                    boolean isFirefox = browser.startsWith("Firefox");
+                    boolean isSafari = browser.startsWith("Safari");
+
+                    int maxData = 0, maxStreams = 0, bidiLocal = 0, bidiRemote = 0;
+                    try {
+                        if (params.containsKey("1")) maxData = Integer.parseInt(params.get("1"));
+                        else if (params.containsKey("0x01")) maxData = Integer.parseInt(params.get("0x01"));
+
+                        if (params.containsKey("4")) maxStreams = Integer.parseInt(params.get("4"));
+                        else if (params.containsKey("8")) maxStreams = Integer.parseInt(params.get("8"));
+                        else if (params.containsKey("0x08")) maxStreams = Integer.parseInt(params.get("0x08"));
+
+                        if (params.containsKey("5")) bidiLocal = Integer.parseInt(params.get("5"));
+                        else if (params.containsKey("0x05")) bidiLocal = Integer.parseInt(params.get("0x05"));
+
+                        if (params.containsKey("6")) bidiRemote = Integer.parseInt(params.get("6"));
+                        else if (params.containsKey("0x06")) bidiRemote = Integer.parseInt(params.get("0x06"));
+                    } catch (NumberFormatException ignored) {}
+
+                    if (isChromium) {
                         if (maxData > 0 && maxData < 1048576) anomaly += 40.0;
                         if (maxStreams > 0 && maxStreams != 100) anomaly += 30.0;
-                        if (!priorityOrder.isEmpty() && !priorityOrder.contains("u=")) anomaly += 30.0;
-                    } else if (browser.startsWith("Firefox")) {
-                        int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
+                        if (priorityOrder != null && !priorityOrder.isEmpty() && !priorityOrder.contains("u=")) anomaly += 30.0;
+
+                        if (bidiLocal > 0 && (bidiLocal < 524288 || bidiLocal == 262144)) anomaly += 40.0;
+                        if (bidiRemote > 0 && (bidiRemote < 524288 || bidiRemote == 262144)) anomaly += 30.0;
+
+                        if (frameOrder.size() >= 2) {
+                            int sIdx = frameOrder.indexOf("s");
+                            if (sIdx == -1) sIdx = frameOrder.indexOf("settings");
+                            if (sIdx == -1) sIdx = frameOrder.indexOf("4");
+
+                            int mIdx = frameOrder.indexOf("m");
+                            if (mIdx == -1) mIdx = frameOrder.indexOf("max_streams");
+                            if (mIdx == -1) mIdx = frameOrder.indexOf("18");
+
+                            int pIdx = frameOrder.indexOf("p");
+                            if (pIdx == -1) pIdx = frameOrder.indexOf("priority");
+                            if (pIdx == -1) pIdx = frameOrder.indexOf("priority_update");
+                            if (pIdx == -1) pIdx = frameOrder.indexOf("15");
+
+                            if (sIdx != 0 && sIdx != -1) anomaly += 50.0;
+                            if (mIdx != -1 && sIdx != -1 && mIdx < sIdx) anomaly += 60.0;
+                            if (pIdx != -1 && sIdx != -1 && pIdx < sIdx) anomaly += 60.0;
+                        }
+                    } else if (isFirefox) {
                         if (maxData > 0 && maxData > 5000000) anomaly += 40.0;
+                        if (maxStreams == 100) anomaly += 50.0;
+                        if (bidiLocal == 6291456) anomaly += 50.0;
+                        if (frameOrder.size() >= 2) {
+                            int sIdx = frameOrder.indexOf("s");
+                            if (sIdx == -1) sIdx = frameOrder.indexOf("settings");
+                            if (sIdx == -1) sIdx = frameOrder.indexOf("4");
+                            if (sIdx != 0 && sIdx != -1) anomaly += 50.0;
+                        }
+                    } else if (isSafari) {
+                        if (maxStreams == 100 && maxData == 1572864 && priorityOrder != null && priorityOrder.contains("u=2,i")) {
+                            anomaly += 60.0;
+                        }
+                        if (bidiLocal == 6291456) anomaly += 50.0;
+                        if (frameOrder.size() >= 2) {
+                            int sIdx = frameOrder.indexOf("s");
+                            if (sIdx == -1) sIdx = frameOrder.indexOf("settings");
+                            if (sIdx == -1) sIdx = frameOrder.indexOf("4");
+                            int mIdx = frameOrder.indexOf("m");
+                            if (mIdx == -1) mIdx = frameOrder.indexOf("max_streams");
+                            if (mIdx != -1 && (mIdx == 0 || (sIdx != -1 && mIdx < sIdx))) {
+                                anomaly += 50.0;
+                            }
+                        }
                     }
                     result.put("quicAnomalyScore", Math.max(0.0, Math.min(100.0, anomaly)));
                 }
@@ -1273,46 +1289,8 @@ public class RequestUtils {
                 }
             }
 
-            // QUIC Anomaly Logic
-            String quicFp = context.getHeader("x-quic-fp");
-            if (quicFp == null) {
-                quicFp = context.quicFingerprint;
-            }
-            if (quicFp != null && !quicFp.isEmpty()) {
-                String[] parts = quicFp.split(";");
-                if (parts.length >= 2) {
-                    Map<String, String> params = new HashMap<>();
-                    for (String p : parts[1].split(",")) {
-                        String[] kv = p.split("=", 2);
-                        if (kv.length == 2) {
-                            params.put(kv[0], kv[1]);
-                        }
-                    }
-                    String priorityOrder = parts.length > 2 ? parts[2] : "";
-
-                    boolean isChromium = browser.startsWith("Chrome") || browser.startsWith("Edge");
-                    boolean isFirefox = browser.startsWith("Firefox");
-
-                    if (isChromium) {
-                        try {
-                            int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
-                            int maxStreams = params.containsKey("4") ? Integer.parseInt(params.get("4")) : 0;
-                            if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
-                            if (maxStreams > 0 && maxStreams != 100) quicAnomaly += 30.0;
-                            if (priorityOrder != null && !priorityOrder.isEmpty() && !priorityOrder.contains("u=")) quicAnomaly += 30.0;
-                        } catch (NumberFormatException e) {
-                            // ignore
-                        }
-                    } else if (isFirefox) {
-                        try {
-                            int maxData = params.containsKey("1") ? Integer.parseInt(params.get("1")) : 0;
-                            if (maxData > 0 && maxData > 5000000) quicAnomaly += 40.0;
-                        } catch (NumberFormatException e) {
-                            // ignore
-                        }
-                    }
-                }
-            }
+            // Délégation au module QUIC dédié pour éviter la duplication de code
+            quicAnomaly = getQuicAnomalyScore(context).getOrDefault("quicAnomalyScore", 0.0);
         }
 
         double score = Math.max(
@@ -1324,6 +1302,8 @@ public class RequestUtils {
         );
 
         result.put("protocolAnomalyScore", score);
+        result.put("http2AnomalyScore", http2Anomaly);
+        result.put("quicAnomalyScore", quicAnomaly);
         return result;
     }
 

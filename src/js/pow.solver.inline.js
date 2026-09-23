@@ -53,6 +53,25 @@ function generateBlock(seed, blockIndex, blockSize = 1024) {
     return block;
 }
 
+async function readSpaceBlock(blockIdx) {
+    const db = await openDb();
+    const transaction = db.transaction("blocks", "readonly");
+    const store = transaction.objectStore("blocks");
+    const getReq = store.get(blockIdx);
+    return new Promise((resolve, reject) => {
+        getReq.onsuccess = () => {
+            const block = getReq.result;
+            if (block) {
+                const hex = Array.from(block).map(b => b.toString(16).padStart(2, '0')).join('');
+                resolve(hex);
+            } else {
+                reject(new Error("Block not found"));
+            }
+        };
+        getReq.onerror = () => reject(getReq.error);
+    });
+}
+
 async function loadTfjs() {
     if (typeof tf !== 'undefined') return tf;
     if (typeof window !== 'undefined') {
@@ -1143,6 +1162,7 @@ async function solveChallenge(challenge, fingerprint = '') { // fingerprint para
 if (typeof window !== 'undefined') {
     window.solveCpuChallengeInline = solveCpuTargetInline;
     window.solveMemoryChallenge = solveMemory;
+    window.readSpaceBlock = readSpaceBlock;
     window.solveTspChallenge = solveTsp;
     window.solveChallenge = solveChallenge;
 }

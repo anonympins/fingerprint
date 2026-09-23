@@ -40,6 +40,7 @@ public class SecurityProfiles {
         balancedWeights.put("tcpAnomalyScore", 0.8);
         balancedWeights.put("protocolAnomalyScore", 0.8);
         balancedWeights.put("ipReputationScore", 0.5);
+        balancedWeights.put("virtualizationScore", 0.8);
         balanced.put("weights", balancedWeights);
 
         Map<String, Integer> balancedThresholds = new HashMap<>();

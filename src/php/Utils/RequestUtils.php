@@ -1025,13 +1025,20 @@ class RequestUtils
 
     public static function getThreatIntelScore(RequestContext $context, array $threatIntelConfig): array
     {
+        $score = 0.0;
         $zkpY = $context->zkpY;
-        if (empty($zkpY)) {
-            return ['threatIntelScore' => 0.0];
+        if (!empty($zkpY)) {
+            $store = StoreManager::getStore();
+            $isBanned = $store->has("banned-zkp-y:{$zkpY}");
+            if ($isBanned) {
+                $score = 100.0;
+            }
         }
-        $store = StoreManager::getStore();
-        $isBanned = $store->has("banned-zkp-y:{$zkpY}");
-        return ['threatIntelScore' => $isBanned ? 100.0 : 0.0];
+
+        $rttProxyScore = \Anonympins\Fingerprint\Ja3AnomalyDetector::getRttProxyScore($context);
+        $score = max($score, (float)$rttProxyScore);
+
+        return ['threatIntelScore' => $score];
     }
 
     /**
@@ -1355,23 +1362,24 @@ class RequestUtils
             return ['subnetScore' => 0.0];
         }
 
-        $suspicionDensity = $highScoreCount / $deviceCount;
-        $ipDeviceRatio = $ipCount / $deviceCount;
+        // 1. Régularisation bayésienne continue de la densité
+        $bayesianDensity = ((float)$highScoreCount + 0.5) / ((float)$deviceCount + 2.5);
 
-        // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
-        $uaDeviceRatio = (double)max(1, $uaCount) / $deviceCount;
-        $uaMultiplier = 0.6 + (0.4 * min(2.5, $uaDeviceRatio));
+        // 2. Dispersion IP / Terminal (CGNAT vs Proxy Pool)
+        $ipDispersion = min(2.0, (float)$ipCount / (float)$deviceCount);
+        $ipMultiplier = 0.6 + 0.4 * tanh($ipDispersion);
 
-        $baseScore = 100.0 * (1.0 - exp(-0.15 * $highScoreCount));
+        // 3. Dispersion User-Agent / Terminal
+        $uaDispersion = min(3.0, (float)max(1, $uaCount) / (float)$deviceCount);
+        $uaMultiplier = 0.7 + 0.3 * tanh($uaDispersion - 1.0);
 
-        $densityMultiplier = 0.4 + (1.6 * $suspicionDensity);
-        $distributionMultiplier = 0.5 + (1.0 * $ipDeviceRatio);
+        // 4. Intensité continue de la menace
+        $rawIntensity = (float)$highScoreCount * $bayesianDensity * $ipMultiplier * $uaMultiplier;
 
-        $dampening = 1.0;
-        if( $highScoreCount < 3 ){
-            $dampening = $highScoreCount / 3.0;
-        }
-        $finalScore = min(100.0, round($baseScore * $densityMultiplier * $distributionMultiplier * $uaMultiplier * $dampening * 10.0) / 10.0);
+        // 5. Asymptote continue via tanh (99.9 maximum strict, dérivable et sans saut)
+        $asymptote = 99.9;
+        $scale = 4.0;
+        $finalScore = round($asymptote * tanh($rawIntensity / $scale) * 10.0) / 10.0;
 
         return ['subnetScore' => $finalScore];
     }
@@ -2030,5 +2038,92 @@ class RequestUtils
         }
 
         return !empty($deviceId) && !empty($deviceHash); // Match d'identité matérielle stricte (deviceId + deviceHash validés par HMAC)
+    }
+
+    private static function imul(int $a, int $b): int
+    {
+        return ($a * $b) & 0xffffffff;
+    }
+
+    public static function cyrb53(string $str, int $seed = 0): int
+    {
+        $h1 = (0xdeadbeef ^ $seed) & 0xffffffff;
+        $h2 = (0x41c6ce57 ^ $seed) & 0xffffffff;
+        for ($i = 0; $i < strlen($str); $i++) {
+            $ch = ord($str[$i]);
+            $h1 = self::imul($h1 ^ $ch, 2654435761);
+            $h2 = self::imul($h2 ^ $ch, 1597334677);
+        }
+        $h1 = self::imul($h1 ^ ($h1 >> 16), 2246822507) ^ self::imul($h2 ^ ($h2 >> 13), 3266489909);
+        $h2 = self::imul($h2 ^ ($h2 >> 16), 2246822507) ^ self::imul($h1 ^ ($h1 >> 13), 3266489909);
+        $unsigned_h1 = $h1 & 0xffffffff;
+        return 4294967296 * (2097151 & $h2) + $unsigned_h1;
+    }
+
+    public static function getVirtualizationAnomalyScore(RequestContext $context): float
+    {
+        $clientFp = $context->headers['x-device-fingerprint'] ?? null;
+        if (!$clientFp) {
+            return 0.0;
+        }
+
+        $fpMap = [];
+        foreach (explode('|', $clientFp) as $part) {
+            $pair = explode(':', $part, 2);
+            if (count($pair) === 2) {
+                $fpMap[$pair[0]] = $pair[1];
+            }
+        }
+
+        $score = 0.0;
+        $clientGpuHash = $fpMap['gpu'] ?? null;
+        if ($clientGpuHash) {
+            $virtualGpus = [
+                "Google SwiftShader", "SwiftShader",
+                "Mesa llvmpipe", "llvmpipe", "Mesa Gallium",
+                "Microsoft Basic Render Driver", "HeadlessChrome",
+                "Intel(R) HD Graphics"
+            ];
+            $virtualGpuHashes = [];
+            foreach ($virtualGpus as $gpu) {
+                $virtualGpuHashes[] = (string)self::cyrb53($gpu);
+            }
+            if (in_array($clientGpuHash, $virtualGpuHashes, true)) {
+                $score += 75.0;
+            }
+        }
+
+        $clientScreenHash = $fpMap['scr'] ?? null;
+        if ($clientScreenHash) {
+            $headlessResolutions = ["800x600_24", "1024x768_24"];
+            $headlessHashes = [];
+            foreach ($headlessResolutions as $res) {
+                $headlessHashes[] = (string)self::cyrb53($res);
+            }
+            if (in_array($clientScreenHash, $headlessHashes, true)) {
+                $score += 25.0;
+            }
+        }
+
+        return min(100.0, $score);
+    }
+
+    /**
+     * Calcule un score d'incohérence analogique et lisse plafonnant à 99.9 max.
+     */
+    public static function calculateAnalogInconsistencyScore(float $consistencyScore, float $inflectionPoint = 0.72, float $steepness = 12.0): float
+    {
+        $s = max(0.0, min(1.0, $consistencyScore));
+        if ($s >= 0.98) {
+            return 0.0;
+        }
+
+        $asymptote = 99.9;
+        $raw = 1.0 / (1.0 + exp($steepness * ($s - $inflectionPoint)));
+        $minVal = 1.0 / (1.0 + exp($steepness * (1.0 - $inflectionPoint)));
+        $maxVal = 1.0 / (1.0 + exp($steepness * (0.0 - $inflectionPoint)));
+        $normalized = (($raw - $minVal) / ($maxVal - $minVal)) * $asymptote;
+
+        return min($asymptote, round($normalized, 1));
     }
 }

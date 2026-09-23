@@ -2373,7 +2373,7 @@ describe('Subnet Scoring (Node.js)', () => {
             deviceIds: ['d1', 'd2'], // count < 10, score += 0
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-        expect(subnetScore).toBe(100);
+        expect(subnetScore).toBe(58.6);
 
         // 3. Many devices and high scores
         const deviceIds = Array.from({ length: 20 }, (_, i) => `d${i}`);
@@ -2382,7 +2382,7 @@ describe('Subnet Scoring (Node.js)', () => {
             deviceIds: deviceIds, // count = 20. score += (20-10)*5 = 50
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-            expect(subnetScore).toBe(94.4);
+            expect(subnetScore).toBe(99.4);
     });
 });
 
@@ -2579,6 +2579,14 @@ describe('Additional Suspicion Vectors Coverage', () => {
 });
 
 describe('Ed25519 Asymmetric Tickets', () => {
+    const localStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        async has(key) { return this._map.has(key); },
+        async delete(key) { this._map.delete(key); },
+        async clear() { this._map.clear(); }
+    };
     const { privateKey, publicKey } = generateKeyPairSync('ed25519', {
         privateKeyEncoding: { format: 'pem', type: 'pkcs8' },
         publicKeyEncoding: { format: 'pem', type: 'spki' }
@@ -2586,7 +2594,9 @@ describe('Ed25519 Asymmetric Tickets', () => {
     const privateKeyPem = privateKey;
     const publicKeyPem = publicKey;
 
-    beforeEach(() => {
+    beforeEach(async () => {
+        await localStore.clear();
+        configureStore(localStore);
         process.env.ED25519_PRIVATE_KEY = privateKeyPem;
         process.env.ED25519_PUBLIC_KEY = publicKeyPem;
     });
@@ -2664,6 +2674,62 @@ describe('Ed25519 Asymmetric Tickets', () => {
         expect(resPoll.requests.length).toBe(1);
         expect(resPoll.requests[0].req_id).toBe('req-123');
         expect(resPoll.requests[0].block_idx).toBe(42);
+    });
+
+    test('WebRTC P2P Signaling Flow (Node.js)', async () => {
+        const clientIp = '127.0.0.1';
+        const nodeIdA = 'node-a-webrtc';
+        const nodeIdB = 'node-b-webrtc';
+        const clientSecretA = 'secret-a-webrtc';
+        const clientSecretB = 'secret-b-webrtc';
+
+        const store = __internal.store;
+        await store.set(`secret:${nodeIdA}`, { clientSecret: clientSecretA });
+        await store.set(`secret:${nodeIdB}`, { clientSecret: clientSecretB });
+
+        await __internal.registerCooperativeNode(clientIp, nodeIdA, 'seed-a');
+        await __internal.registerCooperativeNode(clientIp, nodeIdB, 'seed-b');
+
+        // 1. Découverte d'un pair dans le sous-réseau
+        const sigFind = createHash('sha256')
+            .update(`${clientSecretA}:find_peer:${nodeIdA}`)
+            .digest('hex');
+        const findRes = await __internal.handleCooperativeRequest({
+            coop_op: 'find_peer',
+            node_id: nodeIdA,
+            coop_sig: sigFind
+        }, clientIp);
+        expect(findRes.status).toBe('peer_found');
+        expect(findRes.peer_id).toBe(nodeIdB);
+
+        // 2. Envoi d'une offre SDP WebRTC (A -> B)
+        const offerData = '{"type":"offer","sdp":"v=0..."}';
+        const sigSignal = createHash('sha256')
+            .update(`${clientSecretA}:webrtc_signal:${nodeIdA}:${nodeIdB}:offer:${offerData}`)
+            .digest('hex');
+        const signalRes = await __internal.handleCooperativeRequest({
+            coop_op: 'webrtc_signal',
+            node_id: nodeIdA,
+            target_peer_id: nodeIdB,
+            signal_type: 'offer',
+            signal_data: offerData,
+            coop_sig: sigSignal
+        }, clientIp);
+        expect(signalRes.status).toBe('signal_queued');
+
+        // 3. Récupération des signaux par le nœud B
+        const sigPoll = createHash('sha256')
+            .update(`${clientSecretB}:poll_signals:${nodeIdB}`)
+            .digest('hex');
+        const pollRes = await __internal.handleCooperativeRequest({
+            coop_op: 'poll_signals',
+            node_id: nodeIdB,
+            coop_sig: sigPoll
+        }, clientIp);
+        expect(pollRes.status).toBe('ok');
+        expect(pollRes.signals.length).toBe(1);
+        expect(pollRes.signals[0].from_peer_id).toBe(nodeIdA);
+        expect(pollRes.signals[0].signal_type).toBe('offer');
     });
 });
 

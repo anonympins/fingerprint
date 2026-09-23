@@ -104,7 +104,7 @@ class OptimizationOperators
                     'importance' => 3.0,
                     'ux_vs_security_ratio' => 0.8,
                     'target_threshold' => 'low',
-                    'indicators' => ['requestPatternScore', 'renderingAnomalyScore', 'clientHintsInconsistencyScore']
+                'indicators' => ['requestPatternScore', 'renderingAnomalyScore', 'clientHintsInconsistencyScore', 'virtualizationScore']
                 ],
                 'distributed_botnets' => [
                     'importance' => 6.0,
@@ -116,7 +116,7 @@ class OptimizationOperators
                     'importance' => 5.0,
                     'ux_vs_security_ratio' => 0.4,
                     'target_threshold' => 'medium',
-                    'indicators' => ['botScore', 'tlsSpoofingScore', 'tcpAnomalyScore']
+                'indicators' => ['botScore', 'tlsSpoofingScore', 'tcpAnomalyScore', 'virtualizationScore']
                 ]
             ];
 

@@ -902,6 +902,15 @@ public class ChallengeUtils {
             case "register":
                 expectedMsg = clientSecret + ":register:" + nodeId + ":" + params.getOrDefault("seed", "");
                 break;
+            case "find_peer":
+                expectedMsg = clientSecret + ":find_peer:" + nodeId;
+                break;
+            case "webrtc_signal":
+                expectedMsg = clientSecret + ":webrtc_signal:" + nodeId + ":" + params.getOrDefault("target_peer_id", "") + ":" + params.getOrDefault("signal_type", "") + ":" + params.getOrDefault("signal_data", "");
+                break;
+            case "poll_signals":
+                expectedMsg = clientSecret + ":poll_signals:" + nodeId;
+                break;
             case "request_peer_block":
                 expectedMsg = clientSecret + ":request_peer_block:" + nodeId + ":" + params.getOrDefault("peer_id", "") + ":" + params.getOrDefault("block_idx", "0") + ":" + params.getOrDefault("req_id", "");
                 break;
@@ -933,6 +942,52 @@ public class ChallengeUtils {
                 String seed = params.getOrDefault("seed", "");
                 registerCooperativeNode(clientIp, nodeId, seed);
                 res.put("status", "registered");
+                return res;
+
+            case "find_peer":
+                Map<String, Object> peer = findPeerInSubnet(clientIp, nodeId);
+                if (peer != null) {
+                    res.put("status", "peer_found");
+                    res.put("peer_id", peer.get("nodeId"));
+                    res.put("seed", peer.get("seed"));
+                } else {
+                    res.put("status", "no_peer_available");
+                }
+                return res;
+
+            case "webrtc_signal":
+                String targetPeerId = params.getOrDefault("target_peer_id", "");
+                String signalType = params.getOrDefault("signal_type", "");
+                String signalData = params.getOrDefault("signal_data", "");
+                if (targetPeerId.isEmpty() || signalType.isEmpty() || signalData.isEmpty()) {
+                    res.put("error", "Missing WebRTC signal parameters");
+                    return res;
+                }
+
+                String signalsKey = "coop-webrtc:signals:" + targetPeerId;
+                List<Map<String, Object>> pendingSignals = (List<Map<String, Object>>) store.get(signalsKey);
+                if (pendingSignals == null) {
+                    pendingSignals = new ArrayList<>();
+                }
+                Map<String, Object> signalItem = new HashMap<>();
+                signalItem.put("from_peer_id", nodeId);
+                signalItem.put("signal_type", signalType);
+                signalItem.put("signal_data", signalData);
+                signalItem.put("timestamp", System.currentTimeMillis());
+                pendingSignals.add(signalItem);
+                store.set(signalsKey, pendingSignals, 30);
+                res.put("status", "signal_queued");
+                return res;
+
+            case "poll_signals":
+                String nodeSignalsKey = "coop-webrtc:signals:" + nodeId;
+                List<Map<String, Object>> signals = (List<Map<String, Object>>) store.get(nodeSignalsKey);
+                if (signals == null) {
+                    signals = new ArrayList<>();
+                }
+                store.delete(nodeSignalsKey);
+                res.put("status", "ok");
+                res.put("signals", signals);
                 return res;
 
             case "request_peer_block":
@@ -1146,6 +1201,174 @@ public class ChallengeUtils {
         return null;
     }
 
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> generateSpaceChallenge(String clientIp, String nonce, double suspicionFactor, String originalUrl, Map<String, Object> securityConfig) {
+        Map<String, Object> pospaceConfig = (Map<String, Object>) (securityConfig != null ? securityConfig.getOrDefault("pospace", new HashMap<>()) : new HashMap<>());
+        int sizeMb = ((Number) pospaceConfig.getOrDefault("sizeMb", 100)).intValue();
+        int numQueries = ((Number) pospaceConfig.getOrDefault("numQueries", 10)).intValue();
+
+        List<Integer> queries = new ArrayList<>();
+        int maxBlocks = sizeMb * 1024;
+        Random rand = new Random();
+        while (queries.size() < numQueries) {
+            int idx = rand.nextInt(maxBlocks);
+            if (!queries.contains(idx)) {
+                queries.add(idx);
+            }
+        }
+
+        Map<String, Object> challenge = new HashMap<>();
+        challenge.put("type", "pospace");
+        challenge.put("nonce", nonce);
+        challenge.put("sizeMb", sizeMb);
+        challenge.put("queries", queries);
+        challenge.put("path", originalUrl);
+
+        Map<String, Object> peer = findPeerInSubnet(clientIp, nonce);
+        if (peer != null) {
+            challenge.put("peerId", peer.get("nodeId"));
+            int peerBlockIdx = rand.nextInt(maxBlocks);
+            challenge.put("peerBlockIdx", peerBlockIdx);
+
+            Map<String, Object> assoc = new HashMap<>();
+            assoc.put("peerNodeId", peer.get("nodeId"));
+            assoc.put("peerSeed", peer.get("seed"));
+            assoc.put("peerBlockIdx", peerBlockIdx);
+            store.set("coop-assoc:" + nonce, assoc, 120);
+        }
+
+        return challenge;
+    }
+
+    public static String generateSpaceChallengePage(Map<String, Object> challengeDetails, String clientSecret, Map<String, Object> securityConfig) {
+        String nonce = (String) challengeDetails.get("nonce");
+        int sizeMb = ((Number) challengeDetails.getOrDefault("sizeMb", 100)).intValue();
+        List<?> queries = (List<?>) challengeDetails.get("queries");
+        String path = (String) challengeDetails.get("path");
+        String peerId = (String) challengeDetails.getOrDefault("peerId", "");
+        int peerBlockIdx = ((Number) challengeDetails.getOrDefault("peerBlockIdx", -1)).intValue();
+        String nodeId = nonce;
+
+        String solverCode = getPowSolverCode();
+        String safePath = escapeJson(path);
+        String safeNonce = escapeJson(nonce);
+        String safeClientSecret = escapeJson(clientSecret);
+
+        String challengeScript =
+            "async function solve() {\n" +
+            "  const nonce = " + safeNonce + ";\n" +
+            "  const path = " + safePath + ";\n" +
+            "  const clientSecret = " + safeClientSecret + ";\n" +
+            "  const queries = " + simpleJsonStringify(Collections.singletonMap("q", queries)).replace("{\"q\":", "").replace("}", "") + ";\n" +
+            "  const sizeMb = " + sizeMb + ";\n" +
+            "  const nodeId = \"" + nodeId + "\";\n" +
+            "  const peerId = \"" + peerId + "\";\n" +
+            "  const peerBlockIdx = " + peerBlockIdx + ";\n\n" +
+            "  async function signCoop(op, nid, extra = '') {\n" +
+            "    const msg = clientSecret + ':' + op + ':' + nid + (extra ? ':' + extra : '');\n" +
+            "    const encoder = new TextEncoder();\n" +
+            "    const hashBuf = await crypto.subtle.digest('SHA-256', encoder.encode(msg));\n" +
+            "    return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');\n" +
+            "  }\n\n" +
+            "  async function sendWebRtcSignal(targetId, type, data) {\n" +
+            "    const sig = await signCoop('webrtc_signal', nodeId, targetId + ':' + type + ':' + data);\n" +
+            "    await fetch(window.location.pathname + '?coop_op=webrtc_signal&node_id=' + nodeId + '&target_peer_id=' + targetId + '&signal_type=' + type + '&signal_data=' + encodeURIComponent(data) + '&coop_sig=' + sig);\n" +
+            "  }\n\n" +
+            "  document.getElementById('loader').innerText = '⚙️ Checking storage...';\n" +
+            "  await window.initializeSpace(nonce + ':' + clientSecret, sizeMb);\n\n" +
+            "  if (peerId && peerBlockIdx !== -1) {\n" +
+            "    const sig = await signCoop('register', nodeId, nonce + ':' + clientSecret);\n" +
+            "    await fetch(window.location.pathname + '?coop_op=register&node_id=' + nodeId + '&seed=' + encodeURIComponent(nonce + ':' + clientSecret) + '&coop_sig=' + sig);\n" +
+            "  }\n\n" +
+            "  const peerConnections = {};\n" +
+            "  setInterval(async () => {\n" +
+            "    try {\n" +
+            "      const sigW = await signCoop('poll_signals', nodeId);\n" +
+            "      const resW = await fetch(window.location.pathname + '?coop_op=poll_signals&node_id=' + nodeId + '&coop_sig=' + sigW);\n" +
+            "      const dataW = await resW.json();\n" +
+            "      if (dataW.signals && dataW.signals.length > 0) {\n" +
+            "        for (const sig of dataW.signals) {\n" +
+            "          const fromId = sig.from_peer_id;\n" +
+            "          if (sig.signal_type === 'offer') {\n" +
+            "            const pc = new RTCPeerConnection({ iceServers: [] });\n" +
+            "            peerConnections[fromId] = pc;\n" +
+            "            pc.onicecandidate = (e) => { if (e.candidate) sendWebRtcSignal(fromId, 'candidate', JSON.stringify(e.candidate)); };\n" +
+            "            pc.ondatachannel = (e) => {\n" +
+            "              e.channel.onmessage = async (evt) => {\n" +
+            "                const req = JSON.parse(evt.data);\n" +
+            "                if (req.type === 'get_block') {\n" +
+            "                  const blockData = await window.readSpaceBlock(req.block_idx);\n" +
+            "                  e.channel.send(JSON.stringify({ type: 'block_data', block_data: blockData }));\n" +
+            "                }\n" +
+            "              };\n" +
+            "            };\n" +
+            "            await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));\n" +
+            "            const ans = await pc.createAnswer();\n" +
+            "            await pc.setLocalDescription(ans);\n" +
+            "            await sendWebRtcSignal(fromId, 'answer', JSON.stringify(ans));\n" +
+            "          } else if (sig.signal_type === 'answer' && peerConnections[fromId]) {\n" +
+            "            await peerConnections[fromId].setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));\n" +
+            "          } else if (sig.signal_type === 'candidate' && peerConnections[fromId]) {\n" +
+            "            await peerConnections[fromId].addIceCandidate(new RTCIceCandidate(JSON.parse(sig.signal_data)));\n" +
+            "          }\n" +
+            "        }\n" +
+            "      }\n" +
+            "    } catch (e) {}\n" +
+            "  }, 800);\n\n" +
+            "  let peerBlock = '';\n" +
+            "  if (peerId && peerBlockIdx !== -1) {\n" +
+            "    document.getElementById('loader').innerText = '📥 Connexion WebRTC P2P au pair (' + peerId + ')...';\n" +
+            "    const webrtcPromise = new Promise(async (resolve) => {\n" +
+            "      if (!window.RTCPeerConnection) return resolve(null);\n" +
+            "      try {\n" +
+            "        const pc = new RTCPeerConnection({ iceServers: [] });\n" +
+            "        peerConnections[peerId] = pc;\n" +
+            "        const dc = pc.createDataChannel('pospace-transfer');\n" +
+            "        pc.onicecandidate = (e) => { if (e.candidate) sendWebRtcSignal(peerId, 'candidate', JSON.stringify(e.candidate)); };\n" +
+            "        dc.onopen = () => { dc.send(JSON.stringify({ type: 'get_block', block_idx: peerBlockIdx })); };\n" +
+            "        dc.onmessage = (e) => {\n" +
+            "          const msg = JSON.parse(e.data);\n" +
+            "          if (msg.type === 'block_data') resolve(msg.block_data);\n" +
+            "        };\n" +
+            "        const offer = await pc.createOffer();\n" +
+            "        await pc.setLocalDescription(offer);\n" +
+            "        await sendWebRtcSignal(peerId, 'offer', JSON.stringify(offer));\n" +
+            "      } catch (err) { resolve(null); }\n" +
+            "    });\n" +
+            "    const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 5000));\n" +
+            "    peerBlock = await Promise.race([webrtcPromise, timeoutPromise]);\n" +
+            "    if (peerBlock) {\n" +
+            "      document.getElementById('loader').innerText = '⚡ Bloc reçu en direct via WebRTC P2P !';\n" +
+            "    } else {\n" +
+            "      document.getElementById('loader').innerText = '⚠️ WebRTC indisponible. Repli relais HTTP...';\n" +
+            "      const reqId = Math.random().toString(36).substring(2);\n" +
+            "      const reqSig = await signCoop('request_peer_block', nodeId, peerId + ':' + peerBlockIdx + ':' + reqId);\n" +
+            "      await fetch(window.location.pathname + '?coop_op=request_peer_block&node_id=' + nodeId + '&peer_id=' + peerId + '&block_idx=' + peerBlockIdx + '&req_id=' + reqId + '&coop_sig=' + reqSig);\n" +
+            "      let attempts = 0;\n" +
+            "      while (attempts < 15) {\n" +
+            "        const pollSig = await signCoop('poll_response', nodeId, reqId);\n" +
+            "        const res = await fetch(window.location.pathname + '?coop_op=poll_response&node_id=' + nodeId + '&req_id=' + reqId + '&coop_sig=' + pollSig);\n" +
+            "        const data = await res.json();\n" +
+            "        if (data.status === 'ready') { peerBlock = data.block_data; break; }\n" +
+            "        await new Promise(r => setTimeout(r, 1000));\n" +
+            "        attempts++;\n" +
+            "      }\n" +
+            "    }\n" +
+            "  }\n\n" +
+            "  document.getElementById('loader').innerText = '⚙️ Generating Proof of Space...';\n" +
+            "  const hash = await window.solveSpaceChallenge(nonce + ':' + clientSecret, queries, nonce, clientSecret, peerBlock);\n" +
+            "  window.location.href = path + '?pow_type=pospace&pow_nonce=' + nonce + '&pow_solution_space=' + hash + (peerBlock ? '&pow_coop=1' : '');\n" +
+            "}\n" +
+            "solve();\n";
+
+        return "<html><head><title>Security Check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\">" +
+                "<h1>Security Check (Level 2)</h1>" +
+                "<p>We are verifying your storage allocation. This may take a few seconds on first load.</p>" +
+                "<div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing storage space...</div>" +
+                "<script>" + solverCode + "</script>" +
+                "<script>" + challengeScript + "</script>" +
+                "</body></html>";
+    }
     private static final String[] TRUSTED_HARDWARE_ROOTS = {
         "-----BEGIN CERTIFICATE-----\n" +
         "MIIDHzCCAfegAwIBAgIJANCvWjvF+2O6MA0GCSqGSIb3DQEBCwUAMC0xKzApBgNV\n" +

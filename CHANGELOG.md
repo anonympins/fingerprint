@@ -1,3 +1,12 @@
+## Version 0.7.0
+
+- 🛡️ **Targeted Re-Challenge Strategy (`mustReChallenge`)**: Re-introduced and hardened the re-challenge workflow specifically targeted at honeypot triggers and critical indicators (e.g., `honeypotScore >= mediumThreshold` or any indicator score reaching $\ge 100$). Legitimate sessions with valid clearance tickets are preserved, while active attack attempts immediately invalidate existing tickets and force verification.
+- 📡 **QUIC / HTTP/3 Transport Profiling & Protocol Anomaly Scoring**: Implemented deep inspection of QUIC transport parameters (`initial_max_data`, `initial_max_streams_bidi`, control frame ordering `s,m,p`, and extensible priority schemes). Deviations between browser User-Agents and QUIC transport implementations (e.g. `curl-impersonate`, `quiche`, custom bot clients) are surfaced in `protocolAnomalyScore` and `quicAnomalyScore`.
+- ⚡ **WebRTC DataChannel for Cooperative Proof-of-Space**: Added direct peer-to-peer WebRTC DataChannel signaling (`webrtc_signal`, `RTCPeerConnection`) to cooperative Proof-of-Space challenges. Subnet nodes now exchange PoSpace verification blocks directly without routing heavy binary payloads through the application server, falling back seamlessly to HTTP mailbox polling if P2P negotiation fails.
+- 📈 **Analog Asymptotic Inconsistency Scoring (`calculateAnalogInconsistencyScore`)**: Replaced abrupt, stepped similarity thresholds with a smooth sigmoid function asymptotically bounded at 99.9. This prevents discrete score cliffs and false positives for minor profile drifts across JavaScript, PHP, and Java engines.
+- 🌐 **Bayesian Subnet Scoring & IP Dispersion**: Refactored `subnetScore` using Bayesian density estimation, User-Agent dispersion factors, and IP-to-device ratios scaled via hyperbolic tangent (`tanh`) with a 99.9 asymptote, effectively distinguishing dense CGNAT/corporate gateways from distributed proxy clusters.
+- 🕵️ **Virtualization & Threat Intel Scoring**: Added `virtualizationScore` to expose virtual display drivers and headless emulators (SwiftShader, Mesa llvmpipe, soft-pipe renderers, and standard headless display resolutions), alongside `threatIntelScore` correlating RTT proxy timing and federated ZKP public keys.
+
 ## Version 0.6.8
 
 - 🧹 **Removal of Arbitrary Re-challenging**: Removed the `mustReChallenge` feature which forced an arbitrary re-challenge even when a user presented a valid clearance ticket. The system now relies exclusively on a real-time calculated suspicion score, ensuring a predictable user journey without arbitrary blocks.

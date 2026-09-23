@@ -373,6 +373,10 @@ def generate_space_challenge_page(challenge_details: dict, client_secret: str, s
     safe_nonce = safe_json_dumps(nonce)
     safe_client_secret = safe_json_dumps(client_secret)
 
+    peer_id = challenge_details.get("peerId", "")
+    peer_block_idx = challenge_details.get("peerBlockIdx", -1)
+    coop_timeout = security_config.get("pospace", {}).get("coopTimeout", 15)
+
     challenge_script = f"""
     async function solve() {{
       const nonce = {safe_nonce};
@@ -380,16 +384,127 @@ def generate_space_challenge_page(challenge_details: dict, client_secret: str, s
       const clientSecret = {safe_client_secret};
       const queries = {queries_json};
       const sizeMb = {size_mb};
+      const nodeId = nonce;
+      const peerId = "{peer_id}";
+      const peerBlockIdx = {peer_block_idx};
+      const coopTimeout = {coop_timeout};
+
+      async function signCoop(op, nid, extra = "") {{
+        const msg = clientSecret + ":" + op + ":" + nid + (extra ? ":" + extra : "");
+        const encoder = new TextEncoder();
+        const data = encoder.encode(msg);
+        const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+        return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+      }}
+
+      async function sendWebRtcSignal(targetId, type, data) {{
+        const sig = await signCoop("webrtc_signal", nodeId, targetId + ":" + type + ":" + data);
+        await fetch(window.location.pathname + "?coop_op=webrtc_signal&node_id=" + nodeId + "&target_peer_id=" + targetId + "&signal_type=" + type + "&signal_data=" + encodeURIComponent(data) + "&coop_sig=" + sig);
+      }}
       
       document.getElementById('loader').innerText = '⚙&#xFE0F; Checking persistent local storage...';
       await new Promise(r => setTimeout(r, 10));
       
       try {{
           await window.initializeSpace(nonce + ":" + clientSecret, size_mb);
+
+          if (peerId && peerBlockIdx !== -1) {{
+              const sig = await signCoop("register", nodeId, nonce + ":" + clientSecret);
+              await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret) + "&coop_sig=" + sig);
+          }}
+
+          const peerConnections = {{}};
+
+          setInterval(async () => {{
+              try {{
+                  const sigWebrtc = await signCoop("poll_signals", nodeId);
+                  const resWebrtc = await fetch(window.location.pathname + "?coop_op=poll_signals&node_id=" + nodeId + "&coop_sig=" + sigWebrtc);
+                  const dataWebrtc = await resWebrtc.json();
+                  if (dataWebrtc.signals && dataWebrtc.signals.length > 0) {{
+                      for (const sig of dataWebrtc.signals) {{
+                          const fromId = sig.from_peer_id;
+                          if (sig.signal_type === 'offer') {{
+                              const pc = new RTCPeerConnection({{ iceServers: [] }});
+                              peerConnections[fromId] = pc;
+                              pc.onicecandidate = (e) => {{
+                                  if (e.candidate) sendWebRtcSignal(fromId, 'candidate', JSON.stringify(e.candidate));
+                              }};
+                              pc.ondatachannel = (e) => {{
+                                  const dc = e.channel;
+                                  dc.onmessage = async (evt) => {{
+                                      try {{
+                                          const req = JSON.parse(evt.data);
+                                          if (req.type === 'get_block') {{
+                                              document.getElementById('loader').innerText = '📤 Transfert direct P2P (WebRTC) du bloc vers le pair...';
+                                              const blockData = await window.readSpaceBlock(req.block_idx);
+                                              dc.send(JSON.stringify({{ type: 'block_data', block_data: blockData }}));
+                                          }}
+                                      }} catch (err) {{}}
+                                  }};
+                              }};
+                              await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
+                              const answer = await pc.createAnswer();
+                              await pc.setLocalDescription(answer);
+                              await sendWebRtcSignal(fromId, 'answer', JSON.stringify(answer));
+                          }} else if (sig.signal_type === 'answer' && peerConnections[fromId]) {{
+                              await peerConnections[fromId].setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
+                          }} else if (sig.signal_type === 'candidate' && peerConnections[fromId]) {{
+                              await peerConnections[fromId].addIceCandidate(new RTCIceCandidate(JSON.parse(sig.signal_data)));
+                          }}
+                      }}
+                  }}
+              }} catch (e) {{}}
+          }}, 800);
+
+          let peerBlock = "";
+          if (peerId && peerBlockIdx !== -1) {{
+              document.getElementById('loader').innerText = '📥 Connexion WebRTC P2P directe au pair (' + peerId + ')...';
+
+              const webrtcTransferPromise = new Promise(async (resolve) => {{
+                  if (!window.RTCPeerConnection) return resolve(null);
+                  try {{
+                      const pc = new RTCPeerConnection({{ iceServers: [] }});
+                      peerConnections[peerId] = pc;
+                      const dc = pc.createDataChannel("pospace-transfer");
+                      pc.onicecandidate = (e) => {{
+                          if (e.candidate) sendWebRtcSignal(peerId, 'candidate', JSON.stringify(e.candidate));
+                      }};
+                      dc.onopen = () => {{
+                          dc.send(JSON.stringify({{ type: 'get_block', block_idx: peerBlockIdx }}));
+                      }};
+                      dc.onmessage = (e) => {{
+                          try {{
+                              const msg = JSON.parse(e.data);
+                              if (msg.type === 'block_data' && msg.block_data) {{
+                                  resolve(msg.block_data);
+                              }}
+                          }} catch (err) {{}}
+                      }};
+                      const offer = await pc.createOffer();
+                      await pc.setLocalDescription(offer);
+                      await sendWebRtcSignal(peerId, 'offer', JSON.stringify(offer));
+                  }} catch (err) {{
+                      resolve(null);
+                  }}
+              }});
+
+              const webrtcTimeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 5000));
+              peerBlock = await Promise.race([webrtcTransferPromise, webrtcTimeoutPromise]);
+
+              if (peerBlock) {{
+                  document.getElementById('loader').innerText = '⚡ Bloc reçu en direct via WebRTC P2P sans transit serveur !';
+              }} else {{
+                  document.getElementById('loader').innerText = '⚠️ WebRTC indisponible. Téléchargement via relais HTTP...';
+                  const reqId = Math.random().toString(36).substring(2);
+                  const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
+                  await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
+              }}
+          }}
+
           document.getElementById('loader').innerText = '⚙&#xFE0F; Generating Proof of Space...';
-          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret);
+          const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, peerBlock);
           
-          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;
+          window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash + (peerBlock ? "&pow_coop=1" : "");
       }} catch(e) {{
           document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
       }}
@@ -536,6 +651,9 @@ class RequestContext:
             self.tls_session_id = self.headers.get("x-tls-session-id") or self.headers.get("x-ssl-session-id")
         if not self.quic_fingerprint:
             self.quic_fingerprint = self.headers.get("x-quic-fp")
+
+    def get_header(self, name: str) -> Optional[str]:
+        return self.headers.get(name.lower())
 
 class InMemoryStore:
     """
@@ -814,6 +932,41 @@ class ChallengeUtils:
             seed = params.get("seed") or ""
             await ChallengeUtils.register_cooperative_node(store, client_ip, node_id, seed)
             return {"status": "registered"}
+
+        elif op == "find_peer":
+            peer = await ChallengeUtils.find_peer_in_subnet(store, client_ip, node_id)
+            if not peer:
+                return {"status": "no_peers"}
+            return {
+                "status": "peer_found",
+                "peer_id": peer.get("nodeId"),
+                "seed": peer.get("seed", "")
+            }
+
+        elif op == "webrtc_signal":
+            target_peer_id = params.get("target_peer_id") or ""
+            signal_type = params.get("signal_type") or ""
+            signal_data = params.get("signal_data") or ""
+            if not target_peer_id or not signal_type or not signal_data:
+                return {"error": "Invalid parameters"}
+
+            signal_queue_key = f"coop-webrtc:signals:{target_peer_id}"
+            signals = await store.get(signal_queue_key) or []
+            signals.append({
+                "from_peer_id": node_id,
+                "signal_type": signal_type,
+                "signal_data": signal_data,
+                "timestamp": int(time.time() * 1000)
+            })
+            await store.set(signal_queue_key, signals, 30)
+            return {"status": "signal_queued"}
+
+        elif op == "poll_signals":
+            poll_signal_key = f"coop-webrtc:signals:{node_id}"
+            signals = await store.get(poll_signal_key) or []
+            if signals:
+                await store.delete(poll_signal_key)
+            return {"status": "ok", "signals": signals}
 
         elif op == "request_peer_block":
             peer_id = params.get("peer_id") or ""
@@ -1350,6 +1503,27 @@ class RequestUtils:
         return min(100.0, anomaly_score)
 
     @staticmethod
+    def calculate_analog_inconsistency_score(
+        consistency_score: float,
+        inflection_point: float = 0.72,
+        steepness: float = 12.0
+    ) -> float:
+        """
+        Calcule un score d'incohérence analogique et lisse (sigmoïde continue),
+        plafonnant à une asymptote stricte de 99.9.
+        """
+        s = max(0.0, min(1.0, float(consistency_score)))
+        if s >= 0.98:
+            return 0.0
+
+        asymptote = 99.9
+        raw = 1.0 / (1.0 + math.exp(steepness * (s - inflection_point)))
+        min_val = 1.0 / (1.0 + math.exp(steepness * (1.0 - inflection_point)))
+        max_val = 1.0 / (1.0 + math.exp(steepness * (0.0 - inflection_point)))
+        normalized = ((raw - min_val) / (max_val - min_val)) * asymptote
+        return min(asymptote, round(normalized, 1))
+
+    @staticmethod
     def get_client_hints_inconsistency(context: RequestContext) -> float:
         """
         Calculates a suspicion score based on inconsistencies between the User-Agent
@@ -1468,34 +1642,77 @@ class RequestUtils:
             if len(kv) == 2:
                 params[kv[0]] = kv[1]
         priority_order = parts[2] if len(parts) > 2 else ""
+        frame_order_raw = parts[3] if len(parts) > 3 else (context.headers.get("x-quic-frame-order") or "")
+        frame_order = [s.strip().lower() for s in frame_order_raw.split(",") if s.strip()]
 
         ua = context.headers.get("user-agent", "")
         ua_parts = RequestUtils.parse_user_agent(ua)
-        browser = ua_parts.get("browser")
+        browser = ua_parts.get("browser") or ""
 
         if not browser:
             return {"quicAnomalyScore": 0.0}
 
+        is_chromium = browser.startswith("Chrome") or browser.startswith("Edge")
+        is_firefox = browser.startswith("Firefox")
+        is_safari = browser.startswith("Safari")
+
+        try:
+            max_data = int(params.get("1") or params.get("0x01") or "0")
+            max_streams = int(params.get("4") or params.get("8") or params.get("0x08") or "0")
+            bidi_local = int(params.get("5") or params.get("0x05") or "0")
+            bidi_remote = int(params.get("6") or params.get("0x06") or "0")
+        except ValueError:
+            max_data, max_streams, bidi_local, bidi_remote = 0, 0, 0, 0
+
         anomaly = 0.0
-        if browser.startswith("Chrome") or browser.startswith("Edge"):
-            try:
-                max_data = int(params.get("1", "0"))
-                max_streams = int(params.get("4", "0"))
-                if max_data > 0 and max_data < 1048576:
-                    anomaly += 40.0
-                if max_streams > 0 and max_streams != 100:
-                    anomaly += 30.0
-                if priority_order and "u=" not in priority_order:
-                    anomaly += 30.0
-            except ValueError:
-                pass
-        elif browser.startswith("Firefox"):
-            try:
-                max_data = int(params.get("1", "0"))
-                if max_data > 0 and max_data > 5000000:
-                    anomaly += 40.0
-            except ValueError:
-                pass
+        if is_chromium:
+            if max_data > 0 and max_data < 1048576:
+                anomaly += 40.0
+            if max_streams > 0 and max_streams != 100:
+                anomaly += 30.0
+            if priority_order and "u=" not in priority_order:
+                anomaly += 30.0
+
+            # Contrôle de flux bidi (Chromium alloue 6MB = 6291456 ou au minimum 512 Ko)
+            # curl-impersonate / quiche alloue 256 Ko (262144) ou 128 Ko (131072)
+            if bidi_local > 0 and (bidi_local < 524288 or bidi_local == 262144):
+                anomaly += 40.0
+            if bidi_remote > 0 and (bidi_remote < 524288 or bidi_remote == 262144):
+                anomaly += 30.0
+
+            # Ordre des trames de contrôle QUIC (SETTINGS, MAX_STREAMS, PRIORITY)
+            if len(frame_order) >= 2:
+                s_idx = next((i for i, f in enumerate(frame_order) if f in ("s", "settings", "4")), -1)
+                m_idx = next((i for i, f in enumerate(frame_order) if f in ("m", "max_streams", "18")), -1)
+                p_idx = next((i for i, f in enumerate(frame_order) if f in ("p", "priority", "priority_update", "15")), -1)
+
+                if s_idx != 0 and s_idx != -1:
+                    anomaly += 50.0  # SETTINGS doit impérativement être la 1ère trame
+                if m_idx != -1 and s_idx != -1 and m_idx < s_idx:
+                    anomaly += 60.0  # MAX_STREAMS envoyé avant SETTINGS (curl/quiche)
+                if p_idx != -1 and s_idx != -1 and p_idx < s_idx:
+                    anomaly += 60.0
+        elif is_firefox:
+            if max_data > 0 and max_data > 5000000:
+                anomaly += 40.0
+            if max_streams == 100:
+                anomaly += 50.0
+            if bidi_local == 6291456:
+                anomaly += 50.0
+            if len(frame_order) >= 2:
+                s_idx = next((i for i, f in enumerate(frame_order) if f in ("s", "settings", "4")), -1)
+                if s_idx != 0 and s_idx != -1:
+                    anomaly += 50.0
+        elif is_safari:
+            if max_streams == 100 and max_data == 1572864 and "u=2,i" in priority_order:
+                anomaly += 60.0  # Usurpation profil Cronet
+            if bidi_local == 6291456:
+                anomaly += 50.0
+            if len(frame_order) >= 2:
+                s_idx = next((i for i, f in enumerate(frame_order) if f in ("s", "settings", "4")), -1)
+                m_idx = next((i for i, f in enumerate(frame_order) if f in ("m", "max_streams")), -1)
+                if m_idx != -1 and (m_idx == 0 or (s_idx != -1 and m_idx < s_idx)):
+                    anomaly += 50.0
 
         return {"quicAnomalyScore": max(0.0, min(100.0, anomaly))}
 
@@ -1798,6 +2015,53 @@ class RequestUtils:
         return min(100.0, score)
 
     @staticmethod
+    def get_virtualization_anomaly_score(context: RequestContext) -> float:
+        """
+        Détecte si le navigateur s'exécute dans un environnement virtuel ou headless
+        (commun pour les bots hébergés directement sur des serveurs proxy résidentiels).
+        """
+        client_fp = context.headers.get("x-device-fingerprint")
+        if not client_fp:
+            return 0.0
+            
+        try:
+            fp_map = dict(part.split(":", 1) for part in client_fp.split("|") if ":" in part)
+        except Exception:
+            return 0.0
+            
+        score = 0.0
+        client_gpu_hash = fp_map.get("gpu")
+        
+        if client_gpu_hash:
+            # Liste de renderers virtuels ou logiciels couramment utilisés en environnement automatisé / VPS
+            virtual_gpus = [
+                "Google SwiftShader",
+                "SwiftShader",
+                "Mesa llvmpipe",
+                "llvmpipe",
+                "Mesa Gallium",
+                "Microsoft Basic Render Driver",
+                "HeadlessChrome",
+                "Intel(R) HD Graphics" # Souvent usurpé ou émulé par défaut
+            ]
+            # Génération dynamique des hashes cyrb53 correspondants pour comparaison sans faille
+            virtual_gpu_hashes = {str(cyrb53(gpu)) for gpu in virtual_gpus}
+            
+            if client_gpu_hash in virtual_gpu_hashes:
+                # Le client utilise un moteur de rendu graphique virtuel ou logiciel !
+                score += 75.0
+
+        # Détection de résolutions d'écran caractéristiques d'instances headless Docker/VNC (ex: 800x600 ou 1024x768 par défaut)
+        client_screen_hash = fp_map.get("scr")
+        if client_screen_hash:
+            headless_resolutions = {"800x600_24", "1024x768_24"}
+            headless_hashes = {str(cyrb53(res)) for res in headless_resolutions}
+            if client_screen_hash in headless_hashes:
+                score += 25.0
+                
+        return min(100.0, score)
+
+    @staticmethod
     def get_request_pattern_score(context: RequestContext, device_data: Dict[str, Any], pattern_config: Dict[str, Any]) -> Dict[str, float]:
         history_size = pattern_config.get("historySize", 20)
         min_samples = pattern_config.get("minSamples", 10)
@@ -1990,26 +2254,25 @@ class RequestUtils:
         if device_count == 0:
             return {"subnetScore": 0.0}
 
-        suspicion_density = high_score_count / device_count
-        ip_device_ratio = ip_count / device_count
+        # 1. Estimation Bayésienne de densité (évite les sur-réactions sur de faibles échantillons)
+        bayesian_density = (high_score_count + 0.5) / (device_count + 2.5)
 
-        # Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
-        ua_device_ratio = max(1, ua_count) / device_count
-        ua_multiplier = 0.6 + (0.4 * min(2.5, ua_device_ratio))
+        # 2. Dispersion IP / Terminal (CGNAT vs Proxy Pool distribué)
+        ip_dispersion = min(2.0, ip_count / device_count)
+        ip_multiplier = 0.6 + 0.4 * math.tanh(ip_dispersion)
 
-        # Base score continu basé sur le volume de menaces
-        base_score = 100.0 * (1.0 - math.exp(-0.15 * high_score_count))
+        # 3. Volatilité des User-Agents (rotation de navigateurs sur matériel identique)
+        ua_dispersion = min(3.0, max(1, ua_count) / device_count)
+        ua_multiplier = 0.7 + 0.3 * math.tanh(ua_dispersion - 1.0)
 
-        # Multiplicateurs continus
-        density_multiplier = 0.4 + (1.6 * suspicion_density)
-        distribution_multiplier = 0.5 + (1.0 * ip_device_ratio)
+        # 4. Intensité continue de la menace (sans seuil abrupt ni dérivée nulle)
+        raw_threat_intensity = high_score_count * bayesian_density * ip_multiplier * ua_multiplier
 
-        # Amortissement pour éviter les faux positifs sur les réseaux NAT résidentiels
-        dampening = 1.0
-        if high_score_count < 3:
-            dampening = high_score_count / 3.0
+        # 5. Saturation asymptotique continue (Asymptote à 99.9 maximum strict)
+        asymptote = 99.9
+        scale_factor = 4.0
+        final_score = round(asymptote * math.tanh(raw_threat_intensity / scale_factor) * 10.0) / 10.0
 
-        final_score = min(100.0, round(base_score * density_multiplier * distribution_multiplier * ua_multiplier * dampening * 10.0) / 10.0)
         return {"subnetScore": final_score}
 
     @staticmethod
@@ -2450,6 +2713,116 @@ class TLSClientHelloParser:
     }
 
     @staticmethod
+    def read_var_int(data: bytes, offset: int) -> tuple:
+        if offset >= len(data):
+            return None, offset
+        first = data[offset]
+        prefix = first >> 6
+        first_val = first & 0x3f
+        if prefix == 0:
+            return first_val, offset + 1
+        elif prefix == 1:
+            if offset + 2 > len(data):
+                return None, offset
+            val = (first_val << 8) | data[offset + 1]
+            return val, offset + 2
+        elif prefix == 2:
+            if offset + 4 > len(data):
+                return None, offset
+            val = (first_val << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]
+            return val, offset + 4
+        else:
+            if offset + 8 > len(data):
+                return None, offset
+            val = first_val
+            for i in range(1, 8):
+                val = (val << 8) | data[offset + i]
+            return val, offset + 8
+
+    @staticmethod
+    def parse_quic_transport_parameters(data: bytes) -> Dict[int, Any]:
+        params = {}
+        offset = 0
+        length = len(data)
+        while offset < length:
+            param_id, offset = TLSClientHelloParser.read_var_int(data, offset)
+            if param_id is None:
+                break
+            param_len, offset = TLSClientHelloParser.read_var_int(data, offset)
+            if param_len is None or offset + param_len > length:
+                break
+            param_val_bytes = data[offset:offset + param_len]
+            offset += param_len
+            if param_len > 0 and param_id in (1, 3, 4, 5, 6, 7, 8, 9, 11, 14):
+                val, _ = TLSClientHelloParser.read_var_int(param_val_bytes, 0)
+                params[param_id] = val if val is not None else param_val_bytes.hex()
+            else:
+                params[param_id] = param_val_bytes.hex()
+        return params
+
+    @staticmethod
+    def parse_quic_control_frames(stream_data: bytes) -> Dict[str, Any]:
+        frames = []
+        frame_order = []
+        settings = {}
+        offset = 0
+        length = len(stream_data)
+        if length == 0:
+            return {"frames": [], "frame_order": "", "settings": {}}
+
+        if stream_data[0] == 0x00:
+            offset = 1
+
+        while offset < length:
+            frame_type, offset = TLSClientHelloParser.read_var_int(stream_data, offset)
+            if frame_type is None:
+                break
+            frame_len, offset = TLSClientHelloParser.read_var_int(stream_data, offset)
+            if frame_len is None or offset + frame_len > length:
+                break
+            payload = stream_data[offset:offset + frame_len]
+            offset += frame_len
+
+            abbr = "s" if frame_type == 0x04 else (
+                "m" if frame_type in (0x12, 0x02) else (
+                    "p" if frame_type in (0x0f, 0xaf, 0xf0700) else (
+                        "d" if frame_type in (0x10, 0x0d) else (
+                            "g" if frame_type == 0x07 else "u"
+                        )
+                    )
+                )
+            )
+            frames.append({"type": frame_type, "length": frame_len})
+            frame_order.append(abbr)
+
+            if frame_type == 0x04:
+                s_offset = 0
+                s_len = len(payload)
+                while s_offset < s_len:
+                    s_id, s_offset = TLSClientHelloParser.read_var_int(payload, s_offset)
+                    if s_id is None:
+                        break
+                    s_val, s_offset = TLSClientHelloParser.read_var_int(payload, s_offset)
+                    if s_val is None:
+                        break
+                    settings[s_id] = s_val
+
+        return {
+            "frames": frames,
+            "frame_order": ",".join(frame_order),
+            "settings": settings
+        }
+
+    @staticmethod
+    def format_quic_fingerprint(params: Dict[int, Any], priority: str = "", frame_order: str = "") -> str:
+        param_parts = [f"{k}={v}" for k, v in params.items()]
+        fp = "1;" + ",".join(param_parts)
+        if priority or frame_order:
+            fp += f";{priority}"
+        if frame_order:
+            fp += f";{frame_order}"
+        return fp
+    @staticmethod
     def parse(binary: bytes) -> Optional[Dict[str, str]]:
         length = len(binary)
         if length < 43:
@@ -2487,6 +2860,7 @@ class TLSClientHelloParser:
         sig_algs, supported_versions = [], []
         has_sni = False
         alpn_protocol = ""
+        quic_params = None
         ext_limit = offset + extensions_len
         while offset < ext_limit and offset + 4 <= length:
             ext_type = struct.unpack("!H", binary[offset:offset+2])[0]
@@ -2522,6 +2896,10 @@ class TLSClientHelloParser:
                     for j in range(1, versions_len + 1, 2):
                         if offset + j + 2 <= length and j + 2 <= ext_len:
                             supported_versions.append(struct.unpack("!H", binary[offset+j:offset+j+2])[0])
+            elif ext_type == 57 or ext_type == 0xffa5:
+                if ext_len > 0 and offset + ext_len <= length:
+                    quic_data = binary[offset:offset + ext_len]
+                    quic_params = TLSClientHelloParser.parse_quic_transport_parameters(quic_data)
             offset += ext_len
 
         filter_grease = lambda arr: [v for v in arr if v not in TLSClientHelloParser.GREASE_VALUES]
@@ -2582,11 +2960,15 @@ class TLSClientHelloParser:
         
         ja4_hash = f"{ja4_a}_{ja4_b}_{ja4_c}"
 
-        return {
+        result = {
             "ja3_string": ja3_string,
             "ja3_hash": hashlib.md5(ja3_string.encode("utf-8")).hexdigest(),
             "ja4_raw": ja4_hash
         }
+        if quic_params is not None:
+            result["quic_params"] = quic_params
+            result["quic_fp"] = TLSClientHelloParser.format_quic_fingerprint(quic_params)
+        return result
 
 
 class FingerprintClient:
@@ -3120,12 +3502,12 @@ class FingerprintEngine:
         if device_data and device_data.get("condemned"):
             suspicion_vector["honeypotScore"] = 100.0
             return suspicion_vector
-    # Inconsistency score
+
+        # Inconsistency score analogique lisse
         current_hash = self.get_composite_device_hash(context)
-        similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash"), current_hash)
-        inconsistency_score = max(0.0, (1.0 - similarity) * 200.0)
-        if similarity < self.config.get("similarityThreshold", 0.7):
-            inconsistency_score = 100.0
+        similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash") or "", current_hash)
+        similarity_threshold = float(self.config.get("similarityThreshold", 0.72))
+        inconsistency_score = RequestUtils.calculate_analog_inconsistency_score(similarity, similarity_threshold)
 
         behavioral_indicators = await self.get_behavioral_indicators(context, device_data)
         history_score = behavioral_indicators["historyScore"]
@@ -3176,12 +3558,19 @@ class FingerprintEngine:
         cross_layer_inconsistency_score = RequestUtils.get_cross_layer_inconsistency(context)
         click_variance_score = RequestUtils.get_click_variance_score(context)
         request_pattern_score = RequestUtils.get_request_pattern_score(context, device_data, self.config.get("patterns", {}))["requestPatternScore"]
-        threat_intel_score = RequestUtils.get_threat_intel_score(context, self.config.get("threatIntel"))
+        
+        # Extraction et validation de la clé publique ZKP du client
+        zkp_proof = context.headers.get("x-zkp-proof") or context.query_params.get("pow_zkp") or ""
+        zkp_y = zkp_proof.split(":")[0] if zkp_proof and ":" in zkp_proof else None
+        threat_intel_score = await self.calculate_threat_intel_score(context, zkp_y)
+
         ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
         subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id))["subnetScore"]
 
         tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
         tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
+
+        virtualization_score = RequestUtils.get_virtualization_anomaly_score(context)
 
         quic_anomaly = RequestUtils.get_quic_anomaly_score(context)
         quic_anomaly_score = quic_anomaly.get("quicAnomalyScore", 0.0)
@@ -3213,6 +3602,7 @@ class FingerprintEngine:
             "quicAnomalyScore": quic_anomaly_score,
             "tcpAnomalyScore": tcp_anomaly_score,
             "renderingAnomalyScore": rendering_anomaly_score,
+            "virtualizationScore": virtualization_score,
         })
         return suspicion_vector
 
@@ -3280,6 +3670,49 @@ class FingerprintEngine:
 
         await asyncio.gather(*(send_one(peer) for peer in peers), return_exceptions=True)
 
+    def get_rtt_proxy_score(self, context: RequestContext) -> float:
+        """
+        Feature 7 : Corrélation RTT & Latence de Proxy Résidentiel
+        Compare le RTT de transport TCP réel avec l'horodatage applicatif client
+        pour lever les masques des proxys résidentiels rotatifs.
+        """
+        tcp_rtt_header = context.get_header("x-tcp-rtt") or context.get_header("x-real-rtt")
+        tcp_rtt = None
+        if tcp_rtt_header:
+            try:
+                tcp_rtt = int(tcp_rtt_header)
+            except ValueError:
+                pass
+
+        behavior_header = context.get_header("x-behavior-metrics")
+        if behavior_header:
+            try:
+                metrics = json.loads(behavior_header)
+                client_timestamp = metrics.get("clientTimestamp")
+                if client_timestamp is not None:
+                    app_latency = context.request_timestamp - int(client_timestamp)
+
+                    if tcp_rtt is not None and tcp_rtt > 0:
+                        client_to_proxy_delta = app_latency - tcp_rtt
+                        # RTT très court vers le proxy de sortie, mais latence applicative totale anormale
+                        if tcp_rtt < 35 and client_to_proxy_delta > 150:
+                            return 85.0
+                    else:
+                        # Analyse de secours sans RTT TCP (latence brute élevée)
+                        if app_latency > 350:
+                            return 40.0
+            except Exception:
+                # Fail-safe silencieux
+                pass
+        return 0.0
+
+    async def calculate_threat_intel_score(self, context: RequestContext, zkp_y: Optional[str]) -> float:
+        # Récupération du score de base de Threat Intelligence (ZKP réputation)
+        is_banned = await self.store.has(f"banned-zkp-y:{zkp_y}") if zkp_y else False
+        base_score = 100.0 if is_banned else 0.0
+        rtt_score = self.get_rtt_proxy_score(context)
+        return max(base_score, rtt_score)
+    
     async def get_suspicion_score(self, context: RequestContext) -> float:
         await self.translate_polymorphic_headers(context)
         vector = await self.get_suspicion_vector(context)
@@ -3600,8 +4033,8 @@ class FingerprintEngine:
 
         high_threshold = self.thresholds.get("high", 75)
         medium_threshold = self.thresholds.get("medium", 45)
-        is_blocked = score >= block_threshold
-        must_rechallenge = False
+        max_indicators_count = sum(1 for val in suspicion_vector.values() if isinstance(val, (int, float)) and val >= 100.0)
+        must_rechallenge = (suspicion_vector.get("honeypotScore", 0.0) >= medium_threshold) or (max_indicators_count >= 1)
 
         low_threshold = self.thresholds.get("low", 20)
 
@@ -3752,6 +4185,10 @@ class FingerprintEngine:
         MetricsManager.increment_counter("requests_total", {"status": "passed"})
         MetricsManager.observe_value("suspicion_score", score, {"action": "passed"})
         return {"action": "next"}
+
+    calculate_analog_inconsistency_score = staticmethod(RequestUtils.calculate_analog_inconsistency_score)
+
+calculate_analog_inconsistency_score = RequestUtils.calculate_analog_inconsistency_score
 
 # --- CORE: Optimization & AutoTuning ---
 class Optimization:
@@ -4649,7 +5086,7 @@ class AutoTuner:
             "mass_scraping": {
                 "importance": 3.0,
                 "ux_vs_security_ratio": 0.8,
-                "indicators": ["requestPatternScore", "renderingAnomalyScore", "clientHintsInconsistencyScore"]
+                "indicators": ["requestPatternScore", "renderingAnomalyScore", "clientHintsInconsistencyScore", "virtualizationScore"]
             },
             "distributed_botnets": {
                 "importance": 6.0,
@@ -4659,7 +5096,7 @@ class AutoTuner:
             "basic_automation": {
                 "importance": 5.0,
                 "ux_vs_security_ratio": 0.4,
-                "indicators": ["botScore", "tlsSpoofingScore", "tcpAnomalyScore"]
+                "indicators": ["botScore", "tlsSpoofingScore", "tcpAnomalyScore", "virtualizationScore"]
             }
         }
 
@@ -5236,6 +5673,7 @@ if __name__ == "__main__":
                 "honeypotScore": 1.0,
                 "quicAnomalyScore": 0.8,
                 "renderingAnomalyScore": 0.8,
+                "virtualizationScore": 0.8,
             },
             "honeypot": {
                 "fields": ["email_confirm"],
