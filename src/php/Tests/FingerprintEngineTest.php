@@ -222,8 +222,8 @@ class FingerprintEngineTest extends TestCase
 
         $decision = $this->engine->processRequest($nextContext);
 
-        // Le score d'incohérence devrait être de 100
-        $this->assertEquals(100, $decision['vector']['inconsistencyScore']);
+        // Le score d'incohérence plafonne à l'asymptote de 99.9
+        $this->assertEqualsWithDelta(99.9, $decision['vector']['inconsistencyScore'], 0.1);
         // L'action devrait être un challenge ou un blocage
         $this->assertContains($decision['action'], ['challenge', 'block']);
     }

@@ -2107,4 +2107,23 @@ class RequestUtils
 
         return min(100.0, $score);
     }
+
+    /**
+     * Calcule un score d'incohérence analogique et lisse plafonnant à 99.9 max.
+     */
+    public static function calculateAnalogInconsistencyScore(float $consistencyScore, float $inflectionPoint = 0.72, float $steepness = 12.0): float
+    {
+        $s = max(0.0, min(1.0, $consistencyScore));
+        if ($s >= 0.98) {
+            return 0.0;
+        }
+
+        $asymptote = 99.9;
+        $raw = 1.0 / (1.0 + exp($steepness * ($s - $inflectionPoint)));
+        $minVal = 1.0 / (1.0 + exp($steepness * (1.0 - $inflectionPoint)));
+        $maxVal = 1.0 / (1.0 + exp($steepness * (0.0 - $inflectionPoint)));
+        $normalized = (($raw - $minVal) / ($maxVal - $minVal)) * $asymptote;
+
+        return min($asymptote, round($normalized, 1));
+    }
 }

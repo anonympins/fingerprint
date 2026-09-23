@@ -3155,6 +3155,25 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
 
     await store.set(key, subnetData, 86400); // 24-hour TTL
 }
+/**
+ * Calcule un score d'incohérence analogique lisse plafonnant à une asymptote de 99.9.
+ * @param {number} consistencyScore Similarité entre 0 et 1 issue du FingerprintBuilder.
+ * @param {number} [inflectionPoint=0.72] Point d'inflexion où la suspicion accélère.
+ * @param {number} [steepness=12] Raideur de la transition sigmoïdale.
+ * @returns {number} Score de 0 à 99.9 sans saut de palier ni certitude absolue à 100.
+ */
+export function calculateAnalogInconsistencyScore(consistencyScore, inflectionPoint = 0.72, steepness = 12) {
+    const s = Math.max(0.0, Math.min(1.0, consistencyScore));
+    if (s >= 0.98) return 0.0;
+
+    const asymptote = 99.9;
+    const raw = 1.0 / (1.0 + Math.exp(steepness * (s - inflectionPoint)));
+    const minVal = 1.0 / (1.0 + Math.exp(steepness * (1.0 - inflectionPoint)));
+    const maxVal = 1.0 / (1.0 + Math.exp(steepness * (0.0 - inflectionPoint)));
+    const normalized = ((raw - minVal) / (maxVal - minVal)) * asymptote;
+
+    return Math.min(asymptote, Math.round(normalized * 10.0) / 10.0);
+}
 
 /**
  * Calculates a suspicion score based on the historical activity of the IP subnet.
@@ -3798,12 +3817,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
       // Synchronous calculations
       const { headerAnomalyScore } = getHeaderAnomalies(context);
-      let inconsistencyScore = Math.min(100, Math.max(0, (1 - consistencyScore) * 200)); // Amplified score
-
-      // NOUVEAU: Si l'incohérence est très forte (cookie probablement volé), on applique une pénalité maximale.
-      if (consistencyScore < 0.7) { // Seuil de rupture
-          inconsistencyScore = 100;
-      }
+    const similarityThreshold = securityConfig?.similarityThreshold ?? 0.72;
+    const inconsistencyScore = calculateAnalogInconsistencyScore(consistencyScore, similarityThreshold);
 
       const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
 
@@ -6739,6 +6754,7 @@ export const __internal = {
     calculateTarget,
     determineOptimalTicketTtl,
     runBackgroundTtlOptimization,
+    calculateAnalogInconsistencyScore,
     getRequestPatternScore, // Expose for testing
     getBehaviorScore, // Expose for testing
     getCrossLayerInconsistency, // Expose for testing

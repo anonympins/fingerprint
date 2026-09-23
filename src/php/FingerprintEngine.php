@@ -638,10 +638,8 @@
          // Score d'incohérence du fingerprint (déplacé ici pour être avec les autres)
          $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
          $consistencyScore = FingerprintBuilder::compare($deviceData['initialDeviceHash'] ?? '', $currentDeviceHash);
-         $inconsistencyScore = min(100.0, max(0.0, (1 - $consistencyScore) * 200));
-         if ($consistencyScore < ($this->securityConfig['similarityThreshold'] ?? 0.7)) {
-             $inconsistencyScore = 100.0;
-         }
+         $similarityThreshold = (float)($this->securityConfig['similarityThreshold'] ?? 0.72);
+         $inconsistencyScore = RequestUtils::calculateAnalogInconsistencyScore($consistencyScore, $similarityThreshold);
 
          $behavioral = RequestUtils::getBehavioralIndicators($context, $deviceData);
 

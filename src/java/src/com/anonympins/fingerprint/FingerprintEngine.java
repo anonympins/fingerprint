@@ -939,10 +939,8 @@ public class FingerprintEngine {
 
         // Gather metrics and scores
         double similarity = FingerprintBuilder.compare(deviceData != null ? (String) deviceData.get("initialDeviceHash") : "", currentDeviceHash);
-        double inconsistencyScore = Math.min(100.0, Math.max(0.0, (1.0 - similarity) * 200.0));
-        if (similarity < ((Number) config.getOrDefault("similarityThreshold", 0.7)).doubleValue()) {
-            inconsistencyScore = 100.0;
-        }
+        double similarityThreshold = ((Number) config.getOrDefault("similarityThreshold", 0.72)).doubleValue();
+        double inconsistencyScore = calculateAnalogInconsistencyScore(similarity, similarityThreshold, 12.0);
 
         Map<String, Double> behavioral = RequestUtils.getBehavioralIndicators(context, deviceData);
         double historyScore = behavioral.getOrDefault("historyScore", 0.0);
@@ -1141,5 +1139,18 @@ public class FingerprintEngine {
         }
 
         return Math.min(100.0, score);
+    }
+
+    public static double calculateAnalogInconsistencyScore(double consistencyScore, double inflectionPoint, double steepness) {
+        double s = Math.max(0.0, Math.min(1.0, consistencyScore));
+        if (s >= 0.98) return 0.0;
+
+        double asymptote = 99.9;
+        double raw = 1.0 / (1.0 + Math.exp(steepness * (s - inflectionPoint)));
+        double minVal = 1.0 / (1.0 + Math.exp(steepness * (1.0 - inflectionPoint)));
+        double maxVal = 1.0 / (1.0 + Math.exp(steepness * (0.0 - inflectionPoint)));
+        double normalized = ((raw - minVal) / (maxVal - minVal)) * asymptote;
+
+        return Math.min(asymptote, Math.round(normalized * 10.0) / 10.0);
     }
 }

@@ -1503,6 +1503,27 @@ class RequestUtils:
         return min(100.0, anomaly_score)
 
     @staticmethod
+    def calculate_analog_inconsistency_score(
+        consistency_score: float,
+        inflection_point: float = 0.72,
+        steepness: float = 12.0
+    ) -> float:
+        """
+        Calcule un score d'incohérence analogique et lisse (sigmoïde continue),
+        plafonnant à une asymptote stricte de 99.9.
+        """
+        s = max(0.0, min(1.0, float(consistency_score)))
+        if s >= 0.98:
+            return 0.0
+
+        asymptote = 99.9
+        raw = 1.0 / (1.0 + math.exp(steepness * (s - inflection_point)))
+        min_val = 1.0 / (1.0 + math.exp(steepness * (1.0 - inflection_point)))
+        max_val = 1.0 / (1.0 + math.exp(steepness * (0.0 - inflection_point)))
+        normalized = ((raw - min_val) / (max_val - min_val)) * asymptote
+        return min(asymptote, round(normalized, 1))
+
+    @staticmethod
     def get_client_hints_inconsistency(context: RequestContext) -> float:
         """
         Calculates a suspicion score based on inconsistencies between the User-Agent
@@ -3481,12 +3502,12 @@ class FingerprintEngine:
         if device_data and device_data.get("condemned"):
             suspicion_vector["honeypotScore"] = 100.0
             return suspicion_vector
-    # Inconsistency score
+
+        # Inconsistency score analogique lisse
         current_hash = self.get_composite_device_hash(context)
-        similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash"), current_hash)
-        inconsistency_score = max(0.0, (1.0 - similarity) * 200.0)
-        if similarity < self.config.get("similarityThreshold", 0.7):
-            inconsistency_score = 100.0
+        similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash") or "", current_hash)
+        similarity_threshold = float(self.config.get("similarityThreshold", 0.72))
+        inconsistency_score = RequestUtils.calculate_analog_inconsistency_score(similarity, similarity_threshold)
 
         behavioral_indicators = await self.get_behavioral_indicators(context, device_data)
         history_score = behavioral_indicators["historyScore"]
@@ -4164,6 +4185,10 @@ class FingerprintEngine:
         MetricsManager.increment_counter("requests_total", {"status": "passed"})
         MetricsManager.observe_value("suspicion_score", score, {"action": "passed"})
         return {"action": "next"}
+
+    calculate_analog_inconsistency_score = staticmethod(RequestUtils.calculate_analog_inconsistency_score)
+
+calculate_analog_inconsistency_score = RequestUtils.calculate_analog_inconsistency_score
 
 # --- CORE: Optimization & AutoTuning ---
 class Optimization:
