@@ -2233,26 +2233,25 @@ class RequestUtils:
         if device_count == 0:
             return {"subnetScore": 0.0}
 
-        suspicion_density = high_score_count / device_count
-        ip_device_ratio = ip_count / device_count
+        # 1. Estimation Bayésienne de densité (évite les sur-réactions sur de faibles échantillons)
+        bayesian_density = (high_score_count + 0.5) / (device_count + 2.5)
 
-        # Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
-        ua_device_ratio = max(1, ua_count) / device_count
-        ua_multiplier = 0.6 + (0.4 * min(2.5, ua_device_ratio))
+        # 2. Dispersion IP / Terminal (CGNAT vs Proxy Pool distribué)
+        ip_dispersion = min(2.0, ip_count / device_count)
+        ip_multiplier = 0.6 + 0.4 * math.tanh(ip_dispersion)
 
-        # Base score continu basé sur le volume de menaces
-        base_score = 100.0 * (1.0 - math.exp(-0.15 * high_score_count))
+        # 3. Volatilité des User-Agents (rotation de navigateurs sur matériel identique)
+        ua_dispersion = min(3.0, max(1, ua_count) / device_count)
+        ua_multiplier = 0.7 + 0.3 * math.tanh(ua_dispersion - 1.0)
 
-        # Multiplicateurs continus
-        density_multiplier = 0.4 + (1.6 * suspicion_density)
-        distribution_multiplier = 0.5 + (1.0 * ip_device_ratio)
+        # 4. Intensité continue de la menace (sans seuil abrupt ni dérivée nulle)
+        raw_threat_intensity = high_score_count * bayesian_density * ip_multiplier * ua_multiplier
 
-        # Amortissement pour éviter les faux positifs sur les réseaux NAT résidentiels
-        dampening = 1.0
-        if high_score_count < 3:
-            dampening = high_score_count / 3.0
+        # 5. Saturation asymptotique continue (Asymptote à 99.9 maximum strict)
+        asymptote = 99.9
+        scale_factor = 4.0
+        final_score = round(asymptote * math.tanh(raw_threat_intensity / scale_factor) * 10.0) / 10.0
 
-        final_score = min(100.0, round(base_score * density_multiplier * distribution_multiplier * ua_multiplier * dampening * 10.0) / 10.0)
         return {"subnetScore": final_score}
 
     @staticmethod
@@ -4013,8 +4012,8 @@ class FingerprintEngine:
 
         high_threshold = self.thresholds.get("high", 75)
         medium_threshold = self.thresholds.get("medium", 45)
-        is_blocked = score >= block_threshold
-        must_rechallenge = suspicion_vector.get("honeypotScore", 0.0) >= medium_threshold
+        max_indicators_count = sum(1 for val in suspicion_vector.values() if isinstance(val, (int, float)) and val >= 100.0)
+        must_rechallenge = (suspicion_vector.get("honeypotScore", 0.0) >= medium_threshold) or (max_indicators_count >= 1)
 
         low_threshold = self.thresholds.get("low", 20)
 

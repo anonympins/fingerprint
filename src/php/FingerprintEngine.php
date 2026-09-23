@@ -1247,7 +1247,13 @@
              }
 
              $mediumThreshold = $thresholds['medium'] ?? 45;
-             $mustReChallenge = ($suspicionVector['honeypotScore'] ?? 0.0) >= $mediumThreshold;
+             $maxIndicatorsCount = 0;
+             foreach ($suspicionVector as $val) {
+                 if (is_numeric($val) && (float)$val >= 100.0) {
+                     $maxIndicatorsCount++;
+                 }
+             }
+             $mustReChallenge = (($suspicionVector['honeypotScore'] ?? 0.0) >= $mediumThreshold) || ($maxIndicatorsCount >= 1);
 
              $lowThreshold = $thresholds['low'] ?? 20;
              if (($finalScore >= $lowThreshold && !$hasValidTicket) || $mustReChallenge) {

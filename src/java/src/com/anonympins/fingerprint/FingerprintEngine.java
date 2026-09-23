@@ -672,7 +672,11 @@ public class FingerprintEngine {
             RequestUtils.updateSubnetMetrics(store, context, deviceId, finalScore);
         }
 
-        boolean mustReChallenge = false;
+        long maxIndicatorsCount = suspicionVector.values().stream()
+                .filter(val -> val != null && val >= 100.0)
+                .count();
+        boolean mustReChallenge = suspicionVector.getOrDefault("honeypotScore", 0.0) >= mediumThreshold
+                || maxIndicatorsCount >= 1;
 
             if (hasValidTicket && !mustReChallenge) {
                 int deviceTtl = 2592000; // 30 jours par défaut en secondes

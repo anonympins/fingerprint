@@ -152,61 +152,6 @@ public class RequestUtils {
     }
 
     @SuppressWarnings("unchecked")
-    private static void applySubnetDecay(IStore store, String subnet, Map<String, Object> subnetData, long now) {
-        long lastActivity = ((Number) subnetData.getOrDefault("lastActivity", now)).longValue();
-        if (lastActivity == 0L) {
-            subnetData.put("lastActivity", now);
-            return;
-        }
-        long inactivityMs = now - lastActivity;
-        long halfLives = inactivityMs / (30 * 60 * 1000L); // 30 minutes half-life
-
-        if (halfLives > 0) {
-            double decay = Math.pow(2, halfLives);
-
-            int highScoreCount = ((Number) subnetData.getOrDefault("highScoreCount", 0)).intValue();
-            highScoreCount = Math.max(0, (int) Math.floor(highScoreCount / decay));
-            subnetData.put("highScoreCount", highScoreCount);
-
-            List<String> deviceIdsList = (List<String>) subnetData.getOrDefault("deviceIds", new ArrayList<String>());
-            int deviceCount = Math.max(0, (int) Math.floor(deviceIdsList.size() / decay));
-            if (deviceIdsList.size() > deviceCount) {
-                deviceIdsList = new ArrayList<>(deviceIdsList.subList(deviceIdsList.size() - deviceCount, deviceIdsList.size()));
-                subnetData.put("deviceIds", deviceIdsList);
-            }
-
-            List<String> ipsList = (List<String>) subnetData.getOrDefault("ips", new ArrayList<String>());
-            int ipCount = Math.max(1, (int) Math.floor(ipsList.size() / decay));
-            if (ipsList.size() > ipCount) {
-                ipsList = new ArrayList<>(ipsList.subList(ipsList.size() - ipCount, ipsList.size()));
-                subnetData.put("ips", ipsList);
-            }
-
-            List<String> uasList = (List<String>) subnetData.getOrDefault("uas", new ArrayList<String>());
-            int uaCountDecayed = Math.max(1, (int) Math.floor(uasList.size() / decay));
-            if (uasList.size() > uaCountDecayed) {
-                uasList = new ArrayList<>(uasList.subList(uasList.size() - uaCountDecayed, uasList.size()));
-                subnetData.put("uas", uasList);
-            }
-
-            Map<String, Integer> highScoreDevices = (Map<String, Integer>) subnetData.get("highScoreDevices");
-            if (highScoreDevices != null) {
-                Map<String, Integer> decayedDevices = new HashMap<>();
-                for (Map.Entry<String, Integer> entry : highScoreDevices.entrySet()) {
-                    int decayedVal = Math.max(0, (int) Math.floor(entry.getValue() / decay));
-                    if (decayedVal > 0) {
-                        decayedDevices.put(entry.getKey(), decayedVal);
-                    }
-                }
-                subnetData.put("highScoreDevices", decayedDevices);
-            }
-
-            subnetData.put("lastActivity", now);
-            store.set("subnet:" + subnet, subnetData, 86400);
-        }
-    }
-
-    @SuppressWarnings("unchecked")
     public static Map<String, Double> getRequestPatternScore(RequestContext context, Map<String, Object> deviceData, Map<String, Object> patternsConfig) {
         Map<String, Double> result = new HashMap<>();
         double score = 0.0;
@@ -822,24 +767,25 @@ public class RequestUtils {
             return result;
         }
 
-        double suspicionDensity = (double) highScoreCount / deviceCount;
-        double ipDeviceRatio = (double) ipCount / deviceCount;
+        // 1. Estimation Bayésienne de densité (évite les sur-réactions sur de faibles échantillons)
+        double bayesianDensity = ((double) highScoreCount + 0.5) / ((double) deviceCount + 2.5);
 
-        // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
-        double uaDeviceRatio = (double) Math.max(1, uaCount) / deviceCount;
-        double uaMultiplier = 0.6 + (0.4 * Math.min(2.5, uaDeviceRatio));
+        // 2. Dispersion IP / Terminal (CGNAT vs Proxy Pool distribué)
+        double ipDispersion = Math.min(2.0, (double) ipCount / (double) deviceCount);
+        double ipMultiplier = 0.6 + 0.4 * Math.tanh(ipDispersion);
 
-        double baseScore = 100.0 * (1.0 - Math.exp(-0.15 * highScoreCount));
+        // 3. Volatilité des User-Agents (rotation de navigateurs sur matériel identique)
+        double uaDispersion = Math.min(3.0, (double) Math.max(1, uaCount) / (double) deviceCount);
+        double uaMultiplier = 0.7 + 0.3 * Math.tanh(uaDispersion - 1.0);
 
-        double densityMultiplier = 0.4 + (1.6 * suspicionDensity);
-        double distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio);
+        // 4. Intensité continue de la menace (sans seuil abrupt ni dérivée nulle)
+        double rawThreatIntensity = (double) highScoreCount * bayesianDensity * ipMultiplier * uaMultiplier;
 
-        double dampening = 1.0;
-        if (highScoreCount < 3) {
-            dampening = highScoreCount / 3.0;
-        }
+        // 5. Saturation asymptotique continue (Asymptote à 99.9 maximum strict)
+        double asymptote = 99.9;
+        double scaleFactor = 4.0;
+        double finalScore = Math.round(asymptote * Math.tanh(rawThreatIntensity / scaleFactor) * 10.0) / 10.0;
 
-        double finalScore = Math.min(100.0, Math.round(baseScore * densityMultiplier * distributionMultiplier * uaMultiplier * dampening * 10.0) / 10.0);
         result.put("subnetScore", finalScore);
         return result;
     }

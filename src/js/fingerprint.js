@@ -3190,28 +3190,29 @@ async function getSubnetScore(context) {
         return { subnetScore: 0.0 };
     }
 
-    // Calculs analogues continus (sans sauts brusques)
-    const suspicionDensity = highScoreCount / deviceCount;
-    const ipDeviceRatio = ipCount / deviceCount;
+    // 1. Estimation Bayésienne de densité (évite les sur-réactions sur 1 ou 2 appareils)
+    // Prior: alpha=0.5, beta=2.0 (a priori réseau sain)
+    const bayesianDensity = (highScoreCount + 0.5) / (deviceCount + 2.5);
 
-    // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
-    const uaDeviceRatio = Math.max(1, uaCount) / deviceCount;
-    const uaMultiplier = 0.6 + (0.4 * Math.min(2.5, uaDeviceRatio));
+    // 2. Ratio IP / Terminal (distingue un proxy distribué d'un gros NAT / CGNAT)
+    // Sur un proxy distribué, chaque terminal utilise une IP différente (ratio >= 1.0)
+    // Sur un CGNAT, des dizaines de terminaux partagent peu d'IPs (ratio << 1.0)
+    const ipDispersion = Math.min(2.0, ipCount / deviceCount);
+    const ipMultiplier = 0.6 + 0.4 * Math.tanh(ipDispersion);
 
-    // Base score continu basé sur le volume de menaces
-    const baseScore = 100 * (1 - Math.exp(-0.15 * highScoreCount));
+    // 3. Volatilité des User-Agents (rotation de navigateurs sur matériel identique)
+    const uaDispersion = Math.min(3.0, Math.max(1, uaCount) / deviceCount);
+    const uaMultiplier = 0.7 + 0.3 * Math.tanh(uaDispersion - 1.0);
 
-    // Multiplicateurs continus
-    const densityMultiplier = 0.4 + (1.6 * suspicionDensity); // Favorise les densités de suspicion élevées
-    const distributionMultiplier = 0.5 + (1.0 * ipDeviceRatio); // NAT (faible ratio IP/Device) vs Proxy distribué (fort ratio)
+    // 4. Intensité brute continue de la menace (sans discontinuité)
+    const rawThreatIntensity = highScoreCount * bayesianDensity * ipMultiplier * uaMultiplier;
 
-    // Amortissement pour éviter les faux positifs sur les réseaux NAT résidentiels (petits nombres d'appareils suspects)
-    let dampening = 1.0;
-    if (highScoreCount < 3) {
-        dampening = highScoreCount / 3.0; // 0.33 pour 1 appareil, 0.66 pour 2 appareils
-    }
+    // 5. Saturation asymptotique continue (Asymptote à 99.9)
+    // Même si rawThreatIntensity tend vers l'infini, tanh converge vers 1.0 sans jamais dépasser 85.0
+    const ASYMPTOTE = 99.9;
+    const scaleFactor = 4.0; // Sensibilité de la transition
+    const finalScore = Math.round(ASYMPTOTE * Math.tanh(rawThreatIntensity / scaleFactor) * 10) / 10;
 
-    const finalScore = Math.min(100, Math.round(baseScore * densityMultiplier * distributionMultiplier * uaMultiplier * dampening * 10) / 10);
     return { subnetScore: finalScore };
 }
 
@@ -5347,9 +5348,10 @@ export class FingerprintEngine {
     const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
     // Correction : Pour éviter une boucle infinie de challenges (qui mène à l'erreur 429),
     // on fait confiance au ticket valide tant qu'il n'a pas expiré.
-    const mustReChallenge = suspicionVector.honeypotScore >= (thresholds.medium ?? 45);
+    const maxIndicatorsCount = Object.values(suspicionVector).filter(val => typeof val === 'number' && val >= 100).length;
+    const mustReChallenge = (suspicionVector.honeypotScore >= (thresholds.medium ?? 45)) || (maxIndicatorsCount >= 1);
 
-    if (isSuspicious && (!hasValidTicket || mustReChallenge)) {
+    if ((isSuspicious && !hasValidTicket) || mustReChallenge) {
         if (mustReChallenge) {
             this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
         }
@@ -5396,7 +5398,7 @@ export class FingerprintEngine {
         let usefulWorkDispatched = false;
         let challengePayload = null;
 
-        if (isSuspicious && shouldUseUsefulWork) {
+        if ((isSuspicious || mustReChallenge) && shouldUseUsefulWork) {
             this._log('Issuing a useful work challenge', { finalScore });
 
             try {
@@ -5428,7 +5430,7 @@ export class FingerprintEngine {
             }
         }
 
-        if (isSuspicious && usefulWorkDispatched) {
+        if ((isSuspicious || mustReChallenge) && usefulWorkDispatched) {
             if (isApi) {
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: challengePayload };
             } else {
@@ -5444,7 +5446,7 @@ export class FingerprintEngine {
                 </script></body></html>`;
                 return { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404, body: html };
             }
-        } else if (isSuspicious) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi / a échoué                
+        } else if (isSuspicious || mustReChallenge) { // Pour les scores bas/moyens ou si le travail utile n'est pas choisi / a échoué                
             const decision = { action: 'challenge', score: finalScore, vector: suspicionVector, status: 404 };
                 if (this.dryRun) {
                     this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });

@@ -1362,23 +1362,24 @@ class RequestUtils
             return ['subnetScore' => 0.0];
         }
 
-        $suspicionDensity = $highScoreCount / $deviceCount;
-        $ipDeviceRatio = $ipCount / $deviceCount;
+        // 1. Régularisation bayésienne continue de la densité
+        $bayesianDensity = ((float)$highScoreCount + 0.5) / ((float)$deviceCount + 2.5);
 
-        // Ratio User-Agent / Device : détecte la rotation/spoofing de navigateurs sur une même empreinte matérielle
-        $uaDeviceRatio = (double)max(1, $uaCount) / $deviceCount;
-        $uaMultiplier = 0.6 + (0.4 * min(2.5, $uaDeviceRatio));
+        // 2. Dispersion IP / Terminal (CGNAT vs Proxy Pool)
+        $ipDispersion = min(2.0, (float)$ipCount / (float)$deviceCount);
+        $ipMultiplier = 0.6 + 0.4 * tanh($ipDispersion);
 
-        $baseScore = 100.0 * (1.0 - exp(-0.15 * $highScoreCount));
+        // 3. Dispersion User-Agent / Terminal
+        $uaDispersion = min(3.0, (float)max(1, $uaCount) / (float)$deviceCount);
+        $uaMultiplier = 0.7 + 0.3 * tanh($uaDispersion - 1.0);
 
-        $densityMultiplier = 0.4 + (1.6 * $suspicionDensity);
-        $distributionMultiplier = 0.5 + (1.0 * $ipDeviceRatio);
+        // 4. Intensité continue de la menace
+        $rawIntensity = (float)$highScoreCount * $bayesianDensity * $ipMultiplier * $uaMultiplier;
 
-        $dampening = 1.0;
-        if( $highScoreCount < 3 ){
-            $dampening = $highScoreCount / 3.0;
-        }
-        $finalScore = min(100.0, round($baseScore * $densityMultiplier * $distributionMultiplier * $uaMultiplier * $dampening * 10.0) / 10.0);
+        // 5. Asymptote continue via tanh (99.9 maximum strict, dérivable et sans saut)
+        $asymptote = 99.9;
+        $scale = 4.0;
+        $finalScore = round($asymptote * tanh($rawIntensity / $scale) * 10.0) / 10.0;
 
         return ['subnetScore' => $finalScore];
     }
