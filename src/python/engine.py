@@ -1949,8 +1949,11 @@ class RequestUtils:
         if metrics.get("honeypotInteraction"):
             return 100.0
         score = 0.0
+        if metrics.get("prototypeTampered"):
+            score += 80.0
+        touch_history = metrics.get("touchMovementsHistory") or []
         mouse_analysis = RequestUtils.analyze_mouse_movements(metrics.get("mouseMovementsHistory"))
-        touch_analysis = RequestUtils.analyze_touch_movements(metrics.get("touchMovementsHistory"))
+        touch_analysis = RequestUtils.analyze_touch_movements(touch_history)
         if "historyLength" in metrics:
             hl = metrics["historyLength"]
             if hl == 1: score += 15.0
@@ -2012,6 +2015,14 @@ class RequestUtils:
         if len(mouse_analysis["segments"]) > 10:
             benford_deviation = Optimization.benford_test(mouse_analysis["segments"])
             if benford_deviation > 0.18: score += 35.0
+
+        # Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
+        ua = context.headers.get("user-agent", "")
+        is_mobile_device = "Mobile" in ua
+        motion_variance = metrics.get("motionVariance")
+        if is_mobile_device and len(touch_history) >= 5 and isinstance(motion_variance, (int, float)):
+            if motion_variance == 0:
+                score += 50.0
         return min(100.0, score)
 
     @staticmethod

@@ -481,6 +481,10 @@ public class RequestUtils {
                         return result;
                     }
 
+                    if (Boolean.TRUE.equals(metrics.get("prototypeTampered"))) {
+                        score += 80.0;
+                    }
+
                     List<Map<String, Object>> mouseHistory = (List<Map<String, Object>>) metrics.get("mouseMovementsHistory");
                     List<Map<String, Object>> touchHistory = (List<Map<String, Object>>) metrics.get("touchMovementsHistory");
 
@@ -577,6 +581,16 @@ public class RequestUtils {
                         double benfordDeviation = benfordTest(mouseSegments);
                         if (benfordDeviation > 0.18) {
                             score += 35.0;
+                        }
+                    }
+
+                    // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
+                    String ua = context.getHeader("user-agent");
+                    boolean isMobileDevice = ua != null && ua.contains("Mobile");
+                    Object motionVariance = metrics.get("motionVariance");
+                    if (isMobileDevice && touchHistory != null && touchHistory.size() >= 5 && motionVariance instanceof Number) {
+                        if (((Number) motionVariance).doubleValue() == 0.0) {
+                            score += 50.0;
                         }
                     }
                 }

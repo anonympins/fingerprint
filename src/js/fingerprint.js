@@ -2347,7 +2347,9 @@ function getBehaviorScore(context) {
     if (metrics.honeypotInteraction) {
       return { behaviorScore: 100 };
     }
-
+  if (metrics.prototypeTampered) {
+      score += 80; // Altération flagrante de l'environnement JS
+  }
     // 2. Analyse des mouvements de la souris
     const { avgSpeed, avgAcceleration, straightness, pauses, segments } = analyzeMouseMovements(metrics.mouseMovementsHistory);
     const touchAnalysis = analyzeTouchMovements(metrics.touchMovementsHistory);
@@ -2398,6 +2400,14 @@ function getBehaviorScore(context) {
         if (touch.segments.length > 10) {
             const benfordDev = Optimization.Operators.benfordTest(touch.segments);
             if (benfordDev > 0.18) score += 35;
+        }
+
+        // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
+        const isMobileDevice = (context.headers['user-agent'] || '').includes('Mobile');
+        if (isMobileDevice && touchHistory.length >= 5 && typeof metrics.motionVariance === 'number') {
+            if (metrics.motionVariance === 0) {
+                score += 50; // Terminal fixé sur un châssis mécanique (rack ADB)
+            }
         }
     }
 

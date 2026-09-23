@@ -37,7 +37,13 @@ async function negotiateSessionKey() {
             body: JSON.stringify({ fp: ClientLibrary.getDeviceFingerprint() })
         });
 
-        const serverPubKeyHex = response.headers.get('x-server-ephemeral-key');
+        if (!response || !response.headers) return;
+        let serverPubKeyHex = null;
+        if (typeof response.headers.get === 'function') {
+            serverPubKeyHex = response.headers.get('x-server-ephemeral-key');
+        } else if (typeof response.headers === 'object') {
+            serverPubKeyHex = response.headers['x-server-ephemeral-key'] || response.headers['X-Server-Ephemeral-Key'];
+        }
         if (serverPubKeyHex) {
             const serverPubKeyBuffer = new Uint8Array(
                 serverPubKeyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16))
@@ -156,6 +162,38 @@ const ClientLibrary = {
         if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return;
         const event = new CustomEvent(`fingerprint:${eventName}`, { detail });
         window.dispatchEvent(event);
+    },
+
+    /**
+     * Vérifie si les prototypes JavaScript natifs ont été altérés ou hookés (Frida, Puppeteer Stealth).
+     */
+    detectTamperedPrototypes() {
+        const checkNative = (obj, method) => {
+            try {
+                if (!obj) return false;
+                const fn = obj[method];
+                if (!fn) return false;
+                const str = Function.prototype.toString.call(fn);
+                if (!str.includes('[native code]')) return true; // Hook JS classique
+                const desc = Object.getOwnPropertyDescriptor(obj, method);
+                if (desc && (!desc.writable && !desc.configurable && desc.value)) return false;
+                return false;
+            } catch (e) {
+                return true;
+            }
+        };
+
+        const win = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : null);
+        if (!win) return false;
+
+        const htmlCanvas = typeof HTMLCanvasElement !== 'undefined' ? HTMLCanvasElement : win.HTMLCanvasElement;
+        const canvas2d = typeof CanvasRenderingContext2D !== 'undefined' ? CanvasRenderingContext2D : win.CanvasRenderingContext2D;
+        const webgl = typeof WebGLRenderingContext !== 'undefined' ? WebGLRenderingContext : win.WebGLRenderingContext;
+
+        return checkNative(htmlCanvas?.prototype, 'toDataURL') ||
+               checkNative(canvas2d?.prototype, 'getImageData') ||
+               checkNative(webgl?.prototype, 'getParameter') ||
+               checkNative(win, 'fetch');
     },
 
     /**
@@ -304,6 +342,9 @@ const ClientLibrary = {
 
             // 7. Bot Detection (Indication cachée)
             if (nav.webdriver) this._cachedBuilder.add("bot", "true");
+            if (ClientLibrary.detectTamperedPrototypes()) {
+                this._cachedBuilder.add("tampered", "true");
+            }
         }
 
         return this._cachedBuilder.toString();
@@ -407,6 +448,30 @@ const ClientLibrary = {
     },
 
     /**
+     * Mesure le bruit inertiel du gyroscope/accéléromètre pour démasquer les racks de fermes de téléphones.
+     */
+    startMotionTracker() {
+        if (this._motionTrackerAttached || typeof window === 'undefined') return;
+        this._motionTrackerAttached = true;
+        const motionSamples = [];
+        const handleMotion = (e) => {
+            const acc = e.accelerationIncludingGravity || e.acceleration;
+            if (!acc) return;
+            const mag = Math.sqrt((acc.x || 0)**2 + (acc.y || 0)**2 + (acc.z || 0)**2);
+            motionSamples.push(mag);
+            if (motionSamples.length > 20) motionSamples.shift();
+            if (motionSamples.length >= 10) {
+                const avg = motionSamples.reduce((a, b) => a + b, 0) / motionSamples.length;
+                const variance = motionSamples.reduce((a, b) => a + (b - avg)**2, 0) / motionSamples.length;
+                metrics.motionVariance = Math.round(variance * 10000) / 10000;
+            }
+        };
+        try {
+            window.addEventListener('devicemotion', handleMotion, { passive: true });
+        } catch (e) {}
+    },
+
+    /**
      * Démarre le suivi des événements tactiles sur mobile/tablette.
      */
     startTouchEventTracker() {
@@ -455,8 +520,9 @@ const ClientLibrary = {
 
         const checkOffscreenAnom = () => {
             try {
-                if ('OffscreenCanvas' in window && HTMLCanvasElement.prototype.transferControlToOffscreen) {
-                    const nativeToString = Function.prototype.toString.call(HTMLCanvasElement.prototype.transferControlToOffscreen);
+                const htmlCanvas = typeof HTMLCanvasElement !== 'undefined' ? HTMLCanvasElement : window.HTMLCanvasElement;
+                if ('OffscreenCanvas' in window && htmlCanvas?.prototype?.transferControlToOffscreen) {
+                    const nativeToString = Function.prototype.toString.call(htmlCanvas.prototype.transferControlToOffscreen);
                     return !nativeToString.includes('[native code]');
                 }
             } catch (e) {}
@@ -805,9 +871,10 @@ const ClientLibrary = {
      * @returns {Promise<object|null>}
      */
     async getWebAuthnAnchor() {
-        if (typeof window === 'undefined' || !window.PublicKeyCredential) return null;
+        const win = typeof window !== 'undefined' ? window : null;
+        if (!win || !win.PublicKeyCredential) return null;
         try {
-            const isPlatformAvailable = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+            const isPlatformAvailable = await win.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
             if (!isPlatformAvailable) return null;
 
             const storedCredIdBase64 = localStorage.getItem('fp_webauthn_cred_id');
@@ -895,6 +962,10 @@ const ClientLibrary = {
         metrics.clientTimestamp = Date.now();
 
         metrics.touchMovementsHistory = touchMovementsHistory;
+        if (ClientLibrary.detectTamperedPrototypes()) {
+            metrics.prototypeTampered = true;
+        }
+        metrics.motionVariance = metrics.motionVariance ?? -1;
         // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
         metrics.mouseMovementsHistory = mouseMovementsHistory;
 
@@ -1135,7 +1206,7 @@ const ClientLibrary = {
    * @private
    */
   async solveChallengeAndRetry(response, resource, options) {
-    if (response.status !== 404 || !response.headers.get('content-type')?.includes('application/json') || response.bodyUsed) {
+    if (!response || response.status !== 404 || !response.headers?.get?.('content-type')?.includes('application/json') || response.bodyUsed) {
       return response;
     }
     
@@ -1184,6 +1255,7 @@ const ClientLibrary = {
         keystrokes = true,
         clicks = true, // Add new option
         touches = true, // Nouveau paramètre tactiles
+        motion = true,
             rendering = true,
             phantomTraps = true, // NOUVEAU
         honeypots = [],
@@ -1213,6 +1285,12 @@ const ClientLibrary = {
     }
     if (touches) {
         this.startTouchEventTracker();
+    }
+    if (motion) {
+        this.startMotionTracker();
+    }
+    if (ClientLibrary.detectTamperedPrototypes()) {
+        metrics.prototypeTampered = true;
     }
         if (rendering) {
             this.startRenderingTracker();
@@ -1438,6 +1516,8 @@ export const startKeystrokeDynamicsTracker = ClientLibrary.startKeystrokeDynamic
 export const startClickTracker = ClientLibrary.startClickTracker.bind(ClientLibrary);
 export const startTouchEventTracker = ClientLibrary.startTouchEventTracker.bind(ClientLibrary);
 export const startRenderingTracker = ClientLibrary.startRenderingTracker.bind(ClientLibrary);
+export const startMotionTracker = ClientLibrary.startMotionTracker.bind(ClientLibrary);
+export const detectTamperedPrototypes = ClientLibrary.detectTamperedPrototypes.bind(ClientLibrary);
 export const initializeHoneypots = ClientLibrary.initializeHoneypots.bind(ClientLibrary);
 export const getClientBehaviorMetrics = ClientLibrary.getClientBehaviorMetrics.bind(ClientLibrary);
 export const protectedFetch = ClientLibrary.protectedFetch.bind(ClientLibrary);

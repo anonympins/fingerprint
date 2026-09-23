@@ -411,6 +411,9 @@ class RequestUtils
         }
 
         $score = 0.0;
+        if (!empty($metrics['prototypeTampered'])) {
+            $score += 80.0;
+        }
 
         $mouseAnalysis = self::analyzeMouseMovements($metrics['mouseMovementsHistory'] ?? null);
         $touch = self::analyzeTouchMovements($metrics['touchMovementsHistory'] ?? null);
@@ -499,6 +502,15 @@ class RequestUtils
                 $benfordDev = Optimization::benfordTest($touch['segments']);
                 if ($benfordDev > 0.18) {
                     $score += 35;
+                }
+            }
+
+            // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
+            $ua = $context->getHeader('user-agent') ?? '';
+            $isMobileDevice = str_contains($ua, 'Mobile');
+            if ($isMobileDevice && count($touchHistory) >= 5 && isset($metrics['motionVariance']) && is_numeric($metrics['motionVariance'])) {
+                if ((float)$metrics['motionVariance'] === 0.0) {
+                    $score += 50.0;
                 }
             }
         }
