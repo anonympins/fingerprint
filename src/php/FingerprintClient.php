@@ -6,34 +6,33 @@ namespace Anonympins\Fingerprint;
 use Anonympins\Fingerprint\Config\SecurityProfiles;
 
 /**
- * FingerprintClient - Wrapper PHP pour la bibliothèque de fingerprinting côté client.
+ * FingerprintClient - PHP wrapper for the client-side fingerprinting library.
  *
- * Cette classe facilite l'intégration de la bibliothèque JavaScript `fingerprint.client.js`
- * dans une application PHP. Elle gère l'injection sécurisée du script et la création
- * de "honeypots" (pièges à bots) dans les formulaires.
+ * Handles script injection and generation of polymorphic honeypot fields
+ * inside HTML forms.
  */
 class FingerprintClient
 {
     /**
-     * @var string Le chemin vers le fichier de la bibliothèque client JavaScript.
+     * @var string Path to client script asset.
      */
     private string $clientScriptPath;
 
     /**
-     * @var array La configuration à passer à la fonction `initializeClient` de la bibliothèque JS.
+     * @var array Configuration payload passed to `initializeClient`.
      */
     private array $clientConfig;
 
     /**
-     * @var string|null Un nonce cryptographique pour la Content Security Policy (CSP).
+     * @var string|null Cryptographic nonce for Content Security Policy (CSP).
      */
     private ?string $nonce;
 
     /**
-     * Constructeur de la classe.
+     * Constructor.
      *
-     * @param string $clientScriptPath Le chemin d'accès web au fichier `fingerprint.client.js`.
-     * @param array $clientConfig La configuration pour la bibliothèque client (souris, frappes, honeypots, etc.).
+     * @param string $clientScriptPath Web-accessible path to `fingerprint.client.js`.
+     * @param array $clientConfig Client initialization options.
      */
     public function __construct(string $clientScriptPath, array $clientConfig = [])
     {
@@ -48,15 +47,15 @@ class FingerprintClient
                 'handleChallenges' => true,
                 'probationaryTtl' => 30000, // 30 seconds
             ],
-            'wasm' => true, // Activer la tentative de chargement du module WASM
-            'wasmPath' => '/fp.js' // Chemin vers le script de chargement WASM
+            'wasm' => true, // Attempt to load WASM module
+            'wasmPath' => '/fp.js' // Path to WASM loader script
         ];
 
-        // Utiliser une fusion profonde pour permettre de surcharger des sous-clés
+        // Deep merge configuration overrides
         $this->clientConfig = SecurityProfiles::deepMerge($defaultConfig, $clientConfig);
 
         try {
-            // Génère un nonce pour CSP si possible, pour une sécurité renforcée.
+            // Generate CSP nonce when possible
             $this->nonce = bin2hex(random_bytes(16));
         } catch (\Exception $e) {
             $this->nonce = null;
@@ -64,20 +63,20 @@ class FingerprintClient
     }
 
     /**
-     * Génère un champ de formulaire "honeypot" caché.
-     * Les bots le rempliront, mais il sera invisible pour les humains.
+     * Generates a hidden honeypot form field.
+     * Traps automated bots while remaining invisible to human users.
      *
-     * @param string $fieldName Le nom du champ (doit correspondre à la configuration client).
-     * @return string Le code HTML du champ honeypot.
+     * @param string $fieldName Field name (must match client honeypot registration).
+     * @return string Generated HTML markup.
      */
     public function generateHoneypotField(string $fieldName): string
     {
-        // Ajoute le champ à la configuration pour que le script client le surveille.
+        // Register field in client configuration for monitoring
         if (!in_array($fieldName, $this->clientConfig['honeypots'])) {
             $this->clientConfig['honeypots'][] = $fieldName;
         }
 
-        // Styles CSS polymorphiques pour cacher le champ de manière robuste.
+        // Polymorphic CSS styling to robustly obscure honeypots
         $styleOptions = [
             'position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;',
             'position:fixed; left:-8888px; top:-8888px; width:0; height:0; overflow:hidden; opacity:0; pointer-events:none;',
@@ -104,16 +103,16 @@ class FingerprintClient
     }
 
     /**
-     * Génère le bloc de script complet à inclure dans une page HTML.
+     * Generates HTML script tags to embed the client library on a page.
      *
-     * @return string Le code HTML des balises <script>.
+     * @return string HTML <script> markup.
      */
     public function getScriptTag(): string
     {
         $configJson = json_encode($this->clientConfig);
         $nonceAttr = $this->nonce ? ' nonce="' . $this->nonce . '"' : '';
 
-        // Le script d'initialisation qui sera inclus dans la page.
+        // Inline initialization script embedded in HTML
         $initScript = <<<JS
 document.addEventListener('DOMContentLoaded', function() {
     const config = {$configJson};
@@ -133,13 +132,13 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 JS;
 
-        // On combine le chargement de la bibliothèque et le script d'initialisation.
+        // Combine library loader script and inline initialization
         return '<script src="' . htmlspecialchars($this->clientScriptPath) . '"' . $nonceAttr . '></script>'
             . '<script' . $nonceAttr . '>' . $initScript . '</script>';
     }
 
     /**
-     * Retourne le nonce généré pour pouvoir l'utiliser dans les en-têtes CSP.
+     * Returns the generated CSP nonce.
      * @return string|null
      */
     public function getNonce(): ?string

@@ -199,11 +199,11 @@ uint64_t cyrb53(const std::string& str, uint32_t seed) {
     int32_t h2 = 0x41c6ce57 ^ seed;
 
     for (char ch : str) {
-        h1 = imul(h1 ^ ch, -1640531535); // 2654435761 en int32
+        h1 = imul(h1 ^ ch, -1640531535); // 2654435761 as signed 32-bit int
         h2 = imul(h2 ^ ch, 1597334677);
     }
 
-    h1 = imul(h1 ^ (h1 >> 16), -2048144789) ^ imul(h2 ^ (h2 >> 13), -1028477387); // 2246822507 et 3266489909 en int32
+    h1 = imul(h1 ^ (h1 >> 16), -2048144789) ^ imul(h2 ^ (h2 >> 13), -1028477387); // 2246822507 and 3266489909 as signed 32-bit ints
     h2 = imul(h2 ^ (h2 >> 16), -2048144789) ^ imul(h1 ^ (h1 >> 13), -1028477387);
 
     // Combines two 32-bit hashes into a 64-bit hash matching the JS implementation.

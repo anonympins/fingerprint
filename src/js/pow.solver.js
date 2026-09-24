@@ -1,10 +1,10 @@
 /**
  * @file @/pow.solver.js
- * @description Contient les fonctions côté client pour résoudre les différents types de challenges Proof-of-Work.
- * IMPORTANT: Pour les tâches d'optimisation, ce fichier a besoin d'accéder aux algorithmes de `library.js`.
- * Dans un vrai projet, il faudrait bundler une version client de `library.js` et l'importer ici.
- * Pour cet exemple, nous allons copier/coller les fonctions nécessaires.
- * Fichier compatible à la fois avec l'import de modules ES6 et l'injection directe dans un script HTML.
+ * @description Client-side functions to solve various Proof-of-Work challenges.
+ * IMPORTANT: For optimization tasks, this file requires access to algorithms in `library.js`.
+ * In production, a client bundle of `library.js` should be bundled and imported here.
+ * For this implementation, the necessary functions are embedded.
+ * Compatible with both ES6 module imports and direct HTML script injection.
  */
 
 'use strict';
@@ -18,7 +18,7 @@ function secureRandom() {
     return Math.random();
 }
 /**
- * Implémentation SHA-256 synchrone autonome utilisable partout (HTTP, contextes non sécurisés, Workers).
+ * Standalone synchronous SHA-256 implementation usable anywhere (HTTP, insecure contexts, Workers).
  */
 function sha256Sync(bytes) {
     if (bytes instanceof ArrayBuffer) {
@@ -94,7 +94,7 @@ async function safeDigestSha256Hex(bytes) {
             const buf = await cryptoObj.subtle.digest("SHA-256", bytes);
             return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         } catch (e) {
-            // Repli transparent
+            // Transparent fallback
         }
     }
     return sha256Sync(bytes);
@@ -240,11 +240,11 @@ export async function solveSpaceChallenge(seed, queries, nonce, clientSecret, pe
 }
 
 /**
- * Résout un challenge CPU basé sur une cible en utilisant un bloc de base binaire.
- * @param {Uint8Array} baseBlock - Le bloc de données initial (nonce, secret, fp) fourni par le serveur.
- * @param {bigint} target - La cible à atteindre.
- * @param {Function} progressCallback - Callback pour les mises à jour de progression.
- * @returns {Promise<number>} La solution (un nombre entier).
+ * Solves a target-based CPU challenge using a binary base block.
+ * @param {Uint8Array} baseBlock - Initial data block (nonce, secret, fp) provided by the server.
+ * @param {bigint} target - Target difficulty to reach.
+ * @param {Function} progressCallback - Progress update callback.
+ * @returns {Promise<number>} Solution integer.
  */
 export async function solveCpuTargetInline(baseBlock, target, progressCallback) {
     // --- FIX: Add validation for the target to prevent BigInt conversion errors ---
@@ -291,7 +291,7 @@ export async function solveCpuTargetInline(baseBlock, target, progressCallback) 
                                 resolve(event.data.solution);
                                 worker.terminate();
                             } else if (event.data.solution !== undefined) {
-                                // Fallback pour compatibilité avec l'ancienne signature
+                                // Fallback for backward compatibility with previous signature
                                 resolve(event.data.solution);
                                 worker.terminate();
                             }
@@ -366,17 +366,17 @@ export async function solveCpuTargetInline(baseBlock, target, progressCallback) 
     while (true) {
         const solutionBytes = encoder.encode(String(cpuSolution));
         
-        // Concaténation binaire directe : c'est plus rapide et plus sûr.
+        // Direct binary concatenation: faster and safer.
         const finalBlock = new Uint8Array(baseBlock.length + solutionBytes.length);
         finalBlock.set(baseBlock);
         finalBlock.set(solutionBytes, baseBlock.length);
 
         const hashHex = await safeDigestSha256Hex(finalBlock);
-        // --- AJOUT DE LOGS POUR LE DÉBOGAGE CÔTÉ CLIENT ---
+        // --- CLIENT-SIDE DEBUG LOGS ---
         if (cpuSolution === 0) { // Log only the first attempt
             console.log(`[FP Client Solve] Attempt 0 hash: "0x${hashHex}"`);
         }
-        // --- FIN DES LOGS ---
+        // --- END DEBUG LOGS ---
         if (BigInt('0x' + hashHex) < cpuTarget) break;
         cpuSolution++;
             if (cpuSolution % 50000 === 0) {
@@ -392,28 +392,28 @@ export async function solveCpuTargetInline(baseBlock, target, progressCallback) 
 }
 
 /**
- * Résout un challenge CPU basé sur une cible (version Web Worker).
- * @param {string} message - Le message à hasher (ex: `ip:nonce:solution:secret`).
- * @param {bigint} target - La cible à atteindre.
- * @returns {Promise<number>} La solution (un nombre entier).
+ * Solves a target-based CPU challenge (Web Worker version).
+ * @param {string} message - Message to hash (e.g. `ip:nonce:solution:secret`).
+ * @param {bigint} target - Target difficulty to reach.
+ * @returns {Promise<number>} Solution integer.
  */
 export async function solveCpuTarget(message, target) {
     // Vérifie si les Web Workers sont supportés par le navigateur.
     if (typeof(Worker) === "undefined") {
         console.warn("Web Workers not supported. Falling back to main thread calculation (UI may freeze).");
-        // Ici, on pourrait remettre l'ancienne implémentation comme solution de secours.
-        // Pour la clarté, nous supposons que les workers sont disponibles.
+        // An inline fallback implementation could be placed here if needed.
+        // For clarity, we assume worker availability.
         throw new Error("Web Worker support is required for CPU challenges.");
     }
 
     return new Promise((resolve, reject) => {
-        // Crée un worker à partir du script dédié. Le chemin doit être accessible publiquement.
-        // Assurez-vous que `pow.worker.js` est servi par votre serveur statique.
+        // Create a worker from the dedicated script. The path must be publicly accessible.
+        // Ensure `pow.worker.js` is served by your static assets server.
         const worker = new Worker('./pow.worker.js');
 
         worker.onmessage = (event) => {
             resolve(event.data.solution);
-            worker.terminate(); // Nettoie le worker une fois le travail terminé.
+            worker.terminate(); // Clean up worker once finished.
         };
 
         worker.onerror = (error) => {
@@ -421,16 +421,16 @@ export async function solveCpuTarget(message, target) {
             worker.terminate();
         };
 
-        // Envoie les données du challenge au worker pour qu'il commence le calcul.
+        // Send challenge data to the worker to start calculation.
         worker.postMessage({ message, target });
     });
 }
 
 /**
- * Résout un challenge basé sur la mémoire.
- * @param {string} seed - La graine pour l'initialisation de la mémoire.
- * @param {number} difficulty - La difficulté (en Mo).
- * @returns {Promise<number>} La solution (nombre entier).
+ * Solves a memory-hard challenge.
+ * @param {string} seed - Seed for memory initialization.
+ * @param {number} difficulty - Difficulty in MB.
+ * @returns {Promise<number>} Solution integer.
  */
 export async function solveMemory(seed, difficulty) {
     const wasmModule = typeof window !== 'undefined' ? (window.wasmModule || (window.ClientLibrary && window.ClientLibrary.wasmModule)) : null;
@@ -532,12 +532,12 @@ export async function solveMemory(seed, difficulty) {
 }
 
 /**
- * Résout un challenge de type "Problème du Voyageur de Commerce" (TSP).
- * NOTE: Ceci est une implémentation simple (heuristique du plus proche voisin) et n'est pas garantie
- * de trouver la solution optimale, mais elle est suffisante pour un challenge.
- * @param {Array<{x: number, y: number}>} cities - Les coordonnées des villes.
- * @param {number} targetMaxDistance - La distance maximale acceptable.
- * @returns {Promise<{path: number[], distance: number}>} Le chemin et la distance.
+ * Solves a Traveling Salesperson Problem (TSP) challenge.
+ * NOTE: Uses a nearest-neighbor heuristic which may not find the global optimum,
+ * but is sufficient for verification challenges.
+ * @param {Array<{x: number, y: number}>} cities - City coordinates.
+ * @param {number} targetMaxDistance - Maximum acceptable distance.
+ * @returns {Promise<{path: number[], distance: number}>} Tour path and distance.
  */
 export async function solveTsp(cities, targetMaxDistance) {
     // Utility function to calculate the distance between two cities
@@ -595,7 +595,7 @@ export async function solveTsp(cities, targetMaxDistance) {
     return { path: solutionPath, distance: solutionDistance };
 }
 
-// --- Fonctions d'optimisation copiées/adaptées de library.js pour le client ---
+// --- Optimization functions adapted from library.js for client usage ---
 
 function paretoDominates(objectivesA, objectivesB) {
     let aIsBetterInOne = false;
@@ -943,9 +943,9 @@ const ClientOptimizers = {
 };
 
 /**
- * Résout une unité de travail utile (Useful Work Unit).
- * @param {object} task - La tâche envoyée par le serveur.
- * @returns {Promise<object>} Le résultat du calcul.
+ * Solves a Useful Work Unit (uPoW).
+ * @param {object} task - Task payload sent by the server.
+ * @returns {Promise<object>} Computation result.
  */
 async function solveUsefulWorkTask(task) {
     await new Promise(r => setTimeout(r, 10)); // Yield thread
@@ -1020,7 +1020,7 @@ async function solveUsefulWorkTask(task) {
             const crossover = (p1, p2) => p1.map((w, i) => (w + p2[i]) / 2);
             const mutate = p => { const n = [...p], i = Math.floor(secureRandom() * n.length); n[i] += (secureRandom() - 0.5) * 0.2; return n.map(v => Math.max(0, v)); };
             
-            // Le client doit recréer la population si elle n'est pas fournie
+            // The client must recreate the population if not provided
             const initialPopulation = task.initialPopulation || Array.from({ length: task.payload.options.populationSize }, () => ({ chromosome: createIndividual(), fitness: 0 }));
             initialPopulation.forEach(p => p.fitness = fitness(p.chromosome));
 
@@ -1029,33 +1029,31 @@ async function solveUsefulWorkTask(task) {
         }
 
         case 'run_multiple_parallel':
-            // Côté client, on ne peut pas utiliser de vrais workers pour `runMultipleParallel`.
-            // On exécute donc une version simplifiée : un seul cycle du solveur demandé.
-            // Cela reste un travail coûteux et valide le principe du "Useful Work".
+            // On the client side, Web Workers are not nested for runMultipleParallel.
+            // Run a single cycle of the requested solver.
+            // This still represents non-trivial computational work for useful PoW.
             const { solverName, baseSolverArgs } = task;
             const clientSolver = ClientOptimizers[solverName];
             if (!clientSolver) throw new Error(`Solver ${solverName} not found on client.`);
             
-            // On simule l'appel avec les arguments de base.
-            // Note: `baseSolverArgs` peut contenir des options.
+            // Execute solver with base arguments.
+            // Note: `baseSolverArgs` may contain solver options.
             return clientSolver(...baseSolverArgs);
         
         case 'multi_objective_genetic_algorithm': {
-            // C'est ici que la connexion se fait !
-            // On cherche le solveur demandé (ex: 'cpc.solve') dans notre registre client.
+            // Look up requested solver (e.g. 'cpc.solve') in the client registry.
             const solverFunction = ClientOptimizers[task.solverName];
             if (!solverFunction) {
                 throw new Error(`Solver '${task.solverName}' not found on client.`);
             }
             // On appelle le solveur en lui passant le payload et les options.
-            // La fonction `solveOptimalCPC` attend le payload comme premier argument.
+            // Invoke solver with payload and options.
             return solverFunction(task.payload, { generations: task.generations, initialFront: task.initialFront });
         }
 
         case 'pytorch_onnx_learning': {
-            // Dans un environnement de production réel avec ONNX Runtime Web, on chargerait le modèle .onnx 
-            // et on exécuterait un calcul de gradient (backward pass).
-            // Ici, nous simulons le calcul de gradient mathématique équivalent pour la régression/classification.
+            // In a production environment with ONNX Runtime Web, load .onnx and execute gradient backward pass.
+            // Here, simulate the gradient backward pass for regression/classification.
             const { weights, payload } = task;
             const inputs = payload.inputs || [];
             const labels = payload.labels || [];
@@ -1081,7 +1079,7 @@ async function solveUsefulWorkTask(task) {
             const labels = payload.labels || [];
             try {
                 const tf = await loadTfjs();
-                // Chargement non-bloquant du modèle au format JSON
+                // Non-blocking model loading
                 const model = await tf.loadLayersModel(modelPath);
                 
                 const xs = tf.tensor2d(inputs);
@@ -1093,7 +1091,7 @@ async function solveUsefulWorkTask(task) {
                     return tf.losses.meanSquaredError(ys, preds);
                 };
                 
-                // Dérivation automatique pour le calcul exact des gradients
+                // Automatic differentiation for exact gradient computation
                 const gFn = tf.grad(lossFn);
                 const grads = gFn(trainableVars);
                 
@@ -1124,15 +1122,15 @@ async function solveUsefulWorkTask(task) {
 }
 
 /**
- * Résout une tâche d'optimisation basée sur un algorithme génétique.
- * Reçoit une population et la fait évoluer pendant un certain nombre de générations.
- * NOTE: Cette fonction est une version simplifiée de l'AG de `library.js` adaptée au client.
- * @param {Array<object>} initialPopulation - La population de départ.
- * @param {number} generations - Le nombre de générations à exécuter.
- * @returns {Promise<Array<object>>} La population finale après évolution.
+ * Solves an optimization task using a genetic algorithm.
+ * Evolves a population for a specified number of generations.
+ * NOTE: Simplified client adaptation of GA in `library.js`.
+ * @param {Array<object>} initialPopulation - Starting population.
+ * @param {number} generations - Number of generations to run.
+ * @returns {Promise<Array<object>>} Final evolved population.
  */
 export async function solveOptimizationTask(initialPopulation, generations) {
-    // Fonctions AG simplifiées (croisement, mutation)
+    // Simplified GA operators (crossover, mutation)
     const crossover = (p1, p2) => p1.map((w, i) => (w + p2[i]) / 2);
     const mutate = (p) => {
         const newP = [...p];
@@ -1144,20 +1142,20 @@ export async function solveOptimizationTask(initialPopulation, generations) {
     let population = initialPopulation;
 
     for (let gen = 0; gen < generations; gen++) {
-        // Sélection simple : on garde les 50% meilleurs
+        // Simple selection: keep top 50%
         const parents = population.sort((a, b) => a.fitness - b.fitness).slice(0, Math.ceil(population.length / 2));
-        const newPopulation = [...parents]; // Élitisme
+        const newPopulation = [...parents]; // Elitism
 
         while (newPopulation.length < population.length) {
             const parent1 = parents[Math.floor(secureRandom() * parents.length)];
             const parent2 = parents[Math.floor(secureRandom() * parents.length)];
             let offspring = crossover(parent1.chromosome, parent2.chromosome);
             if (secureRandom() < 0.1) offspring = mutate(offspring);
-            // La fitness sera recalculée côté serveur pour la vérification.
+            // Fitness is recalculated server-side for verification.
             newPopulation.push({ chromosome: offspring, fitness: -1 });
         }
         population = newPopulation;
-        // Pause pour ne pas geler l'UI sur les longues tâches
+        // Yield execution to prevent freezing the UI on long tasks
         if (gen % 10 === 0) await new Promise(r => setTimeout(r, 0));
     }
     return population;
@@ -1165,7 +1163,7 @@ export async function solveOptimizationTask(initialPopulation, generations) {
 
 /**
  * @class ChallengeSolution
- * @description Encapsule une solution de challenge et fournit des méthodes pour la manipuler.
+ * @description Encapsulates a challenge solution and formatting helpers.
  * @private
  */
 class ChallengeSolution {
@@ -1176,14 +1174,14 @@ class ChallengeSolution {
     }
 
     /**
-     * Applique les paramètres de la solution à un objet URL.
-     * @param {URL} url - L'objet URL à modifier.
+     * Applies solution parameters to a URL instance.
+     * @param {URL} url - Target URL object to modify.
      */
     applyToUrl(url) {
         url.searchParams.set('pow_type', this.type);
         url.searchParams.set('pow_nonce', this.nonce);
 
-        // Logique de formatage spécifique à chaque type de challenge
+        // Challenge-specific parameter formatting
         if (this.type === 'cpu_mem' || this.type === 'cpu_mem_inline' || this.type === 'cpu_target') {
             Object.entries(this.rawSolution).forEach(([key, value]) => {
                 if (typeof value === 'object' && value !== null) {
@@ -1196,17 +1194,17 @@ class ChallengeSolution {
             url.searchParams.set('pow_solution_work_result', JSON.stringify(this.rawSolution.work_result));
             url.searchParams.set('pow_problem_id', this.rawSolution.problem_id);
         } else {
-            // Pour les cas simples comme 'tsp' où la solution est une seule valeur
+            // Single-value solutions like TSP
             url.searchParams.set('pow_solution', JSON.stringify(this.rawSolution));
         }
     }
 }
 
 /**
- * Fonction principale qui reçoit un objet challenge et le résout.
- * @param {object} challenge - L'objet challenge reçu du serveur.
- * @param {string} [fingerprint=''] - L'empreinte de l'appareil qui résout le challenge.
- * @returns {Promise<ChallengeSolution>} Un objet `ChallengeSolution` encapsulant le résultat.
+ * Main entry point to resolve a received challenge payload.
+ * @param {object} challenge - Challenge payload received from the server.
+ * @param {string} [fingerprint=''] - Device fingerprint of the solver.
+ * @returns {Promise<ChallengeSolution>} `ChallengeSolution` wrapping the result.
  */
 export async function solveChallenge(challenge, fingerprint = '') { // The fingerprint is now passed from the client library
     const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, optimizationTask, usefulWorkTask, queries, sizeMb } = challenge;
@@ -1219,12 +1217,12 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
                 throw new Error("Challenge data is missing 'cpuTarget' property.");
             }
             const target = cpuTarget; // Keep variable name for consistency below
-            // Pour ce challenge simple, le baseBlock est juste le nonce.
+            // For this simple challenge, baseBlock is the nonce.
             const baseBlockBytes = new TextEncoder().encode(nonce + ":");
             rawSolution.cpu = await solveCpuTargetInline(baseBlockBytes, target, null);
             break;
         case 'cpu_mem':
-            // Pour les appels API, le client IP n'est pas connu, on ne le met pas dans le message
+            // For API calls, client IP is omitted from client-side message reconstruction
             const baseMessageCombined = `:${nonce}:${clientSecret}`;
             const memSeed = `:${nonce}:${clientSecret}`;
             const [cpuSol, memSol] = await Promise.all([
@@ -1239,7 +1237,7 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
             rawSolution.mem = memSol;
             break;
         case 'cpu_mem_inline':
-            // Version inline pour compatibilité HTML avec IP incluse
+            // Inline version for HTML compatibility with IP
             const memSeedInline = `:${nonce}:${clientSecret}`;
             const [cpuSolInline, memSolInline] = await Promise.all([
                 (async () => {
@@ -1254,12 +1252,12 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
             break;
         case 'tsp':
             const tspResult = await solveTsp(cities, targetMaxDistance);
-            // Pour ce challenge, la solution est juste le chemin.
+            // For TSP, solution is the tour path array
             rawSolution = tspResult.path;
             break;
         case 'optimization_task':
             const finalPopulation = await solveOptimizationTask(optimizationTask.population, optimizationTask.generations);
-            rawSolution = finalPopulation.map(p => p.chromosome); // On ne renvoie que les chromosomes
+            rawSolution = finalPopulation.map(p => p.chromosome); // Return chromosomes only
             break;
         case 'useful_work_task':
             const workResult = await solveUsefulWorkTask(usefulWorkTask.task);
@@ -1277,8 +1275,8 @@ export async function solveChallenge(challenge, fingerprint = '') { // The finge
     return new ChallengeSolution(type, nonce, rawSolution);
 }
 
-// --- Compatibilité pour l'injection directe dans le HTML ---
-// Si le script est chargé dans un navigateur (window existe), on attache les fonctions nécessaires à window.
+// --- Direct HTML script injection compatibility ---
+// If loaded in browser context (window exists), expose methods on window.
 if (typeof window !== 'undefined') {
     window.solveCpuChallengeInline = solveCpuTargetInline;
     window.solveMemoryChallenge = solveMemory;

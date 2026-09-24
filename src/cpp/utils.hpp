@@ -6,7 +6,7 @@
 
 namespace Fingerprint::Utils {
 
-// Simule la multiplication 32-bit de JavaScript `Math.imul`
+// Emulates JavaScript 32-bit multiplication `Math.imul`
 inline int32_t imul(int32_t a, int32_t b) {
     return static_cast<int32_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b));
 }

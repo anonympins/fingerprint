@@ -35,7 +35,7 @@ export function createRedisStore(redisClient) {
         reconnecting = false;
         clearInterval(interval);
       } catch (err) {
-        // Continue de tenter la reconnexion toutes les 5 secondes
+        // Keep retrying connection every 5 seconds
       }
     }, 5000);
     if (interval.unref) interval.unref();

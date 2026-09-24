@@ -1,7 +1,7 @@
 /**
  * @file @/pow.solver.inline.js
- * @description Contient les fonctions côté client pour résoudre les différents types de challenges Proof-of-Work.
- * Fichier compatible avec l'injection directe dans un script HTML (sans `export`).
+ * @description Client-side functions to solve various Proof-of-Work challenges.
+ * Compatible with direct HTML script injection (no `export`).
  */
 
 'use strict';
@@ -40,14 +40,14 @@ function sha256Sync(bytes) {
         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
     ]);
 
-    // Padding standard SHA-256
+    // Standard SHA-256 padding
     var padLen = (((l + 8) >> 6) + 1) << 6;
     var buf = new Uint8Array(padLen);
     buf.set(bytes);
     buf[l] = 0x80;
 
     var view = new DataView(buf.buffer);
-    // Longueur en bits codée en Big-Endian sur 64 bits (padLen - 8)
+    // 64-bit big-endian length in bits (padLen - 8)
     var highBitLen = Math.floor(bitLen / 0x100000000);
     view.setUint32(padLen - 8, highBitLen >>> 0);
     view.setUint32(padLen - 4, bitLen >>> 0);
@@ -55,7 +55,7 @@ function sha256Sync(bytes) {
     var W = new Int32Array(64);
     for (var i = 0; i < padLen; i += 64) {
         for (var t = 0; t < 16; t++) {
-            // Lecture explicite big-endian (false)
+            // Explicit big-endian read (false)
             W[t] = view.getInt32(i + t * 4, false);
         }
         for (var t = 16; t < 64; t++) {
@@ -97,7 +97,7 @@ async function safeDigestSha256Hex(bytes) {
             const buf = await cryptoObj.subtle.digest("SHA-256", bytes);
             return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
         } catch (e) {
-            // Fallback en cas d'échec
+            // Fallback on failure
         }
     }
     return sha256Sync(bytes);
@@ -259,7 +259,7 @@ async function solveSpaceChallenge(seed, queries, nonce, clientSecret, peerBlock
     return await safeDigestSha256Hex(finalBlock);
 }
 
-// --- Fonctions d'optimisation copiées/adaptées de library.js pour le client ---
+// --- Optimization functions adapted from library.js for client usage ---
 
 function paretoDominates(objectivesA, objectivesB) {
     let aIsBetterInOne = false;
@@ -822,11 +822,11 @@ async function solveOptimizationTask(initialPopulation, generations) {
 }
 
 /**
- * Résout un challenge CPU basé sur une cible en utilisant un bloc de base binaire.
- * @param {Uint8Array} baseBlock - Le bloc de données initial (nonce, secret, fp) fourni par le serveur.
- * @param {bigint} target - La cible à atteindre.
- * @param {Function} progressCallback - Callback pour les mises à jour de progression.
- * @returns {Promise<number>} La solution (un nombre entier).
+ * Solves a target-based CPU challenge using a binary base block.
+ * @param {Uint8Array} baseBlock - Initial data block (nonce, secret, fp) provided by the server.
+ * @param {bigint} target - Target difficulty to reach.
+ * @param {Function} progressCallback - Progress update callback.
+ * @returns {Promise<number>} Solution integer.
 */
 async function solveCpuTargetInline(baseBlock, target, progressCallback) {
     // --- FIX: Add validation for the target to prevent BigInt conversion errors ---
@@ -873,7 +873,7 @@ async function solveCpuTargetInline(baseBlock, target, progressCallback) {
                                 resolve(event.data.solution);
                                 worker.terminate();
                             } else if (event.data && event.data.solution !== undefined) {
-                                // Fallback pour compatibilité avec l'ancienne signature
+                                // Fallback for backward compatibility with previous signature
                                 resolve(event.data.solution);
                                 worker.terminate();
                             }
@@ -948,23 +948,23 @@ async function solveCpuTargetInline(baseBlock, target, progressCallback) {
     while (true) {
         const solutionBytes = encoder.encode(String(cpuSolution));
         
-        // Concaténation binaire directe : c'est plus rapide et plus sûr.
+        // Direct binary concatenation: faster and safer.
         const finalBlock = new Uint8Array(baseBlock.length + solutionBytes.length);
         finalBlock.set(baseBlock);
         finalBlock.set(solutionBytes, baseBlock.length);
 
         if (cpuSolution === 0) {
-            // Pour le débogage, on peut afficher le message reconstruit.
+            // For debugging, print reconstructed message.
             const reconstructedMsg = new TextDecoder().decode(finalBlock);
             console.log(`[FP Client Solve] Hashing message: "${reconstructedMsg}"`);
         }
 
         const hashHex = await safeDigestSha256Hex(finalBlock);
-        // --- AJOUT DE LOGS POUR LE DÉBOGAGE CÔTÉ CLIENT ---
+        // --- CLIENT-SIDE DEBUG LOGS ---
         if (cpuSolution === 0) { // Log only the first attempt
             console.log(`[FP Client Solve] Attempt 0 hash: "0x${hashHex}"`);
         }
-        // --- FIN DES LOGS ---
+        // --- END DEBUG LOGS ---
         if (BigInt('0x' + hashHex) < cpuTarget) break;
         cpuSolution++;
             if (cpuSolution % 50000 === 0) {
@@ -980,28 +980,28 @@ async function solveCpuTargetInline(baseBlock, target, progressCallback) {
 }
 
 /**
- * Résout un challenge CPU basé sur une cible (version Web Worker).
- * @param {string} message - Le message à hasher (ex: `ip:nonce:solution:secret`).
- * @param {bigint} target - La cible à atteindre.
- * @returns {Promise<number>} La solution (un nombre entier).
+ * Solves a target-based CPU challenge (Web Worker version).
+ * @param {string} message - Message to hash (e.g. `ip:nonce:solution:secret`).
+ * @param {bigint} target - Target difficulty to reach.
+ * @returns {Promise<number>} Solution integer.
  */
 async function solveCpuTarget(message, target) {
     // Vérifie si les Web Workers sont supportés par le navigateur.
     if (typeof(Worker) === "undefined") {
         console.warn("Web Workers not supported. Falling back to main thread calculation (UI may freeze).");
-        // Ici, on pourrait remettre l'ancienne implémentation comme solution de secours.
-        // Pour la clarté, nous supposons que les workers sont disponibles.
+        // An inline fallback implementation could be placed here if needed.
+        // For clarity, we assume workers are available.
         throw new Error("Web Worker support is required for CPU challenges.");
     }
 
     return new Promise((resolve, reject) => {
-        // Crée un worker à partir du script dédié. Le chemin doit être accessible publiquement.
-        // Assurez-vous que `pow.worker.js` est servi par votre serveur statique.
+        // Create worker from dedicated script. The path must be publicly accessible.
+        // Ensure `pow.worker.js` is served by your static file server.
         const worker = new Worker('./pow.worker.js');
 
         worker.onmessage = (event) => {
             resolve(event.data.solution);
-            worker.terminate(); // Nettoie le worker une fois le travail terminé.
+            worker.terminate(); // Clean up worker once finished.
         };
 
         worker.onerror = (error) => {
@@ -1009,16 +1009,16 @@ async function solveCpuTarget(message, target) {
             worker.terminate();
         };
 
-        // Envoie les données du challenge au worker pour qu'il commence le calcul.
+        // Send challenge data to worker to begin computation.
         worker.postMessage({ message, target });
     });
 }
 
 /**
- * Résout un challenge basé sur la mémoire.
- * @param {string} seed - La graine pour l'initialisation de la mémoire.
- * @param {number} difficulty - La difficulté (en Mo).
- * @returns {Promise<number>} La solution (nombre entier).
+ * Solves a memory-hard challenge.
+ * @param {string} seed - Seed for memory initialization.
+ * @param {number} difficulty - Difficulty in MB.
+ * @returns {Promise<number>} Solution integer.
  */
 async function solveMemory(seed, difficulty) {
     const wasmModule = typeof window !== 'undefined' ? (window.wasmModule || (window.ClientLibrary && window.ClientLibrary.wasmModule)) : null;
@@ -1120,12 +1120,12 @@ async function solveMemory(seed, difficulty) {
 }
 
 /**
- * Résout un challenge de type "Problème du Voyageur de Commerce" (TSP).
- * NOTE: Ceci est une implémentation simple (heuristique du plus proche voisin) et n'est pas garantie
- * de trouver la solution optimale, mais elle est suffisante pour un challenge.
- * @param {Array<{x: number, y: number}>} cities - Les coordonnées des villes.
- * @param {number} targetMaxDistance - La distance maximale acceptable.
- * @returns {Promise<{path: number[], distance: number}>} Le chemin et la distance.
+ * Solves a Traveling Salesperson Problem (TSP) challenge.
+ * NOTE: Uses a nearest-neighbor heuristic which may not find the global optimum,
+ * but is sufficient for verification challenges.
+ * @param {Array<{x: number, y: number}>} cities - City coordinates.
+ * @param {number} targetMaxDistance - Maximum acceptable distance.
+ * @returns {Promise<{path: number[], distance: number}>} Tour path and distance.
  */
 async function solveTsp(cities, targetMaxDistance) {
     // Utility function to calculate the distance between two cities
@@ -1184,9 +1184,9 @@ async function solveTsp(cities, targetMaxDistance) {
 }
 
 /**
- * Fonction principale qui reçoit un objet challenge et le résout.
- * @param {object} challenge - L'objet challenge reçu du serveur.
- * @returns {Promise<object>} Un objet contenant la ou les solutions.
+ * Main entry point to resolve a received challenge payload.
+ * @param {object} challenge - Challenge payload received from the server.
+ * @returns {Promise<object>} Object containing solution(s).
  */
 async function solveChallenge(challenge, fingerprint = '') { // fingerprint parameter was already here, but unused in some calls
     const { type, nonce, clientSecret, cpuTarget, memDifficulty, cities, clientIp, targetMaxDistance, queries, sizeMb } = challenge;
@@ -1212,7 +1212,7 @@ async function solveChallenge(challenge, fingerprint = '') { // fingerprint para
             solutions.cpu = await solveCpuTargetInline(baseBlockBytes, target, null);
             break;
         case 'cpu_mem':
-            // Pour les appels API, le client IP n'est pas connu, on ne le met pas dans le message
+            // For API calls, client IP is omitted from client-side message reconstruction
             const memSeed = `:${nonce}:${clientSecret}`;
             const [cpuSol, memSol] = await Promise.all([
                 (async () => {
@@ -1226,7 +1226,7 @@ async function solveChallenge(challenge, fingerprint = '') { // fingerprint para
             solutions.mem = memSol;
             break;
         case 'cpu_mem_inline':
-            // Version inline pour compatibilité HTML avec IP incluse
+            // Inline version for HTML compatibility with IP
             const memSeedInline = `:${nonce}:${clientSecret}`;
             const [cpuSolInline, memSolInline] = await Promise.all([
                 (async () => {
@@ -1255,8 +1255,8 @@ async function solveChallenge(challenge, fingerprint = '') { // fingerprint para
     return solutions;
 }
 
-// --- Compatibilité pour l'injection directe dans le HTML ---
-// Si le script est chargé dans un navigateur (window existe), on attache les fonctions nécessaires à window.
+// --- Direct HTML script injection compatibility ---
+// If loaded in browser context (window exists), expose methods on window.
 if (typeof window !== 'undefined') {
     window.solveCpuChallengeInline = solveCpuTargetInline;
     window.solveMemoryChallenge = solveMemory;

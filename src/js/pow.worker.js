@@ -1,7 +1,7 @@
 /**
  * @file @/pow.worker.js
- * @description Web Worker dédié à la résolution du challenge CPU.
- * Ce script s'exécute sur un thread séparé pour ne pas bloquer l'interface utilisateur.
+ * @description Dedicated Web Worker for CPU challenge solving.
+ * Executes on a separate thread to avoid blocking the main UI thread.
  */
 
 self.onmessage = async (event) => {

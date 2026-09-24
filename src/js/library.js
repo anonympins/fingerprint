@@ -203,7 +203,7 @@ const Optimization = {
 
       if (logProgress) {
         console.log(
-          `   -> Cycle ${i + 1}/${numCycles}: Score trouvé = ${currentScore.toFixed(2)}`,
+          `   -> Cycle ${i + 1}/${numCycles}: Score found = ${currentScore.toFixed(2)}`,
         );
       }
 
@@ -303,7 +303,7 @@ const Optimization = {
 
     if (logProgress) {
       console.log(
-        `   (Utilisation d'un pool de ${concurrency} workers pour ${numCycles} cycles avec le solveur ${solverName})`,
+        `   (Using a pool of ${concurrency} workers for ${numCycles} cycles with solver ${solverName})`,
       );
     }
 
@@ -331,7 +331,7 @@ const Optimization = {
           worker.on("exit", (code) => {
             if (code !== 0)
               reject(
-                new Error(`Worker ${workerId} a terminé avec le code ${code}`),
+                new Error(`Worker ${workerId} exited with code ${code}`),
               );
           });
         });
@@ -652,7 +652,7 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
         const arx = []; // Search vectors
         const L = cholesky(C);
         if (!L) {
-            console.warn("[CMA-ES] La matrice de covariance n'est plus définie positive. Arrêt.");
+            console.warn("[CMA-ES] Covariance matrix is no longer positive definite. Stopping.");
             break;
         }
 
@@ -784,7 +784,7 @@ Optimization.Operators.createCovarianceMatrixFromCorrelations = ({
     const [nameA, nameB] = corr.assets;
     if (!assetInfo.has(nameA) || !assetInfo.has(nameB)) {
       console.warn(
-        `Avertissement: L'un des actifs [${nameA}, ${nameB}] n'a pas été trouvé. La corrélation est ignorée.`,
+        `Warning: One of assets [${nameA}, ${nameB}] was not found. Correlation ignored.`,
       );
       continue;
     }
