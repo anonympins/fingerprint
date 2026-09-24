@@ -206,8 +206,8 @@ uint64_t cyrb53(const std::string& str, uint32_t seed) {
     h1 = imul(h1 ^ (h1 >> 16), -2048144789) ^ imul(h2 ^ (h2 >> 13), -1028477387); // 2246822507 et 3266489909 en int32
     h2 = imul(h2 ^ (h2 >> 16), -2048144789) ^ imul(h1 ^ (h1 >> 13), -1028477387);
 
-    // Combine les deux hash 32-bit en un hash 64-bit (similaire à la version JS)
-    // Note : La conversion en uint64_t est importante pour correspondre au résultat non signé de JS.
+    // Combines two 32-bit hashes into a 64-bit hash matching the JS implementation.
+    // Note: Cast to uint64_t matches the unsigned JS result.
     uint64_t result = static_cast<uint64_t>(static_cast<uint32_t>(2097151 & h2)) * 4294967296;
     result += static_cast<uint32_t>(h1);
 

@@ -7,8 +7,8 @@ namespace Anonympins\Fingerprint;
 use Anonympins\Fingerprint\Utils\MetricsManager;
 
 /**
- * Intégration directe du moteur de fingerprinting pour les applications PHP sans framework PSR.
- * Cette classe interagit directement avec les superglobales PHP et les fonctions de réponse.
+ * Direct integration of the fingerprint engine for PHP applications without a PSR framework.
+ * Interacts directly with PHP superglobals and response headers.
  */
 class DirectFingerprint
 {
@@ -16,7 +16,7 @@ class DirectFingerprint
     private FingerprintEngine $engine;
 
     /**
-     * @param array $securityConfig La configuration de sécurité pour le moteur.
+     * @param array $securityConfig Security configuration for the engine.
      */
     public function __construct(array $securityConfig)
     {
@@ -25,15 +25,15 @@ class DirectFingerprint
     }
 
     /**
-     * Protège le point d'entrée actuel.
-     * Analyse la requête entrante et, si nécessaire, envoie une réponse de challenge/blocage et termine le script.
-     * Si la requête est autorisée, la méthode retourne simplement et le reste du script peut s'exécuter.
+     * Protects the current entry point.
+     * Analyzes the incoming request and issues challenges or block responses, exiting the script if necessary.
+     * If the request is allowed, returns the fingerprint data.
      *
-     * @return array{score: float, vector: array}|null Les données du fingerprint si la requête est autorisée, null sinon.
+     * @return array{score: float, vector: array}|null Fingerprint data if allowed, null otherwise.
      */
     public function protect(): ?array
     {
-        // 1. Construire le contexte de la requête à partir des superglobales PHP.
+        // 1. Build request context from PHP superglobals
         $body = $_POST ?: json_decode(file_get_contents('php://input'), true);
         $headers = function_exists('getallheaders') ? getallheaders() : [];
 
@@ -47,10 +47,10 @@ class DirectFingerprint
             $_SERVER['SERVER_PROTOCOL'] ?? '1.1'
         );
 
-        // 2. Traiter la requête avec le moteur.
+        // 2. Process request with engine
         $decision = $this->engine->processRequest($context);
 
-        // 3. Agir sur la décision.
+        // 3. Act on decision
         if (isset($context->newCookieForResponse)) {
             $cookie = $context->newCookieForResponse;
             $this->sendCookie($cookie['name'], $cookie['value'], $cookie['options'] ?? []);
@@ -67,24 +67,24 @@ class DirectFingerprint
                     header('Content-Type: text/html; charset=utf-8');
                     echo $decision['body'];
                 }
-                exit(); // Termine le script.
+                exit();
 
             case 'redirect':
                 if (isset($decision['cookie'])) {
                     $this->sendCookie($decision['cookie']['name'], $decision['cookie']['value'], $decision['cookie']['options'] ?? []);
                 }
                 header('Location: ' . $decision['path'], true, 302);
-                exit(); // Termine le script.
+                exit();
 
             case 'next':
             default:
-                // La requête est autorisée, on retourne les informations du fingerprint.
+                // Request allowed, return fingerprint metrics
                 return ['score' => $decision['score'], 'vector' => $decision['vector']];
         }
     }
 
     /**
-     * Envoie un cookie HTTP en filtrant les options non supportées par setcookie() (comme 'partitioned').
+     * Sends an HTTP cookie while handling modern flags like 'partitioned'.
      *
      * @param string $name
      * @param string $value
@@ -95,8 +95,8 @@ class DirectFingerprint
         $isPartitioned = !empty($options['partitioned']);
         unset($options['partitioned']);
 
-        // PHP setcookie() ne supporte pas nativement l'option 'partitioned'.
-        // Si le cookie est sécurisé et requiert 'Partitioned' (CHIPS), on émet l'en-tête manuellement.
+        // PHP setcookie() does not natively support 'partitioned'.
+        // If the cookie is secure and partitioned, emit raw header manually.
         if ($isPartitioned && !empty($options['secure'])) {
             $header = rawurlencode($name) . '=' . rawurlencode($value);
             if (!empty($options['expires'])) {

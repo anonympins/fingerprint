@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Store;
 
 /**
- * Gère l'instance du store global.
+ * Manages the global store singleton instance.
  */
 class StoreManager
 {
@@ -25,7 +25,7 @@ class StoreManager
     }
 
     /**
-     * Définit l'instance active du store (utile pour l'injection de dépendances et les tests).
+     * Sets the active store instance (useful for dependency injection and tests).
      *
      * @param mixed $store
      */

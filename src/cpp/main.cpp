@@ -3,17 +3,15 @@
 #include "utils.hpp"
 
 /**
- * Ce fichier sert de pont entre le C++ et JavaScript.
- * Les fonctions déclarées ici avec EMSCRIPTEN_KEEPALIVE seront exportées
- * et pourront être appelées depuis le code JavaScript.
+ * Bridges C++ and JavaScript via WebAssembly.
+ * Functions marked with EMSCRIPTEN_KEEPALIVE are exported to JavaScript.
  */
 
 extern "C" {
 
 /**
- * Expose la fonction cyrb53 à JavaScript.
- * Note : Les types de base comme les nombres et les pointeurs de chaînes C
- * sont gérés nativement par Emscripten.
+ * Exposes cyrb53 hash function to JavaScript.
+ * Primitive types and C string pointers are handled natively by Emscripten.
  */
 EMSCRIPTEN_KEEPALIVE
 uint64_t hash_string(const char* str) {

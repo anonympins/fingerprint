@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Store;
 
 /**
- * Implémentation en mémoire de l'interface IStore.
- * Utile pour le développement ou les applications à instance unique sans persistance externe.
+ * In-memory implementation of the IStore interface.
+ * Suitable for local development, tests, or single-instance deployments.
  */
 class InMemoryStore implements IStore
 {
@@ -23,7 +23,7 @@ class InMemoryStore implements IStore
 
         $item = $this->data[$key];
         if ($item['expiresAt'] !== null && $item['expiresAt'] < time()) {
-            $this->delete($key); // Supprime l'élément expiré
+            $this->delete($key); // Delete expired item
             return null;
         }
 
@@ -58,7 +58,7 @@ class InMemoryStore implements IStore
     }
 
     /**
-     * Efface toutes les données du store. Utile pour les tests.
+     * Clears all data from the store. Useful for testing.
      */
     public function clear(): void
     {
