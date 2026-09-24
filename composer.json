@@ -36,5 +36,12 @@
     "config": {
         "sort-packages": true
     },
-    "minimum-stability": "stable"
+    "minimum-stability": "stable",
+    "scripts": {
+        "build:wordpress": "@php src/php/WordPress/package.php",
+        "package:wordpress": "@php src/php/WordPress/package.php"
+    },
+    "scripts-descriptions": {
+        "build:wordpress": "Empaquette et génère le fichier zip du plugin WordPress dans public/"
+    }
 }

@@ -14,7 +14,94 @@ function secureRandom() {
     }
     return Math.random();
 }
+function sha256Sync(bytes) {
+    if (bytes instanceof ArrayBuffer) {
+        bytes = new Uint8Array(bytes);
+    } else if (typeof bytes === 'string') {
+        bytes = new TextEncoder().encode(bytes);
+    } else if (ArrayBuffer.isView(bytes) && !(bytes instanceof Uint8Array)) {
+        bytes = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    }
 
+    var l = bytes.length;
+    var bitLen = l * 8;
+    var K = new Uint32Array([
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76ca1422,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    ]);
+    var H = new Uint32Array([
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+    ]);
+
+    // Padding standard SHA-256
+    var padLen = (((l + 8) >> 6) + 1) << 6;
+    var buf = new Uint8Array(padLen);
+    buf.set(bytes);
+    buf[l] = 0x80;
+
+    var view = new DataView(buf.buffer);
+    // Longueur en bits codée en Big-Endian sur 64 bits (padLen - 8)
+    var highBitLen = Math.floor(bitLen / 0x100000000);
+    view.setUint32(padLen - 8, highBitLen >>> 0);
+    view.setUint32(padLen - 4, bitLen >>> 0);
+
+    var W = new Int32Array(64);
+    for (var i = 0; i < padLen; i += 64) {
+        for (var t = 0; t < 16; t++) {
+            // Lecture explicite big-endian (false)
+            W[t] = view.getInt32(i + t * 4, false);
+        }
+        for (var t = 16; t < 64; t++) {
+            var s0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
+            var s1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
+            W[t] = (W[t - 16] + s0 + W[t - 7] + s1) | 0;
+        }
+        var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+        for (var t = 0; t < 64; t++) {
+            var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+            var ch = (e & f) ^ ((~e) & g);
+            var temp1 = (h + S1 + ch + K[t] + W[t]) | 0;
+            var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+            var maj = (a & b) ^ (a & c) ^ (b & c);
+            var temp2 = (S0 + maj) | 0;
+            h = g; g = f; f = e; e = (d + temp1) | 0;
+            d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+        }
+        H[0] = (H[0] + a) | 0;
+        H[1] = (H[1] + b) | 0;
+        H[2] = (H[2] + c) | 0;
+        H[3] = (H[3] + d) | 0;
+        H[4] = (H[4] + e) | 0;
+        H[5] = (H[5] + f) | 0;
+        H[6] = (H[6] + g) | 0;
+        H[7] = (H[7] + h) | 0;
+    }
+    var hex = '';
+    for (var i = 0; i < 8; i++) {
+        hex += (H[i] >>> 0).toString(16).padStart(8, '0');
+    }
+    return hex;
+}
+
+async function safeDigestSha256Hex(bytes) {
+    const cryptoObj = (typeof globalThis !== 'undefined' && globalThis.crypto) ? globalThis.crypto : (typeof window !== 'undefined' ? window.crypto : null);
+    if (cryptoObj && cryptoObj.subtle && typeof cryptoObj.subtle.digest === 'function') {
+        try {
+            const buf = await cryptoObj.subtle.digest("SHA-256", bytes);
+            return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        } catch (e) {
+            // Fallback en cas d'échec
+        }
+    }
+    return sha256Sync(bytes);
+}
 function cyrb53(str, seed = 0) {
     const safeStr = (typeof str === 'string' ? str : String(str || '')).slice(0, 10000);
     let h1 = 0xdeadbeef ^ seed,
@@ -168,9 +255,8 @@ async function solveSpaceChallenge(seed, queries, nonce, clientSecret, peerBlock
     const finalBlock = new Uint8Array(finalCombined.length + nonceBytes.length);
     finalBlock.set(finalCombined);
     finalBlock.set(nonceBytes, finalCombined.length);
-    
-    const buf = await crypto.subtle.digest("SHA-256", finalBlock);
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    return await safeDigestSha256Hex(finalBlock);
 }
 
 // --- Fonctions d'optimisation copiées/adaptées de library.js pour le client ---
@@ -776,16 +862,17 @@ async function solveCpuTargetInline(baseBlock, target, progressCallback) {
         if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
             try {
                 const staticWorkerPath = window.ClientLibrary?.workerPath || (window.ClientConfig && window.ClientConfig.workerPath);
+                const sha256FnStr = sha256Sync.toString();
                 if (staticWorkerPath) {
                     return await new Promise((resolve, reject) => {
                         const worker = new Worker(staticWorkerPath);
                         worker.onmessage = (event) => {
-                            if (event.data.type === 'progress') {
+                            if (event.data && event.data.type === 'progress') {
                                 if (progressCallback) progressCallback(event.data.solution);
-                            } else if (event.data.type === 'success') {
+                            } else if (event.data && event.data.type === 'success') {
                                 resolve(event.data.solution);
                                 worker.terminate();
-                            } else if (event.data.solution !== undefined) {
+                            } else if (event.data && event.data.solution !== undefined) {
                                 // Fallback pour compatibilité avec l'ancienne signature
                                 resolve(event.data.solution);
                                 worker.terminate();
@@ -804,15 +891,29 @@ async function solveCpuTargetInline(baseBlock, target, progressCallback) {
                             const { baseBlock, target } = e.data;
                             const cpuTarget = BigInt(target);
                             const encoder = new TextEncoder();
-                            let cpuSolution = 0;
+                            const hasSubtle = typeof self.crypto !== 'undefined' && self.crypto && self.crypto.subtle && typeof self.crypto.subtle.digest === 'function';
+                             const sha256Fallback = ${sha256FnStr};
+                             let cpuSolution = 0;
                             while (true) {
                                 const solutionBytes = encoder.encode(String(cpuSolution));
                                 const finalBlock = new Uint8Array(baseBlock.length + solutionBytes.length);
                                 finalBlock.set(baseBlock);
                                 finalBlock.set(solutionBytes, baseBlock.length);
-                                const buf = await crypto.subtle.digest("SHA-256", finalBlock);
-                                const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-                                if (BigInt('0x' + hashHex) < cpuTarget) break;
+                                let hashHex = '';
+                                 if (hasSubtle) {
+                                     try {
+                                         const buf = await self.crypto.subtle.digest("SHA-256", finalBlock);
+                                         const arr = new Uint8Array(buf);
+                                         for (let j = 0; j < arr.length; j++) {
+                                             hashHex += arr[j].toString(16).padStart(2, '0');
+                                         }
+                                     } catch (subtleErr) {
+                                         hashHex = sha256Fallback(finalBlock);
+                                     }
+                                 } else {
+                                     hashHex = sha256Fallback(finalBlock);
+                                 }
+                                 if (BigInt('0x' + hashHex) < cpuTarget) break;
                                 cpuSolution++;
                                 if (cpuSolution % 25000 === 0) {
                                     self.postMessage({ type: 'progress', solution: cpuSolution });
@@ -858,8 +959,7 @@ async function solveCpuTargetInline(baseBlock, target, progressCallback) {
             console.log(`[FP Client Solve] Hashing message: "${reconstructedMsg}"`);
         }
 
-        const buf = await crypto.subtle.digest("SHA-256", finalBlock);
-        const hashHex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        const hashHex = await safeDigestSha256Hex(finalBlock);
         // --- AJOUT DE LOGS POUR LE DÉBOGAGE CÔTÉ CLIENT ---
         if (cpuSolution === 0) { // Log only the first attempt
             console.log(`[FP Client Solve] Attempt 0 hash: "0x${hashHex}"`);
@@ -940,8 +1040,7 @@ async function solveMemory(seed, difficulty) {
     if (numBlocks === 0) return { solution: 0, merkleRoot: '', proofs: {} };
 
     async function hashBlock(block) {
-        const buf = await crypto.subtle.digest("SHA-256", block.buffer);
-        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+        return await safeDigestSha256Hex(block.buffer);
     }
 
     function hexToBytes(hex) {
@@ -972,8 +1071,7 @@ async function solveMemory(seed, difficulty) {
             const left = currentLayer[i];
             const right = currentLayer[i + 1] || left;
             const combined = hexToBytes(left + right);
-            const hashBuf = await crypto.subtle.digest("SHA-256", combined);
-            const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+            const hashHex = await safeDigestSha256Hex(combined);
             nextLayer.push(hashHex);
         }
         tree.push(nextLayer);

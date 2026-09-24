@@ -53,7 +53,7 @@ class DirectFingerprint
         // 3. Agir sur la décision.
         if (isset($context->newCookieForResponse)) {
             $cookie = $context->newCookieForResponse;
-            setcookie($cookie['name'], $cookie['value'], $cookie['options']);
+            $this->sendCookie($cookie['name'], $cookie['value'], $cookie['options'] ?? []);
         }
 
         switch ($decision['action']) {
@@ -71,7 +71,7 @@ class DirectFingerprint
 
             case 'redirect':
                 if (isset($decision['cookie'])) {
-                    setcookie($decision['cookie']['name'], $decision['cookie']['value'], $decision['cookie']['options']);
+                    $this->sendCookie($decision['cookie']['name'], $decision['cookie']['value'], $decision['cookie']['options'] ?? []);
                 }
                 header('Location: ' . $decision['path'], true, 302);
                 exit(); // Termine le script.
@@ -81,6 +81,51 @@ class DirectFingerprint
                 // La requête est autorisée, on retourne les informations du fingerprint.
                 return ['score' => $decision['score'], 'vector' => $decision['vector']];
         }
+    }
+
+    /**
+     * Envoie un cookie HTTP en filtrant les options non supportées par setcookie() (comme 'partitioned').
+     *
+     * @param string $name
+     * @param string $value
+     * @param array<string, mixed> $options
+     */
+    private function sendCookie(string $name, string $value, array $options): void
+    {
+        $isPartitioned = !empty($options['partitioned']);
+        unset($options['partitioned']);
+
+        // PHP setcookie() ne supporte pas nativement l'option 'partitioned'.
+        // Si le cookie est sécurisé et requiert 'Partitioned' (CHIPS), on émet l'en-tête manuellement.
+        if ($isPartitioned && !empty($options['secure'])) {
+            $header = rawurlencode($name) . '=' . rawurlencode($value);
+            if (!empty($options['expires'])) {
+                $header .= '; Expires=' . gmdate('D, d M Y H:i:s T', (int)$options['expires']);
+                $header .= '; Max-Age=' . max(0, (int)$options['expires'] - time());
+            }
+            if (!empty($options['path'])) {
+                $header .= '; Path=' . $options['path'];
+            }
+            if (!empty($options['domain'])) {
+                $header .= '; Domain=' . $options['domain'];
+            }
+            if (!empty($options['secure'])) {
+                $header .= '; Secure';
+            }
+            if (!empty($options['httponly'])) {
+                $header .= '; HttpOnly';
+            }
+            if (!empty($options['samesite'])) {
+                $header .= '; SameSite=' . $options['samesite'];
+            }
+            $header .= '; Partitioned';
+            header('Set-Cookie: ' . $header, false);
+            return;
+        }
+
+        $allowedKeys = ['expires', 'path', 'domain', 'secure', 'httponly', 'samesite'];
+        $cleanOptions = array_intersect_key($options, array_flip($allowedKeys));
+        setcookie($name, $value, $cleanOptions);
     }
 
     /**

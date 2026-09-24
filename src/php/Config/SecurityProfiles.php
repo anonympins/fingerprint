@@ -59,6 +59,10 @@ class SecurityProfiles
                 'decayFactor' => 0.9,
                 'inactivityReset' => 5000,
             ],
+            'cpu' => [
+                'minDifficultyBits' => 8,
+                'maxDifficultyBits' => 22,
+            ],
         'filterWhitelist' => 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
         'wasm' => true,
         ],
@@ -108,6 +112,10 @@ class SecurityProfiles
                 'decayFactor' => 0.85,
                 'inactivityReset' => 4000,
             ],
+            'cpu' => [
+                'minDifficultyBits' => 10,
+                'maxDifficultyBits' => 24,
+            ],
             'challengeNewDevices' => true, // Challenge all new devices
         'wasm' => true,
         'filterWhitelist' => true, // Tout comportement d'attaque certain bypass immédiatement la liste blanche
@@ -155,6 +163,10 @@ class SecurityProfiles
                 'patternWeight' => 85,
                 'decayFactor' => 0.9,
                 'inactivityReset' => 10000,
+            ],
+            'cpu' => [
+                'minDifficultyBits' => 8,
+                'maxDifficultyBits' => 20,
             ],
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/") || req.headers.accept?.includes("application/json")',
@@ -208,6 +220,10 @@ class SecurityProfiles
                 'decayFactor' => 0.92,
                 'inactivityReset' => 10000,
             ],
+            'cpu' => [
+                'minDifficultyBits' => 8,
+                'maxDifficultyBits' => 20,
+            ],
         'filterWhitelist' => 90.0, // Très tolérant, n'inspecte que si le score est presque au blocage
         'wasm' => true,
         ],
@@ -257,6 +273,10 @@ class SecurityProfiles
                 'patternWeight' => 95,
                 'decayFactor' => 0.88,
                 'inactivityReset' => 3000,
+            ],
+            'cpu' => [
+                'minDifficultyBits' => 10,
+                'maxDifficultyBits' => 24,
             ],
             'challengeNewDevices' => true, // New devices are suspicious in e-commerce
             // This would be a callable in PHP, but for now, we represent its intent.

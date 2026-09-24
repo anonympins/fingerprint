@@ -25,6 +25,7 @@ class RequestContext
     public ?string $httpVersion = null;
     public int $requestTimestamp = 0;
     public ?string $tlsSessionId = null;
+    public bool $isHttps = false;
 
     /** @var ?array{type: string, name: string} */
     public ?array $graphqlOperation = null;
@@ -67,7 +68,8 @@ class RequestContext
         $body,
         array $cookies,
         ?string $httpVersion,
-        ?int $requestTimestamp = null
+        ?int $requestTimestamp = null,
+        ?bool $isHttps = null
     ) {
         $this->clientIp = $clientIp;
         $this->path = $path;
@@ -78,6 +80,11 @@ class RequestContext
         $this->cookies = $cookies;
         $this->httpVersion = $httpVersion;
         $this->requestTimestamp = $requestTimestamp ?? (int)(microtime(true) * 1000);
+        $this->isHttps = $isHttps ?? (
+            (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
+            (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443) ||
+            ($this->getHeader('x-forwarded-proto') === 'https')
+        );
 
         // Extraire les empreintes TLS/HTTP2/TCP si elles sont fournies par les en-têtes
         $this->ja3 = $this->headers['x-ja3-hash'] ?? null;

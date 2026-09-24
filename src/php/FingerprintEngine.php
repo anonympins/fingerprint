@@ -229,7 +229,8 @@
              'autotuning', 'enableUsefulWork', 'usefulWorkConfigPath', 'challengeNewDevices', 'graphql_operation_allowlist', 'dryRun',
              'similarityThreshold', 'summary', 'description',
              'ed25519_private_key', 'ed25519_public_key',
-             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret', 'reset'
+             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret', 'reset',
+             'filterWhitelist'
          ];
 
          if (empty($config['weights'])) {
@@ -562,7 +563,6 @@
                  'options' => [
                      'httponly' => true,
                      'secure' => $secureOption,
-                     'partitioned' => $secureOption,
                      'samesite' => 'Strict',
                      'path' => '/',
                  ]
@@ -1092,7 +1092,6 @@
                                  'samesite' => 'Strict',
                                  'expires' => time() + ($ticketTtl / 1000),
                                  'path' => '/',
-                                 'partitioned' => $secureOption,
                              ]
                          ]
                      ];
@@ -1399,6 +1398,7 @@
                  $tlsSessionId = $context->tlsSessionId ?? '';
                  $baseBlock = ChallengeUtils::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint, $context->clientIp, $tlsSessionId);
 
+                 $isHttps = !empty($context->isHttps);
                  $challengeContext = [
                      'clientSecret' => $clientSecret,
                      'cpuTarget' => $cpuChallengeDetails['target'],
@@ -1407,6 +1407,7 @@
                      'memDifficulty' => $memDifficulty,
                      'baseBlock' => $baseBlock,
                      'originalPath' => $context->path,
+                     'isHttp' => !$isHttps,
                  ];
 
                  $store->set("secret:{$nonce}", $challengeContext, $this->securityConfig['challengeTtl'] ?? 300);
@@ -1441,7 +1442,8 @@
                      // Pour les navigateurs, retourner une page HTML
                      $pageBody = ChallengeUtils::generateCombinedPoWChallengePage(
                          $cpuChallengeDetails, $memDifficulty, $clientSecret,
-                         $this->securityConfig, $trapUrls, $originalFingerprint
+                         $this->securityConfig, $trapUrls, $originalFingerprint,
+                         $context->clientIp, $tlsSessionId, $baseBlock, $isHttps
                      );
                      $decision['body'] = $pageBody;
                  }
