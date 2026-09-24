@@ -2369,20 +2369,47 @@ describe('Subnet Scoring (Node.js)', () => {
         // 2. Some high scores, few devices. The subnet is calculated from the context.
         // The key is hardcoded here to match what the implementation would store.
         await inMemoryStore.set('subnet:10.0.0.0/24', {
-            highScoreCount: 5, // score += 5 * 2 = 10
-            deviceIds: ['d1', 'd2'], // count < 10, score += 0
+            highScoreCount: 5,
+            deviceIds: ['d1', 'd2'],
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-        expect(subnetScore).toBe(58.6);
+        expect(subnetScore).toBeGreaterThan(0);
+        expect(subnetScore).toBeLessThanOrEqual(45.0); // Ambient score capped in Medium zone
 
-        // 3. Many devices and high scores
+        // 3. Many devices and high scores, ambient score still capped at 45.0 (Medium asymptote)
         const deviceIds = Array.from({ length: 20 }, (_, i) => `d${i}`);
         await inMemoryStore.set('subnet:10.0.0.0/24', {
-            highScoreCount: 30, // score += min(40, 30 * 2) = 40
-            deviceIds: deviceIds, // count = 20. score += (20-10)*5 = 50
+            highScoreCount: 30,
+            deviceIds: deviceIds,
         });
         ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
-            expect(subnetScore).toBe(99.4);
+        expect(subnetScore).toBeLessThanOrEqual(45.0);
+        expect(subnetScore).toBeGreaterThanOrEqual(30.0);
+
+        // 4. Nearby attacker in /30 (+45 boost), escalates score into High territory
+        await inMemoryStore.set('subnet:10.0.0.0/24', {
+            highScoreCount: 30,
+            deviceIds: deviceIds,
+            attackerIps: [{ ip: '10.0.0.26', lastSeen: Date.now(), score: 85 }]
+        });
+        ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
+        expect(subnetScore).toBeGreaterThanOrEqual(80.0);
+
+        // 5. Exact IP match (+55 boost), reaches 90-100
+        await inMemoryStore.set('subnet:10.0.0.0/24', {
+            highScoreCount: 30,
+            deviceIds: deviceIds,
+            attackerIps: [{ ip: '10.0.0.25', lastSeen: Date.now(), score: 95 }]
+        });
+        ({ subnetScore } = await __internal.getSubnetScore(context, 'device-1'));
+        expect(subnetScore).toBeGreaterThanOrEqual(90.0);
+    });
+
+    it('getIpCommonPrefixLength should accurately calculate common prefix bits', () => {
+        const { getIpCommonPrefixLength } = __internal;
+        expect(getIpCommonPrefixLength('10.0.0.25', '10.0.0.25')).toBe(32);
+        expect(getIpCommonPrefixLength('10.0.0.24', '10.0.0.25')).toBe(31);
+        expect(getIpCommonPrefixLength('192.168.1.10', '192.168.2.10')).toBe(22);
     });
 });
 

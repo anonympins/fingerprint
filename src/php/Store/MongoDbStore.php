@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Store;
 
 /**
- * Adaptateur de stockage MongoDB pour le moteur Fingerprint.
- * Utilise la bibliothèque officielle mongodb/mongodb.
+ * MongoDB storage adapter for the Fingerprint engine.
+ * Utilizes the official mongodb/mongodb driver.
  */
 class MongoDbStore implements IStore
 {
@@ -31,7 +31,7 @@ class MongoDbStore implements IStore
     private float $lastReconnectAttempt = 0.0;
 
     /**
-     * @param \MongoDB\Collection $collection Collection dédiée au stockage des empreintes
+     * @param \MongoDB\Collection $collection Target collection for fingerprint data storage.
      */
     public function __construct($collection)
     {
@@ -69,7 +69,7 @@ class MongoDbStore implements IStore
                 return null;
             }
 
-            // Vérification d'expiration active pour bypasser le délai de 60s du démon de MongoDB
+            // Active TTL check to bypass MongoDB daemon 60-second cleanup latency
             if (isset($doc['expiresAt'])) {
                 $expiresAt = $doc['expiresAt'];
                 if ($expiresAt instanceof \MongoDB\BSON\UTCDateTime) {
@@ -168,7 +168,7 @@ class MongoDbStore implements IStore
     }
 
     /**
-     * Automatise la configuration de l'index TTL nécessaire dans MongoDB.
+     * Automatically initializes required TTL index in MongoDB collection.
      */
     public function init(): void
     {

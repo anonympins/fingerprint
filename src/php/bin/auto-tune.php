@@ -3,9 +3,9 @@
 declare(strict_types=1);
 
 /**
- * CLI Script d'auto-tuning périodique des configurations de sécurité.
- * Ce script lit la configuration courante, récupère les logs, les assainit,
- * exécute l'optimiseur génétique, et écrase le fichier JSON d'origine.
+ * Periodic security configuration auto-tuning CLI script.
+ * Reads current configuration, prunes and sanitizes traffic logs,
+ * executes the genetic optimizer, and writes back the optimized profile.
  */
 
 $autoloaderPaths = [
@@ -24,7 +24,7 @@ foreach ($autoloaderPaths as $path) {
 }
 
 if (!$autoloaded) {
-    fwrite(STDERR, "Erreur : Impossible de charger l'autoloader. Exécutez 'composer install'.\n");
+    fwrite(STDERR, "Error: Unable to load autoloader. Run 'composer install'.\n");
     exit(1);
 }
 
@@ -35,53 +35,53 @@ use Anonympins\Fingerprint\Utils\RequestUtils;
 // 1. Récupération des arguments CLI
 $configPath = $argv[1] ?? null;
 if (!$configPath) {
-    echo "Usage: php auto-tune.php [chemin_vers_security-config.json]\n";
+    echo "Usage: php auto-tune.php [path_to_security-config.json]\n";
     exit(1);
 }
 
 if (!file_exists($configPath)) {
-    fwrite(STDERR, "Erreur : Fichier de configuration introuvable : {$configPath}\n");
+    fwrite(STDERR, "Error: Configuration file not found: {$configPath}\n");
     exit(1);
 }
 
 $config = json_decode(file_get_contents($configPath), true);
 if (json_last_error() !== JSON_ERROR_NONE) {
-    fwrite(STDERR, "Erreur : Fichier de configuration JSON invalide.\n");
+    fwrite(STDERR, "Error: Invalid JSON configuration file.\n");
     exit(1);
 }
 
-// 2. Connexion au store pour récupérer les logs accumulés
+// 2. Connect to datastore to retrieve accumulated traffic logs
 $store = StoreManager::getStore();
 if (!$store) {
-    fwrite(STDERR, "Erreur : Aucun store de persistance actif.\n");
+    fwrite(STDERR, "Error: No active persistent datastore available.\n");
     exit(1);
 }
 
 $rawTrafficLogs = $store->get('traffic_logs') ?? [];
 if (empty($rawTrafficLogs)) {
-    echo "[AutoTuning] Aucun log de trafic disponible pour l'optimisation.\n";
+    echo "[AutoTuning] No traffic logs available for optimization.\n";
     exit(0);
 }
 
-// 3. Nettoyage des données pour prévenir l'empoisonnement (Sybil attacks)
+// 3. Sanitize data to prevent poisoning / Sybil attacks
 $sanitizedLogs = RequestUtils::sanitizeTrafficData($rawTrafficLogs);
 
 $minDataPoints = $config['autotuning']['minDataPoints'] ?? 200;
 if (count($sanitizedLogs) < $minDataPoints) {
-    echo "[AutoTuning] Reporté : Pas assez de données assainies (" . count($sanitizedLogs) . "/{$minDataPoints}).\n";
+    echo "[AutoTuning] Postponed: Insufficient sanitized logs (" . count($sanitizedLogs) . "/{$minDataPoints}).\n";
     exit(0);
 }
 
-echo "[AutoTuning] Lancement de l'optimisation sur " . count($sanitizedLogs) . " données de trafic...\n";
+echo "[AutoTuning] Starting optimization pass on " . count($sanitizedLogs) . " traffic data points...\n";
 
-// 4. Résolution du Front de Pareto
+// 4. Compute Pareto front
 $paretoFront = Optimization::solveFullSecurityTuning(['trafficData' => $sanitizedLogs]);
 if (empty($paretoFront)) {
-    fwrite(STDERR, "[AutoTuning] L'optimisation n'a retourné aucun résultat.\n");
+    fwrite(STDERR, "[AutoTuning] Optimization returned no solutions.\n");
     exit(1);
 }
 
-// 5. Sélection de la solution la plus équilibrée
+// 5. Select the most balanced solution (closest to origin)
 $bestSolution = $paretoFront[0];
 $minDistance = sqrt(pow($bestSolution['objectives'][0], 2) + pow($bestSolution['objectives'][1], 2));
 foreach ($paretoFront as $candidate) {
@@ -93,7 +93,7 @@ foreach ($paretoFront as $candidate) {
 }
 
 $newConfig = $bestSolution['solution'];
-$maxChangeVelocity = 0.15; // Inertie de 15% maximum par cycle
+$maxChangeVelocity = 0.15; // Max 15% inertial step per cycle
 
 $applyInertialUpdate = function (array &$current, array $target) use ($maxChangeVelocity) {
     $sumCurrent = array_sum($current);
@@ -113,6 +113,6 @@ $applyInertialUpdate($config['thresholds'], $newConfig['thresholds']);
 $applyInertialUpdate($config['weights'], $newConfig['weights']);
 $applyInertialUpdate($config['patterns'], $newConfig['patterns']);
 
-// 6. Écrasement propre du fichier de configuration original
+// 6. Write back optimized parameters to configuration file
 file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-echo "[AutoTuning] Succès : Fichier {$configPath} mis à jour avec les paramètres optimisés.\n";
+echo "[AutoTuning] Success: File {$configPath} updated with optimized parameters.\n";

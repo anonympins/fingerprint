@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Store;
 
 /**
- * Adaptateur de stockage Redis pour le moteur Fingerprint.
- * Compatible avec phpredis et predis.
+ * Redis storage adapter for the Fingerprint engine.
+ * Compatible with phpredis and predis clients.
  */
 class RedisStore implements IStore
 {
     /**
-     * @var mixed Une instance de \Redis ou de \Predis\Client
+     * @var mixed An instance of \Redis or \Predis\Client
      */
     private $redis;
 
@@ -31,7 +31,7 @@ class RedisStore implements IStore
     private float $lastReconnectAttempt = 0.0;
 
     /**
-     * @param mixed $redis Client Redis déjà configuré et connecté
+     * @param mixed $redis Pre-configured and connected Redis client instance.
      */
     public function __construct($redis)
     {
@@ -46,7 +46,7 @@ class RedisStore implements IStore
         }
 
         $now = microtime(true);
-        // Tentative de reconnexion toutes les 5 secondes
+        // Retry connection every 5 seconds
         if ($now - $this->lastReconnectAttempt > 5.0) {
             $this->lastReconnectAttempt = $now;
             try {

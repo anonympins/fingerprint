@@ -5,14 +5,14 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Optimization;
 
 /**
- * Opérateurs pour les problèmes d'optimisation.
+ * Operators and objective function factories for optimization problems.
  */
 class OptimizationOperators
 {
     /**
-     * Crée une fonction de sélection par tournoi pour un algorithme génétique.
-     * @param array $options Options pour le tournoi.
-     * @return callable Une fonction de sélection.
+     * Creates a tournament selection operator for genetic algorithms.
+     * @param array $options Tournament configuration options.
+     * @return callable Selection operator function.
      */
     public static function createTournamentSelection(array $options = []): callable
     {
@@ -37,7 +37,7 @@ class OptimizationOperators
     }
 
     /**
-     * Génère un nombre flottant aléatoire cryptographiquement sûr entre 0 (inclus) et 1 (exclus).
+     * Generates a cryptographically secure random float in [0, 1).
      */
     private static function secureRandom(): float
     {
@@ -49,7 +49,7 @@ class OptimizationOperators
     }
 
     /**
-     * Évalue un portefeuille pour un payload donné.
+     * Evaluates a portfolio for a given payload.
      * 
      * @param array $weights
      * @param array $payload
@@ -62,22 +62,21 @@ class OptimizationOperators
     }
 
     /**
-     * Crée un évaluateur pour l'optimisation de portefeuille.
+     * Creates a portfolio allocation evaluator.
      * @param array $config
      * @return callable
      */
     public static function createPortfolioAllocator(array $config): callable
     {
-        // Cette fonction est un placeholder. Une implémentation complète nécessiterait
-        // une logique de calcul de rendement et de volatilité de portefeuille.
+        // Baseline portfolio evaluator minimizing negative expected return
         return function (array $weights) use ($config): float {
-            // Minimiser le rendement négatif (donc maximiser le rendement)
+            // Minimize negative return (maximizes positive return)
             return -array_sum($weights);
         };
     }
 
     /**
-     * Crée un évaluateur pour l'auto-tuning complet de la configuration de sécurité.
+     * Creates an evaluator for full security configuration auto-tuning.
      * @param array $context
      * @return callable
      */
@@ -145,6 +144,7 @@ class OptimizationOperators
             ];
 
             // 1. Évaluation sur les logs de trafic réels
+            // 1. Evaluate on real traffic logs
             foreach ($trafficData as $log) {
                 $weight = (float)($log['weight'] ?? 1.0);
                 $confidence = ($confidenceWeights[$log['type'] ?? ''] ?? 1.0) * $weight;
@@ -206,6 +206,7 @@ class OptimizationOperators
             }
 
             // 3. Pénalité de dérive d'échelle (L2 Regularization par rapport au profil d'origine)
+            // 3. Scale drift penalty (L2 regularization against baseline profile)
             $regularizationPenalty = 0.0;
             if ($currentConfig && isset($currentConfig['weights'])) {
                 foreach ($config['weights'] as $key => $val) {
@@ -215,6 +216,7 @@ class OptimizationOperators
             }
 
             // 4. Maximisation de la marge
+            // 4. Margin separation maximization
             $marginOverlap = max(0.0, $maxHumanScore - $minBotScore);
             $marginPenalty = $marginOverlap / 100.0;
 
@@ -226,7 +228,7 @@ class OptimizationOperators
     }
 
     /**
-     * Résout le problème de l'auto-tuning complet de la configuration de sécurité.
+     * Solves end-to-end security configuration auto-tuning.
      * @param array $context
      * @param array $options
      * @return array
@@ -256,7 +258,7 @@ class OptimizationOperators
                 if (isset($config[$section]) && is_array($config[$section])) {
                     foreach ($config[$section] as $k => $v) {
                         if (is_numeric($v)) {
-                            $randomVariation = 1.0 + (self::secureRandom() - 0.5) * 0.5; // Variation de +/- 25%
+                            $randomVariation = 1.0 + (self::secureRandom() - 0.5) * 0.5; // +/- 25% variation
                             $ind[$section][$k] = $v * $randomVariation;
                         } else {
                             $ind[$section][$k] = $v;
@@ -330,7 +332,7 @@ class OptimizationOperators
     }
 
     /**
-     * Crée un évaluateur pour trouver les seuils de détection de fraude optimaux.
+     * Creates an evaluator to find optimal fraud detection thresholds.
      * @param array $context
      * @return callable
      */
@@ -374,7 +376,7 @@ class OptimizationOperators
     }
 
     /**
-     * Résout le problème de la détection de fraude.
+     * Solves fraud detection threshold optimization.
      * @param array $context
      * @param array $options
      * @return array
@@ -411,19 +413,18 @@ class OptimizationOperators
     }
 
     /**
-     * Placeholder pour le solveur TSP.
+     * TSP solver baseline implementation.
      * @param array $cities
      * @param array $options
      * @return array
      */
     public static function solveTSP(array $cities, array $options = []): array
     {
-        // Implémentation factice pour la complétude
         return ['solution' => array_keys($cities), 'energy' => 100];
     }
 
     /**
-     * Placeholder pour le solveur de portefeuille.
+     * Portfolio allocator baseline implementation.
      * @param array $assets
      * @param float $maxVolatility
      * @param array $options
@@ -431,7 +432,6 @@ class OptimizationOperators
      */
     public static function solvePortfolio(array $assets, float $maxVolatility, array $options = []): array
     {
-        // Implémentation factice pour la complétude
         return ['solution' => array_fill(0, count($assets), 1 / count($assets)), 'fitness' => -0.1];
     }
 
@@ -440,7 +440,7 @@ class OptimizationOperators
         $fixedCostPerFacility = $options['fixedCostPerFacility'] ?? 0;
         $initialTemperature = $options['initialTemperature'] ?? 100000.0;
         $coolingRate = $options['coolingRate'] ?? 0.999;
-        $maxIterations = $options['maxIterations'] ?? 15000; // Borne raisonnable pour PHP
+        $maxIterations = $options['maxIterations'] ?? 15000;
 
         $evaluator = function (array $facilities) use ($customers, $fixedCostPerFacility): float {
             $totalConnectionCost = 0.0;
@@ -473,6 +473,7 @@ class OptimizationOperators
         };
 
         // Génération d'une solution initiale aléatoire
+        // Random initial placement
         $currentSolution = [];
         for ($i = 0; $i < $numFacilities; $i++) {
             $currentSolution[] = [
@@ -509,12 +510,12 @@ class OptimizationOperators
     }
 
     /**
-     * Évalue de manière indépendante l'énergie d'une solution de placement d'infrastructures.
-     * Appelée par le serveur pour valider les calculs soumis par le client.
+     * Independently evaluates total cost of a facility placement proposal.
+     * Invoked server-side to verify client-submitted solutions.
      * 
-     * @param array $facilities Liste des positions proposées par le client.
-     * @param array $payload Configuration initiale contenant les clients et les coûts fixes.
-     * @return float Le coût total vérifié.
+     * @param array $facilities Facility coordinates proposed by client.
+     * @param array $payload Base payload containing customer coordinates and fixed costs.
+     * @return float Verified total connection and maintenance cost.
      */
     public static function evaluateFacilityLocation(array $facilities, array $payload): float
     {

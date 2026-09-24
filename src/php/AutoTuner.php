@@ -8,18 +8,18 @@ use Anonympins\Fingerprint\Optimization\OptimizationOperators;
 use Anonympins\Fingerprint\Utils\RequestUtils;
 
 /**
- * Gère le processus d'auto-ajustement en arrière-plan pour les seuils et poids de sécurité.
- * Conçu pour être exécuté périodiquement (par exemple, via une tâche cron).
+ * Manages the background auto-tuning process for security thresholds and weights.
+ * Designed to be executed periodically (e.g. via a cron job).
  */
 class AutoTuner
 {
     /**
-     * @var array<string, mixed> La configuration de sécurité en direct qui sera mutée.
+     * @var array<string, mixed> Live security configuration that will be mutated.
      */
     private array $securityConfig;
 
     /**
-     * @var array<int, array<string, mixed>> Les données de trafic collectées.
+     * @var array<int, array<string, mixed>> Collected traffic data log.
      */
     private array $trafficData;
 
@@ -33,14 +33,14 @@ class AutoTuner
     private float $validationTolerance;
 
     /**
-     * @var ?array<string, mixed> La dernière meilleure solution trouvée par l'optimiseur.
+     * @var ?array<string, mixed> Last best solution found by the optimizer.
      */
     private static ?array $lastBestSolution = null;
 
     /**
-     * @param array<string, mixed> &$securityConfig La configuration de sécurité (passée par référence).
-     * @param array<int, array<string, mixed>> &$trafficData Les données de trafic (passées par référence).
-     * @param array<string, int> $options Options pour l'auto-ajustement.
+     * @param array<string, mixed> &$securityConfig Security configuration passed by reference.
+     * @param array<int, array<string, mixed>> &$trafficData Traffic logs passed by reference.
+     * @param array<string, int> $options Auto-tuning options.
      */
     public function __construct(array &$securityConfig, array &$trafficData, array $options = [])
     {
@@ -104,7 +104,7 @@ class AutoTuner
         $now = (int)(microtime(true) * 1000);
         $removed = [];
 
-        // 1. Expire par temps (maxAgeMs)
+        // 1. Time-based expiration (maxAgeMs)
         if ($this->maxAgeMs !== null && $this->maxAgeMs > 0) {
             $threshold = $now - $this->maxAgeMs;
             foreach ($this->trafficData as $key => $log) {
@@ -117,14 +117,14 @@ class AutoTuner
             $this->trafficData = array_values($this->trafficData);
         }
 
-        // 2. Politique de taille maximale (maxDataPoints)
+        // 2. Maximum dataset size enforcement (maxDataPoints)
         if ($this->maxDataPoints > 0 && count($this->trafficData) > $this->maxDataPoints) {
             $overflowCount = count($this->trafficData) - $this->maxDataPoints;
             $spliced = array_splice($this->trafficData, 0, $overflowCount);
             $removed = array_merge($removed, $spliced);
         }
 
-        // 3. Invocation du callback onCleanup
+        // 3. Execute cleanup callback
         if ($this->onCleanup !== null && is_callable($this->onCleanup) && !empty($removed)) {
             try {
                 call_user_func($this->onCleanup, $removed);
@@ -135,7 +135,7 @@ class AutoTuner
     }
 
     /**
-     * Exécute un cycle d'optimisation des seuils.
+     * Executes a threshold optimization cycle.
      */
     public function runOptimizationCycle(): void
     {
@@ -148,35 +148,35 @@ class AutoTuner
             fn ($log) => in_array($log['type'] ?? '', ['challenge_solved', 'trap_triggered'])
         ));
         $highConfidenceRatio = count($sanitizedData) > 0 ? $highConfidenceLogs / count($sanitizedData) : 0;
-        $minConfidenceRatio = 0.05; // Exiger au moins 5% de signaux forts.
-        $minHighConfidenceCount = 10; // Absolu de secours pour éviter le gel lors de floods
+        $minConfidenceRatio = 0.05; // Require at least 5% high-confidence signals
+        $minHighConfidenceCount = 10; // Fallback absolute count to avoid starvation during floods
 
         $hasEnoughSignal = $highConfidenceRatio >= $minConfidenceRatio || $highConfidenceLogs >= $minHighConfidenceCount;
 
         if (count($sanitizedData) < $this->minDataPoints || !$hasEnoughSignal) {
             if (count($sanitizedData) < $this->minDataPoints) {
-                echo sprintf("[AutoTuning] Reporté : %d/%d points de données.\n", count($sanitizedData), $this->minDataPoints);
+                echo sprintf("[AutoTuning] Postponed: %d/%d data points collected.\n", count($sanitizedData), $this->minDataPoints);
             } else {
-                echo sprintf("[AutoTuning] Reporté : Signaux de confiance insuffisants (Ratio: %.2f%% < %.2f%% et absolu: %d < %d).\n", $highConfidenceRatio * 100, $minConfidenceRatio * 100, $highConfidenceLogs, $minHighConfidenceCount);
+                echo sprintf("[AutoTuning] Postponed: Insufficient confidence signals (Ratio: %.2f%% < %.2f%% and count: %d < %d).\n", $highConfidenceRatio * 100, $minConfidenceRatio * 100, $highConfidenceLogs, $minHighConfidenceCount);
             }
             return;
         }
 
         if (count($this->trafficData) > $this->maxDataPoints) {
-            echo sprintf("[AutoTuning] Le journal de trafic a atteint %d entrées (max: %d). Troncation des données les plus anciennes.\n", count($this->trafficData), $this->maxDataPoints);
+            echo sprintf("[AutoTuning] Traffic log reached %d entries (max: %d). Truncating oldest logs.\n", count($this->trafficData), $this->maxDataPoints);
             $this->trafficData = array_slice($this->trafficData, count($this->trafficData) - $this->maxDataPoints);
         }
 
-        echo sprintf("[AutoTuning] Démarrage du cycle d'optimisation complet avec %d points de données assainis.\n", count($sanitizedData));
+        echo sprintf("[AutoTuning] Starting complete optimization cycle with %d sanitized data points.\n", count($sanitizedData));
 
         $paretoFront = OptimizationOperators::solveFullSecurityTuning(['trafficData' => $sanitizedData, 'currentConfig' => $this->securityConfig], []);
 
         if (empty($paretoFront)) {
-            echo "[AutoTuning] L'optimisation n'a retourné aucune solution.\n";
+            echo "[AutoTuning] Optimization returned no solutions.\n";
             return;
         }
 
-        // Règles de gardiennage (Sanity Guardrails) pour filtrer le front de Pareto
+        // Sanity guardrails to filter candidate Pareto solutions
         $isValidSecurityConfig = function (array $config): bool {
             if (!isset($config['weights']) || !isset($config['thresholds'])) return false;
             $w = $config['weights'];
@@ -192,13 +192,13 @@ class AutoTuner
 
         $filteredFront = array_filter($paretoFront, fn ($p) => $isValidSecurityConfig($p['solution']));
         if (empty($filteredFront)) {
-            echo "[AutoTuning] Attention : Toutes les solutions ont été rejetées par les règles de gardiennage. Rétablissement du front brut.\n";
+            echo "[AutoTuning] Warning: All Pareto solutions violated sanity guardrails. Restoring raw front.\n";
             $filteredFront = $paretoFront;
         } else {
             $filteredFront = array_values($filteredFront);
         }
 
-        // Stratégie de sélection : choisir la solution la plus équilibrée (la plus proche de l'origine).
+        // Selection strategy: pick the most balanced solution (closest to origin in objective space)
         $bestSolution = $filteredFront[0];
         $minDistance = sqrt(pow($bestSolution['objectives'][0], 2) + pow($bestSolution['objectives'][1], 2));
 
@@ -210,7 +210,7 @@ class AutoTuner
             }
         }
 
-        // Logique d'inertie pour l'application de la configuration.
+        // Inertial update logic to prevent drastic parameter jumps
         $newConfig = $bestSolution['solution'];
         $trafficConfidence = min(1.5, max(0.3, $highConfidenceRatio * 4));
 
@@ -254,7 +254,7 @@ class AutoTuner
             }
         };
 
-        // --- VALIDATION POST-CALCUL (PHP Rollback & Seuil de Tolérance) ---
+        // --- POST-COMPUTATION VALIDATION (Rollback guard & tolerance threshold) ---
         $tempConfig = [
             'thresholds' => $this->securityConfig['thresholds'],
             'weights' => $this->securityConfig['weights'],
@@ -300,22 +300,22 @@ class AutoTuner
 
         self::$lastBestSolution = $bestSolution;
 
-        echo "[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.\n";
-        echo "[AutoTuning] Objectifs atteints : " . json_encode([
+        echo "[AutoTuning] New optimized security configuration applied.\n";
+        echo "[AutoTuning] Objectives achieved: " . json_encode([
             'falsePositiveRate' => round($bestSolution['objectives'][0], 4),
             'falseNegativeRate' => round($bestSolution['objectives'][1], 4)
         ]) . "\n";
-        echo "[AutoTuning] Nouveaux seuils : " . json_encode($this->securityConfig['thresholds']) . "\n";
-        echo "[AutoTuning] Nouveaux poids : " . json_encode($this->securityConfig['weights']) . "\n";
-        echo "[AutoTuning] Nouveaux patterns : " . json_encode($this->securityConfig['patterns']) . "\n";
+        echo "[AutoTuning] New thresholds: " . json_encode($this->securityConfig['thresholds']) . "\n";
+        echo "[AutoTuning] New weights: " . json_encode($this->securityConfig['weights']) . "\n";
+        echo "[AutoTuning] New patterns: " . json_encode($this->securityConfig['patterns']) . "\n";
 
-        // NOUVEAU: Sauvegarder la meilleure configuration si un chemin est fourni.
+        // Persist best configuration if savePath is configured
         if ($this->savePath !== null) {
             try {
                 file_put_contents($this->savePath, json_encode($bestSolution['solution'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                echo "[AutoTuning] Meilleure configuration sauvegardée dans : {$this->savePath}\n";
+                echo "[AutoTuning] Best configuration saved to: {$this->savePath}\n";
             } catch (\Throwable $e) {
-                error_log("[AutoTuning] Erreur lors de la sauvegarde de la configuration optimisée : " . $e->getMessage());
+                error_log("[AutoTuning] Error saving optimized configuration: " . $e->getMessage());
             }
         }
 
@@ -333,7 +333,7 @@ class AutoTuner
     }
 
     /**
-     * Retourne la dernière meilleure solution trouvée par l'auto-tuner.
+     * Returns the latest best solution found by the auto-tuner.
      * @return array<string, mixed>|null
      */
     public static function getBestTuningSolution(): ?array
@@ -342,7 +342,7 @@ class AutoTuner
     }
 
     /**
-     * Réinitialise la meilleure solution statique. Utile pour les tests.
+     * Resets the static best solution. Intended for testing.
      * @internal
      */
     public static function resetBestTuningSolution(): void

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Optimization;
 
 /**
- * Fonctions pour générer dynamiquement les données d'un problème.
+ * Generators for dynamically seeding problem instance datasets.
  */
 class ProblemInitializers
 {

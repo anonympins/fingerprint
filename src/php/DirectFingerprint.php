@@ -137,7 +137,7 @@ class DirectFingerprint
      */
     public function handleMetricsRequest(RequestContext $context): void
     {
-        // 2. Appliquer le callback d'autorisation personnalisé si défini.
+        // 2. Apply custom authorization callback if configured
         $authorizationCallback = $this->securityConfig['metricsAuthorizationCallback'] ?? null;
         if (is_callable($authorizationCallback)) {
             $decision = call_user_func($authorizationCallback, $context);
@@ -158,23 +158,23 @@ class DirectFingerprint
                         header('Location: ' . $decision['path'], true, $decision['status'] ?? 302);
                         exit();
                     case 'next':
-                        // Autorisé, continuer pour servir les métriques
+                        // Authorized; proceed to serve metrics
                         break;
                     default:
-                        // Action inconnue, refuser par défaut
+                        // Unknown action; deny by default
                         http_response_code(403);
                         echo "Invalid authorization decision.";
                         exit();
                 }
             } else {
-                // Retour inattendu du callback, refuser par défaut
+                // Unexpected return type; deny by default
                 http_response_code(403);
                 echo "Invalid authorization callback response.";
                 exit();
             }
         }
 
-        // 3. Si autorisé, servir les métriques.
+        // 3. If authorized, stream metrics output
         header('Content-Type: text/plain; version=0.0.4; charset=utf-8');
         echo MetricsManager::getPrometheusMetrics();
         exit();

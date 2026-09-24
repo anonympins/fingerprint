@@ -745,7 +745,7 @@
          $botnetCluster = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
 
          // NOUVEAU: Score de réputation du sous-réseau IP
-         $subnetScore = RequestUtils::getSubnetScore($context, $deviceId);
+         $subnetScore = RequestUtils::getSubnetScore($context, $deviceId, $this->securityConfig);
 
          // Score d'anomalie de pile TCP/IP
          $tcpAnomaly = RequestUtils::getTcpAnomalyScore($context);

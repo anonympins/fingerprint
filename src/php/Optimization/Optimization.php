@@ -35,8 +35,8 @@ class Optimization
         callable $createIndividual,
         callable $fitnessFunction,
         callable $crossover,
-        callable $mutate, // La fonction mutate doit maintenant accepter $currentConfig
-        ?array $currentConfig = null, // NOUVEAU: La configuration actuelle
+        callable $mutate, // The mutate function must accept $currentConfig
+        ?array $currentConfig = null, // Reference baseline configuration
         array $options = []
     ): array {
         $generations = $options['generations'] ?? 150;
@@ -222,7 +222,7 @@ class Optimization
      * Elevated values indicate synthetic or automated intervals.
      * @param array<int|float> $numbers
      */
-    public static function benfordTest(array $numbers): float // Rendre la méthode publique et statique
+    public static function benfordTest(array $numbers): float // Public static helper for digit distribution test
     {
         $counts = array_fill(1, 9, 0);
         $validCount = 0;

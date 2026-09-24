@@ -3,8 +3,8 @@ package com.anonympins.fingerprint;
 import java.util.Map;
 
 /**
- * Classe de base abstraite pour définir des tâches uPoW basées sur l'entraînement
- * ou l'évaluation de modèles d'apprentissage automatique en Java.
+ * Abstract base class defining useful Proof-of-Work (uPoW) tasks based on ML training
+ * or evaluation in Java.
  */
 public abstract class UpowModelTask {
     protected final String problemId;
@@ -26,18 +26,18 @@ public abstract class UpowModelTask {
     }
 
     /**
-     * Génère la charge utile de travail (poids, inputs, etc.) à envoyer au client.
+     * Generates task payload (weights, inputs, etc.) dispatched to the client.
      */
     public abstract Map<String, Object> dispatchTask(double suspicionFactor);
 
     /**
-     * Vérifie la validité mathématique de la solution (gradients/poids) retournée 
-     * par le client (mures anti-empoisonnement, clipping).
+     * Verifies mathematical validity of solution gradients/weights returned 
+     * by the client (anti-poisoning guards, gradient clipping).
      */
     public abstract boolean verifySolution(Map<String, Object> taskContext, Map<String, Object> solution);
 
     /**
-     * Intègre les gradients validés dans le modèle maître (par exemple via FedAvg).
+     * Integrates validated gradients into global model weights (e.g. FedAvg).
      */
     public abstract void integrateSolution(Map<String, Object> solution);
 
