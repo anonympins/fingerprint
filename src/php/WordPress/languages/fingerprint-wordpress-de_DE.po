@@ -192,6 +192,9 @@ msgstr "Rohdatenformat exportiert für das Scraping durch Prometheus, Grafana Ag
 msgid "Triggering of invisible trap links, multi-framework honeypots, and injection probes."
 msgstr "Auslösen von unsichtbaren Fallen-Links, Multi-Framework-Honeypots und Injektionssonden."
 
+msgid "Missing, malformed, or out-of-order HTTP headers inconsistent with legitimate browsers."
+msgstr "Fehlende, fehlerhafte oder falsch angeordnete HTTP-Header, die nicht zu legitimen Browsern passen."
+
 msgid "Discrepancy between User-Agent and TLS cryptographic fingerprints (JA3/JA4, extensions, GREASE)."
 msgstr "Diskrepanz zwischen User-Agent und kryptografischen TLS-Fingerprints (JA3/JA4, Erweiterungen, GREASE)."
 
@@ -207,11 +210,20 @@ msgstr "Veränderung oder Drift des Hardware-Fingerprints zwischen Besuchen mit 
 msgid "Aggregated IP reputation of the network subnet (/24 or /48) and nearby attacker density."
 msgstr "Aggregierte IP-Reputation des Subnetzes (/24 oder /48) und Dichte nahegelegener Angreifer."
 
+msgid "Local historical reputation score of the client IP address with temporal decay over time."
+msgstr "Lokaler historischer Reputationswert der Client-IP-Adresse mit zeitlichem Abklingen über die Zeit."
+
 msgid "Display rendering anomalies, V-Sync/FPS cadence, and OffscreenCanvas hooking."
 msgstr "Grafik-Rendering-Anomalien, V-Sync/FPS-Kadenz und OffscreenCanvas-Hooking."
 
 msgid "Divergence in HTTP/2 and QUIC / HTTP/3 flow control frame settings."
 msgstr "Divergenz in HTTP/2- und QUIC / HTTP/3-Flusssteuerungsrahmeneinstellungen."
+
+msgid "Anomalies in QUIC transport parameters (flow control windows, max streams, and control frame ordering)."
+msgstr "Anomalien bei QUIC-Transportparametern (Flusssteuerungsfenster, maximale Streams und Kontrollrahmen-Reihenfolge)."
+
+msgid "Passive TCP/IP stack fingerprinting (SYN packet TTL, window size, MSS, options) vs declared operating system."
+msgstr "Passives TCP/IP-Stack-Fingerprinting (SYN-Paket-TTL, Fenstergröße, MSS, Optionen) vs. deklariertes Betriebssystem."
 
 msgid "Suspicious rotation of multiple IP addresses associated with a single hardware identity."
 msgstr "Verdächtige Rotation mehrerer IP-Adressen bei gleicher Hardware-Identität."
@@ -221,6 +233,27 @@ msgstr "Schnelle und abnormale Änderungen des Anwendungs-Stacks."
 
 msgid "Detection of native automation attributes (navigator.webdriver, Chrome CDP)."
 msgstr "Erkennung nativer Automatisierungsattribute (navigator.webdriver, Chrome CDP)."
+
+msgid "Detection of cookie deletion, dropping, or refusal between consecutive requests to bypass device identification."
+msgstr "Erkennung von Cookie-Löschung, -Verwerfung oder -Verweigerung zwischen aufeinanderfolgenden Anfragen zur Umgehung der Geräteidentifikation."
+
+msgid "Correlation with known proxy IPs, Tor exit nodes, and federated threat intelligence blacklist."
+msgstr "Korrelation mit bekannten Proxy-IPs, Tor-Exit-Nodes und föderierter Threat-Intelligence-Sperrliste."
+
+msgid "Discrepancies between standard User-Agent and Sec-CH-UA Client Hints headers (browser family, version drift)."
+msgstr "Diskrepanzen zwischen Standard-User-Agent und Sec-CH-UA Client-Hints-Headern (Browser-Familie, Versionsabweichung)."
+
+msgid "Statistical analysis of click coordinate variance; flags unnaturally low pixel variance typical of click bots."
+msgstr "Statistische Analyse der Klick-Koordinatenvarianz; markiert unnatürlich niedrige Pixelvarianz typisch für Klick-Bots."
+
+msgid "Clustering of volatile client requests sharing identical hardware signatures across distinct IP addresses."
+msgstr "Clustering flüchtiger Client-Anfragen mit identischen Hardware-Signaturen über verschiedene IP-Adressen hinweg."
+
+msgid "Time delta between client timestamp and server reception to detect replay and automated delay attacks."
+msgstr "Zeitdifferenz zwischen Client-Zeitstempel und Serverempfang zur Erkennung von Replay- und automatisierten Verzögerungsangriffen."
+
+msgid "Detection of headless browsers, virtual GPU renderers (SwiftShader, llvmpipe) and emulated display resolutions."
+msgstr "Erkennung von Headless-Browsern, virtuellen GPU-Renderern (SwiftShader, llvmpipe) und emulierten Bildschirmauflösungen."
 
 msgid "Strict contradiction between layers (e.g. declared OS in User-Agent vs network TCP/IP stack OS)."
 msgstr "Strikter Widerspruch zwischen Schichten (z. B. im User-Agent deklariertes OS vs. TCP/IP-Netzwerk-OS)."

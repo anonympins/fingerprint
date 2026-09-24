@@ -192,6 +192,9 @@ msgstr "Format brut exporté pour scraping par Prometheus, Grafana Agent ou Data
 msgid "Triggering of invisible trap links, multi-framework honeypots, and injection probes."
 msgstr "Déclenchement de liens pièges invisibles, honeypots multi-frameworks et sondes d'injection."
 
+msgid "Missing, malformed, or out-of-order HTTP headers inconsistent with legitimate browsers."
+msgstr "En-têtes HTTP manquants, malformés ou dans un ordre incohérent avec les navigateurs légitimes."
+
 msgid "Discrepancy between User-Agent and TLS cryptographic fingerprints (JA3/JA4, extensions, GREASE)."
 msgstr "Discordance entre User-Agent et empreintes cryptographiques TLS (JA3/JA4, extensions, GREASE)."
 
@@ -207,11 +210,47 @@ msgstr "Altération ou dérive du fingerprint matériel entre deux visites du m�
 msgid "Aggregated IP reputation of the network subnet (/24 or /48) and nearby attacker density."
 msgstr "Réputation IP agrégée du sous-réseau (/24 ou /48) et densité d'attaquants proches."
 
+msgid "Local historical reputation score of the client IP address with temporal decay over time."
+msgstr "Score historique local de réputation de l'adresse IP cliente avec décroissance temporelle au fil du temps."
+
 msgid "Display rendering anomalies, V-Sync/FPS cadence, and OffscreenCanvas hooking."
 msgstr "Anomalies de rendu graphique, cadence V-Sync/FPS et hook d'OffscreenCanvas."
 
 msgid "Divergence in HTTP/2 and QUIC / HTTP/3 flow control frame settings."
 msgstr "Divergence des réglages de trames de contrôle de flux HTTP/2 et QUIC / HTTP/3."
+
+msgid "Anomalies in QUIC transport parameters (flow control windows, max streams, and control frame ordering)."
+msgstr "Anomalies dans les paramètres de transport QUIC (fenêtres de contrôle de flux, flux max et ordonnancement des trames)."
+
+msgid "Passive TCP/IP stack fingerprinting (SYN packet TTL, window size, MSS, options) vs declared operating system."
+msgstr "Empreinte passive de pile TCP/IP (TTL paquet SYN, taille fenêtre, MSS, options) vs système d'exploitation déclaré."
+
+msgid "Suspicious rotation of multiple IP addresses associated with a single hardware identity."
+msgstr "Rotation suspecte d'adresses IP distinctes sur une même identité matérielle."
+
+msgid "Detection of native automation attributes (navigator.webdriver, Chrome CDP)."
+msgstr "Détection d'attributs natifs d'automatisation (navigator.webdriver, CDP Chrome)."
+
+msgid "Detection of cookie deletion, dropping, or refusal between consecutive requests to bypass device identification."
+msgstr "Détection de la suppression, rejet ou refus de cookie entre requêtes consécutives pour contourner l'identification."
+
+msgid "Correlation with known proxy IPs, Tor exit nodes, and federated threat intelligence blacklist."
+msgstr "Corrélation avec les adresses IP de proxy connues, nœuds de sortie Tor et liste noire fédérée de renseignements sur les menaces."
+
+msgid "Discrepancies between standard User-Agent and Sec-CH-UA Client Hints headers (browser family, version drift)."
+msgstr "Discordances entre User-Agent standard et en-têtes Client Hints Sec-CH-UA (famille de navigateur, dérive de version)."
+
+msgid "Statistical analysis of click coordinate variance; flags unnaturally low pixel variance typical of click bots."
+msgstr "Analyse statistique de variance des coordonnées de clics ; signale une variance anormalement faible typique des bots."
+
+msgid "Clustering of volatile client requests sharing identical hardware signatures across distinct IP addresses."
+msgstr "Regroupement de requêtes clientes partageant une signature matérielle identique sur des adresses IP distinctes."
+
+msgid "Time delta between client timestamp and server reception to detect replay and automated delay attacks."
+msgstr "Écart temporel entre horodatage client et réception serveur pour détecter les attaques par rejeu et délais automatisés."
+
+msgid "Detection of headless browsers, virtual GPU renderers (SwiftShader, llvmpipe) and emulated display resolutions."
+msgstr "Détection des navigateurs headless, rendus GPU virtuels (SwiftShader, llvmpipe) et résolutions d'écran émulées."
 
 msgid "Suspicious rotation of multiple IP addresses associated with a single hardware identity."
 msgstr "Rotation suspecte d'adresses IP distinctes sur une même identité matérielle."

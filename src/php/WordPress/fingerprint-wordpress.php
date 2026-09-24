@@ -248,7 +248,7 @@ add_action('plugins_loaded', function () use ($fingerprintSecurityProfiles) {
 add_action('admin_menu', function () {
     add_options_page(
         __('Fingerprint Anti-Bot', 'fingerprint-wordpress'),
-        'Fingerprint Anti-Bot',
+        __('Fingerprint Anti-Bot', 'fingerprint-wordpress'),
         'manage_options',
         'fingerprint-settings',
         'fingerprint_render_admin_page'
@@ -290,14 +290,11 @@ function fingerprint_render_admin_page(): void {
         $saved['frontend']['overrides']['verbose']             = !empty($_POST['frontend_verbose']);
         $saved['frontend']['overrides']['honeypot']['detectInjections'] = !empty($_POST['detect_injections']);
 
-        // Surcharges de poids clés
-        $weightsKeys = [
-            'honeypotScore', 'tlsSpoofingScore', 'behaviorScore', 'requestPatternScore',
-            'inconsistencyScore', 'subnetScore', 'renderingAnomalyScore', 'protocolAnomalyScore'
-        ];
-        foreach ($weightsKeys as $wKey) {
-            if (isset($_POST["weight_{$wKey}"])) {
-                $val = (float)$_POST["weight_{$wKey}"];
+        // Surcharges de l'ensemble des poids de métriques
+        foreach ($_POST as $postKey => $postVal) {
+            if (str_starts_with($postKey, 'weight_')) {
+                $wKey = substr($postKey, 7);
+                $val = (float)$postVal;
                 $saved['frontend']['overrides']['weights'][$wKey] = max(0.0, min(2.0, $val));
             }
         }
@@ -491,17 +488,28 @@ function fingerprint_render_admin_page(): void {
                         <?php
                         $metricDescriptions = [
                             'honeypotScore'              => __('Triggering of invisible trap links, multi-framework honeypots, and injection probes.', 'fingerprint-wordpress'),
+                            'headerAnomalyScore'         => __('Missing, malformed, or out-of-order HTTP headers inconsistent with legitimate browsers.', 'fingerprint-wordpress'),
                             'tlsSpoofingScore'           => __('Discrepancy between User-Agent and TLS cryptographic fingerprints (JA3/JA4, extensions, GREASE).', 'fingerprint-wordpress'),
                             'behaviorScore'              => __('Dynamic biometrics: mouse movements, keystroke dynamics, and mobile touch anomalies.', 'fingerprint-wordpress'),
                             'requestPatternScore'        => __('Velocity, robotic bursts, request standard deviation, and Benford\'s law statistical analysis.', 'fingerprint-wordpress'),
                             'inconsistencyScore'         => __('Alteration or drift in the hardware fingerprint between visits with the same cookie.', 'fingerprint-wordpress'),
                             'subnetScore'                => __('Aggregated IP reputation of the network subnet (/24 or /48) and nearby attacker density.', 'fingerprint-wordpress'),
+                            'ipReputationScore'          => __('Local historical reputation score of the client IP address with temporal decay over time.', 'fingerprint-wordpress'),
                             'renderingAnomalyScore'      => __('Display rendering anomalies, V-Sync/FPS cadence, and OffscreenCanvas hooking.', 'fingerprint-wordpress'),
                             'protocolAnomalyScore'       => __('Divergence in HTTP/2 and QUIC / HTTP/3 flow control frame settings.', 'fingerprint-wordpress'),
+                            'quicAnomalyScore'           => __('Anomalies in QUIC transport parameters (flow control windows, max streams, and control frame ordering).', 'fingerprint-wordpress'),
+                            'tcpAnomalyScore'            => __('Passive TCP/IP stack fingerprinting (SYN packet TTL, window size, MSS, options) vs declared operating system.', 'fingerprint-wordpress'),
                             'historyScore'               => __('Suspicious rotation of multiple IP addresses associated with a single hardware identity.', 'fingerprint-wordpress'),
                             'rotationScore'              => __('Rapid and abnormal modifications to the application stack.', 'fingerprint-wordpress'),
                             'botScore'                   => __('Detection of native automation attributes (navigator.webdriver, Chrome CDP).', 'fingerprint-wordpress'),
-                            'crossLayerInconsistencyScore' => __('Strict contradiction between layers (e.g. declared OS in User-Agent vs network TCP/IP stack OS).', 'fingerprint-wordpress')
+                            'cookieDroppingScore'        => __('Detection of cookie deletion, dropping, or refusal between consecutive requests to bypass device identification.', 'fingerprint-wordpress'),
+                            'threatIntelScore'           => __('Correlation with known proxy IPs, Tor exit nodes, and federated threat intelligence blacklist.', 'fingerprint-wordpress'),
+                            'clientHintsInconsistencyScore' => __('Discrepancies between standard User-Agent and Sec-CH-UA Client Hints headers (browser family, version drift).', 'fingerprint-wordpress'),
+                            'clickVarianceScore'         => __('Statistical analysis of click coordinate variance; flags unnaturally low pixel variance typical of click bots.', 'fingerprint-wordpress'),
+                            'botnetClusterScore'         => __('Clustering of volatile client requests sharing identical hardware signatures across distinct IP addresses.', 'fingerprint-wordpress'),
+                            'timeInconsistencyScore'     => __('Time delta between client timestamp and server reception to detect replay and automated delay attacks.', 'fingerprint-wordpress'),
+                            'virtualizationScore'        => __('Detection of headless browsers, virtual GPU renderers (SwiftShader, llvmpipe) and emulated display resolutions.', 'fingerprint-wordpress'),
+                            'crossLayerInconsistencyScore' => __('Strict contradiction between layers (e.g. declared OS in User-Agent vs network TCP/IP stack OS).', 'fingerprint-wordpress'),
                         ];
 
                         foreach ($frontendConfig['weights'] as $indicator => $weight):
