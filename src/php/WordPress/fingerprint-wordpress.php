@@ -2,10 +2,12 @@
 /**
  * Plugin Name: Fingerprint Anti-Bot & Proof-of-Work
  * Plugin URI: https://github.com/anonympins/fingerprint
- * Description: Protection bot haute performance pour WordPress avec Proof-of-Work client et détection d'anomalies.
+ * Description: High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress.
  * Version: 0.7.1
  * Author: Anonympins
  * License: MIT
+ * Text Domain: fingerprint-wordpress
+ * Domain Path: /languages
  */
 
 declare(strict_types=1);
@@ -112,6 +114,11 @@ function fingerprint_get_effective_profiles(array $defaultProfiles): array {
     ];
 }
 
+// Chargement du domaine de traduction i18n (FR / EN / DE)
+add_action('init', function (): void {
+    load_plugin_textdomain('fingerprint-wordpress', false, dirname(plugin_basename(__FILE__)) . '/languages');
+});
+
 // 1. Autoloader PSR-4 pour le moteur Fingerprint
 if (!class_exists(DirectFingerprint::class)) {
     $composerPaths = [
@@ -190,10 +197,9 @@ add_action('fingerprint_prune_expired_entries', function () {
 add_action('admin_notices', function () {
     if (!is_ssl()) {
         echo '<div class="notice notice-warning is-dismissible">';
-        echo '<p><strong>[Fingerprint Anti-Bot Security Warning]</strong> : Votre site fonctionne actuellement sous le protocole non chiffré <code>HTTP</code>. ';
-        echo 'Dans ce mode, l\'API native <em>Web Cryptography</em> (<code>crypto.subtle</code>) des navigateurs est désactivée par mesure de sécurité par les navigateurs modernes, ';
-        echo 'forçant l\'exécution d\'un simulacre/fallback purement JavaScript plus lent et vulnérable aux attaques par interception (MitM). ';
-        echo 'Il est fortement recommandé de déployer un certificat TLS/SSL et de forcer <code>HTTPS</code> pour garantir l\'intégrité des calculs PoW et la protection des cookies d\'identité.</p>';
+        echo '<p><strong>' . esc_html__('[Fingerprint Anti-Bot Security Warning]', 'fingerprint-wordpress') . '</strong> : ' .
+            esc_html__('Your website is currently running on unencrypted HTTP. In this mode, modern web browsers disable the native Web Cryptography API (crypto.subtle) for security reasons, forcing a JavaScript fallback simulation that is slower and vulnerable to Man-in-the-Middle (MitM) attacks. We strongly recommend deploying a TLS/SSL certificate and enforcing HTTPS to ensure the cryptographic integrity of Proof-of-Work computations and identity protection.', 'fingerprint-wordpress') .
+            '</p>';
         echo '</div>';
     }
 });
@@ -241,7 +247,7 @@ add_action('plugins_loaded', function () use ($fingerprintSecurityProfiles) {
 
 add_action('admin_menu', function () {
     add_options_page(
-        'Fingerprint Anti-Bot',
+        __('Fingerprint Anti-Bot', 'fingerprint-wordpress'),
         'Fingerprint Anti-Bot',
         'manage_options',
         'fingerprint-settings',
@@ -254,7 +260,7 @@ add_action('admin_menu', function () {
  */
 function fingerprint_render_admin_page(): void {
     if (!current_user_can('manage_options')) {
-        wp_die(__('Vous n\'avez pas les permissions suffisantes pour accéder à cette page.'));
+        wp_die(esc_html__('You do not have sufficient permissions to access this page.', 'fingerprint-wordpress'));
     }
 
     global $fingerprintSecurityProfiles, $wpdb;
@@ -297,14 +303,14 @@ function fingerprint_render_admin_page(): void {
         }
 
         update_option('fingerprint_security_options', $saved);
-        echo '<div class="notice notice-success is-dismissible"><p><strong>Paramètres Fingerprint mis à jour avec succès.</strong></p></div>';
+        echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Fingerprint settings updated successfully.', 'fingerprint-wordpress') . '</strong></p></div>';
     }
 
     // Action pour vider le cache SQL manuellement
     if (isset($_POST['fingerprint_clear_store']) && check_admin_referer('fingerprint_clear_nonce', 'fingerprint_nonce_clear')) {
         $store = new WpDbStore();
         $store->clear();
-        echo '<div class="notice notice-info is-dismissible"><p>Table de cache SQL ($wpdb) purgée avec succès.</p></div>';
+        echo '<div class="notice notice-info is-dismissible"><p>' . esc_html__('SQL cache table ($wpdb) cleared successfully.', 'fingerprint-wordpress') . '</p></div>';
     }
 
     // Récupération des profils effectifs
@@ -322,16 +328,16 @@ function fingerprint_render_admin_page(): void {
     ?>
     <div class="wrap">
         <h1><span class="dashicons dashicons-shield-alt" style="font-size:32px;vertical-align:middle;margin-right:8px;"></span> Fingerprint Anti-Bot & Proof-of-Work</h1>
-        <p class="description">Protection comportementale et cryptographique sans CAPTCHA tiers pour WordPress.</p>
+        <p class="description"><?php esc_html_e('Client-side behavioral and cryptographic anti-bot protection without third-party CAPTCHA for WordPress.', 'fingerprint-wordpress'); ?></p>
 
         <div style="background:#fff;border-left:4px solid #2271b1;padding:12px 18px;margin:18px 0;box-shadow:0 1px 1px rgba(0,0,0,.04);">
             <p style="margin:4px 0;">
-                <strong>Documentation complète de référence :</strong>
+                <strong><?php esc_html_e('Official documentation reference:', 'fingerprint-wordpress'); ?></strong>
                 <a href="https://github.com/anonympins/fingerprint/blob/main/doc/full_options.md" target="_blank" rel="noopener noreferrer" class="button button-secondary" style="margin-left:8px;">
-                    <span class="dashicons dashicons-external" style="vertical-align:middle;"></span> Voir Full Configuration Options sur GitHub
+                    <span class="dashicons dashicons-external" style="vertical-align:middle;"></span> <?php esc_html_e('View Full Configuration Options on GitHub', 'fingerprint-wordpress'); ?>
                 </a>
                 <a href="https://github.com/anonympins/fingerprint" target="_blank" rel="noopener noreferrer" class="button button-secondary" style="margin-left:4px;">
-                    <span class="dashicons dashicons-admin-plugins" style="vertical-align:middle;"></span> Dépôt GitHub
+                    <span class="dashicons dashicons-admin-plugins" style="vertical-align:middle;"></span> <?php esc_html_e('GitHub Repository', 'fingerprint-wordpress'); ?>
                 </a>
             </p>
         </div>
@@ -339,37 +345,37 @@ function fingerprint_render_admin_page(): void {
         <!-- TABLEAU DE BORD STATISTIQUES & ÉTAT -->
         <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:16px;margin-bottom:24px;">
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
-                <h3 style="margin-top:0;">État HTTPS</h3>
+                <h3 style="margin-top:0;"><?php esc_html_e('HTTPS Status', 'fingerprint-wordpress'); ?></h3>
                 <?php if (is_ssl()): ?>
                     <p style="color:#007017;font-weight:bold;font-size:16px;">
-                        <span class="dashicons dashicons-yes-alt"></span> Actif (WebCrypto Subtle disponible)
+                        <span class="dashicons dashicons-yes-alt"></span> <?php esc_html_e('Active (WebCrypto Subtle available)', 'fingerprint-wordpress'); ?>
                     </p>
                 <?php else: ?>
                     <p style="color:#d63638;font-weight:bold;font-size:16px;">
-                        <span class="dashicons dashicons-warning"></span> Insecure (HTTP non chiffré)
+                        <span class="dashicons dashicons-warning"></span> <?php esc_html_e('Insecure (Unencrypted HTTP)', 'fingerprint-wordpress'); ?>
                     </p>
                 <?php endif; ?>
             </div>
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
-                <h3 style="margin-top:0;">Cache SQL ($wpdb)</h3>
-                <p style="font-size:22px;margin:0;font-weight:600;"><?php echo esc_html((string)$totalRows); ?> <span style="font-size:14px;color:#646970;font-weight:normal;">clés en base</span></p>
-                <small style="color:#8c8f94;"><?php echo esc_html((string)$expiredRows); ?> clés expirées en attente de purge cron</small>
+                <h3 style="margin-top:0;"><?php esc_html_e('SQL Cache ($wpdb)', 'fingerprint-wordpress'); ?></h3>
+                <p style="font-size:22px;margin:0;font-weight:600;"><?php echo esc_html((string)$totalRows); ?> <span style="font-size:14px;color:#646970;font-weight:normal;"><?php esc_html_e('keys in database', 'fingerprint-wordpress'); ?></span></p>
+                <small style="color:#8c8f94;"><?php echo sprintf(esc_html__('%d expired keys awaiting cron purge', 'fingerprint-wordpress'), $expiredRows); ?></small>
             </div>
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
-                <h3 style="margin-top:0;">Profils Actifs</h3>
+                <h3 style="margin-top:0;"><?php esc_html_e('Active Profiles', 'fingerprint-wordpress'); ?></h3>
                 <p style="margin:0;">
-                    Frontend : <strong><?php echo esc_html($effective['frontend']['profile']); ?></strong><br>
-                    Admin : <strong><?php echo esc_html($effective['admin']['profile']); ?></strong><br>
-                    API REST : <strong><?php echo esc_html($effective['api']['profile']); ?></strong>
+                    <?php esc_html_e('Frontend:', 'fingerprint-wordpress'); ?> <strong><?php echo esc_html($effective['frontend']['profile']); ?></strong><br>
+                    <?php esc_html_e('Admin:', 'fingerprint-wordpress'); ?> <strong><?php echo esc_html($effective['admin']['profile']); ?></strong><br>
+                    <?php esc_html_e('REST API:', 'fingerprint-wordpress'); ?> <strong><?php echo esc_html($effective['api']['profile']); ?></strong>
                 </p>
             </div>
         </div>
 
         <!-- ONGLETS DE NAVIGATION -->
         <h2 class="nav-tab-wrapper">
-            <a href="#tab-settings" class="nav-tab nav-tab-active" onclick="fingerprintSwitchTab(event, 'tab-settings')">Réglages & Profils</a>
-            <a href="#tab-metrics" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-metrics')">Vue des Métriques & Poids</a>
-            <a href="#tab-prometheus" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-prometheus')">Flux Prometheus</a>
+            <a href="#tab-settings" class="nav-tab nav-tab-active" onclick="fingerprintSwitchTab(event, 'tab-settings')"><?php esc_html_e('Settings & Profiles', 'fingerprint-wordpress'); ?></a>
+            <a href="#tab-metrics" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-metrics')"><?php esc_html_e('Metrics & Weights View', 'fingerprint-wordpress'); ?></a>
+            <a href="#tab-prometheus" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-prometheus')"><?php esc_html_e('Prometheus Stream', 'fingerprint-wordpress'); ?></a>
         </h2>
 
         <!-- TAB 1 : RÉGLAGES -->
@@ -377,35 +383,35 @@ function fingerprint_render_admin_page(): void {
             <form method="post" action="">
                 <?php wp_nonce_field('fingerprint_settings_nonce', 'fingerprint_nonce'); ?>
 
-                <h3>1. Profils de sécurité par cible</h3>
+                <h3><?php esc_html_e('1. Target Security Profiles', 'fingerprint-wordpress'); ?></h3>
                 <table class="form-table">
                     <tr>
-                        <th scope="row"><label for="frontend_profile">Visiteurs & Frontend</label></th>
+                        <th scope="row"><label for="frontend_profile"><?php esc_html_e('Visitors & Frontend', 'fingerprint-wordpress'); ?></label></th>
                         <td>
                             <select name="frontend_profile" id="frontend_profile">
-                                <option value="blog" <?php selected($effective['frontend']['profile'], 'blog'); ?>>Blog (Optimal pour contenus, UX fluide)</option>
-                                <option value="balanced" <?php selected($effective['frontend']['profile'], 'balanced'); ?>>Balanced (Équilibré)</option>
-                                <option value="strict" <?php selected($effective['frontend']['profile'], 'strict'); ?>>Strict (Protection maximale)</option>
-                                <option value="ecommerce" <?php selected($effective['frontend']['profile'], 'ecommerce'); ?>>E-commerce (Anti-scraping / scalping)</option>
+                                <option value="blog" <?php selected($effective['frontend']['profile'], 'blog'); ?>><?php esc_html_e('Blog (Optimal for content, smooth UX)', 'fingerprint-wordpress'); ?></option>
+                                <option value="balanced" <?php selected($effective['frontend']['profile'], 'balanced'); ?>><?php esc_html_e('Balanced (General purpose)', 'fingerprint-wordpress'); ?></option>
+                                <option value="strict" <?php selected($effective['frontend']['profile'], 'strict'); ?>><?php esc_html_e('Strict (Maximum protection)', 'fingerprint-wordpress'); ?></option>
+                                <option value="ecommerce" <?php selected($effective['frontend']['profile'], 'ecommerce'); ?>><?php esc_html_e('E-commerce (Anti-scraping / scalping)', 'fingerprint-wordpress'); ?></option>
                             </select>
-                            <p class="description">Profil appliqué à toutes les pages publiques du site WordPress.</p>
+                            <p class="description"><?php esc_html_e('Profile applied to all public pages of the WordPress site.', 'fingerprint-wordpress'); ?></p>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="admin_profile">Zone d'administration (wp-login / wp-admin)</label></th>
+                        <th scope="row"><label for="admin_profile"><?php esc_html_e('Administration Area (wp-login / wp-admin)', 'fingerprint-wordpress'); ?></label></th>
                         <td>
                             <select name="admin_profile" id="admin_profile">
-                                <option value="strict" <?php selected($effective['admin']['profile'], 'strict'); ?>>Strict (Recommandé pour sécuriser les logins)</option>
-                                <option value="balanced" <?php selected($effective['admin']['profile'], 'balanced'); ?>>Balanced</option>
+                                <option value="strict" <?php selected($effective['admin']['profile'], 'strict'); ?>><?php esc_html_e('Strict (Recommended to secure logins)', 'fingerprint-wordpress'); ?></option>
+                                <option value="balanced" <?php selected($effective['admin']['profile'], 'balanced'); ?>><?php esc_html_e('Balanced', 'fingerprint-wordpress'); ?></option>
                             </select>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="api_profile">API REST (/wp-json/)</label></th>
+                        <th scope="row"><label for="api_profile"><?php esc_html_e('REST API (/wp-json/)', 'fingerprint-wordpress'); ?></label></th>
                         <td>
                             <select name="api_profile" id="api_profile">
-                                <option value="api" <?php selected($effective['api']['profile'], 'api'); ?>>API (Challenges JSON & PoW machine)</option>
-                                <option value="strict" <?php selected($effective['api']['profile'], 'strict'); ?>>Strict</option>
+                                <option value="api" <?php selected($effective['api']['profile'], 'api'); ?>><?php esc_html_e('API (JSON challenges & machine PoW)', 'fingerprint-wordpress'); ?></option>
+                                <option value="strict" <?php selected($effective['api']['profile'], 'strict'); ?>><?php esc_html_e('Strict', 'fingerprint-wordpress'); ?></option>
                             </select>
                         </td>
                     </tr>
@@ -413,54 +419,54 @@ function fingerprint_render_admin_page(): void {
 
                 <hr>
 
-                <h3>2. Seuils d'action (Thresholds Frontend)</h3>
+                <h3><?php esc_html_e('2. Action Thresholds (Frontend)', 'fingerprint-wordpress'); ?></h3>
                 <table class="form-table">
                     <tr>
-                        <th scope="row">Seuils de score (0 - 100)</th>
+                        <th scope="row"><?php esc_html_e('Suspicion Score Thresholds (0 - 100)', 'fingerprint-wordpress'); ?></th>
                         <td>
-                            <label>Low (Challenge initial) :
+                            <label><?php esc_html_e('Low (Initial challenge):', 'fingerprint-wordpress'); ?>
                                 <input type="number" name="frontend_threshold_low" value="<?php echo esc_attr((string)($frontendConfig['thresholds']['low'] ?? 20)); ?>" min="1" max="50" style="width:80px;">
                             </label><br><br>
-                            <label>Medium (Challenge renforcé) :
+                            <label><?php esc_html_e('Medium (Hardened challenge):', 'fingerprint-wordpress'); ?>
                                 <input type="number" name="frontend_threshold_medium" value="<?php echo esc_attr((string)($frontendConfig['thresholds']['medium'] ?? 45)); ?>" min="10" max="75" style="width:80px;">
                             </label><br><br>
-                            <label>High (Preuve de travail lourde) :
+                            <label><?php esc_html_e('High (Heavy Proof-of-Work):', 'fingerprint-wordpress'); ?>
                                 <input type="number" name="frontend_threshold_high" value="<?php echo esc_attr((string)($frontendConfig['thresholds']['high'] ?? 75)); ?>" min="30" max="95" style="width:80px;">
                             </label><br><br>
-                            <label>Block (Blocage immédiat 403) :
+                            <label><?php esc_html_e('Block (Immediate 403 Forbidden):', 'fingerprint-wordpress'); ?>
                                 <input type="number" name="frontend_threshold_block" value="<?php echo esc_attr((string)($frontendConfig['thresholds']['block'] ?? 95)); ?>" min="50" max="100" style="width:80px;">
                             </label>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row">Comportements avancés</th>
+                        <th scope="row"><?php esc_html_e('Advanced Behaviors', 'fingerprint-wordpress'); ?></th>
                         <td>
                             <label>
                                 <input type="checkbox" name="frontend_challenge_new" value="1" <?php checked(!empty($frontendConfig['challengeNewDevices'])); ?>>
-                                Challenger automatiquement les nouveaux navigateurs inconnus (sans cookie device_id)
+                                <?php esc_html_e('Automatically challenge unknown new devices (without device_id cookie)', 'fingerprint-wordpress'); ?>
                             </label><br>
                             <label>
                                 <input type="checkbox" name="detect_injections" value="1" <?php checked(!empty($frontendConfig['honeypot']['detectInjections'])); ?>>
-                                Activer l'analyse récursive WAF (Injections SQL, NoSQL, Log4j, Traversal dans GET/POST)
+                                <?php esc_html_e('Enable recursive WAF inspection (SQL, NoSQL, Log4j, Traversal in GET/POST)', 'fingerprint-wordpress'); ?>
                             </label><br>
                             <label>
                                 <input type="checkbox" name="frontend_verbose" value="1" <?php checked(!empty($frontendConfig['verbose'])); ?>>
-                                Mode verbeux dans les logs PHP (Débogage)
+                                <?php esc_html_e('Verbose mode in PHP logs (Debugging)', 'fingerprint-wordpress'); ?>
                             </label>
                         </td>
                     </tr>
                 </table>
 
-                <?php submit_button('Enregistrer les modifications', 'primary', 'fingerprint_save_settings'); ?>
+                <?php submit_button(esc_html__('Save Changes', 'fingerprint-wordpress'), 'primary', 'fingerprint_save_settings'); ?>
             </form>
 
             <hr>
             <form method="post" action="" style="margin-top:16px;">
                 <?php wp_nonce_field('fingerprint_clear_nonce', 'fingerprint_nonce_clear'); ?>
                 <p>
-                    <strong>Maintenance du Store :</strong>
-                    <button type="submit" name="fingerprint_clear_store" class="button button-secondary" onclick="return confirm('Purger toutes les sessions et nonces enregistrés ?');">
-                        Vider la table de cache SQL ($wpdb)
+                    <strong><?php esc_html_e('Store Maintenance:', 'fingerprint-wordpress'); ?></strong>
+                    <button type="submit" name="fingerprint_clear_store" class="button button-secondary" onclick="return confirm('<?php echo esc_js(__('Purge all stored sessions and nonces?', 'fingerprint-wordpress')); ?>');">
+                        <?php esc_html_e('Clear SQL cache table ($wpdb)', 'fingerprint-wordpress'); ?>
                     </button>
                 </p>
             </form>
@@ -468,38 +474,38 @@ function fingerprint_render_admin_page(): void {
 
         <!-- TAB 2 : VUE DÉTAILLÉE DES MÉTRIQUES -->
         <div id="tab-metrics" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
-            <h3>Poids des indicateurs comportementaux & transport (Profil Frontend Actif)</h3>
-            <p class="description">Le score final de chaque requête est calculé par la somme pondérée : <code>Score = &Sigma; (Métrique &times; Poids)</code>.</p>
+            <h3><?php esc_html_e('Behavioral & Transport Indicator Weights (Active Frontend Profile)', 'fingerprint-wordpress'); ?></h3>
+            <p class="description"><?php echo wp_kses_post(__('The final score of each request is computed using the weighted sum: <code>Score = &Sigma; (Metric &times; Weight)</code>.', 'fingerprint-wordpress')); ?></p>
 
             <form method="post" action="">
                 <?php wp_nonce_field('fingerprint_settings_nonce', 'fingerprint_nonce'); ?>
                 <table class="wp-list-table widefat fixed striped">
                     <thead>
                         <tr>
-                            <th style="width:280px;">Indicateur / Métrique</th>
-                            <th style="width:120px;">Poids Actuel</th>
-                            <th>Description & Rôle Détecté</th>
+                            <th style="width:280px;"><?php esc_html_e('Indicator / Metric', 'fingerprint-wordpress'); ?></th>
+                            <th style="width:120px;"><?php esc_html_e('Current Weight', 'fingerprint-wordpress'); ?></th>
+                            <th><?php esc_html_e('Description & Detection Role', 'fingerprint-wordpress'); ?></th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php
                         $metricDescriptions = [
-                            'honeypotScore'              => 'Déclenchement de liens pièges invisibles, honeypots multi-frameworks et sondes d\'injection.',
-                            'tlsSpoofingScore'           => 'Discordance entre User-Agent et empreintes cryptographiques TLS (JA3/JA4, extensions, GREASE).',
-                            'behaviorScore'              => 'Biométrie dynamique : mouvements souris, cadence frappe clavier, anomalies de touch mobile.',
-                            'requestPatternScore'        => 'Vélocité, rafales robotiques, écart-type des requêtes et analyse statistique de Benford.',
-                            'inconsistencyScore'         => 'Altération ou dérive du fingerprint matériel entre deux visites du même cookie.',
-                            'subnetScore'                => 'Réputation IP agrégée du sous-réseau (/24 ou /48) et densité d\'attaquants proches.',
-                            'renderingAnomalyScore'      => 'Anomalies de rendu graphique, cadence V-Sync/FPS et hook d\'OffscreenCanvas.',
-                            'protocolAnomalyScore'       => 'Divergence des réglages de trames de contrôle de flux HTTP/2 et QUIC / HTTP/3.',
-                            'historyScore'               => 'Rotation suspecte d\'adresses IP distinctes sur une même identité matérielle.',
-                            'rotationScore'              => 'Changements rapides et anormaux de la pile applicative.',
-                            'botScore'                   => 'Détection d\'attributs natifs d\'automatisation (navigator.webdriver, CDP Chrome).',
-                            'crossLayerInconsistencyScore' => 'Contradiction stricte entre couches (ex: OS déclaré dans UA vs OS réseau TCP/IP).'
+                            'honeypotScore'              => __('Triggering of invisible trap links, multi-framework honeypots, and injection probes.', 'fingerprint-wordpress'),
+                            'tlsSpoofingScore'           => __('Discrepancy between User-Agent and TLS cryptographic fingerprints (JA3/JA4, extensions, GREASE).', 'fingerprint-wordpress'),
+                            'behaviorScore'              => __('Dynamic biometrics: mouse movements, keystroke dynamics, and mobile touch anomalies.', 'fingerprint-wordpress'),
+                            'requestPatternScore'        => __('Velocity, robotic bursts, request standard deviation, and Benford\'s law statistical analysis.', 'fingerprint-wordpress'),
+                            'inconsistencyScore'         => __('Alteration or drift in the hardware fingerprint between visits with the same cookie.', 'fingerprint-wordpress'),
+                            'subnetScore'                => __('Aggregated IP reputation of the network subnet (/24 or /48) and nearby attacker density.', 'fingerprint-wordpress'),
+                            'renderingAnomalyScore'      => __('Display rendering anomalies, V-Sync/FPS cadence, and OffscreenCanvas hooking.', 'fingerprint-wordpress'),
+                            'protocolAnomalyScore'       => __('Divergence in HTTP/2 and QUIC / HTTP/3 flow control frame settings.', 'fingerprint-wordpress'),
+                            'historyScore'               => __('Suspicious rotation of multiple IP addresses associated with a single hardware identity.', 'fingerprint-wordpress'),
+                            'rotationScore'              => __('Rapid and abnormal modifications to the application stack.', 'fingerprint-wordpress'),
+                            'botScore'                   => __('Detection of native automation attributes (navigator.webdriver, Chrome CDP).', 'fingerprint-wordpress'),
+                            'crossLayerInconsistencyScore' => __('Strict contradiction between layers (e.g. declared OS in User-Agent vs network TCP/IP stack OS).', 'fingerprint-wordpress')
                         ];
 
                         foreach ($frontendConfig['weights'] as $indicator => $weight):
-                            $desc = $metricDescriptions[$indicator] ?? 'Indicateur de suspicion comportemental.';
+                            $desc = $metricDescriptions[$indicator] ?? __('Behavioral suspicion indicator.', 'fingerprint-wordpress');
                         ?>
                         <tr>
                             <td><code><?php echo esc_html($indicator); ?></code></td>
@@ -512,15 +518,15 @@ function fingerprint_render_admin_page(): void {
                     </tbody>
                 </table>
                 <p style="margin-top:16px;">
-                    <?php submit_button('Mettre à jour les poids des métriques', 'primary', 'fingerprint_save_settings', false); ?>
+                    <?php submit_button(esc_html__('Update Metric Weights', 'fingerprint-wordpress'), 'primary', 'fingerprint_save_settings', false); ?>
                 </p>
             </form>
         </div>
 
         <!-- TAB 3 : FLUX PROMETHEUS -->
         <div id="tab-prometheus" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
-            <h3>Métriques Prometheus Temps Réel</h3>
-            <p class="description">Format brut exporté pour scraping par Prometheus, Grafana Agent ou Datadog.</p>
+            <h3><?php esc_html_e('Real-Time Prometheus Metrics', 'fingerprint-wordpress'); ?></h3>
+            <p class="description"><?php esc_html_e('Raw text format exported for scraping by Prometheus, Grafana Agent, or Datadog.', 'fingerprint-wordpress'); ?></p>
             <textarea readonly style="width:100%;height:380px;font-family:monospace;background:#f6f7f7;padding:12px;"><?php echo esc_textarea($prometheusRaw); ?></textarea>
         </div>
     </div>
