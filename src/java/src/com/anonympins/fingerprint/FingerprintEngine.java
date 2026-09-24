@@ -54,11 +54,11 @@ public class FingerprintEngine {
         String envPrivate = System.getenv("ED25519_PRIVATE_KEY");
         String propPrivate = System.getProperty("ED25519_PRIVATE_KEY");
         if (useAsymmetric && (envPrivate == null || envPrivate.isEmpty()) && (propPrivate == null || propPrivate.isEmpty())) {
-            // Chemin vers le fichier de clés persistant
+            // Path to persistent key file
             java.io.File configDir = new java.io.File("config");
             java.io.File keyFile = new java.io.File(configDir, "ed25519_key.json");
 
-            // Tenter de charger les clés existantes
+            // Attempt to load existing keys from disk
             if (keyFile.exists()) {
                 try {
                     String content = java.nio.file.Files.readString(keyFile.toPath());
@@ -77,7 +77,7 @@ public class FingerprintEngine {
                     }
                 }
             } else {
-                // Si le fichier n'existe pas, générer de nouvelles clés et les sauvegarder
+                // Generate and persist new key pair if missing
                 try {
                     java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("Ed25519");
                     java.security.KeyPair kp = kpg.generateKeyPair();
@@ -90,7 +90,7 @@ public class FingerprintEngine {
                     System.setProperty("ED25519_PRIVATE_KEY", privPem);
                     System.setProperty("ED25519_PUBLIC_KEY", pubPem);
                     if (!configDir.exists()) {
-                        configDir.mkdirs(); // Créer le répertoire 'config' si nécessaire
+                        configDir.mkdirs();
                     }
                     String json = "{\n  \"privateKey\": \"" + privPem.replace("\n", "\\n") + "\",\n  \"publicKey\": \"" + pubPem.replace("\n", "\\n") + "\"\n}";
                     java.nio.file.Files.writeString(keyFile.toPath(), json);
@@ -145,7 +145,7 @@ public class FingerprintEngine {
     }
 
     /**
-     * Réinitialise le store de persistance actif.
+     * Clears the active datastore.
      */
     public void resetStore() {
         if (store != null) {
@@ -499,7 +499,7 @@ public class FingerprintEngine {
             return res;
         }
         
-        // --- Interception et vérification des challenges Useful Work (uPoW) ---
+        // --- Interception and verification of Useful Work (uPoW) challenges ---
         Object rawPowNonce = context.queryParams.get("pow_nonce");
         String powNonce = rawPowNonce instanceof String ? (String) rawPowNonce : null;
         Object rawPowType = context.queryParams.get("pow_type");
@@ -961,7 +961,8 @@ public class FingerprintEngine {
         double botScore = RequestUtils.getBotScore(context).getOrDefault("botScore", 0.0);
         double clickVarianceScore = RequestUtils.getClickVarianceScore(context).getOrDefault("clickVarianceScore", 0.0);
         double clientHintsInconsistencyScore = RequestUtils.getClientHintsInconsistencyScore(context).getOrDefault("clientHintsInconsistencyScore", 0.0);
-        double subnetScore = RequestUtils.getSubnetScore(store, context, deviceId).getOrDefault("subnetScore", 0.0);
+        double mediumThreshold = ((Number) thresholds.getOrDefault("medium", 45.0)).doubleValue();
+        double subnetScore = RequestUtils.getSubnetScore(store, context, deviceId, mediumThreshold).getOrDefault("subnetScore", 0.0);
         
         String stableFp = RequestUtils.extractStablePart(currentDeviceHash);
         String stableFpHash = FingerprintBuilder.cyrb53(stableFp, 0);

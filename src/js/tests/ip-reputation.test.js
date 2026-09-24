@@ -138,5 +138,6 @@ describe('IP Reputation Local System (Node.js)', () => {
         }
         score = await __internal.getSubnetScore(mockContext);
         expect(score.subnetScore).toBeGreaterThan(0);
+        expect(score.subnetScore).toBeLessThanOrEqual(45.0); // Ambient cap
     });
 });

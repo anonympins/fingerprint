@@ -1,13 +1,13 @@
 /**
  * @file @/library.js
- * @description Une bibliothèque d'outils basés sur le principe fondamental de la dichotomie (division en deux).
- * Inclut des algorithmes pour les tableaux triés, des structures de données et des solveurs de problèmes conceptuels.
+ * @description A library of tools based on the fundamental principle of dichotomy (division in two).
+ * Includes algorithms for sorted arrays, data structures, and problem solvers.
  *
  * @template T
  * @callback Comparator
- * @param {T} element - L'élément du tableau.
- * @param {any} target - La valeur cible.
- * @returns {number} -1 si element < target, 0 si element == target, 1 si element > target.
+ * @param {T} element - Array element.
+ * @param {any} target - Target value.
+ * @returns {number} -1 if element < target, 0 if element == target, 1 if element > target.
  *
  */
 
@@ -16,7 +16,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 
 /**
- * Génère un nombre flottant aléatoire entre 0 (inclus) et 1 (exclus).
+ * Generates a cryptographically secure random float between 0 (inclusive) and 1 (exclusive).
  * @returns {number}
  */
 const random = () => {
@@ -26,17 +26,15 @@ const random = () => {
 const Optimization = {
   // eslint-disable-line no-unused-vars
   /**
-   * Trouve une bonne solution à un problème d'optimisation en utilisant le Recuit Simulé.
-   * Cet algorithme est efficace pour trouver un optimum global dans un grand espace de recherche
-   * avec de nombreux optima locaux (plusieurs "pics" ou "vallées").
-   * @template TSolution - Le type de la solution (peut être un nombre, un tableau, un objet...).
-   * @param {TSolution} initialSolution - Le point de départ de la recherche.
-   * @param {function(TSolution): number} evaluator - Fonction qui évalue une solution. L'objectif est de minimiser ce score.
-   * @param {function(TSolution): TSolution} neighbor - Fonction qui génère une solution "voisine" aléatoire.
-   * @param {number} [initialTemperature=1000] - La température de départ.
-   * @param {number} [coolingRate=0.995] - Le taux de refroidissement (proche de 1).
-   * @param {number} [maxIterations=10000] - Le nombre total d'itérations.
-   * @returns {{solution: TSolution, energy: number}} Le meilleur couple solution/score trouvé.
+   * Finds an optimized solution using Simulated Annealing.
+   * @template TSolution - Type of the solution (number, array, object...).
+   * @param {TSolution} initialSolution - Starting point for optimization.
+   * @param {function(TSolution): number} evaluator - Evaluates a solution (goal is to MINIMIZE score).
+   * @param {function(TSolution): TSolution} neighbor - Generates a random neighbor solution.
+   * @param {number} [initialTemperature=1000] - Initial temperature.
+   * @param {number} [coolingRate=0.995] - Cooling rate factor.
+   * @param {number} [maxIterations=10000] - Total iterations.
+   * @returns {{solution: TSolution, energy: number}} Best solution and corresponding energy score.
    */
   simulatedAnnealing(
     initialSolution,
@@ -58,24 +56,24 @@ const Optimization = {
       const newSolution = neighbor(currentSolution);
       const newEnergy = evaluator(newSolution);
 
-      // Calcule la probabilité d'accepter une moins bonne solution.
+      // Calculate acceptance probability for a worse solution
       const acceptanceProbability = Math.exp(
         (currentEnergy - newEnergy) / temperature,
       );
 
-      // Décide si on se déplace vers la nouvelle solution.
+      // Decide whether to transition to the candidate solution
       if (newEnergy < currentEnergy || random() < acceptanceProbability) {
         currentSolution = newSolution;
         currentEnergy = newEnergy;
       }
 
-      // Met à jour la meilleure solution trouvée jusqu'à présent.
+      // Update global best found so far
       if (currentEnergy < bestEnergy) {
         bestSolution = currentSolution;
         bestEnergy = currentEnergy;
       }
 
-      // Refroidit la température.
+      // Cool down temperature
       temperature *= coolingRate;
     }
 
@@ -83,21 +81,20 @@ const Optimization = {
   },
 
   /**
-   * Résout un problème d'optimisation en utilisant un Algorithme Génétique.
-   * Idéal pour les problèmes complexes où l'espace de recherche est vaste et non-linéaire.
-   * @template TChromosome - Le type de la solution (un "chromosome").
-   * @param {function(): TChromosome} createIndividual - Fonction pour créer un individu aléatoire.
-   * @param {function(TChromosome): number} fitnessFunction - Évalue un individu. L'objectif est de MINIMISER ce score.
-   * @param {function(TChromosome, TChromosome): TChromosome} crossover - Croise deux parents pour créer un enfant.
-   * @param {function(TChromosome): TChromosome} mutate - Applique une mutation aléatoire à un individu.
-   * @param {object} options - Options de l'algorithme.
-   * @param {number} [options.populationSize=100] - Taille de la population.
-   * @param {number} [options.generations=100] - Nombre de générations à simuler.
-   * @param {number} [options.crossoverRate=0.8] - Probabilité de croisement.
-   * @param {number} [options.mutationRate=0.1] - Probabilité de mutation.
-   * @param {function} [options.selectionFunction] - Fonction de sélection des parents. Par défaut, un tournoi.
-   * @param {boolean} [options.returnPopulation=false] - Si true, retourne la population finale au lieu du meilleur individu.
-   * @returns {{solution: TChromosome, fitness: number}} Le meilleur individu trouvé.
+   * Solves an optimization problem using a Genetic Algorithm.
+   * @template TChromosome - Type of the chromosome.
+   * @param {function(): TChromosome} createIndividual - Creates a random individual.
+   * @param {function(TChromosome): number} fitnessFunction - Evaluates an individual (MINIMIZATION).
+   * @param {function(TChromosome, TChromosome): TChromosome} crossover - Crosses two parents.
+   * @param {function(TChromosome): TChromosome} mutate - Applies random mutation.
+   * @param {object} options - Algorithm options.
+   * @param {number} [options.populationSize=100] - Population size.
+   * @param {number} [options.generations=100] - Number of generations.
+   * @param {number} [options.crossoverRate=0.8] - Crossover rate.
+   * @param {number} [options.mutationRate=0.1] - Mutation rate.
+   * @param {function} [options.selectionFunction] - Parent selection function.
+   * @param {boolean} [options.returnPopulation=false] - Whether to return final population instead of single best.
+   * @returns {{solution: TChromosome, fitness: number}} Best individual found.
    */
   geneticAlgorithm(
     createIndividual,
@@ -117,33 +114,30 @@ const Optimization = {
       this.Operators.createTournamentSelection({ size: 5 });
     const returnPopulation = options.returnPopulation || false;
 
-    // 1. Initialisation
-    // La population est un tableau d'objets { chromosome, fitness }
-    // La fitness est calculée une seule fois par individu.
+    // 1. Initialization
     let population = Array.from({ length: populationSize }, () => {
       const chromosome = createIndividual();
       return { chromosome, fitness: fitnessFunction(chromosome) };
     });
 
-    // Trier la population initiale pour trouver le meilleur
+    // Sort initial population to find best
     population.sort((a, b) => a.fitness - b.fitness);
     let bestOverall = population[0];
 
-    // 2. Boucle des générations
+    // 2. Generation loop
     for (let gen = 0; gen < generations; gen++) {
       const newPopulation = [];
 
-      // Élitisme : le meilleur individu de la génération précédente est conservé.
-      // Il est déjà à l'index 0 grâce au tri à la fin de la boucle précédente.
+      // Elitism: retain best individual from previous generation
       newPopulation.push(population[0]);
 
       while (newPopulation.length < populationSize) {
-        // 3. Sélection
+        // 3. Selection
         const parent1 = selectionFunction(population);
         const parent2 = selectionFunction(population);
 
         let offspringChromosome;
-        // 4. Croisement
+        // 4. Crossover
         if (random() < crossoverRate) {
           offspringChromosome = crossover(
             parent1.chromosome,
@@ -158,21 +152,20 @@ const Optimization = {
           offspringChromosome = mutate(offspringChromosome);
         }
 
-        // S'assurer que les opérateurs ont bien retourné un individu
+        // Ensure operators returned a valid individual
         if (offspringChromosome) {
           newPopulation.push({
             chromosome: offspringChromosome,
             fitness: fitnessFunction(offspringChromosome),
           });
         } else {
-          // Si le croisement/mutation échoue, on réinsère un parent pour garder la taille de la population
           newPopulation.push(parent1);
         }
       }
 
       population = newPopulation;
 
-      // Trier la nouvelle population pour la prochaine génération (élitisme) et la mise à jour du meilleur
+      // Sort new population for elitism and update best overall
       population.sort((a, b) => a.fitness - b.fitness);
 
       if (population[0].fitness < bestOverall.fitness) {
@@ -188,13 +181,11 @@ const Optimization = {
   },
 
   /**
-   * Exécute un solveur stochastique plusieurs fois et retourne le meilleur résultat.
-   * C'est une méta-heuristique pour augmenter la probabilité de trouver un optimum global
-   * en échange d'un temps de calcul plus long.
-   * @param {function(): {solution: any, energy?: number, fitness?: number}} solverFunction - Une fonction qui, lorsqu'elle est appelée, exécute un algorithme d'optimisation et retourne un objet résultat.
-   * @param {number} numCycles - Le nombre de fois où exécuter le solveur.
-   * @param {boolean} [logProgress=false] - Si true, affiche le score de chaque cycle dans la console.
-   * @returns {{bestResult: object, stats: {scores: Array<number>, average: number, stdDev: number}}} Le meilleur résultat et des statistiques sur les exécutions.
+   * Executes a stochastic solver multiple times and returns the best result.
+   * @param {function(): {solution: any, energy?: number, fitness?: number}} solverFunction - Solver function.
+   * @param {number} numCycles - Number of execution cycles.
+   * @param {boolean} [logProgress=false] - Log progress to console.
+   * @returns {{bestResult: object, stats: {scores: Array<number>, average: number, stdDev: number}}} Best result and run stats.
    */
   runMultiple(solverFunction, numCycles, logProgress = false) {
     let bestResult = null;
@@ -203,8 +194,7 @@ const Optimization = {
     for (let i = 0; i < numCycles; i++) {
       const currentResult = solverFunction();
 
-      // Gère les résultats du Recuit Simulé (energy) et des Algorithmes Génétiques (fitness).
-      // On suppose que pour les deux, un score plus bas est meilleur.
+      // Handle simulated annealing (energy) and genetic algorithm (fitness) results (lower is better)
       const currentScore =
         currentResult.energy !== undefined
           ? currentResult.energy
@@ -213,7 +203,7 @@ const Optimization = {
 
       if (logProgress) {
         console.log(
-          `   -> Cycle ${i + 1}/${numCycles}: Score trouvé = ${currentScore.toFixed(2)}`,
+          `   -> Cycle ${i + 1}/${numCycles}: Score found = ${currentScore.toFixed(2)}`,
         );
       }
 
@@ -228,7 +218,7 @@ const Optimization = {
       }
     }
 
-    // Calcul des statistiques
+    // Statistical calculations
     const sum = allScores.reduce((a, b) => a + b, 0);
     const average = sum / numCycles;
     const variance =
@@ -246,16 +236,15 @@ const Optimization = {
   },
 
   /**
-   * Trouve un minimum local d'une fonction en utilisant l'algorithme de Descente de Gradient.
-   * Nécessite que la fonction soit différentiable et que son gradient soit connu.
-   * @template TSolution - Le type de la solution (nombre ou tableau de nombres).
-   * @param {TSolution} initialSolution - Le point de départ.
-   * @param {function(TSolution): TSolution} gradientFunction - Fonction qui calcule le gradient au point donné.
-   * @param {object} options - Options de l'algorithme.
-   * @param {number} [options.learningRate=0.01] - Le "pas" de la descente.
-   * @param {number} [options.maxIterations=1000] - Nombre d'itérations.
-   * @param {number} [options.tolerance=1e-6] - Seuil pour arrêter si la solution ne change plus beaucoup.
-   * @returns {TSolution} La solution (minimum local) trouvée.
+   * Finds a local minimum of a differentiable function using Gradient Descent.
+   * @template TSolution - Solution type (number or array of numbers).
+   * @param {TSolution} initialSolution - Starting point.
+   * @param {function(TSolution): TSolution} gradientFunction - Computes gradient at given point.
+   * @param {object} options - Algorithm options.
+   * @param {number} [options.learningRate=0.01] - Step size.
+   * @param {number} [options.maxIterations=1000] - Max iterations.
+   * @param {number} [options.tolerance=1e-6] - Stopping threshold.
+   * @returns {TSolution} Local minimum found.
    */
   gradientDescent(initialSolution, gradientFunction, options = {}) {
     const {
@@ -282,7 +271,7 @@ const Optimization = {
         );
         if (change < tolerance) break;
       } else {
-        // Cas d'une seule variable (nombre)
+        // Single variable scalar case
         const prevSolution = currentSolution;
         currentSolution -= learningRate * gradient;
         if (Math.abs(prevSolution - currentSolution) < tolerance) break;
@@ -292,15 +281,15 @@ const Optimization = {
   },
 
   /**
-   * Exécute un solveur stochastique plusieurs fois en parallèle en utilisant un pool de workers pour éviter de surcharger le système.
-   * @param {string} solverName - Le nom de la fonction solveur à appeler dans `Optimization.Operators`.
-   * @param {Array<any>} baseSolverArgs - Les arguments de base à passer au solveur (sans les données aléatoires qui seront générées par worker).
-   * @param {number} numCycles - Le nombre total de cycles à exécuter.
-   * @param {boolean} [logProgress=false] - Si true, affiche la progression dans la console.
-   * @param {object} [options={}] - Options pour la parallélisation.
-   * @param {number} [options.concurrency] - Le nombre de workers à utiliser en parallèle. Par défaut, le nombre de cœurs CPU. 
-   * @param {function(number): Array<any>} [options.workerDataGenerator] - Une fonction qui, pour chaque cycle (index), génère les arguments spécifiques à passer au solveur. Si non fournie, `baseSolverArgs` est utilisé tel quel.
-   * @returns {Promise<{bestResult: object, stats: {scores: Array<number>, average: number, stdDev: number}}>} Le meilleur résultat et des statistiques.
+   * Executes a stochastic solver multiple times in parallel using a worker pool.
+   * @param {string} solverName - Name of the solver function in `Optimization.Operators`.
+   * @param {Array<any>} baseSolverArgs - Base arguments for solver.
+   * @param {number} numCycles - Total cycles to run.
+   * @param {boolean} [logProgress=false] - Log progress.
+   * @param {object} [options={}] - Concurrency options.
+   * @param {number} [options.concurrency] - Worker concurrency count (defaults to CPU count).
+   * @param {function(number): Array<any>} [options.workerDataGenerator] - Dynamic argument generator per task index.
+   * @returns {Promise<{bestResult: object, stats: {scores: Array<number>, average: number, stdDev: number}}>} Best result and stats.
    */
   async runMultipleParallel(
     solverName,
@@ -314,7 +303,7 @@ const Optimization = {
 
     if (logProgress) {
       console.log(
-        `   (Utilisation d'un pool de ${concurrency} workers pour ${numCycles} cycles avec le solveur ${solverName})`,
+        `   (Using a pool of ${concurrency} workers for ${numCycles} cycles with solver ${solverName})`,
       );
     }
 
@@ -335,15 +324,14 @@ const Optimization = {
         };
 
         const result = await new Promise(async (resolve, reject) => {
-          // Le chemin du worker doit être absolu ou relatif au fichier appelant.
-          // On utilise import.meta.url pour résoudre le chemin de manière fiable.
+          // Resolve worker script path relative to current module
           const worker = new Worker(new URL('./optimization.worker.js', import.meta.url), { workerData });
           worker.on("message", resolve);
           worker.on("error", reject);
           worker.on("exit", (code) => {
             if (code !== 0)
               reject(
-                new Error(`Worker ${workerId} a terminé avec le code ${code}`),
+                new Error(`Worker ${workerId} exited with code ${code}`),
               );
           });
         });
@@ -365,7 +353,7 @@ const Optimization = {
     );
     await Promise.all(workerPromises);
 
-    // Le reste de la logique est identique à `runMultiple`
+    // Remainder follows runMultiple logic
     let bestResult = null;
     const allScores = [];
     allResults.forEach((result) => {
@@ -397,30 +385,30 @@ const Optimization = {
 };
 
 /**
- * Détermine si la solution A domine la solution B en multi-objectifs (problème de minimisation).
+ * Determines whether solution A Pareto-dominates solution B (minimization problem).
  * @private
- * @param {number[]} objectivesA - Tableau des scores des objectifs pour la solution A.
- * @param {number[]} objectivesB - Tableau des scores des objectifs pour la solution B.
- * @returns {boolean} - True si A domine B.
+ * @param {number[]} objectivesA - Objective scores for solution A.
+ * @param {number[]} objectivesB - Objective scores for solution B.
+ * @returns {boolean} - True if A dominates B.
  */
 function paretoDominates(objectivesA, objectivesB) {
   let aIsBetterInOne = false;
   for (let i = 0; i < objectivesA.length; i++) {
     if (objectivesA[i] > objectivesB[i]) {
-      return false; // A est pire sur au moins un objectif, donc ne domine pas.
+      return false; // A is worse on at least one objective
     }
     if (objectivesA[i] < objectivesB[i]) {
-      aIsBetterInOne = true; // A est strictement meilleur sur au moins un objectif.
+      aIsBetterInOne = true; // A is strictly better on at least one objective
     }
   }
-  return aIsBetterInOne; // A domine B si elle n'est jamais pire et au moins une fois meilleure.
+  return aIsBetterInOne;
 }
 
 /**
- * Trie une population en fronts de Pareto non-dominés (inspiré de NSGA-II).
+ * Sorts a population into non-dominated Pareto fronts (inspired by NSGA-II).
  * @private
- * @param {Array<{individual: any, objectives: number[]}>} populationWithObjectives - La population à trier.
- * @returns {Array<Array<{individual: any, objectives: number[]}>>} - Un tableau de fronts, où le premier est le meilleur.
+ * @param {Array<{individual: any, objectives: number[]}>} populationWithObjectives - Population to sort.
+ * @returns {Array<Array<{individual: any, objectives: number[]}>>} - Array of fronts, first being the best.
  */
 function nonDominatedSort(populationWithObjectives) {
   const fronts = [[]];
@@ -462,9 +450,9 @@ function nonDominatedSort(populationWithObjectives) {
 }
 
 /**
- * Calcule la distance de promiscuité (crowding distance) pour un front, afin de préserver la diversité.
+ * Calculates crowding distance for a front to preserve diversity.
  * @private
- * @param {Array<{individual: any, objectives: number[]}>} front - Le front de Pareto.
+ * @param {Array<{individual: any, objectives: number[]}>} front - Pareto front.
  */
 function calculateCrowdingDistance(front) {
   if (front.length === 0) return;
@@ -476,7 +464,7 @@ function calculateCrowdingDistance(front) {
     const minObj = front[0].objectives[i];
     const maxObj = front[front.length - 1].objectives[i];
 
-    // Les solutions aux extrémités sont cruciales, on leur donne une distance infinie.
+    // Boundary solutions receive infinite distance to encourage spread
     front[0].crowdingDistance = Infinity;
     front[front.length - 1].crowdingDistance = Infinity;
 
@@ -491,13 +479,13 @@ function calculateCrowdingDistance(front) {
 }
 
 /**
- * Algorithme génétique multi-objectifs (inspiré de NSGA-II) pour trouver un front de Pareto.
- * @param {function(): any} createIndividual - Fonction qui crée un individu aléatoire.
- * @param {function(any): number[]} fitnessFunction - Fonction qui évalue un individu et retourne un tableau d'objectifs à MINIMISER.
- * @param {function(any, any): any} crossover - Fonction de croisement.
- * @param {function(any): any} mutate - Fonction de mutation.
- * @param {object} options - Options de l'algorithme.
- * @returns {Array<{solution: any, objectives: number[]}>} Le premier front de Pareto (l'ensemble des meilleures solutions de compromis).
+ * Multi-objective genetic algorithm (inspired by NSGA-II) to find a Pareto front.
+ * @param {function(): any} createIndividual - Creates a random individual.
+ * @param {function(any): number[]} fitnessFunction - Evaluates individual and returns array of objectives to MINIMIZE.
+ * @param {function(any, any): any} crossover - Crossover function.
+ * @param {function(any): any} mutate - Mutation function.
+ * @param {object} options - Algorithm options.
+ * @returns {Array<{solution: any, objectives: number[]}>} Non-dominated Pareto front.
  */
 Optimization.geneticAlgorithmMultiObjective = function (
   createIndividual,
@@ -507,48 +495,47 @@ Optimization.geneticAlgorithmMultiObjective = function (
   options = {},
 ) {
   const {
-    generations = 150, // Augmenté pour une meilleure convergence
-    populationSize = 60, // Augmenté pour plus de diversité
+    generations = 150,
+    populationSize = 60,
     mutationRate = 0.1,
     currentConfig = null,
   } = options;
 
   let population = Array.from({ length: populationSize }, () => ({
     individual: createIndividual(),
-  })); // createIndividual doit maintenant utiliser currentConfig
+  }));
   population.forEach((p) => (p.objectives = fitnessFunction(p.individual)));
 
   for (let gen = 0; gen < generations; gen++) {
-    // 1. Créer une population d'enfants
+    // 1. Generate offspring
     const offspring = [];
     for (let i = 0; i < populationSize; i++) {
-      // Sélection simple pour l'exemple
         const parent1 = population[crypto.randomInt(0, population.length)];
         const parent2 = population[crypto.randomInt(0, population.length)];
       let childIndividual = crossover(parent1.individual, parent2.individual);
         if (random() < mutationRate) {
-        childIndividual = mutate(childIndividual, currentConfig); // mutate doit maintenant utiliser currentConfig
+        childIndividual = mutate(childIndividual, currentConfig);
       }
       const child = { individual: childIndividual };
       child.objectives = fitnessFunction(child.individual);
       offspring.push(child);
     }
 
-    // 2. Combiner parents et enfants
+    // 2. Combine parent and offspring populations
     const combinedPopulation = [...population, ...offspring];
 
-    // 3. Trier la population combinée en fronts
+    // 3. Sort into Pareto fronts
     const fronts = nonDominatedSort(combinedPopulation);
 
-    // 4. Construire la nouvelle population
+    // 4. Build next generation population
     const newPopulation = [];
     for (const front of fronts) {
       if (newPopulation.length + front.length <= populationSize) {
         newPopulation.push(...front);
       } else {
-        // Si le front est trop grand, on utilise la distance de promiscuité pour choisir les individus les plus diversifiés.
+        // Use crowding distance truncation if front overflows population size
         calculateCrowdingDistance(front);
-        front.sort((a, b) => b.crowdingDistance - a.crowdingDistance); // Trier par distance décroissante
+        front.sort((a, b) => b.crowdingDistance - a.crowdingDistance);
         const remaining = populationSize - newPopulation.length;
         newPopulation.push(...front.slice(0, remaining));
         break;
@@ -557,11 +544,11 @@ Optimization.geneticAlgorithmMultiObjective = function (
     population = newPopulation;
   }
 
-  // Retourner le premier front de la population finale
+  // Return the first front of the final population
   const finalFronts = nonDominatedSort(population);
   const bestFront = finalFronts.length > 0 ? finalFronts[0] : [];
 
-  // Filtrer le front pour ne garder que les solutions avec des objectifs uniques
+  // Deduplicate solutions with identical objectives
   const uniqueSolutionsMap = new Map();
   for (const p of bestFront) {
     const key = JSON.stringify(p.objectives);
@@ -576,68 +563,68 @@ Optimization.geneticAlgorithmMultiObjective = function (
 };
 
 /**
- * Utilitaires pour les problèmes d'optimisation.
+ * Optimization utilities.
  */
 Optimization.Utils = {
-    /** Calcule la distance euclidienne entre deux points (villes). */
+    /** Calculates Euclidean distance between two points/cities. */
     distance: (city1, city2) => Math.sqrt(Math.pow(city1.x - city2.x, 2) + Math.pow(city1.y - city2.y, 2)),
 
-    /** Évalue la distance totale d'un chemin TSP donné. */
+    /** Evaluates the total round-trip distance of a TSP path. */
     evaluatePathDistance: (cities, path) => {
         let totalDistance = 0;
         for (let i = 0; i < path.length - 1; i++) {
             totalDistance += Optimization.Utils.distance(cities[path[i]], cities[path[i + 1]]);
         }
-        totalDistance += Optimization.Utils.distance(cities[path[path.length - 1]], cities[path[0]]); // Retour au départ
+        totalDistance += Optimization.Utils.distance(cities[path[path.length - 1]], cities[path[0]]); // Return to start
         return totalDistance;
     }
 };
 
 /**
- * Algorithme d'optimisation CMA-ES (Covariance Matrix Adaptation Evolution Strategy).
- * C'est un algorithme de pointe pour l'optimisation en boîte noire de fonctions non-linéaires et non-convexes.
- * Il est particulièrement efficace pour les problèmes avec des variables continues.
- * @param {function(Array<number>): number} fitnessFunction - La fonction à MINIMISER.
- * @param {Array<number>} initialSolution - Le point de départ de la recherche (un vecteur de nombres).
- * @param {number} initialStepSize - La taille de pas initiale (sigma).
- * @param {object} [options={}] - Options de l'algorithme.
- * @param {number} [options.maxGenerations=100] - Nombre maximum de générations.
- * @param {number} [options.populationSize] - Taille de la population (lambda). Calculée par défaut si non fournie.
- * @param {number} [options.tolerance=1e-6] - Seuil de tolérance pour l'arrêt précoce.
- * @returns {{solution: Array<number>, fitness: number}} La meilleure solution trouvée.
+ * CMA-ES (Covariance Matrix Adaptation Evolution Strategy) optimization algorithm.
+ * State-of-the-art evolutionary algorithm for black-box optimization of non-linear, non-convex functions.
+ * Particularly effective for problems involving continuous real-valued variables.
+ * @param {function(Array<number>): number} fitnessFunction - The objective function to MINIMIZE.
+ * @param {Array<number>} initialSolution - Starting point for the search (numeric vector).
+ * @param {number} initialStepSize - Initial search step size (sigma).
+ * @param {object} [options={}] - Algorithm options.
+ * @param {number} [options.maxGenerations=100] - Maximum number of generations.
+ * @param {number} [options.populationSize] - Population size (lambda). Automatically computed if omitted.
+ * @param {number} [options.tolerance=1e-6] - Tolerance threshold for early stopping.
+ * @returns {{solution: Array<number>, fitness: number}} Best solution found and its fitness score.
  */
 Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize, options = {}) {
-    const n = initialSolution.length; // Dimension du problème
+    const n = initialSolution.length; // Problem dimension
 
-    // --- Paramètres de l'algorithme (stratégie) ---
+    // --- Algorithm strategy parameters ---
     const { maxGenerations = 100, tolerance = 1e-6 } = options;
     const populationSize = options.populationSize || (4 + Math.floor(3 * Math.log(n))); // Lambda
-    const mu = Math.floor(populationSize / 2); // Nombre de parents pour la recombinaison
+    const mu = Math.floor(populationSize / 2); // Parent count for recombination
 
-    // Poids de recombinaison
+    // Recombination weights
     let weights = Array.from({ length: mu }, (_, i) => Math.log(mu + 0.5) - Math.log(i + 1));
     const sumWeights = weights.reduce((s, w) => s + w, 0);
     weights = weights.map(w => w / sumWeights);
     const muEff = 1 / weights.reduce((s, w) => s + w * w, 0);
 
-    // Paramètres d'adaptation
+    // Adaptation parameters
     const cc = (4 + muEff / n) / (n + 4 + 2 * muEff / n);
     const cs = (muEff + 2) / (n + muEff + 5);
     const c1 = 2 / (Math.pow(n + 1.3, 2) + muEff);
     const cmu = Math.min(1 - c1, 2 * (muEff - 2 + 1 / muEff) / (Math.pow(n + 2, 2) + muEff));
     const damps = 1 + 2 * Math.max(0, Math.sqrt((muEff - 1) / (n + 1)) - 1) + cs;
 
-    // --- Variables d'état dynamiques ---
-    let mean = [...initialSolution]; // Le centre de la distribution de recherche
+    // --- Dynamic state variables ---
+    let mean = [...initialSolution]; // Distribution mean / search center
     let stepSize = initialStepSize; // Sigma
-    let C = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))); // Matrice de covariance
-    let pc = Array(n).fill(0); // Chemin d'évolution pour C
-    let ps = Array(n).fill(0); // Chemin d'évolution pour sigma
+    let C = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0))); // Covariance matrix
+    let pc = Array(n).fill(0); // Evolution path for C
+    let ps = Array(n).fill(0); // Evolution path for sigma
 
     let bestFitness = Infinity;
     let bestSolution = null;
 
-    // Fonction pour la décomposition de Cholesky (simplifiée, pour matrice symétrique définie positive)
+    // Cholesky decomposition helper (simplified for symmetric positive-definite matrices)
     function cholesky(A) {
         const L = Array.from({ length: n }, () => Array(n).fill(0));
         for (let i = 0; i < n; i++) {
@@ -648,7 +635,7 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
                 }
                 if (i === j) {
                     const val = A[i][i] - sum;
-                    if (val < 0) return null; // Non définie positive
+                    if (val < 0) return null; // Not positive definite
                     L[i][j] = Math.sqrt(val);
                 } else {
                     if (L[j][j] === 0) return null;
@@ -660,18 +647,18 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
     }
 
     for (let gen = 0; gen < maxGenerations; gen++) {
-        // 1. Échantillonnage de la nouvelle population
+        // 1. Sample new population
         const population = [];
-        const arx = []; // Vecteurs de recherche
+        const arx = []; // Search vectors
         const L = cholesky(C);
         if (!L) {
-            console.warn("[CMA-ES] La matrice de covariance n'est plus définie positive. Arrêt.");
+            console.warn("[CMA-ES] Covariance matrix is no longer positive definite. Stopping.");
             break;
         }
 
         for (let i = 0; i < populationSize; i++) {
-            const z = Array.from({ length: n }, () => random() * 2 - 1); // Vecteur normal standard
-            const y = Array(n).fill(0); // z transformé par L
+            const z = Array.from({ length: n }, () => random() * 2 - 1); // Standard normal approximation
+            const y = Array(n).fill(0); // z transformed by L
             for (let r = 0; r < n; r++) {
                 for (let c = 0; c < n; c++) {
                     y[r] += L[r][c] * z[c];
@@ -682,7 +669,7 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
             population.push({ individual, fitness: fitnessFunction(individual) });
         }
 
-        // 2. Trier et sélectionner les meilleurs
+        // 2. Sort and select elite parents
         population.sort((a, b) => a.fitness - b.fitness);
         const parents = population.slice(0, mu);
 
@@ -691,7 +678,7 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
             bestSolution = parents[0].individual;
         }
 
-        // 3. Mise à jour des variables d'état
+        // 3. Update distribution mean
         const oldMean = [...mean];
         const y_w = Array(n).fill(0);
         for (let j = 0; j < n; j++) {
@@ -702,15 +689,15 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
         }
         mean = oldMean.map((m, i) => m + stepSize * y_w[i]);
 
-        // 4. Adaptation des chemins d'évolution
-        const C_inv_sqrt = cholesky(C); // Simplification, devrait être l'inverse de la racine
+        // 4. Adapt evolution paths
+        const C_inv_sqrt = cholesky(C); // Simplification, ideally inverse square root
         const C_inv_sqrt_y_w = y_w; // Approximation
         ps = ps.map((p, i) => (1 - cs) * p + Math.sqrt(cs * (2 - cs) * muEff) * C_inv_sqrt_y_w[i]);
         
         const hsig = Math.sqrt(ps.reduce((s, v) => s + v*v, 0)) / (1 - Math.pow(1 - cs, 2 * (gen + 1))) / n < 1.4 + 2 / (n + 1);
         pc = pc.map((p, i) => (1 - cc) * p + (hsig ? Math.sqrt(cc * (2 - cc) * muEff) * y_w[i] : 0));
 
-        // 5. Adaptation de la matrice de covariance C
+        // 5. Adapt covariance matrix C
         let rankOneUpdate = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => c1 * pc[i] * pc[j]));
         let rankMuUpdate = Array.from({ length: n }, () => Array(n).fill(0));
         for (let k = 0; k < mu; k++) {
@@ -723,7 +710,7 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
         }
         C = C.map((row, i) => row.map((val, j) => (1 - c1 - cmu) * val + rankOneUpdate[i][j] + rankMuUpdate[i][j]));
 
-        // 6. Adaptation de la taille de pas (sigma)
+        // 6. Adapt step size (sigma)
         stepSize *= Math.exp((cs / damps) * (Math.sqrt(ps.reduce((s, v) => s + v*v, 0)) / Math.sqrt(n) - 1));
     }
 
@@ -732,16 +719,16 @@ Optimization.cmaes = function(fitnessFunction, initialSolution, initialStepSize,
 
 /**
  * @namespace Optimization.Operators
- * @description Une bibliothèque de "fabriques d'évaluateurs" pour des problèmes d'optimisation complexes,
- * souvent multidimensionnels, à utiliser avec les algorithmes de `Optimization` (Recuit Simulé, Algorithmes Génétiques, etc.).
+ * @description Evaluator factories for complex, multi-dimensional optimization problems
+ * designed for use with Optimization solvers (Simulated Annealing, Genetic Algorithms, etc.).
  */
-Optimization.Operators = {}; // Création du namespace
+Optimization.Operators = {}; // Namespace creation
 
 /**
- * Crée une fonction de sélection par tournoi pour un algorithme génétique.
- * @param {object} [options] - Options pour le tournoi.
- * @param {number} [options.size=5] - Le nombre de participants par tournoi.
- * @returns {function(Array<{chromosome: any, fitness: number}>): {chromosome: any, fitness: number}} Une fonction de sélection.
+ * Creates a tournament selection operator for genetic algorithms.
+ * @param {object} [options] - Tournament options.
+ * @param {number} [options.size=5] - Number of candidates per tournament.
+ * @returns {function(Array<{chromosome: any, fitness: number}>): {chromosome: any, fitness: number}} Tournament selection operator.
  */
 Optimization.Operators.createTournamentSelection = (options = {}) => {
   const tournamentSize = options.size || 5;
@@ -756,8 +743,8 @@ Optimization.Operators.createTournamentSelection = (options = {}) => {
         best = individual;
       }
     }
-    // Retourne le meilleur trouvé. Dans le pire des cas (tous les scores sont Infinity),
-    // on retourne le premier candidat sélectionné au lieu de null.
+    // Returns the best candidate. In degenerate edge cases (all fitness scores are Infinity),
+    // fallback to a random candidate instead of returning null.
     if (!best) {
       return population[crypto.randomInt(0, population.length)];
     }
@@ -766,12 +753,12 @@ Optimization.Operators.createTournamentSelection = (options = {}) => {
 };
 
 /**
- * Crée une matrice de covariance à partir de coefficients de corrélation déclarés.
- * C'est une manière plus intuitive de définir les relations de risque entre les actifs.
- * @param {object} config - L'objet de configuration.
- * @param {Array<{name: string, volatility: number}>} config.assets - La liste des actifs avec leur volatilité.
- * @param {Array<{assets: [string, string], correlation: number}>} config.correlations - Une liste de relations de corrélation.
- * @returns {Array<Array<number>>} La matrice de covariance calculée.
+ * Creates a covariance matrix from pairwise asset correlations.
+ * Provides an intuitive representation for cross-asset risk modeling.
+ * @param {object} config - Configuration object.
+ * @param {Array<{name: string, volatility: number}>} config.assets - Asset definitions with volatilities.
+ * @param {Array<{assets: [string, string], correlation: number}>} config.correlations - Pairwise correlation entries.
+ * @returns {Array<Array<number>>} Resulting covariance matrix.
  */
 Optimization.Operators.createCovarianceMatrixFromCorrelations = ({
   assets,
@@ -780,24 +767,24 @@ Optimization.Operators.createCovarianceMatrixFromCorrelations = ({
   const n = assets.length;
   const matrix = Array.from({ length: n }, () => Array(n).fill(0));
 
-  // Créer un map pour un accès rapide aux infos des actifs par leur nom.
+  // Fast lookup map for asset details by name
   const assetInfo = new Map();
   assets.forEach((asset, index) => {
     assetInfo.set(asset.name, { index, volatility: asset.volatility });
   });
 
-  // 1. Remplir la diagonale avec les variances (volatilité^2)
+  // 1. Fill diagonal with individual variances (volatility^2)
   for (let i = 0; i < n; i++) {
     const variance = Math.pow(assets[i].volatility, 2);
     matrix[i][i] = variance;
   }
 
-  // 2. Remplir les autres cellules avec les covariances calculées
+  // 2. Fill off-diagonal cells with computed covariances
   for (const corr of correlations) {
     const [nameA, nameB] = corr.assets;
     if (!assetInfo.has(nameA) || !assetInfo.has(nameB)) {
       console.warn(
-        `Avertissement: L'un des actifs [${nameA}, ${nameB}] n'a pas été trouvé. La corrélation est ignorée.`,
+        `Warning: One of assets [${nameA}, ${nameB}] was not found. Correlation ignored.`,
       );
       continue;
     }
@@ -809,13 +796,13 @@ Optimization.Operators.createCovarianceMatrixFromCorrelations = ({
     const covariance = corr.correlation * infoA.volatility * infoB.volatility;
 
     matrix[infoA.index][infoB.index] = covariance;
-    matrix[infoB.index][infoA.index] = covariance; // La matrice est symétrique
+    matrix[infoB.index][infoA.index] = covariance; // Symmetric matrix
   }
 
   return matrix;
 };
 
-// Le "déséquilibre" est la différence absolue entre l'offre et la demande. On veut le minimiser.
+// Market imbalance is the absolute delta between supply and demand (goal is minimization)
 Optimization.Operators.createMarketEquilibriumEvaluator = (
   demandModel,
   supplyModel,
@@ -827,26 +814,26 @@ Optimization.Operators.createMarketEquilibriumEvaluator = (
   };
 };
 
-// Un "individu" est un tableau de 3 poids (ex: [0.5, 0.2, 0.3]) qui doivent sommer à 1.
 /**
- * Crée une fonction de fitness pour l'optimisation de portefeuille.
- * @param {object} config - L'objet de configuration.
- * @param {Array<{name: string, expectedReturn: number, volatility: number}>} config.assets - Les actifs disponibles.
- * @param {number} config.maxVolatility - La contrainte de volatilité maximale du portefeuille.
- * @param {Array<Array<number>>} [config.covarianceMatrix] - Matrice de covariance pour un calcul de risque précis.
- * @returns {function(Array<number>): number} Une fonction de fitness qui évalue un portefeuille (tableau de poids).
+ * Creates a fitness function for portfolio allocation.
+ * An individual is a weight array (e.g. [0.5, 0.2, 0.3]) normalized to sum to 1.
+ * @param {object} config - Configuration object.
+ * @param {Array<{name: string, expectedReturn: number, volatility: number}>} config.assets - Target assets.
+ * @param {number} config.maxVolatility - Maximum portfolio volatility threshold constraint.
+ * @param {Array<Array<number>>} [config.covarianceMatrix] - Covariance matrix for exact variance evaluation.
+ * @returns {function(Array<number>): number} Fitness evaluator returning negative return with risk penalty.
  */
 Optimization.Operators.createPortfolioAllocator = ({
   assets,
   maxVolatility,
   covarianceMatrix,
 }) => {
-  // La fonction de fitness évalue un portefeuille (un tableau de poids).
-  // L'objectif est de MINIMISER le score, donc on minimise le rendement NÉGATIF.
+  // Evaluates a portfolio weight vector.
+  // Since solvers minimize, we minimize NEGATIVE expected return.
   return function portfolioFitness(weights) {
-    // Normaliser les poids pour qu'ils somment à 1
+    // Normalize weights to ensure total equals 1.0
     const totalWeight = weights.reduce((sum, w) => sum + w, 0);
-    if (totalWeight === 0) return Infinity; // Éviter la division par zéro, score très mauvais
+    if (totalWeight === 0) return Infinity; // Prevent zero-division
     const normalizedWeights = weights.map((w) => w / totalWeight);
 
     let portfolioReturn = normalizedWeights.reduce(
@@ -856,8 +843,7 @@ Optimization.Operators.createPortfolioAllocator = ({
     let portfolioVolatility;
 
     if (covarianceMatrix) {
-      // Calcul de la volatilité avec la matrice de covariance (plus précis)
-      // Volatilité^2 = w' * C * w
+      // Accurate covariance volatility: Volatility^2 = w' * C * w
       let variance = 0;
       for (let i = 0; i < assets.length; i++) {
         for (let j = 0; j < assets.length; j++) {
@@ -869,7 +855,7 @@ Optimization.Operators.createPortfolioAllocator = ({
       }
       portfolioVolatility = Math.sqrt(variance);
     } else {
-      // Calcul simplifié (moins précis) : moyenne pondérée des volatilités individuelles.
+      // Simplified weighted average volatility
       portfolioVolatility = normalizedWeights.reduce(
         (sum, w, i) => sum + w * assets[i].volatility,
         0,
@@ -878,39 +864,38 @@ Optimization.Operators.createPortfolioAllocator = ({
 
     for (let i = 0; i < assets.length; i++) {}
 
-    // Forte pénalité si la contrainte de risque n'est pas respectée.
+    // High penalty if risk ceiling is violated
     if (portfolioVolatility > maxVolatility) {
-      return 1000 + (portfolioVolatility - maxVolatility) * 1000; // Pénalité proportionnelle à la violation.
+      return 1000 + (portfolioVolatility - maxVolatility) * 1000; // Proportional penalty
     }
 
-    // On veut maximiser le rendement, donc on minimise son opposé.
+    // Maximize return <=> minimize negative return
     return -portfolioReturn;
   };
 };
 
 /**
- * Crée un solveur complet pour le problème du voyageur de commerce (TSP) en utilisant le Recuit Simulé.
- * Cette fonction factorise la création de l'évaluateur de chemin et de la fonction de voisinage.
- * @param {Array<{x: number, y: number}>} cities - Un tableau d'objets représentant les coordonnées des villes.
- * @param {object} [options] - Options pour l'algorithme de recuit simulé.
- * @returns {{solution: Array<number>, energy: number}} Le chemin optimal (indices des villes) et sa distance.
+ * Solves the Traveling Salesperson Problem (TSP) using Simulated Annealing.
+ * @param {Array<{x: number, y: number}>} cities - City coordinates array.
+ * @param {object} [options] - Simulated Annealing parameters.
+ * @returns {{solution: Array<number>, energy: number}} Optimal tour (city indices) and total distance.
  */
 Optimization.Operators.solveTSP = (cities, options = {}) => {
-  // Fonction interne pour calculer la distance entre deux villes.
+  // Euclidean distance between two cities
   const distance = (city1, city2) =>
     Math.sqrt(Math.pow(city1.x - city2.x, 2) + Math.pow(city1.y - city2.y, 2));
 
-  // Évaluateur : calcule la longueur totale d'un chemin donné.
+  // Total route tour distance evaluator
   const pathEvaluator = (path) => {
     let totalDistance = 0;
     for (let i = 0; i < path.length - 1; i++) {
       totalDistance += distance(cities[path[i]], cities[path[i + 1]]);
     }
-    totalDistance += distance(cities[path[path.length - 1]], cities[path[0]]); // Retour au départ
+    totalDistance += distance(cities[path[path.length - 1]], cities[path[0]]); // Return to origin
     return totalDistance;
   };
 
-  // Voisinage : génère un chemin voisin en inversant une sous-séquence (heuristique 2-opt).
+  // Neighborhood: inverts a random sub-sequence (2-opt heuristic)
   const pathNeighbor = (path) => {
     const newPath = [...path];
     if (newPath.length <= 1) return newPath;
@@ -926,12 +911,12 @@ Optimization.Operators.solveTSP = (cities, options = {}) => {
     return newPath;
   };
 
-  // Solution initiale : un chemin aléatoire.
+  // Initial solution: randomized route
   const initialPath = Array.from({ length: cities.length }, (_, i) => i).sort(
     () => random() - 0.5,
   );
 
-  // Paramètres par défaut pour le TSP, pouvant être surchargés par `options`.
+  // Default hyperparameters for TSP
   const saOptions = {
     initialTemperature: 10000,
     coolingRate: 0.999,
@@ -950,35 +935,35 @@ Optimization.Operators.solveTSP = (cities, options = {}) => {
 };
 
 /**
- * Crée un solveur complet pour le problème d'optimisation de portefeuille en utilisant un Algorithme Génétique.
- * @param {Array<{name: string, expectedReturn: number, volatility: number}>} assets - Les actifs disponibles.
- * @param {number} maxVolatility - La contrainte de volatilité maximale du portefeuille.
- * @param {object} [options] - Options pour l'algorithme génétique.
- * @returns {{solution: Array<number>, fitness: number}} L'allocation de poids optimale et le score de fitness associé.
+ * Solves portfolio allocation using a Genetic Algorithm.
+ * @param {Array<{name: string, expectedReturn: number, volatility: number}>} assets - Available assets.
+ * @param {number} maxVolatility - Maximum allowed volatility constraint.
+ * @param {object} [options] - Genetic algorithm options.
+ * @returns {{solution: Array<number>, fitness: number}} Optimal weights and associated fitness.
  */
 Optimization.Operators.solvePortfolio = (
   assets,
   maxVolatility,
   options = {},
 ) => {
-  // La fonction de fitness est créée par notre opérateur existant.
+  // Fitness function created from the allocator operator
   const fitnessFunction = Optimization.Operators.createPortfolioAllocator({
     assets,
     maxVolatility,
     covarianceMatrix: options.covarianceMatrix,
   });
 
-  // Fonctions spécifiques au problème pour l'AG, maintenant encapsulées.
+  // Problem-specific genetic operators
   const createIndividual = () =>
     Array.from({ length: assets.length }, () => random());
 
-  const crossover = (p1, p2) => p1.map((w1, i) => (w1 + p2[i]) / 2); // Moyenne des poids
+  const crossover = (p1, p2) => p1.map((w1, i) => (w1 + p2[i]) / 2); // Arithmetic average
 
   const mutate = (p) => {
     const newP = [...p];
       const i = crypto.randomInt(0, newP.length);
-    newP[i] += (random() - 0.5) * 0.2; // Mutation douce
-    newP[i] = Math.max(0, newP[i]); // Les poids ne peuvent être négatifs
+    newP[i] += (random() - 0.5) * 0.2; // Gentle mutation
+    newP[i] = Math.max(0, newP[i]); // Weights cannot be negative
     return newP;
   };
 
@@ -998,57 +983,56 @@ Optimization.Operators.solvePortfolio = (
 };
 
 /**
- * Crée un évaluateur 2D pour trouver la commission de base et le facteur de bonus qualité qui maximisent les revenus de la plateforme.
- * @param {object} config - L'objet de configuration.
- * @param {number} config.totalAdvertiserCredits - Le total des crédits disponibles chez les annonceurs.
- * @param {Array<{qualityScore: number}>} config.websites - Un tableau d'objets représentant les sites monétisés, chacun avec un score de qualité.
- * @returns {function(Array<number>): number} Un évaluateur qui prend une solution `[baseCommission, bonusFactor]` et retourne le revenu NÉGATIF (car les solveurs minimisent).
+ * Creates a 2D evaluator to determine base commission and quality bonus factor to maximize platform revenue.
+ * @param {object} config - Configuration object.
+ * @param {number} config.totalAdvertiserCredits - Total advertiser credits.
+ * @param {Array<{qualityScore: number}>} config.websites - Array of websites with quality scores.
+ * @returns {function(Array<number>): number} Evaluator for `[baseCommission, bonusFactor]` returning NEGATIVE revenue.
  */
 Optimization.Operators.createAdvancedPlatformRevenueEvaluator = ({
   totalAdvertiserCredits,
   websites,
 }) => {
-  // Modèle de la demande (Annonceurs)
-  // La demande est sensible à la qualité globale de l'inventaire publicitaire.
+  // Advertiser demand model (increases with inventory quality)
   const advertiserDemandModel = (averageSiteQuality) => {
-    // La demande de base est toujours liée aux crédits disponibles.
+    // Baseline demand tied to available credits
     const baseDemand = (totalAdvertiserCredits || 100) * 10;
-    // La demande augmente avec la qualité moyenne des sites.
+    // Demand scales with average inventory quality
     return baseDemand * (1 + averageSiteQuality);
   };
 
-  // Modèle de l'offre (Webmasters)
-  // L'offre de chaque site dépend de sa rémunération individuelle.
+  // Publisher / webmaster supply model
+  // Each site's click supply scales with its effective payout rate
   const webmasterSupplyModel = (baseCommission, bonusFactor) => {
     let totalOfferedClicks = 0;
-    const baseSupplyPerSite = 500; // Clics potentiels par site
+    const baseSupplyPerSite = 500; // Baseline potential clicks per site
 
     for (const site of websites) {
-      // La commission effective est réduite pour les sites de haute qualité.
+      // Effective commission is discounted for higher quality sites
       const effectiveCommission = Math.max(
         0,
         baseCommission - site.qualityScore * bonusFactor,
       );
       const webmasterPayoutRate = 1 - effectiveCommission;
 
-      // L'offre d'un site est proportionnelle à son taux de rémunération.
+      // Supply is proportional to payout rate
       totalOfferedClicks += baseSupplyPerSite * webmasterPayoutRate;
     }
     return totalOfferedClicks;
   };
 
-  // L'évaluateur pour l'algorithme d'optimisation (Recuit Simulé, etc.)
+  // Objective function for optimization algorithms
   return function revenueEvaluator(solution) {
     const [baseCommission, bonusFactor] = solution;
 
-    // Contraintes : on pénalise fortement les solutions hors des clous.
+    // Constraints: heavily penalize out-of-bound solutions
     if (
       baseCommission < 0.01 ||
       baseCommission > 0.8 ||
       bonusFactor < 0 ||
       bonusFactor > baseCommission
     ) {
-      return Infinity; // Score très mauvais
+      return Infinity;
     }
 
     const averageQuality =
@@ -1066,19 +1050,19 @@ Optimization.Operators.createAdvancedPlatformRevenueEvaluator = ({
       baseCommission - averageQuality * bonusFactor,
     );
 
-    // On veut MAXIMISER le revenu, donc on MINIMISE son opposé.
+    // Maximize revenue <=> minimize negative revenue
     return -(clicks * averageCommission);
   };
 };
 
 /**
- * Crée un solveur pour le problème de placement d'infrastructures (Facility Location Problem).
- * @param {Array<{x: number, y: number}>} customers - Coordonnées des clients.
- * @param {number} numFacilities - Le nombre d'infrastructures à placer.
- * @param {{minX: number, maxX: number, minY: number, maxY: number}} bounds - Les limites de la carte où placer les infrastructures.
- * @param {number} [options.fixedCostPerFacility=0] - Coût fixe pour chaque infrastructure installée.
- * @param {object} [options] - Options pour le recuit simulé.
- * @returns {{solution: Array<{x: number, y: number}>, energy: number}} Les coordonnées optimales des infrastructures et le coût total.
+ * Solves the Facility Location Problem using Simulated Annealing.
+ * @param {Array<{x: number, y: number}>} customers - Customer coordinate pairs.
+ * @param {number} numFacilities - Number of facilities to place.
+ * @param {{minX: number, maxX: number, minY: number, maxY: number}} bounds - Boundary box for placing facilities.
+ * @param {number} [options.fixedCostPerFacility=0] - Fixed installation cost per facility.
+ * @param {object} [options] - Simulated Annealing options.
+ * @returns {{solution: Array<{x: number, y: number}>, energy: number}} Optimal facility locations and total cost.
  */
 Optimization.Operators.solveFacilityLocation = (
   customers,
@@ -1088,9 +1072,9 @@ Optimization.Operators.solveFacilityLocation = (
 ) => {
   const fixedCostPerFacility = options.fixedCostPerFacility || 0;
   const distanceSq = (p1, p2) =>
-    Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2); // On utilise la distance au carré pour l'efficacité
+    Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2); // Squared Euclidean distance for efficiency
 
-  // Évaluateur : calcule la somme des distances de chaque client à son infrastructure la plus proche.
+  // Evaluator: computes sum of shortest distances from each customer to nearest facility
   const facilityEvaluator = (facilities) => {
     let totalConnectionCost = 0;
     for (const customer of customers) {
@@ -1101,13 +1085,13 @@ Optimization.Operators.solveFacilityLocation = (
           minDistanceToCustomer = d;
         }
       }
-      totalConnectionCost += Math.sqrt(minDistanceToCustomer); // On utilise la vraie distance pour le coût
+      totalConnectionCost += Math.sqrt(minDistanceToCustomer); // True Euclidean distance for cost
     }
-    // Le coût total est la somme des coûts de connexion + le coût fixe des infrastructures.
+    // Total cost = connection cost + fixed facility maintenance costs
     return totalConnectionCost + facilities.length * fixedCostPerFacility;
   };
 
-  // Voisinage : déplace légèrement une infrastructure au hasard.
+  // Neighborhood: randomly perturb one facility position
   const facilityNeighbor = (facilities) => {
     const newFacilities = facilities.map((f) => ({ ...f }));
       const i = crypto.randomInt(0, numFacilities);
@@ -1126,7 +1110,7 @@ Optimization.Operators.solveFacilityLocation = (
     return newFacilities;
   };
 
-  // Solution initiale : place les infrastructures au hasard sur la carte.
+  // Initial solution: distribute facilities randomly across bounds
   const initialFacilities = Array.from({ length: numFacilities }, () => ({
     x: bounds.minX + random() * (bounds.maxX - bounds.minX),
     y: bounds.minY + random() * (bounds.maxY - bounds.minY),
@@ -1151,65 +1135,59 @@ Optimization.Operators.solveFacilityLocation = (
   return result;
 };
 
-// --- SOLUTION : Définir un coût de base pour un clic ---
-// 1 PRIM'S = 1 clic
+// Baseline click cost: 1 credit = 1 click
 const BASE_CLICK_COST = 1;
 /**
- * Crée un évaluateur multi-objectifs pour déterminer le Coût Par Clic (CPC) optimal.
- * @param {object} config - L'objet de configuration.
- * @param {object} config.advertiser - L'annonceur qui paie le clic.
- * @param {object} config.ad - L'annonce qui a été cliquée.
- * @param {Array<object>} config.competingAds - Les autres annonces ciblant les mêmes mots-clés.
- * @param {object} config.website - Le site sur lequel le clic a eu lieu.
- * @param {object} config.platformParams - Les paramètres de la plateforme (taux de commission, etc.).
- * @param {number} config.estimatedImpressions - Le nombre d'impressions quotidiennes estimées pour ce contexte.
+ * Creates a multi-objective evaluator to determine optimal Cost Per Click (CPC).
+ * @param {object} context - Configuration context.
+ * @param {object} context.advertiser - Advertiser paying for the click.
+ * @param {object} context.ad - Ad details.
+ * @param {Array<object>} context.competingAds - Competing ads targeting the same keywords.
+ * @param {object} context.website - Publisher website hosting the ad.
+ * @param {object} context.platformParams - Platform commission parameters.
+ * @param {number} context.estimatedImpressions - Estimated daily impressions.
  */
 Optimization.Operators.createOptimalCPCEvaluator = (context) => {
   const { optimalBaseCommission, optimalBonusFactor } = context.platformParams;
   const websiteQualityScore = (context.website?.relevanceScore || 50) / 100;
 
-  // Le taux de commission effectif pour ce site
+  // Effective commission rate for this publisher
   const effectiveCommissionRate = Math.max(
     0,
     optimalBaseCommission - websiteQualityScore * optimalBonusFactor,
   );
 
-  // Modèle de la demande : combien de clics l'annonceur peut-il s'offrir ?
+  // Demand model: how many clicks can the advertiser afford?
   const advertiserDemand = (cpc) => {
     if (cpc <= 0) return Infinity;
     return (context.advertiser.credits || 0) / cpc;
   };
 
-  // --- SOLUTION : Utiliser l'offre réelle et la concurrence ---
-  // L'offre est maintenant le nombre d'impressions estimées, un chiffre concret.
-  const supply = context.estimatedImpressions || 1; // Fallback à 1 pour éviter la division par zéro.
+  // Available inventory supply
+  const supply = context.estimatedImpressions || 1; // Fallback to 1 to prevent zero-division
 
-  // Le facteur de concurrence augmente le prix s'il y a plus de monde sur le même créneau.
-  // Formule simple : 1 + (0.1 * nombre de concurrents), avec un plafond.
+  // Competition factor scales price based on competition density (capped at 2.5)
   const competitionFactor = Math.min(
     2.5,
     1 + context.competingAds.length * 0.1,
   );
 
   return function cpcFitness(cpcMultiplier) {
-    // Le CPC final est le coût de base, ajusté par le multiplicateur de l'algo et la concurrence.
+    // Final CPC is baseline cost adjusted by optimizer multiplier and competition factor
     const adjustedCPC = BASE_CLICK_COST * cpcMultiplier * competitionFactor;
-    if (adjustedCPC < 0.1) return [Infinity, Infinity, Infinity]; // CPC minimum
+    if (adjustedCPC < 0.1) return [Infinity, Infinity, Infinity]; // Minimum CPC constraint
 
-    // La demande de l'annonceur est calculée avec le CPC ajusté.
     const demand = advertiserDemand(adjustedCPC);
-
-    // Le nombre de clics est le minimum de l'offre et de la demande.
     const estimatedClicks = Math.min(demand, supply);
 
-    // Objectif 1 : Maximiser le revenu de la plateforme (donc minimiser son opposé)
+    // Objective 1: Maximize platform revenue (minimize negative revenue)
     const platformRevenue =
       estimatedClicks * adjustedCPC * effectiveCommissionRate;
 
-    // Objectif 2 : Maximiser la valeur pour l'annonceur (nombre de clics, donc minimiser son opposé)
+    // Objective 2: Maximize advertiser value (clicks delivered, minimize negative)
     const advertiserValue = estimatedClicks;
 
-    // Objectif 3 : Minimiser le déséquilibre du marché (offre vs demande)
+    // Objective 3: Minimize market imbalance (supply vs demand)
     const marketImbalance = Math.abs(demand - supply);
 
     return [-platformRevenue, -advertiserValue, marketImbalance];
@@ -1217,47 +1195,44 @@ Optimization.Operators.createOptimalCPCEvaluator = (context) => {
 };
 
 /**
- * Applique le facteur de concurrence au CPC de base.
+ * Applies competition factor to baseline CPC.
  * @private
- * @param {number} baseCpc - Le CPC issu de l'algorithme génétique.
- * @param {Array<object>} competingAds - Les annonces concurrentes.
- * @returns {number} Le CPC final ajusté.
+ * @param {number} baseCpc - Baseline CPC from genetic algorithm.
+ * @param {Array<object>} competingAds - Competing ads.
+ * @returns {number} Final adjusted CPC.
  */
 function applyCompetitionFactor(baseCpc, competingAds) {
-  // Formule simple : 1 + (0.1 * nombre de concurrents), avec un plafond pour éviter l'explosion des prix.
   const competitionFactor = Math.min(
     2.5,
     1 + (competingAds || []).length * 0.1,
   );
   const finalCpc = baseCpc * competitionFactor;
-  // On s'assure de ne jamais descendre sous un seuil minimal.
   return Math.max(0.1, finalCpc);
 }
 /**
- * Résout le problème du CPC optimal en utilisant un algorithme génétique multi-objectifs.
- * @param {object} context - Le contexte nécessaire pour l'évaluation (advertiser, ad, etc.).
- * @param {object} [options] - Options pour l'algorithme génétique.
- * @returns {Array<{solution: number, objectives: number[]}>} Le front de Pareto des solutions CPC.
+ * Solves optimal CPC configuration using a multi-objective genetic algorithm.
+ * @param {object} context - Context required for evaluation (advertiser, ad, etc.).
+ * @param {object} [options] - Genetic algorithm options.
+ * @returns {Array<{solution: number, objectives: number[]}>} Pareto front of optimal CPC solutions.
  */
 Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
   const fitnessFunction =
     Optimization.Operators.createOptimalCPCEvaluator(context);
 
-  // Un "individu" est simplement une valeur de CPC.
+  // An individual is a CPC multiplier scalar
   const createIndividual = () => {
-    // Le CPC peut varier, par exemple, entre 0.5 et 5 PRIM'S.
     return 0.5 + random() * 4.5;
   };
 
-  // Croisement : moyenne des CPC des parents.
+  // Crossover: average of parent multipliers
   const crossover = (cpc1, cpc2) => {
     return (cpc1 + cpc2) / 2;
   };
 
-  // Mutation : légère variation aléatoire du CPC.
+  // Mutation: slight random variation
   const mutate = (cpc) => {
     const newCpc = cpc + (random() - 0.5) * 0.5;
-    return Math.max(0.1, newCpc); // Assurer un CPC minimum.
+    return Math.max(0.1, newCpc);
   };
 
   const gaOptions = {
@@ -1266,7 +1241,6 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
     ...options,
   };
 
-  // On utilise l'algorithme génétique multi-objectifs pour obtenir le front de Pareto.
   const paretoFront = Optimization.geneticAlgorithmMultiObjective(
     createIndividual,
     fitnessFunction,
@@ -1275,60 +1249,53 @@ Optimization.Operators.solveOptimalCPC = (context, options = {}) => {
     gaOptions,
   );
 
-  // --- SOLUTION : Appliquer le facteur de concurrence sur les solutions finales ---
+  // Apply competition factor to final Pareto solutions
   return paretoFront.map((result) => {
     const cpcMultiplier = result.solution;
-    // Le CPC final est calculé ici, en dehors de la fonction de fitness.
     const finalCpc = applyCompetitionFactor(
       BASE_CLICK_COST * cpcMultiplier,
       context.competingAds,
     );
     return {
       ...result,
-      solution: Math.max(0.1, finalCpc), // On s'assure de ne jamais descendre sous le plancher absolu.
+      solution: Math.max(0.1, finalCpc),
     };
   });
 };
 
 /**
- * Crée un évaluateur multi-objectifs pour trouver le TTL (Time-To-Live) optimal pour un ticket de sécurité.
- * @param {object} context - L'objet de configuration.
- * @param {number} context.suspicionScore - Le score de suspicion de l'utilisateur (0-100).
- * @returns {function(number): number[]} Une fonction de fitness qui prend un TTL (en ms) et retourne les scores des objectifs [risque, friction].
+ * Creates a multi-objective evaluator to find optimal TTL (Time-To-Live) for a security ticket.
+ * @param {object} context - Configuration context.
+ * @param {number} context.suspicionScore - User suspicion score (0-100).
+ * @returns {function(number): number[]} Fitness function returning [risk, friction] objective scores.
  */
 Optimization.Operators.createOptimalTtlEvaluator = ({ suspicionScore }) => {
-  // On normalise le score pour qu'il soit plus impactant dans le calcul du risque.
+  // Normalize score to ensure strong weight in risk calculation
   const normalizedScore = Math.max(1, suspicionScore);
 
   return function ttlFitness(ttl) {
-    // Contraintes : un TTL doit être dans une plage raisonnable (ex: 5min à 24h)
+    // Constraints: TTL must be within realistic bounds (5m to 24h)
     if (ttl < 300000 || ttl > 86400000) return [Infinity, Infinity];
 
-    // Objectif 1 : Minimiser le Risque.
-    // Le risque est le produit du score et de la durée de la session.
-    // Pour un score élevé, l'algo doit choisir un TTL faible pour minimiser ce produit.
+    // Objective 1: Minimize Security Risk (product of suspicion score and session duration)
     const risk = normalizedScore * ttl;
 
-    // Objectif 2 : Minimiser la Friction UX.
-    // La friction est l'inverse du TTL. On la pénalise d'autant plus que le score est FAIBLE.
-    // (101 - score) assure que pour un score de 1, la pénalité d'un TTL court est maximale.
-    // Pour un score de 100, cette pénalité est quasi nulle.
+    // Objective 2: Minimize UX Friction (inverse of TTL, penalized when suspicion is low)
     const friction = (1 / ttl) * (101 - normalizedScore);
 
-    // On retourne 2 objectifs avec des facteurs de mise à l'échelle pour les équilibrer.
+    // Return scaled objectives to balance dimensions
     return [risk / 1e7, friction * 1e9];
   };
 };
 
 /**
- * Calcule la déviation d'une série de chiffres par rapport à la loi de Benford.
- * Un score élevé indique une distribution non naturelle, potentiellement frauduleuse.
- * @param {string} numberString - Une chaîne de chiffres (ex: "123456789").
- * @returns {number} Un score de déviation (0 = parfait, > 0.15 = suspect).
+ * Calculates Benford's Law deviation for a series of numbers.
+ * Elevated scores indicate unnatural/synthetic data distributions.
+ * @param {Array<number|string>} numbers - Array of numeric samples.
+ * @returns {number} Deviation score (0 = perfect match, > 0.15 = suspicious).
  */
 Optimization.Operators.benfordTest = (numbers) => {
     if (!Array.isArray(numbers)) {
-        // Si l'entrée n'est pas un tableau, on ne peut pas l'analyser.
         return 0;
     }
     const counts = Array(10).fill(0);
@@ -1356,12 +1323,12 @@ Optimization.Operators.benfordTest = (numbers) => {
     }
 
     if (validCount < 10) {
-        return 0; // Pas assez de données pour un test fiable
+        return 0; // Insufficient data points for reliable statistical testing
     }
 
-    // Distribution attendue selon la loi de Benford pour le premier chiffre
+    // Expected Benford's Law distribution for leading digits 1 through 9
     const benfordDistribution = [
-        0, // Index 0 non utilisé
+        0, // Index 0 unused
         30.1, 17.6, 12.5, 9.7, 7.9, 6.7, 5.8, 5.1, 4.6
     ];
 
@@ -1372,8 +1339,7 @@ Optimization.Operators.benfordTest = (numbers) => {
         totalDeviation += Math.pow(observedFrequency - expectedFrequency, 2);
     }
 
-    // Normalise la déviation pour obtenir un score plus interprétable.
-    // Cette normalisation est empirique.
+    // Normalize deviation into an interpretable metric scale
     return Math.sqrt(totalDeviation) / 50;
 };
 
@@ -1381,17 +1347,17 @@ Optimization.Operators.benfordTest = (numbers) => {
 
 
 /**
- * Crée un évaluateur multi-objectifs pour trouver les seuils de détection de fraude optimaux.
- * @param {object} config - L'objet de configuration.
- * @param {Array<object>} config.legitimateClicks - Un échantillon de clics considérés comme légitimes.
- * @param {Array<object>} config.fraudulentClicks - Un échantillon de clics identifiés comme frauduleux (ex: honeypots).
- * @returns {function(Array<number>): number[]} Une fonction de fitness qui prend une solution `[minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents]` et retourne les scores des objectifs.
+ * Creates a multi-objective evaluator to identify optimal fraud detection thresholds.
+ * @param {object} config - Configuration object.
+ * @param {Array<object>} config.legitimateClicks - Sample of legitimate click events.
+ * @param {Array<object>} config.fraudulentClicks - Sample of identified fraudulent clicks (e.g. honeypots).
+ * @returns {function(Array<number>): number[]} Fitness function returning [1 - TPR, FPR].
  */
 Optimization.Operators.createFraudThresholdEvaluator = ({
   legitimateClicks,
   fraudulentClicks,
 }) => {
-  // Fonction d'aide pour calculer la variance des positions de clic pour une empreinte
+  // Helper to compute click coordinate variance for a given fingerprint
   const calculateClickVariance = (clicks) => {
     if (!clicks || clicks.length < 2) return 0;
     const meanX = clicks.reduce((sum, c) => sum + c.clickX, 0) / clicks.length;
@@ -1405,7 +1371,7 @@ Optimization.Operators.createFraudThresholdEvaluator = ({
     return variance;
   };
 
-  // Pré-calculer la variance pour chaque empreinte dans les données
+  // Pre-group click events by fingerprint
   const getClicksByFingerprint = (clickData) => {
     const grouped = {};
     for (const click of clickData) {
@@ -1422,7 +1388,7 @@ Optimization.Operators.createFraudThresholdEvaluator = ({
     const [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents] =
       solution;
 
-    // Contraintes pour garder des seuils logiques
+    // Logical threshold boundary constraints
     if (
       minTimeToClick < 100 ||
       minTimeToClick > 5000 ||
@@ -1432,18 +1398,17 @@ Optimization.Operators.createFraudThresholdEvaluator = ({
       minMouseEntropy > 1 ||
       minScrollEvents < 0
     ) {
-      return [Infinity, Infinity]; // Mauvais score si hors limites
+      return [Infinity, Infinity];
     }
 
-    let truePositives = 0; // Bots correctement identifiés
-    let falsePositives = 0; // Humains incorrectement bloqués
+    let truePositives = 0; // Bots accurately detected
+    let falsePositives = 0; // Humans falsely flagged
 
-    // Évaluer les clics frauduleux
+    // Evaluate fraudulent clicks
     for (const fingerprint in fraudulentGroups) {
       const clicks = fraudulentGroups[fingerprint];
       if (!clicks) continue;
       const variance = calculateClickVariance(clicks);
-      // Un groupe de clics est frauduleux si l'une des conditions est remplie
       const isTooFast = clicks.some((c) => c.timeToClick < minTimeToClick);
       const isTooUniform = variance < maxClickVariance;
       const hasLowEntropy = clicks.some(
@@ -1458,7 +1423,7 @@ Optimization.Operators.createFraudThresholdEvaluator = ({
       }
     }
 
-    // Évaluer les clics légitimes
+    // Evaluate legitimate clicks
     for (const fingerprint in legitimateGroups) {
       const clicks = legitimateGroups[fingerprint];
       if (!clicks) continue;
@@ -1479,10 +1444,10 @@ Optimization.Operators.createFraudThresholdEvaluator = ({
     const totalFraudulent = Object.keys(fraudulentGroups).length || 1;
     const totalLegitimate = Object.keys(legitimateGroups).length || 1;
 
-    // Objectif 1 : Maximiser la détection de fraude (donc minimiser 1 - taux de détection)
+    // Objective 1: Maximize fraud detection rate (minimize 1 - TPR)
     const objective1 = 1 - truePositives / totalFraudulent;
 
-    // Objectif 2 : Minimiser le taux de faux positifs
+    // Objective 2: Minimize false positive rate (minimize FPR)
     const objective2 = falsePositives / totalLegitimate;
 
     return [objective1, objective2];
@@ -1490,27 +1455,27 @@ Optimization.Operators.createFraudThresholdEvaluator = ({
 };
 
 /**
- * Résout le problème de la détection de fraude en trouvant un front de Pareto de seuils optimaux.
- * @param {object} context - Le contexte contenant les données de clics.
- * @param {Array<object>} context.legitimateClicks - Échantillon de clics légitimes.
- * @param {Array<object>} context.fraudulentClicks - Échantillon de clics frauduleux.
- * @param {object} [options] - Options pour l'algorithme génétique.
- * @returns {Array<{solution: Array<number>, objectives: number[]}>} Le front de Pareto des solutions [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents].
+ * Solves fraud detection optimization by finding the Pareto front of threshold values.
+ * @param {object} context - Context containing click datasets.
+ * @param {Array<object>} context.legitimateClicks - Sample of legitimate clicks.
+ * @param {Array<object>} context.fraudulentClicks - Sample of fraudulent clicks.
+ * @param {object} [options] - Genetic algorithm options.
+ * @returns {Array<{solution: Array<number>, objectives: number[]}>} Pareto front of [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents].
  */
 Optimization.Operators.solveFraudDetection = (context, options = {}) => {
   const fitnessFunction =
     Optimization.Operators.createFraudThresholdEvaluator(context);
 
-  // Un "individu" est un tableau de 4 seuils : [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents]
+  // An individual is a 4-threshold array: [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents]
   const createIndividual = () => {
-    const minTimeToClick = 100 + random() * 4900; // entre 100ms et 5s
-    const maxClickVariance = 1 + random() * 9999; // entre 1 et 10000
-    const minMouseEntropy = random() * 0.5; // entre 0 et 0.5
-    const minScrollEvents = crypto.randomInt(0, 10); // entre 0 et 10
+    const minTimeToClick = 100 + random() * 4900; // between 100ms and 5s
+    const maxClickVariance = 1 + random() * 9999; // between 1 and 10000
+    const minMouseEntropy = random() * 0.5; // between 0 and 0.5
+    const minScrollEvents = crypto.randomInt(0, 10); // between 0 and 10
     return [minTimeToClick, maxClickVariance, minMouseEntropy, minScrollEvents];
   };
 
-  // Croisement : moyenne des seuils des parents
+  // Crossover: arithmetic mean of parent thresholds
   const crossover = (s1, s2) => {
     return [
       (s1[0] + s2[0]) / 2,
@@ -1520,14 +1485,14 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
     ];
   };
 
-  // Mutation : légère variation aléatoire d'un des seuils
+  // Mutation: slight random perturbation of a single threshold
   const mutate = (solution) => {
     const newSolution = [...solution];
     const i = crypto.randomInt(0, 4);
-    // Amplitudes de mutation différentes pour chaque seuil
+    // Specific mutation step scales for each dimension
     const mutationFactors = [500, 1000, 0.1, 2];
     const mutationFactor = mutationFactors[i];
-    newSolution[i] += (secureRandom() - 0.5) * mutationFactor;
+    newSolution[i] += (random() - 0.5) * mutationFactor;
     return newSolution;
   };
 
@@ -1547,11 +1512,11 @@ Optimization.Operators.solveFraudDetection = (context, options = {}) => {
 };
 
 /**
- * Crée un évaluateur multi-objectifs pour l'auto-tuning complet de la configuration de sécurité.
- * Optimise à la fois les seuils, les poids de suspicion et les paramètres de détection de patterns.
- * @param {object} config - L'objet de configuration.
- * @param {Array<object>} config.trafficData - Données de trafic collectées.
- * @returns {function(object): number[]} Une fonction de fitness qui prend une configuration complète et retourne les scores [taux de faux positifs, taux de faux négatifs].
+ * Creates a multi-objective evaluator for end-to-end security configuration auto-tuning.
+ * Jointly optimizes action thresholds, suspicion weights, and pattern detection parameters.
+ * @param {object} context - Configuration context.
+ * @param {Array<object>} context.trafficData - Collected traffic logs.
+ * @returns {function(object): number[]} Fitness function returning [weighted FPR, weighted FNR].
  */
 Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
   const trafficData = context.trafficData || [];
@@ -1561,25 +1526,25 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
   const THREAT_PROFILES = {
     account_takeover: {
       importance: 10.0,
-      ux_vs_security_ratio: 0.1, // 10% FPR / 90% FNR (Priorité sécurité maximale)
+      ux_vs_security_ratio: 0.1, // 10% FPR / 90% FNR (Highest security priority)
       target_threshold: 'block',
       indicators: ['requestPatternScore', 'behaviorScore', 'timeInconsistencyScore', 'clickVarianceScore']
     },
     active_exploitation: {
       importance: 8.0,
-      ux_vs_security_ratio: 0.2, // 20% FPR / 80% FNR (Sécurité prioritaire)
+      ux_vs_security_ratio: 0.2, // 20% FPR / 80% FNR (Security prioritized)
       target_threshold: 'block',
       indicators: ['honeypotScore', 'headerAnomalyScore']
     },
     mass_scraping: {
       importance: 3.0,
-      ux_vs_security_ratio: 0.8, // 80% FPR / 20% FNR (UX prioritaire)
+      ux_vs_security_ratio: 0.8, // 80% FPR / 20% FNR (UX prioritized)
       target_threshold: 'low',
       indicators: ['requestPatternScore', 'renderingAnomalyScore', 'clientHintsInconsistencyScore', 'virtualizationScore']
     },
     distributed_botnets: {
       importance: 6.0,
-      ux_vs_security_ratio: 0.5, // Équilibré
+      ux_vs_security_ratio: 0.5, // Balanced
       target_threshold: 'high',
       indicators: ['subnetScore', 'botnetClusterScore', 'ipReputationScore', 'tlsSpoofingScore']
     },
@@ -1591,7 +1556,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
     }
   };
 
-  // Ancres immuables (Baseline Anchors) pour forcer le calibrage d'échelle de suspicion
+  // Immutable baseline anchors to calibrate the suspicion scale
   const STATIC_ANCHORS = [
     {
       type: 'request_passed',
@@ -1620,7 +1585,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       }
     },
     {
-      type: 'request_passed', // Profil humain sain avec du bruit (doit rester sous le seuil d'alerte, ex: < 20)
+      type: 'request_passed', // Clean human profile with minor noise (must remain below alert threshold, e.g. < 20)
       weight: 10.0,
       vector: {
         historyScore: 15, rotationScore: 10, headerAnomalyScore: 20, requestPatternScore: 15,
@@ -1633,7 +1598,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       }
     },
     {
-      type: 'challenge_issued', // Profil robot furtif moyen (doit être challengé, ex: > 35)
+      type: 'challenge_issued', // Stealth automated bot profile (must be challenged, e.g. > 35)
       weight: 10.0,
       vector: {
         historyScore: 20, rotationScore: 20, headerAnomalyScore: 20, requestPatternScore: 40,
@@ -1672,7 +1637,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       trap_triggered: 2.0,
     };
 
-    // 1. Évaluation sur les données de trafic réelles
+    // 1. Evaluate on real traffic logs
     for (const log of trafficData) {
       const weight = log.weight || 1.0;
       const confidence = (confidenceWeights[log.type] || 1.0) * weight;
@@ -1713,7 +1678,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       }
 
     }
-    // 2. Évaluation sur les ancres immuables pour fixer l'échelle
+    // 2. Evaluate against immutable baseline anchors to stabilize scale
     for (const anchor of STATIC_ANCHORS) {
       const score = calculateScore(anchor);
       const weight = anchor.weight;
@@ -1740,12 +1705,12 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
         if (isBot) {
           threatStats[threatName].totalBots += effectiveWeight;
           if (score < targetThreshold) {
-            threatStats[threatName].fn += effectiveWeight * 10; // Pénalité punitive forte
+            threatStats[threatName].fn += effectiveWeight * 10; // Strict punitive penalty
           }
         } else {
           threatStats[threatName].totalHumans += effectiveWeight;
           if (score >= targetThreshold) {
-            threatStats[threatName].fp += effectiveWeight * 10; // Pénalité punitive forte
+            threatStats[threatName].fp += effectiveWeight * 10; // Strict punitive penalty
           }
         }
       }
@@ -1773,7 +1738,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       weightedFnr += fnr * importanceWeight * secRatio;
     }
 
-    // 3. Pénalité de dérive d'échelle L2 (Régularisation par rapport au point d'origine)
+    // 3. L2 drift penalty against baseline configuration
     let regularizationPenalty = 0;
     if (currentConfig && currentConfig.weights) {
       for (const key in config.weights) {
@@ -1782,7 +1747,7 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
       }
     }
 
-    // 4. Maximisation de la marge de séparation (SVM-like Margin Loss)
+    // 4. Maximizing separation margin (SVM-like Margin Loss)
     const marginOverlap = Math.max(0, maxHumanScore - minBotScore);
     const marginPenalty = marginOverlap / 100;
 
@@ -1793,10 +1758,10 @@ Optimization.Operators.createFullSecurityConfigEvaluator = (context) => {
 };
 
 /**
- * Résout le problème de l'auto-tuning complet de la configuration de sécurité.
- * @param {object} context - Le contexte contenant les données de trafic.
- * @param {object} [options] - Options pour l'algorithme génétique.
- * @returns {Array<{solution: object, objectives: number[]}>} Le front de Pareto des configurations optimales.
+ * Solves the full security configuration auto-tuning problem.
+ * @param {object} context - Context containing traffic event logs.
+ * @param {object} [options] - Genetic algorithm options.
+ * @returns {Array<{solution: object, objectives: number[]}>} Pareto front of optimal security configurations.
  */ // eslint-disable-line max-len
 Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator(context);
@@ -1823,7 +1788,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
       virtualizationScore: 0.8
     };
 
-    // Un "individu" est un objet de configuration complet
+    // An "individual" is a complete security configuration object
     const createIndividual = () => ({
         thresholds: {
             low: 15 + random() * 20, // 15-35
@@ -1854,10 +1819,10 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         }
     });
 
-    // Le crossover et la mutation doivent maintenant opérer sur des objets complexes.
+    // Crossover and mutation operators for complex structured configurations
     const crossover = (c1, c2) => {
         const child = JSON.parse(JSON.stringify(c1)); // Deep copy
-        // Croisement pour chaque groupe de paramètres
+        // Crossover across each parameter section
         for (const key in child.thresholds) {
             child.thresholds[key] = (c1.thresholds[key] + c2.thresholds[key]) / 2;
         }
@@ -1873,9 +1838,8 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
     const mutate = (c, currentConfig) => {
         const newConfig = JSON.parse(JSON.stringify(c));
 
-        // --- NOUVELLE LOGIQUE : Sélection de section pondérée ---
-        // On donne plus de poids à la mutation des 'patterns' et des 'weights',
-        // car ils ont un impact plus direct sur la détection que les seuils.
+        // Weighted section selection: prioritize 'patterns' and 'weights'
+        // as they have a more direct impact on detection accuracy than thresholds.
         const sections = [
           { name: 'patterns', weight: 0.50 },
           { name: 'thresholds', weight: 0.25 },
@@ -1896,7 +1860,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         const keyToMutate = keys[crypto.randomInt(0, keys.length)];
 
     
-        // S'assurer que les valeurs restent dans des limites raisonnables
+        // Ensure mutated parameters stay within reasonable bounds
         if (sectionToMutate === 'weights') {
           newConfig[sectionToMutate][keyToMutate] = Math.max(0.05, Math.min(1.5, newConfig[sectionToMutate][keyToMutate] + (random() - 0.5) * 0.1));
         } else if (sectionToMutate === 'thresholds') {
@@ -1909,10 +1873,10 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
           }
         }
     
-        // Contrainte de dérive maximale (±30% par rapport à la configuration actuelle)
+        // Maximum drift constraint (+/- 30% relative to current reference configuration)
         if (currentConfig && currentConfig[sectionToMutate] && currentConfig[sectionToMutate][keyToMutate] !== undefined) {
             const originalValue = currentConfig[sectionToMutate][keyToMutate];
-            if (typeof originalValue === 'number' && originalValue !== 0) { // Éviter la division par zéro ou la contrainte sur 0
+            if (typeof originalValue === 'number' && originalValue !== 0) { // Avoid division by zero or locking zeroes
                 const minAllowed = originalValue * 0.7; // -30%
                 const maxAllowed = originalValue * 1.3; // +30%
                 newConfig[sectionToMutate][keyToMutate] = Math.max(minAllowed, Math.min(maxAllowed, newConfig[sectionToMutate][keyToMutate]));
@@ -1926,7 +1890,7 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
         createIndividual,
         fitnessFunction,
         crossover,
-        (c) => mutate(c, context.currentConfig), // Passer currentConfig à la fonction de mutation
+        (c) => mutate(c, context.currentConfig), // Pass currentConfig to mutation function
         { generations: 50, populationSize: 50, ...options }
     );
 };

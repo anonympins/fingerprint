@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiFunction;
 
 /**
- * Gère le cycle de vie des problèmes mathématiques d'optimisation et de ML (uPoW).
+ * Manages mathematical optimization and ML useful work problem lifecycles (uPoW).
  */
 public class ProblemManager {
     private static ProblemManager instance = null;
@@ -50,18 +50,17 @@ public class ProblemManager {
     }
 
     /**
-     * Enregistre une tâche de modèle uPoW spécifique.
-     * Ces tâches sont généralement des implémentations concrètes de UpowModelTask
-     * qui gèrent des modèles ML spécifiques (TF.js, ONNX).
-     * @param task L'instance de la tâche de modèle.
+     * Registers a specific uPoW model task.
+     * Concrete implementations of UpowModelTask handling ML models (TF.js, ONNX).
+     * @param task The model task instance.
      */
     public void registerModelTask(UpowModelTask task) {
         this.modelTasks.put(task.getProblemId(), task);
     }
 
     /**
-     * Charge et parse les problèmes depuis le fichier de configuration JSON.
-     * Il initialise également l'état des problèmes depuis le store ou les valeurs par défaut.
+     * Loads and parses problem configurations from JSON file.
+     * Synchronizes state with datastore or default parameters.
      */
     @SuppressWarnings("unchecked")
     private void loadProblems() {
@@ -130,10 +129,10 @@ public class ProblemManager {
     }
 
     /**
-     * Sélectionne et génère une tâche uPoW adaptée au score de suspicion.
+     * Selects and generates a uPoW task scaled to the suspicion factor.
      *
-     * @param suspicionFactor Le facteur de suspicion pour ajuster la difficulté.
-     * @return Un Map contenant l'ID du problème et la tâche à effectuer par le client, ou null si aucun problème n'est disponible.
+     * @param suspicionFactor Suspicion factor used to scale difficulty.
+     * @return Map containing problem ID and client task payload, or null if none available.
      */
     public Map<String, Object> dispatchWork(double suspicionFactor) {
         if (problems.isEmpty() && modelTasks.isEmpty()) {
@@ -155,7 +154,7 @@ public class ProblemManager {
     }
 
     /**
-     * Réceptionne, valide (via les validateurs de tâches) et applique les solutions soumises.
+     * Receives, validates, and integrates submitted solutions into problem state.
      */
     @SuppressWarnings("unchecked")
     public void integrateSolution(String problemId, Map<String, Object> solutionData) {
@@ -163,7 +162,7 @@ public class ProblemManager {
             // This is an ML model task
             UpowModelTask task = modelTasks.get(problemId);
             
-            // Contexte à récupérer depuis le store (poids d'origine pour vérifier le gradient)
+            // Task context retrieved from store to verify gradient bounds
             Map<String, Object> taskContext = (Map<String, Object>) store.get("upo-task-ctx:" + problemId);
             if (taskContext == null) {
                 System.err.println("[ProblemManager] Task context not found for model: " + problemId);
@@ -175,7 +174,7 @@ public class ProblemManager {
                 // Persist the updated model state (e.g., weights)
                 store.set("problem-state:" + problemId, task.getCurrentModelState(), null);
             } else {
-                System.err.println("[ProblemManager] Solution rejetée pour le modèle : " + problemId + " (Triche/Empoisonnement suspecté)");
+                System.err.println("[ProblemManager] Solution rejected for model: " + problemId + " (Suspected cheating or poisoning)");
             }
         } else {
             // This is a generic optimization problem
@@ -295,7 +294,7 @@ public class ProblemManager {
     }
 
         /**
-         * S'assure qu'un problème a une solution initiale. Si non, en génère une.
+         * Ensures problem has an initial starting solution. Generates one if missing.
          */
         @SuppressWarnings("unchecked")
         private void ensureInitialSolution(Map<String, Object> problem) {
@@ -328,7 +327,7 @@ public class ProblemManager {
         }
 
         /**
-         * Formate l'état d'un problème pour l'export externe.
+         * Formats problem state for external consumers.
          */
         @SuppressWarnings("unchecked")
         private Map<String, Object> formatSolution(Map<String, Object> problem) {
@@ -356,7 +355,7 @@ public class ProblemManager {
         }
 
         /**
-         * Récupère la meilleure solution actuellement connue pour un ou plusieurs problèmes.
+         * Retrieves best known solution(s) for loaded problems.
          */
         @SuppressWarnings("unchecked")
         public Object getBestSolutions(String problemId) {

@@ -19,7 +19,7 @@ class ProblemManager
     private bool $initialized = false;
     
     /**
-     * Le constructeur est privé pour forcer l'utilisation du singleton.
+     * Private constructor enforces singleton usage.
      */
     private function __construct(string $configPath, IStore $store)
     {
@@ -29,8 +29,8 @@ class ProblemManager
     }
 
     /**
-     * Obtient l'instance singleton du ProblemManager.
-     * Doit être initialisé une fois avec `init`.
+     * Retrieves the ProblemManager singleton instance.
+     * Must be initialized with configPath and store.
      */
     public static function getInstance(?string $configPath = null, ?IStore $store = null): self
     {
@@ -39,7 +39,7 @@ class ProblemManager
                 $defaultPath = dirname(__DIR__, 2) . '/config/problems.config.json';
                 $configPath = file_exists($defaultPath) ? $defaultPath : null;
             }
-            // Si on essaie d'obtenir l'instance sans l'initialiser d'abord, c'est une erreur.
+            // Error if accessed before initialization
             if ($configPath === null || $store === null) {
                 throw new \RuntimeException("ProblemManager must be initialized with configPath and store.");
             }
@@ -53,7 +53,7 @@ class ProblemManager
         return self::$instance !== null && self::$instance->initialized;
     }
     /**
-     * Charge et parse les problèmes depuis le fichier de configuration.
+     * Loads and parses problem definitions from configuration file.
      */
 
     private function loadProblems(): void
@@ -83,7 +83,7 @@ class ProblemManager
             }
             $problem['state'] = $storedState;
 
-            // Résolution dynamique des fonctions et des données
+            // Dynamic function and data resolution
             if (isset($problem['workUnit']['scoreFunction'])) {
                 $problem['workUnit']['scoreFunction'] = FunctionRegistry::get($problem['workUnit']['scoreFunction']);
                 if ($problem['workUnit']['scoreFunction'] === null) {
@@ -105,7 +105,7 @@ class ProblemManager
             }
             $this->problems[] = $problem;
         }
-        $this->initialized = true; // Marquer comme initialisé seulement après un chargement réussi
+        $this->initialized = true; // Mark initialized only after successful load
     }
 
     public function dispatchWork(float $suspicionFactor): ?array
@@ -175,10 +175,10 @@ class ProblemManager
     }
 
     /**
-     * Intègre la solution d'un client dans l'état du problème.
+     * Integrates client solution into problem state.
      *
-     * @param string $problemId L'ID du problème.
-     * @param array $solutionData La solution renvoyée par le client.
+     * @param string $problemId Problem identifier.
+     * @param array $solutionData Client-submitted solution payload.
      */
     public function integrateSolution(string $problemId, array $solutionData): void
     {
@@ -192,13 +192,13 @@ class ProblemManager
 
         $storeKey = "problem-state:{$problem['id']}";
 
-        // La logique d'intégration dépend du type de problème.
+        // Integration logic depends on problem type
         switch ($problem['workUnit']['type']) {
             case 'simulated_annealing_iterations':
                 if (isset($solutionData['solution']) && isset($solutionData['energy'])) {
                     $scoreFunction = $problem['workUnit']['scoreFunction'] ?? null;
                     if (!$scoreFunction) {
-                        error_log("[ProblemManager] Aucune fonction de score définie pour {$problemId}.");
+                        error_log("[ProblemManager] No score function defined for {$problemId}.");
                         return;
                     }
                 // DoS mitigation: validate solution size and structure
@@ -211,15 +211,15 @@ class ProblemManager
                     error_log("[ProblemManager] Solution payload size exceeds safe limit for {$problemId}.");
                     return;
                 }
-                    // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
+                    // 1. Never trust client-reported score. Recalculate server-side.
                     $recalculatedEnergy = $scoreFunction($solutionData['solution'], $problem['payload'] ?? []);
 
                     $currentBest = (float)($problem['state']['bestEnergy'] ?? INF);
 
-                    // 2. Comparer le score recalculé, pas celui du client.
+                    // 2. Compare verified score
                     if ($recalculatedEnergy < $currentBest) { // @phpstan-ignore-line
                         $problem['state']['bestSolution'] = $solutionData['solution'];
-                        $problem['state']['bestEnergy'] = $recalculatedEnergy; // 3. Stocker le score vérifié.
+                        $problem['state']['bestEnergy'] = $recalculatedEnergy; // 3. Store verified score
                         $problem['state']['lastUpdate'] = (new \DateTime())->format(\DateTime::ATOM);
                         $stateChanged = true;
                         error_log("[ProblemManager] New best solution for {$problemId}: {$recalculatedEnergy}"); // @phpstan-ignore-line
@@ -239,7 +239,7 @@ class ProblemManager
                     }
                 }
 
-                    // VÉRIFICATION PAR ÉCHANTILLONNAGE (Parité avec JS)
+                    // Sample-based verification (parity with JS)
                     $fitnessFunction = FunctionRegistry::get('portfolio.calculateMetrics');
                     if ($fitnessFunction) {
                         $sampleSize = min(5, count($solutionData['population']));
@@ -251,8 +251,8 @@ class ProblemManager
                                 $recalculated = $fitnessFunction($individual['chromosome'], $problem['payload'] ?? []);
                                 if (isset($individual['fitness']) && $individual['fitness'] !== -1) {
                                     if (abs($individual['fitness'] - $recalculated) > 1e-4) {
-                                        error_log("[ProblemManager] Triche détectée pour {$problemId}! Fitness déclaré: {$individual['fitness']}, recalculé: {$recalculated}");
-                                        return; // Rejeter en cas d'incohérence
+                                        error_log("[ProblemManager] Cheating detected for {$problemId}! Reported: {$individual['fitness']}, recalculated: {$recalculated}");
+                                        return; // Reject inconsistent population
                                     }
                                 }
                                 $solutionData['population'][$key]['fitness'] = $recalculated;
@@ -266,7 +266,7 @@ class ProblemManager
                 }
                 break;
             case 'multi_objective_genetic_algorithm':
-                // Pour les algorithmes génétiques, on intègre le nouveau front de Pareto.
+                // Merge candidate Pareto front for multi-objective problems
                 if (isset($solutionData['paretoFront']) && is_array($solutionData['paretoFront'])) {
                     $stateChanged = $this->_integrateParetoFront($problem, $solutionData['paretoFront']);
                 }
@@ -275,24 +275,21 @@ class ProblemManager
                 error_log("[ProblemManager] Integration not implemented for useful work type: {$problem['workUnit']['type']}");
                 break;
         }
-        // Sauvegarder l'état mis à jour dans le store.
+        // Persist updated state to datastore
         if ($stateChanged) {
             $this->store->set($storeKey, $problem['state']);
         }
     }
 
     /**
-     * Intègre un nouveau front de Pareto dans l'état du problème.
+     * Integrates a new Pareto front into the problem state.
      *
-     * @param array &$problem Le problème à mettre à jour (passé par référence).
-     * @param array $newFront Le nouveau front de Pareto soumis par le client.
+     * @param array &$problem Target problem passed by reference.
+     * @param array $newFront Candidate Pareto front submitted by client.
      */
     private function _integrateParetoFront(array &$problem, array $newFront): bool
     {
-        // Logique de fusion et de tri non-dominé pour mettre à jour le front de Pareto.
-        // Pour cet exemple, nous remplaçons simplement le front, mais une vraie implémentation
-        // fusionnerait les deux fronts et recalculerait le meilleur.
-        // On vérifie si le nouveau front est différent de l'actuel pour éviter des écritures inutiles.
+        // Verify content differences before updating to prevent redundant writes
         $currentFront = $problem['state']['paretoFront'] ?? [];
         if (!empty($newFront) && json_encode($newFront) !== json_encode($currentFront)) {
             $problem['state']['paretoFront'] = $newFront;
@@ -304,9 +301,9 @@ class ProblemManager
     }
 
     /**
-     * S'assure qu'un problème a une solution initiale. Si non, en génère une.
+     * Ensures that the problem has an initial solution. Generates one if missing.
      *
-     * @param array &$problem Le problème à vérifier (passé par référence).
+     * @param array &$problem Problem passed by reference.
      */
     private function ensureInitialSolution(array &$problem): void
     {
@@ -328,7 +325,7 @@ class ProblemManager
     }
 
     /**
-     * Formate l'état d'un problème pour l'export externe.
+     * Formats problem state for external consumers.
      */
     private function formatSolution(array $problem): ?array
     {
@@ -354,10 +351,10 @@ class ProblemManager
     }
 
     /**
-     * Récupère la meilleure solution actuellement connue pour un ou plusieurs problèmes.
+     * Retrieves the best known solution(s) for loaded problems.
      *
-     * @param string|null $problemId L'ID optionnel du problème à consulter.
-     * @return array|null Un tableau associatif ou une liste de tableaux associatifs.
+     * @param string|null $problemId Optional problem ID filter.
+     * @return array|null Associative array or list of solutions.
      */
     public function getBestSolutions(?string $problemId = null): ?array
     {
@@ -387,7 +384,7 @@ class ProblemManager
     }
 
     /**
-     * Réinitialise l'instance singleton.
+     * Resets singleton instance.
      * @internal Uniquement pour les tests.
      */
     public static function resetInstanceForTests(): void

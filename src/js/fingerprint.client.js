@@ -10,8 +10,8 @@ function secureRandom() {
     return Math.random();
 }
 
-// Variable pour stocker la fonction de hachage active.
-// Par défaut, c'est l'implémentation JavaScript.
+// Variable storing the active hash function.
+// Defaults to the JavaScript implementation.
 let activeCyrb53 = jsCyrb53;
 let derivedKey = null;
 
@@ -37,7 +37,13 @@ async function negotiateSessionKey() {
             body: JSON.stringify({ fp: ClientLibrary.getDeviceFingerprint() })
         });
 
-        const serverPubKeyHex = response.headers.get('x-server-ephemeral-key');
+        if (!response || !response.headers) return;
+        let serverPubKeyHex = null;
+        if (typeof response.headers.get === 'function') {
+            serverPubKeyHex = response.headers.get('x-server-ephemeral-key');
+        } else if (typeof response.headers === 'object') {
+            serverPubKeyHex = response.headers['x-server-ephemeral-key'] || response.headers['X-Server-Ephemeral-Key'];
+        }
         if (serverPubKeyHex) {
             const serverPubKeyBuffer = new Uint8Array(
                 serverPubKeyHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16))
@@ -144,7 +150,7 @@ function cacheWasm(url, data) {
 }
 
 const ClientLibrary = {
-    // Cache pour éviter de recalculer les constantes (Hardware, etc.)
+    // Cache to avoid recalculating hardware constants
     _cachedBuilder: null,
     /**
      * @private
@@ -159,16 +165,48 @@ const ClientLibrary = {
     },
 
     /**
-     * Wrapper interne pour la fonction de hachage.
+     * Checks if native JavaScript prototypes have been tampered with or hooked (Frida, Puppeteer Stealth).
+     */
+    detectTamperedPrototypes() {
+        const checkNative = (obj, method) => {
+            try {
+                if (!obj) return false;
+                const fn = obj[method];
+                if (!fn) return false;
+                const str = Function.prototype.toString.call(fn);
+                if (!str.includes('[native code]')) return true; // Standard JS hook
+                const desc = Object.getOwnPropertyDescriptor(obj, method);
+                if (desc && (!desc.writable && !desc.configurable && desc.value)) return false;
+                return false;
+            } catch (e) {
+                return true;
+            }
+        };
+
+        const win = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : null);
+        if (!win) return false;
+
+        const htmlCanvas = typeof HTMLCanvasElement !== 'undefined' ? HTMLCanvasElement : win.HTMLCanvasElement;
+        const canvas2d = typeof CanvasRenderingContext2D !== 'undefined' ? CanvasRenderingContext2D : win.CanvasRenderingContext2D;
+        const webgl = typeof WebGLRenderingContext !== 'undefined' ? WebGLRenderingContext : win.WebGLRenderingContext;
+
+        return checkNative(htmlCanvas?.prototype, 'toDataURL') ||
+               checkNative(canvas2d?.prototype, 'getImageData') ||
+               checkNative(webgl?.prototype, 'getParameter') ||
+               checkNative(win, 'fetch');
+    },
+
+    /**
+     * Internal wrapper for the active hash function.
      * @private
      */
     _hasher: (str, seed) => activeCyrb53(str, seed),
 
     /**
-     * Génère une preuve de connaissance à divulgation nulle (ZKP) de Schnorr pour l'empreinte de l'appareil.
-     * Rend le tout stable et compatible avec les vérifications JS, PHP et Python.
-     * @param {string} fingerprint - L'empreinte de l'appareil.
-     * @returns {Promise<string>} La preuve sous format "y:t:s" en hexadécimal.
+     * Generates a Schnorr Zero-Knowledge Proof (ZKP) of the device fingerprint.
+     * Ensures compatibility across JS, PHP, and Java verification engines.
+     * @param {string} fingerprint - Device fingerprint string.
+     * @returns {Promise<string>} Proof in hex format "y:t:s".
      */
     async generateZkpProof(fingerprint) {
         const ZKP_P = 115792089237316195423570985008687907853269984665640564039457584007908834671663n;
@@ -215,7 +253,7 @@ const ClientLibrary = {
     },
 
     /**
-     * Génère l'empreinte de l'appareil actuel.
+     * Generates the current device fingerprint.
      */
     getDeviceFingerprint() {
         if (typeof window === "undefined") {
@@ -229,19 +267,19 @@ const ClientLibrary = {
 
             this._cachedBuilder = new FingerprintBuilder();
 
-            // 1. Hardware (Très stable) : Cœurs, RAM, GPU (si dispo via canvas), Touch
+            // 1. Hardware (Very stable): Cores, RAM, GPU, Touch
             this._cachedBuilder.add(
-                "hw", // Utilise maintenant le hasher actif
+                "hw",
                 `${nav.hardwareConcurrency}_${nav.deviceMemory}_${nav.maxTouchPoints}`,
             );
 
-            // 2. Geo/Locale (Stable sauf voyage/VPN) : Timezone, Langue
+            // 2. Geo/Locale (Stable unless traveling/VPN): Timezone, Language
             this._cachedBuilder.add(
                 "geo",
                 `${Intl.DateTimeFormat().resolvedOptions().timeZone}_${nav.language}_${new Date().getTimezoneOffset()}`,
             );
 
-            // 3. Screen (Stable sauf changement moniteur/zoom) : Dimensions, ColorDepth
+            // 3. Screen (Stable unless monitor/zoom changes): Dimensions, ColorDepth
             this._cachedBuilder.add(
                 "scr",
                 `${screen.width}x${screen.height}_${screen.colorDepth}`,
@@ -288,8 +326,8 @@ const ClientLibrary = {
             } catch (e) {
             }
 
-            // 7. Détection des artefacts du Chrome DevTools Protocol (CDP)
-            // Ces variables sont souvent injectées par les outils d'automatisation.
+            // 7. Detection of Chrome DevTools Protocol (CDP) artifacts
+            // Injected by automation tools
             const cdpFootprints = [
                 'cdc_adoQpoasnfa76pfcZLmcfl_Array',
                 'cdc_adoQpoasnfa76pfcZLmcfl_Promise',
@@ -302,15 +340,18 @@ const ClientLibrary = {
                 this._cachedBuilder.add("cdp", "true");
             }
 
-            // 7. Bot Detection (Indication cachée)
+            // 8. Bot Detection (Hidden indicators)
             if (nav.webdriver) this._cachedBuilder.add("bot", "true");
+            if (ClientLibrary.detectTamperedPrototypes()) {
+                this._cachedBuilder.add("tampered", "true");
+            }
         }
 
         return this._cachedBuilder.toString();
     },
 
     /**
-     * Génère une signature de requête incluant le contexte.
+     * Generates a request signature including context.
      * @param {object} payload
      */
     /**
@@ -328,10 +369,10 @@ const ClientLibrary = {
     },
 
     /**
-     * Génère une signature HMAC-SHA256 en utilisant l'API Web Crypto.
-     * @param {object} payload - Les données à signer.
-     * @param {string} secret - La clé secrète partagée.
-     * @returns {Promise<string>} La signature hexadécimale.
+     * Generates an HMAC-SHA256 signature using the Web Crypto API.
+     * @param {object} payload - Data payload to sign.
+     * @param {string} secret - Shared secret key.
+     * @returns {Promise<string>} Hexadecimal signature.
      */
     async generateClientSideSignature(payload, secret) {
         const sortedPayload = Object.keys(payload).sort().map((k) => `${k}=${payload[k]}`).join("&");
@@ -350,28 +391,28 @@ const ClientLibrary = {
      * Resets the cached fingerprint builder. Used for testing purposes.
      */
     _resetCache() {
-        // Réinitialise le hasher à l'implémentation JS par défaut.
+        // Reset hasher to default JS implementation.
         activeCyrb53 = jsCyrb53;
         this._cachedBuilder = null;
     },
 
     /**
-     * Injecte des éléments interactifs fantômes invisibles pour piéger les bots (focus/hover).
+     * Injects invisible phantom interactive elements to trap bots (focus/hover).
      */
     injectPhantomTraps() {
         if (typeof document === 'undefined') return;
 
-        // Création d'un élément interactif fantôme
+        // Create a phantom interactive element
         const phantom = document.createElement('a');
         phantom.href = '#';
-        // Nom trompeur aléatoire pour attirer les analyseurs automatiques de liens / formulaires
+        // Random deceptive name to attract automated link/form parsers
         const phantomNames = ['sys-session-recovery', 'auth-token-refresh', 'debug-console-login', 'admin-portal-access', 'security-bypass-bypass', 'recovery-key-session', 'api-key-test', 'client-secrets-access'];
         phantom.id = phantomNames[Math.floor(secureRandom() * phantomNames.length)] + '-' + genRandStr(6);
         phantom.className = genRandStr(8);
-        phantom.tabIndex = 0; // Dans le flux naturel de tabulation
-        phantom.setAttribute('aria-hidden', 'true'); // Masqué pour les screen readers légitimes
+        phantom.tabIndex = 0; // In natural tab flow
+        phantom.setAttribute('aria-hidden', 'true'); // Hidden from legitimate screen readers
 
-        // Style invisible mais interactif (1px x 1px, presque transparent)
+        // Invisible yet interactive style (1px x 1px, nearly transparent)
         phantom.style.position = 'fixed';
         phantom.style.top = '1px';
         phantom.style.left = '1px';
@@ -389,7 +430,7 @@ const ClientLibrary = {
         phantom.addEventListener('focus', triggerTrap, { passive: true });
         phantom.addEventListener('mouseover', triggerTrap, { passive: true });
 
-        // Imbrication polymorphique du piège fantôme dans le corps du document
+        // Polymorphic DOM insertion of the phantom trap
         const nestingOptions = [
             () => document.body.appendChild(phantom),
             () => {
@@ -407,7 +448,31 @@ const ClientLibrary = {
     },
 
     /**
-     * Démarre le suivi des événements tactiles sur mobile/tablette.
+     * Measures gyroscope/accelerometer noise to detect phone farm racks.
+     */
+    startMotionTracker() {
+        if (this._motionTrackerAttached || typeof window === 'undefined') return;
+        this._motionTrackerAttached = true;
+        const motionSamples = [];
+        const handleMotion = (e) => {
+            const acc = e.accelerationIncludingGravity || e.acceleration;
+            if (!acc) return;
+            const mag = Math.sqrt((acc.x || 0)**2 + (acc.y || 0)**2 + (acc.z || 0)**2);
+            motionSamples.push(mag);
+            if (motionSamples.length > 20) motionSamples.shift();
+            if (motionSamples.length >= 10) {
+                const avg = motionSamples.reduce((a, b) => a + b, 0) / motionSamples.length;
+                const variance = motionSamples.reduce((a, b) => a + (b - avg)**2, 0) / motionSamples.length;
+                metrics.motionVariance = Math.round(variance * 10000) / 10000;
+            }
+        };
+        try {
+            window.addEventListener('devicemotion', handleMotion, { passive: true });
+        } catch (e) {}
+    },
+
+    /**
+     * Starts tracking touch events on mobile/tablet devices.
      */
     startTouchEventTracker() {
         if (this._touchTrackerAttached) return;
@@ -441,7 +506,7 @@ const ClientLibrary = {
     },
 
     /**
-     * Démarre le suivi de la régularité d'affichage (V-Sync/rAF) pour détecter les framebuffers logiciels sans V-Sync.
+     * Starts tracking display regularity (V-Sync/rAF) to detect software framebuffers lacking V-Sync.
      */
     startRenderingTracker() {
         if (this._renderingTrackerAttached) return;
@@ -455,8 +520,9 @@ const ClientLibrary = {
 
         const checkOffscreenAnom = () => {
             try {
-                if ('OffscreenCanvas' in window && HTMLCanvasElement.prototype.transferControlToOffscreen) {
-                    const nativeToString = Function.prototype.toString.call(HTMLCanvasElement.prototype.transferControlToOffscreen);
+                const htmlCanvas = typeof HTMLCanvasElement !== 'undefined' ? HTMLCanvasElement : window.HTMLCanvasElement;
+                if ('OffscreenCanvas' in window && htmlCanvas?.prototype?.transferControlToOffscreen) {
+                    const nativeToString = Function.prototype.toString.call(htmlCanvas.prototype.transferControlToOffscreen);
                     return !nativeToString.includes('[native code]');
                 }
             } catch (e) {}
@@ -487,7 +553,7 @@ const ClientLibrary = {
     },
 
     /**
-     * Initialise l'espace Proof-of-Space persistant dans l'IndexedDB locale.
+     * Initializes persistent Proof-of-Space allocation in local IndexedDB.
      */
     async initializeSpace(seed, sizeMb) {
         return new Promise((resolve, reject) => {
@@ -529,7 +595,7 @@ const ClientLibrary = {
     },
 
     /**
-     * Lit un bloc spécifique de l'IndexedDB locale sous format hexadécimal.
+     * Reads a specific block from local IndexedDB formatted as hex.
      */
     async readSpaceBlock(blockIdx) {
         return new Promise((resolve, reject) => {
@@ -555,7 +621,7 @@ const ClientLibrary = {
     },
 
     /**
-     * Résout le Proof-of-Space en combinant optionnellement le bloc du pair.
+     * Solves Proof-of-Space by optionally combining a peer's block.
      */
     async solveSpaceChallenge(seed, queries, nonce, clientSecret, peerBlock = '') {
         const blocks = [];
@@ -572,8 +638,8 @@ const ClientLibrary = {
     },
 
     /**
-     * Démarre le suivi des mouvements de la souris pour calculer l'entropie.
-     * À appeler une fois sur la page.
+     * Starts tracking mouse movements to evaluate entropy.
+     * Call once per page lifecycle.
      */
     startMouseEntropyTracker() {
         // Utiliser un drapeau pour éviter d'attacher l'écouteur plusieurs fois
@@ -581,9 +647,9 @@ const ClientLibrary = {
         this._mouseTrackerAttached = true;
  
         document.addEventListener('mousemove', (e) => {
-            // NOUVEAU: Capturer une série de points {x, y, t}
+            // Capture trajectory points {x, y, t}
             if (mouseMovementsHistory.length >= MOUSE_HISTORY_MAX) {
-                // Garder la taille de l'historique constante pour éviter une consommation mémoire excessive.
+                // Cap history size to prevent unbounded memory growth
                 mouseMovementsHistory.shift();
             }
             mouseMovementsHistory.push({
@@ -595,8 +661,8 @@ const ClientLibrary = {
     },
 
     /**
-     * Démarre le suivi de la dynamique de frappe pour calculer le dwell time et le flight time (digraphie/trigraphie).
-     * À appeler une fois sur la page.
+     * Starts tracking keystroke dynamics to evaluate dwell and flight times.
+     * Call once per page lifecycle.
      */
     startKeystrokeDynamicsTracker() {
         // S'assurer de ne pas attacher l'écouteur plusieurs fois
@@ -694,18 +760,18 @@ const ClientLibrary = {
         }, { passive: true });
     },
     /**
-     * Initialise ou réinitialise les honeypots côté client pour une détection immédiate.
-     * Les anciens écouteurs sont supprimés avant d'en ajouter de nouveaux.
-     * @param {string[]} honeypotFieldNames - Noms des champs de formulaire cachés.
+     * Initializes or resets client-side honeypots for immediate detection.
+     * Previous listeners are removed before attaching new ones.
+     * @param {string[]} honeypotFieldNames - Hidden form field names.
      */
     initializeHoneypots(honeypotFieldNames) {
-        // 1. Nettoyer les anciens écouteurs
+        // 1. Clean up existing listeners
         activeHoneypotListeners.forEach((listener, field) => {
             field.removeEventListener('input', listener);
         });
         activeHoneypotListeners.clear();
 
-        // 2. Ajouter les nouveaux écouteurs sur le DOM classique
+        // 2. Attach new listeners to existing DOM elements
         honeypotFieldNames.forEach(fieldName => {
             const field = document.querySelector(`[name="${fieldName}"]`);
             if (field) {
@@ -714,11 +780,11 @@ const ClientLibrary = {
                     field.removeEventListener('input', listener);
                 };
                 field.addEventListener('input', listener);
-                activeHoneypotListeners.set(field, listener); // On stocke la référence
+                activeHoneypotListeners.set(field, listener);
             }
         });
 
-        // 3. Générer des champs d'input pièges masqués dans un Shadow DOM fermé
+        // 3. Generate trap inputs inside a closed Shadow DOM
         if (typeof document !== 'undefined' && honeypotFieldNames.length > 0) {
             const host = document.createElement('div');
             host.setAttribute('aria-hidden', 'true');
@@ -729,7 +795,7 @@ const ClientLibrary = {
 
             const shadow = host.attachShadow({ mode: 'closed' });
 
-            // Aléatisation des classes, variables CSS et balises de structure
+            // Randomize classes, CSS variables, and layout tags
             const wrapperClass = genRandStr(10);
             const posStateVar = `--${genRandStr(8)}`;
             const offValVar = `--${genRandStr(8)}`;
@@ -778,7 +844,7 @@ const ClientLibrary = {
                 input.addEventListener('change', trigger, { passive: true });
                 input.addEventListener('focus', trigger, { passive: true });
 
-                // Imbrication polymorphique du label et de l'input
+                // Polymorphic nesting of label and input
                 const nestingType = Math.floor(secureRandom() * 3);
                 if (nestingType === 1) {
                     label.appendChild(input);
@@ -800,21 +866,22 @@ const ClientLibrary = {
         }
     },
     /**
-     * Sollicite silencieusement l'attestation matérielle FIDO2 (WebAuthn)
-     * pour ancrer l'identité physique de l'appareil via TPM / Secure Enclave.
+     * Silently requests FIDO2 hardware attestation (WebAuthn)
+     * to anchor physical device identity via TPM / Secure Enclave.
      * @returns {Promise<object|null>}
      */
     async getWebAuthnAnchor() {
-        if (typeof window === 'undefined' || !window.PublicKeyCredential) return null;
+        const win = typeof window !== 'undefined' ? window : null;
+        if (!win || !win.PublicKeyCredential) return null;
         try {
-            const isPlatformAvailable = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+            const isPlatformAvailable = await win.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
             if (!isPlatformAvailable) return null;
 
             const storedCredIdBase64 = localStorage.getItem('fp_webauthn_cred_id');
             const challenge = new Uint8Array([109, 101, 116, 114, 105, 99, 115, 95, 97, 110, 99, 104, 111, 114, 95, 115, 101, 99, 117, 114, 101]); // Static stable challenge
 
             if (storedCredIdBase64) {
-                // Tentative d'assertion silencieuse (Authentification)
+                // Silent assertion attempt (Authentication)
                 const credentialId = Uint8Array.from(atob(storedCredIdBase64), c => c.charCodeAt(0));
                 const assertion = await navigator.credentials.get({
                     publicKey: {
@@ -837,7 +904,7 @@ const ClientLibrary = {
                     };
                 }
             } else {
-                // Création silencieuse (Enregistrement initial)
+                // Silent creation attempt (Registration)
                 const options = {
                     publicKey: {
                         challenge,
@@ -875,34 +942,38 @@ const ClientLibrary = {
                 }
             }
         } catch (e) {
-            // Ignore et bypass silencieusement pour garder l'invisibilité en cas de non-support
+            // Bypass silently when unsupported to remain non-intrusive
             console.log('[WebAuthn-Anchor] Silent attestation bypassed:', e.message);
         }
         return null;
     },
 
     /**
-     * Récupère les métriques comportementales collectées.
-     * À appeler avant d'envoyer une requête sensible.
+     * Retrieves collected client behavioral metrics.
+     * Call before submitting sensitive requests.
      * @returns {ClientBehaviorMetrics}
      */
     getClientBehaviorMetrics() {
         // Add history length as a behavioral signal.
         metrics.historyLength = window.history.length;
 
-        // Ajoute un timestamp au moment de la collecte pour la détection de rejeu.
+        // Attach collection timestamp for replay detection
         metrics.clicksHistory = clicksHistory;
         metrics.clientTimestamp = Date.now();
 
         metrics.touchMovementsHistory = touchMovementsHistory;
-        // NOUVEAU: Inclure l'historique des mouvements de la souris pour une analyse côté serveur.
+        if (ClientLibrary.detectTamperedPrototypes()) {
+            metrics.prototypeTampered = true;
+        }
+        metrics.motionVariance = metrics.motionVariance ?? -1;
+        // Include mouse trajectory history for server-side evaluation
         metrics.mouseMovementsHistory = mouseMovementsHistory;
 
         // NOUVEAU: Keystroke dynamics metrics (dwell and flight times)
         metrics.keystrokeDwellTimes = keystrokeDwellTimes;
         metrics.keystrokeFlightTimes = keystrokeFlightTimes;
 
-        // Calcule la latence moyenne des frappes
+        // Calculate mean keystroke latency
         if (keystrokeLatencies.length > 0) {
             const sum = keystrokeLatencies.reduce((a, b) => a + b, 0);
             metrics.keystrokeLatency = sum / keystrokeLatencies.length;
@@ -913,7 +984,7 @@ const ClientLibrary = {
     },
 
     /**
-     * Enrichit une requête fetch avec les en-têtes de fingerprinting et de comportement.
+     * Enriches a fetch request with fingerprinting and behavioral headers.
      * @param {RequestInfo} resource
      * @param {RequestInit} [options]
      * @returns {Promise<Response>}
@@ -933,18 +1004,16 @@ const ClientLibrary = {
         return fetch(resource, options);
     },
 
-// --- Système d'interception de Fetch robuste et anti-conflit ---
-
+// --- Fetch Interception Chain ---
     _isFetchPatched: false,
     _interceptorChain: [],
-    // On stocke la fonction fetch originale et on la lie à son contexte (window)
-    // pour éviter les erreurs "Illegal invocation" si une autre lib la modifie.
+    // Store original fetch bound to window to prevent illegal invocation errors
     _originalFetch: (typeof window !== 'undefined') ? window.fetch.bind(window) : null,
 
 /**
  * Adds an interceptor function to the `fetch` chain.
- * Chaque intercepteur reçoit `resource`, `options`, et une fonction `next`.
- * Il DOIT appeler `next(resource, options)` pour continuer la chaîne.
+ * Each interceptor receives `resource`, `options`, and a `next` function.
+ * Must call `next(resource, options)` to continue the chain.
  * @param {function(RequestInfo, RequestInit, function): Promise<Response>} interceptor
  */
   addFetchInterceptor(interceptor) {
@@ -959,14 +1028,11 @@ const ClientLibrary = {
 
     this._isFetchPatched = true;
     window.fetch = (resource, options) => {
-        // Le "dispatcher" qui exécute la chaîne.
         const dispatch = (index, res, opts) => {
             if (index >= this._interceptorChain.length) {
-                // Fin de la chaîne, on appelle le fetch original.
                 return this._originalFetch(res, opts);
             }
             const nextInterceptor = this._interceptorChain[index];
-            // Appelle l'intercepteur actuel en lui passant la fonction pour appeler le suivant.
             return nextInterceptor(res, opts, (nextRes, nextOpts) => dispatch(index + 1, nextRes, nextOpts));
         };
         return dispatch(0, resource, options || {});
@@ -974,20 +1040,19 @@ const ClientLibrary = {
   },
 
     /**
-     * La fonction qui est appelée lorsqu'un honeypot est déclenché.
+     * Invoked when a honeypot trigger occurs.
      * @private
      */
     onHoneypotTrigger() {
         metrics.honeypotInteraction = true;
-        // Émettre un événement pour que l'application puisse réagir.
+        // Dispatch event allowing host applications to react
         this._dispatchEvent('honeypotTriggered');
     },
 
   /**
-   * Initialise l'intercepteur de fingerprinting.
-   * Il s'ajoute à la chaîne d'interception sans écraser les autres.
-   * @param {string[]} [targetDomains] - Optionnel. Liste de domaines à protéger.
-   * Si non fourni, protège les requêtes de même origine.
+   * Initializes the fingerprinting fetch interceptor.
+   * Appends to interceptor chain without clobbering existing handlers.
+   * @param {string[]} [targetDomains] - Domains to protect. Defaults to same-origin.
    */
   initializeFetch(targetDomains = []) {
     const fingerprintInterceptor = async (resource, options, next) => {        
@@ -996,14 +1061,11 @@ const ClientLibrary = {
 
         try {
             const url = new URL(requestUrl, window.location.origin);
-            // Protéger si la liste de domaines est vide ET que la requête est de même origine,
-            // OU si le domaine de la requête est dans la liste fournie.
+            // Protect if targetDomains is empty and same-origin, or host matches targetDomains
             shouldProtect = (targetDomains.length === 0 && url.origin === window.location.origin) || 
                             (targetDomains.length > 0 && targetDomains.includes(url.hostname));
         } catch (e) {
-            // Si l'URL est relative (ex: '/api/data'), new URL() ne lèvera pas d'erreur.
-            // Ce bloc est une sécurité pour les cas où l'URL serait malformée.
-            // On protège par défaut si aucune liste de domaines n'est spécifiée.
+            // Fallback for malformed URLs
             shouldProtect = targetDomains.length === 0;
         }
 
@@ -1017,12 +1079,12 @@ const ClientLibrary = {
             options.headers = headers;
         }
 
-        // Passe la main à l'intercepteur suivant dans la chaîne.
+        // Forward to next interceptor in chain
         return next(resource, options);
     };
 
     this.addFetchInterceptor(fingerprintInterceptor);
-  }, // <-- VIRGULE AJOUTÉE ICI
+  },
   
   /**
    * Injects visually hidden "honeypot" links into the DOM to trap bots.
@@ -1043,7 +1105,7 @@ const ClientLibrary = {
 
     const shadow = host.attachShadow({ mode: 'closed' });
 
-        // Aléatisation des classes, variables CSS et balises de structure
+        // Randomize classes, CSS variables, and layout tags
         const wrapperClass = genRandStr(10);
         const layoutPosVar = `--${genRandStr(8)}`;
         const offsetValVar = `--${genRandStr(8)}`;
@@ -1089,7 +1151,7 @@ const ClientLibrary = {
           link.className = linkColorClass;
           link.id = genRandStr(8);
 
-          // Structure interne polymorphique du lien
+          // Polymorphic link content structure
           const contentNestingType = Math.floor(secureRandom() * 3);
           if (contentNestingType === 1) {
               const span = document.createElement('span');
@@ -1112,7 +1174,7 @@ const ClientLibrary = {
       link.addEventListener('focus', trigger, { passive: true });
       link.addEventListener('mouseover', trigger, { passive: true });
 
-          // Imbrication du lien de manière polymorphique
+          // Polymorphic link nesting
           if (secureRandom() > 0.5) {
               const itemContainer = document.createElement('span');
               itemContainer.className = genRandStr(5);
@@ -1127,74 +1189,72 @@ const ClientLibrary = {
     document.body.appendChild(host);
   },
   /**
-   * Intercepte une réponse de challenge JSON, le résout, et réessaie la requête.
-   * @param {Response} response - La réponse initiale (potentiellement 429).
-   * @param {RequestInfo} resource - La ressource de la requête originale.
-   * @param {RequestInit} options - Les options de la requête originale.
-   * @returns {Promise<Response>} - La réponse de la requête réessayée.
+   * Intercepts a JSON challenge response, solves it, and retries the request.
+   * @param {Response} response - Initial response (status 404/challenge).
+   * @param {RequestInfo} resource - Original request resource.
+   * @param {RequestInit} options - Original request options.
+   * @returns {Promise<Response>} - Retried response.
    * @private
    */
   async solveChallengeAndRetry(response, resource, options) {
-    if (response.status !== 404 || !response.headers.get('content-type')?.includes('application/json') || response.bodyUsed) {
+    if (!response || response.status !== 404 || !response.headers?.get?.('content-type')?.includes('application/json') || response.bodyUsed) {
       return response;
     }
     
     try {
       const challengeData = await response.json();
       if (!challengeData.challenge || !challengeData.challenge.type) {
-        return response; // Pas un challenge JSON valide
+        return response; // Not a valid JSON challenge
       }
 
       console.log(`[Fingerprint] Received a '${challengeData.challenge.type}' challenge. Solving...`);
       this._dispatchEvent('challengeReceived', { challenge: challengeData.challenge });
 
-      // L'empreinte de l'appareil qui résout le challenge est cruciale.
+      // The device fingerprint solving the challenge is crucial
       const solverFp = this.getDeviceFingerprint();
       const solutionWrapper = await solveChallenge(challengeData.challenge, solverFp);
       console.log('[Fingerprint] Challenge solved. Retrying original request.');
 
       this._dispatchEvent('challengeSolved', { solution: solutionWrapper.rawSolution });
-      // Ajouter la solution aux paramètres de la requête pour le nouvel essai
+      // Append solution parameters to retry request URL
               const url = new URL((resource instanceof Request) ? resource.url : String(resource), window.location.origin);
-      // La logique de formatage est maintenant cachée dans la classe ChallengeSolution.
       solutionWrapper.applyToUrl(url);
 
-      // On ajoute l'empreinte du solveur à la requête de réessai.
+      // Attach solver fingerprint to retry request
       url.searchParams.set('pow_fp', solverFp);
 
-      // On utilise la chaîne d'intercepteurs pour la requête réessayée,
-      // ce qui garantit que le fetch original est appelé avec le bon contexte.
-      // Cela évite de réintroduire l'erreur "Illegal invocation".
+      // Use fetch to retry with appropriate execution context
       return window.fetch(url.toString(), options);
     } catch (e) {
       console.error('[Fingerprint] Failed to solve or retry challenge:', e);
       return response; // Retourne la réponse 429 originale en cas d'échec
     }
-  }, // <-- VIRGULE AJOUTÉE ICI
+  },
 
 /**
- * Initialise toutes les protections côté client en une seule fois.
- * Tente également de charger le module WASM si `wasmPath` est fourni.
- * C'est la méthode d'initialisation recommandée.
- * @param {ClientConfig} [config={}] - L'objet de configuration.
+ * Initializes all client-side protections in one call.
+ * Also loads WASM module if `wasmPath` is provided.
+ * Recommended initialization approach.
+ * @param {ClientConfig} [config={}] - Client configuration options.
  */
   initializeClient(config = {}) {
     const {
         mouse = true,
         keystrokes = true,
         clicks = true, // Add new option
-        touches = true, // Nouveau paramètre tactiles
+        touches = true, // Touch event tracking
+        motion = true,
             rendering = true,
-            phantomTraps = true, // NOUVEAU
+        phantomTraps = true,
         honeypots = [],
-        trapUrls = [], // Nouveau paramètre pour les URL pièges
-        wasmPath, // Nouveau paramètre
+        trapUrls = [], // Trap URLs
+        wasmPath,
         workerPath, // NOUVEAU
         fetch: fetchConfig = {}
     } = config;
 
         negotiateSessionKey();
-    // Tentative de chargement du WASM si le chemin est fourni
+    // Load WASM module if path provided
     if (wasmPath) {
         this.initializeWasm(wasmPath);
     }
@@ -1214,6 +1274,12 @@ const ClientLibrary = {
     if (touches) {
         this.startTouchEventTracker();
     }
+    if (motion) {
+        this.startMotionTracker();
+    }
+    if (ClientLibrary.detectTamperedPrototypes()) {
+        metrics.prototypeTampered = true;
+    }
         if (rendering) {
             this.startRenderingTracker();
         }
@@ -1224,19 +1290,19 @@ const ClientLibrary = {
         this.initializeHoneypots(honeypots);
     }
 
-    // Injection dynamique des liens pièges au démarrage
+    // Dynamically inject trap links on startup
     if (trapUrls.length > 0) {
         this.injectTrapLinks(trapUrls);
     }
-    // On active l'interception si `fetch` est configuré, même avec un objet vide.
+    // Enable fetch interception if configured
     if (config.fetch) {
         this.initializeFetch(fetchConfig.targetDomains);
 
-        // Ajoute l'intercepteur pour la résolution de challenge
+        // Add challenge resolution interceptor
         if (fetchConfig.handleChallenges !== false) {
             this.addFetchInterceptor(async (resource, options, next) => {
                 const originalResponse = await next(resource, options);
-                // On clone la réponse pour que la lecture du corps par solveChallengeAndRetry ne la consomme pas pour l'appelant original.
+                // Clone response to prevent draining the body stream for original caller
                 return this.solveChallengeAndRetry(originalResponse.clone(), resource, options);
             });
         }
@@ -1244,9 +1310,9 @@ const ClientLibrary = {
   },
 
     /**
-     * Tente de charger et d'initialiser le module WebAssembly pour un hachage plus rapide.
-     * Si le chargement échoue, il se rabat silencieusement sur l'implémentation JS.
-     * @param {string} wasmPath - Le chemin vers le script de chargement du module WASM (ex: '/fp.js').
+     * Attempts to load and initialize WebAssembly module for accelerated hashing.
+     * Falls back to JavaScript implementation on error.
+     * @param {string} wasmPath - Path to WASM loader script or binary.
      */
     async initializeWasm(wasmPath) {
         try {
@@ -1283,7 +1349,7 @@ const ClientLibrary = {
                 }
                 return;
             }
-            // 1. Injecter le script qui charge le module WASM
+            // 1. Inject WASM loader script
             const script = document.createElement('script');
             script.src = wasmPath;
             await new Promise((resolve, reject) => {
@@ -1292,12 +1358,12 @@ const ClientLibrary = {
                 document.head.appendChild(script);
             });
 
-            // 2. Attendre que la fonction globale `createFingerprintModule` soit disponible
+            // 2. Await global module factory
             if (typeof window.createFingerprintModule !== 'function') {
                 throw new Error('WASM loader script did not expose createFingerprintModule.');
             }
 
-            // 3. Initialiser le module
+            // 3. Initialize module
             const wasmUrl = wasmPath.replace(/\.js$/, '.wasm');
             const wasmModule = await window.createFingerprintModule({
                 instantiateWasm: (imports, successCallback) => {
@@ -1358,13 +1424,13 @@ const ClientLibrary = {
         window.wasmModule = wasmModule;
         ClientLibrary.wasmModule = wasmModule;
 
-        // Pooling de mémoire statique : pré-allocation d'un buffer réutilisable de 4 Ko
-        // Évite d'allouer/libérer de la mémoire sur le tas Emscripten lors des frappes clavier/mouvements souris rapides
+        // Static memory pool: 4KB pre-allocated buffer
+        // Avoids heap malloc/free churn on rapid mouse and keyboard tracking
         const staticBufferSize = 4096;
         const staticBufferPtr = wasmModule._malloc(staticBufferSize);
         const encoder = new TextEncoder();
 
-        // 4. Remplacer la fonction de hachage par la version WASM optimisée via le buffer statique
+        // 4. Swap hash function with WASM implementation
         activeCyrb53 = (str) => {
             const bytes = encoder.encode(str);
             if (bytes.length < staticBufferSize) {
@@ -1372,12 +1438,12 @@ const ClientLibrary = {
                 wasmModule.HEAPU8[staticBufferPtr + bytes.length] = 0; // null-terminator
                 return wasmModule._hash_string(staticBufferPtr);
             }
-            // Fallback dynamique sécurisé si la chaîne dépasse la taille du buffer statique
+            // Fallback if string exceeds static buffer size
             return wasmModule._hash_string(str);
         };
 
             console.log('[Fingerprint] WASM module loaded successfully. Using fast hashing.');
-            // NOUVEAU: Ajoute un indicateur à l'empreinte pour que le serveur sache que le WASM est actif.
+            // Tag fingerprint with wasm marker
             if (this._cachedBuilder) {
                 this._cachedBuilder.addRaw('wasm', 'true');
             }
@@ -1389,19 +1455,19 @@ const ClientLibrary = {
 
 /**
  * @typedef {object} ClientBehaviorMetrics
- * @property {number} mouseEntropy - Entropie des mouvements de la souris.
- * @property {Array<{x: number, y: number, t: number}>} mouseMovementsHistory - Historique des points de la souris.
- * @property {number} keystrokeLatency - Latence moyenne entre les frappes.
- * @property {boolean} honeypotInteraction - Vrai si un honeypot a été touché.
- * @property {Array<{x: number, y: number, t: number, targetId: string}>} clicksHistory - Historique des clics.
- * @property {Array<{x: number, y: number, t: number, p: number, r: number, num: number}>} touchMovementsHistory - Historique des glissements tactiles.
- * @property {number} historyLength - La longueur de l'historique de session du navigateur (`window.history.length`).
- * @property {number} clientTimestamp - Timestamp (Date.now()) de la collecte des métriques.
- * @property {string[]} [trapUrls] - URLs pièges à injecter dynamiquement.
+ * @property {number} mouseEntropy - Mouse entropy estimate.
+ * @property {Array<{x: number, y: number, t: number}>} mouseMovementsHistory - Mouse movement coordinates.
+ * @property {number} keystrokeLatency - Average latency between keystrokes.
+ * @property {boolean} honeypotInteraction - True if honeypot was triggered.
+ * @property {Array<{x: number, y: number, t: number, targetId: string}>} clicksHistory - Click interaction history.
+ * @property {Array<{x: number, y: number, t: number, p: number, r: number, num: number}>} touchMovementsHistory - Touch movement trajectory.
+ * @property {number} historyLength - Browser window.history.length.
+ * @property {number} clientTimestamp - Metrics collection timestamp.
+ * @property {string[]} [trapUrls] - Dynamically injected trap URLs.
  */
 /** @type {ClientBehaviorMetrics} */
 const metrics = {
-    mouseEntropy: 0, // Conservé pour la compatibilité, mais l'analyse se fait maintenant sur l'historique
+    mouseEntropy: 0, // Retained for compatibility; analysis primarily evaluates trajectory history
     mouseMovementsHistory: [],
     touchMovementsHistory: [],
     clicksHistory: [],
@@ -1413,18 +1479,18 @@ const metrics = {
 };
 
 let lastMousePos = { x: 0, y: 0 };
-let mouseMovementsHistory = []; // NOUVEAU: Historique des points de la souris
-let touchMovementsHistory = []; // NOUVEAU: Historique des gestes tactiles
+let mouseMovementsHistory = []; // Mouse movement trajectory
+let touchMovementsHistory = []; // Touch movement trajectory
 const TOUCH_HISTORY_MAX = 100;
-const MOUSE_HISTORY_MAX = 100; // Limite le nombre de points stockés
+const MOUSE_HISTORY_MAX = 100;
 let clicksHistory = [];
 const CLICKS_HISTORY_MAX = 50;
-let activeHoneypotListeners = new Map(); // Garde une trace des écouteurs actifs
+let activeHoneypotListeners = new Map();
 let keystrokeTimestamps = [];
-let keystrokeLatencies = []; // NOUVEAU: Tableau dédié pour les latences
+let keystrokeLatencies = [];
 let keystrokeDwellTimes = [];
 let keystrokeFlightTimes = [];
-const KEYSTROKE_HISTORY_MAX = 20; // On garde l'historique des 20 dernières frappes
+const KEYSTROKE_HISTORY_MAX = 20; // Keep the last 20 keystroke events
 
 
 
@@ -1438,6 +1504,8 @@ export const startKeystrokeDynamicsTracker = ClientLibrary.startKeystrokeDynamic
 export const startClickTracker = ClientLibrary.startClickTracker.bind(ClientLibrary);
 export const startTouchEventTracker = ClientLibrary.startTouchEventTracker.bind(ClientLibrary);
 export const startRenderingTracker = ClientLibrary.startRenderingTracker.bind(ClientLibrary);
+export const startMotionTracker = ClientLibrary.startMotionTracker.bind(ClientLibrary);
+export const detectTamperedPrototypes = ClientLibrary.detectTamperedPrototypes.bind(ClientLibrary);
 export const initializeHoneypots = ClientLibrary.initializeHoneypots.bind(ClientLibrary);
 export const getClientBehaviorMetrics = ClientLibrary.getClientBehaviorMetrics.bind(ClientLibrary);
 export const protectedFetch = ClientLibrary.protectedFetch.bind(ClientLibrary);

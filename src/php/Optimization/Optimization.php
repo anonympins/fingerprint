@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Optimization;
 
 /**
- * Bibliothèque d'algorithmes d'optimisation.
+ * Optimization algorithms library.
  */
 class Optimization
 {
     /**
-     * Génère un nombre flottant aléatoire cryptographiquement sûr entre 0 (inclus) et 1 (exclus).
+     * Generates a cryptographically secure random float in [0, 1).
      */
     private static function secureRandom(): float
     {
@@ -22,12 +22,12 @@ class Optimization
     }
 
     /**
-     * Algorithme génétique multi-objectifs (inspiré de NSGA-II).
+     * Multi-objective genetic algorithm (inspired by NSGA-II).
      * @param callable $createIndividual
      * @param callable $fitnessFunction
      * @param callable $crossover
      * @param callable $mutate
-     * @param array|null $currentConfig La configuration actuelle pour guider l'initialisation et la mutation.
+     * @param array|null $currentConfig Reference baseline configuration.
      * @param array $options
      * @return array<int, array{solution: mixed, objectives: array<float>}>
      */
@@ -35,8 +35,8 @@ class Optimization
         callable $createIndividual,
         callable $fitnessFunction,
         callable $crossover,
-        callable $mutate, // La fonction mutate doit maintenant accepter $currentConfig
-        ?array $currentConfig = null, // NOUVEAU: La configuration actuelle
+        callable $mutate, // The mutate function must accept $currentConfig
+        ?array $currentConfig = null, // Reference baseline configuration
         array $options = []
     ): array {
         $generations = $options['generations'] ?? 150;
@@ -53,14 +53,14 @@ class Optimization
         }
 
         for ($gen = 0; $gen < $generations; $gen++) {
-            // 1. Créer une population d'enfants
+            // 1. Generate offspring population
             $offspring = [];
             for ($i = 0; $i < $populationSize; $i++) {
                 $parent1 = $population[random_int(0, count($population) - 1)];
                 $parent2 = $population[random_int(0, count($population) - 1)];
                 $childIndividual = $crossover($parent1['individual'], $parent2['individual']);
                 if (self::secureRandom() < $mutationRate) {
-                    $childIndividual = $mutate($childIndividual, $currentConfig); // Passer $currentConfig à mutate
+                    $childIndividual = $mutate($childIndividual, $currentConfig);
                 }
                 $offspring[] = [
                     'individual' => $childIndividual,
@@ -68,20 +68,20 @@ class Optimization
                 ];
             }
 
-            // 2. Combiner parents et enfants
+            // 2. Combine parent and offspring populations
             $combinedPopulation = array_merge($population, $offspring);
 
-            // 3. Trier la population combinée en fronts
+            // 3. Sort into non-dominated Pareto fronts
             $fronts = self::nonDominatedSort($combinedPopulation);
 
-            // 4. Construire la nouvelle population
+            // 4. Build next generation
             $newPopulation = [];
             foreach ($fronts as $front) {
                 if (count($newPopulation) + count($front) <= $populationSize) {
                     $newPopulation = array_merge($newPopulation, $front);
                 } else {
                     self::calculateCrowdingDistance($front);
-                    // Trier par distance décroissante
+                    // Sort by crowding distance descending
                     usort($front, fn ($a, $b) => $b['crowdingDistance'] <=> $a['crowdingDistance']);
                     $remaining = $populationSize - count($newPopulation);
                     $newPopulation = array_merge($newPopulation, array_slice($front, 0, $remaining));
@@ -91,11 +91,11 @@ class Optimization
             $population = $newPopulation;
         }
 
-        // Retourner le premier front de la population finale
+        // Return the first non-dominated front of the final population
         $finalFronts = self::nonDominatedSort($population);
         $bestFront = $finalFronts[0] ?? [];
 
-        // Filtrer pour ne garder que les solutions avec des objectifs uniques
+        // Deduplicate solutions with identical objective scores
         $uniqueSolutionsMap = [];
         foreach ($bestFront as $p) {
             $key = json_encode($p['objectives']);
@@ -110,7 +110,7 @@ class Optimization
     }
 
     /**
-     * Détermine si la solution A domine la solution B.
+     * Determines whether solution A Pareto-dominates solution B (minimization).
      * @param array<float> $objectivesA
      * @param array<float> $objectivesB
      */
@@ -119,17 +119,17 @@ class Optimization
         $aIsBetterInOne = false;
         for ($i = 0; $i < count($objectivesA); $i++) {
             if ($objectivesA[$i] > $objectivesB[$i]) {
-                return false; // A est pire sur au moins un objectif
+                return false; // A is worse on at least one objective
             }
             if ($objectivesA[$i] < $objectivesB[$i]) {
-                $aIsBetterInOne = true; // A est strictement meilleur sur au moins un
+                $aIsBetterInOne = true; // A is strictly better on at least one objective
             }
         }
         return $aIsBetterInOne;
     }
 
     /**
-     * Trie une population en fronts de Pareto non-dominés.
+     * Sorts population into non-dominated Pareto fronts (NSGA-II).
      * @param array<int, array> &$populationWithObjectives
      * @return array<int, array>
      */
@@ -182,7 +182,7 @@ class Optimization
     }
 
     /**
-     * Calcule la distance de promiscuité (crowding distance) pour un front.
+     * Computes crowding distance for a front to preserve diversity.
      * @param array<int, array> &$front
      */
     private static function calculateCrowdingDistance(array &$front): void
@@ -197,13 +197,13 @@ class Optimization
         }
 
         for ($i = 0; $i < $numObjectives; $i++) {
-            // Trier le front par l'objectif courant
+            // Sort front by current objective
             usort($front, fn ($a, $b) => $a['objectives'][$i] <=> $b['objectives'][$i]);
 
             $minObj = $front[0]['objectives'][$i];
             $maxObj = $front[$l - 1]['objectives'][$i];
 
-            // Les solutions aux extrémités ont une distance infinie
+            // Boundary solutions receive infinite distance to encourage spread
             $front[0]['crowdingDistance'] = INF;
             $front[$l - 1]['crowdingDistance'] = INF;
 
@@ -218,11 +218,11 @@ class Optimization
     }
 
     /**
-     * Calcule la déviation d'une série de chiffres par rapport à la loi de Benford.
-     * @public
+     * Calculates deviation from Benford's Law distribution.
+     * Elevated values indicate synthetic or automated intervals.
      * @param array<int|float> $numbers
      */
-    public static function benfordTest(array $numbers): float // Rendre la méthode publique et statique
+    public static function benfordTest(array $numbers): float // Public static helper for digit distribution test
     {
         $counts = array_fill(1, 9, 0);
         $validCount = 0;

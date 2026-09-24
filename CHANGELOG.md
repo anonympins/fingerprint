@@ -1,3 +1,20 @@
+## Version 0.7.1
+
+- 🔌 **Native WordPress Plugin Integration (`fingerprint-wordpress`)**:
+  - Full official WordPress plugin integration (`fingerprint-wordpress.php`) without external runtime dependencies, leveraging `$wpdb` through a dedicated `WpDbStore` adapter.
+  - Automatic SQL cache table provisioning and periodic cleanup of expired tickets via WP-Cron (`fingerprint_prune_expired_entries`).
+  - Automated packaging script (`package.php`) generating a ready-to-deploy ZIP archive (`fingerprint-wordpress.zip`).
+  - Cross-environment honeypot tripwires: immediately detects and drops automated scanners probing for non-WordPress entrypoints (Laravel, Symfony, Django, Spring Boot `/actuator`, phpMyAdmin, `.env`, `.git`).
+  - Admin dashboard security notice if running over unencrypted HTTP (warning about modern browsers disabling native `crypto.subtle` APIs in insecure contexts).
+- 🔬 **JavaScript Prototype Tampering Detection (`detectTamperedPrototypes`)**:
+  - Added runtime integrity inspection on critical browser APIs (`HTMLCanvasElement.prototype.toDataURL`, `CanvasRenderingContext2D.prototype.getImageData`, `WebGLRenderingContext.prototype.getParameter`, and `window.fetch`).
+  - Accurately detects function hooks and proxies injected by evasion frameworks (Puppeteer Stealth, Frida, Selenium) and applies an aggressive penalty (`+80` to `behaviorScore`) via the `prototypeTampered` indicator.
+- 📱 **Device Motion Variance Tracking (`motionVariance`)**:
+  - Analyzed accelerometer and gyroscope micro-variations via the `devicemotion` API.
+  - Distinguishes authentic handheld mobile devices from rack-mounted phone farms or automated rigs (detecting active touch interactions with zero natural sensor tremor, `motionVariance === 0`).
+- 📝 **Code Standardization & Internationalization**:
+  - Harmonized and fully translated technical comments into English across optimization modules (`library.js`), PoW solvers, and build scripts.
+
 ## Version 0.7.0
 
 - 🛡️ **Targeted Re-Challenge Strategy (`mustReChallenge`)**: Re-introduced and hardened the re-challenge workflow specifically targeted at honeypot triggers and critical indicators (e.g., `honeypotScore >= mediumThreshold` or any indicator score reaching $\ge 100$). Legitimate sessions with valid clearance tickets are preserved, while active attack attempts immediately invalidate existing tickets and force verification.

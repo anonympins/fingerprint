@@ -143,12 +143,12 @@ export function modPow(base, exponent, modulus) {
 
 
 export function hashNetwork(ip, prefix = 24) {
-    // Hash du réseau (masque /24 ou /16)
+    // Network hash (/24 or /16 mask)
     const parts = ip.split('.');
     if (parts.length !== 4) return null;
     const maskBytes = prefix / 8;
     const network = parts.slice(0, maskBytes).join('.');
-    // Hash simple
+    // Basic hash
     let hash = 0;
     for (let i = 0; i < network.length; i++) {
         const char = network.charCodeAt(i);
@@ -167,18 +167,18 @@ export function normalizeReferer(referer) {
 }
 
 export function isPrivateIp(ip) {
-    // Vérifier si l'IP est privée
+    // Check whether the IP address is private
     const parts = ip.split('.');
     if (parts.length !== 4) return false;
     const first = parseInt(parts[0]);
     return (first === 10) || (first === 172 && parseInt(parts[1]) >= 16 && parseInt(parts[1]) <= 31) || (first === 192 && parseInt(parts[1]) === 168);
 }
-// Fonctions utilitaires
+// Utility parsing functions
 export function parseUserAgent(ua) {
-    // Parser basique du User-Agent
+    // Basic User-Agent parser
     const result = {};
 
-    // Détection du navigateur
+    // Browser detection
     if (ua.includes('Chrome') && !ua.includes('Edg')) {
         result.browser = 'Chrome';
         const match = ua.match(/Chrome\/(\d+)/);
@@ -197,7 +197,7 @@ export function parseUserAgent(ua) {
         if (match) result.browser += `/${match[1]}`;
     }
 
-    // Détection de l'OS
+    // OS detection
     if (ua.includes('Windows NT 10.0')) result.os = 'Windows 10';
     else if (ua.includes('Windows NT 6.1')) result.os = 'Windows 7';
     else if (ua.includes('Mac OS X')) result.os = 'macOS';
@@ -205,7 +205,7 @@ export function parseUserAgent(ua) {
     else if (ua.includes('Android')) result.os = 'Android';
     else if (ua.includes('iPhone') || ua.includes('iPad')) result.os = 'iOS';
 
-    // Détection du type d'appareil
+    // Device form-factor detection
     if (ua.includes('Mobile')) result.device = 'mobile';
     else if (ua.includes('Tablet')) result.device = 'tablet';
     else result.device = 'desktop';

@@ -2347,7 +2347,9 @@ function getBehaviorScore(context) {
     if (metrics.honeypotInteraction) {
       return { behaviorScore: 100 };
     }
-
+  if (metrics.prototypeTampered) {
+      score += 80; // Altération flagrante de l'environnement JS
+  }
     // 2. Analyse des mouvements de la souris
     const { avgSpeed, avgAcceleration, straightness, pauses, segments } = analyzeMouseMovements(metrics.mouseMovementsHistory);
     const touchAnalysis = analyzeTouchMovements(metrics.touchMovementsHistory);
@@ -2398,6 +2400,14 @@ function getBehaviorScore(context) {
         if (touch.segments.length > 10) {
             const benfordDev = Optimization.Operators.benfordTest(touch.segments);
             if (benfordDev > 0.18) score += 35;
+        }
+
+        // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
+        const isMobileDevice = (context.headers['user-agent'] || '').includes('Mobile');
+        if (isMobileDevice && touchHistory.length >= 5 && typeof metrics.motionVariance === 'number') {
+            if (metrics.motionVariance === 0) {
+                score += 50; // Terminal fixé sur un châssis mécanique (rack ADB)
+            }
         }
     }
 
@@ -3033,6 +3043,62 @@ function getIpSubnet(ip, ipv4Prefix = 24, ipv6Prefix = 48) { // eslint-disable-l
 }
 
 /**
+ * Calcule la longueur du préfixe commun (en bits) entre deux adresses IP (IPv4 ou IPv6).
+ * @param {string} ip1
+ * @param {string} ip2
+ * @returns {number} Nombre de bits identiques en tête (0 à 32 pour IPv4, 0 à 128 pour IPv6).
+ */
+function getIpCommonPrefixLength(ip1, ip2) {
+  if (!ip1 || !ip2) return 0;
+  if (isIPv4(ip1) && isIPv4(ip2)) {
+    const b1 = ip1.split('.').map(Number);
+    const b2 = ip2.split('.').map(Number);
+    const int1 = ((b1[0] << 24) | (b1[1] << 16) | (b1[2] << 8) | b1[3]) >>> 0;
+    const int2 = ((b2[0] << 24) | (b2[1] << 16) | (b2[2] << 8) | b2[3]) >>> 0;
+    const xor = (int1 ^ int2) >>> 0;
+    return xor === 0 ? 32 : Math.clz32(xor);
+  }
+  if (isIPv6(ip1) && isIPv6(ip2)) {
+    const normalize = (ip) => {
+      let normalized = ip.trim().toLowerCase();
+      if (normalized.includes("::")) {
+        const parts = normalized.split("::");
+        const left = parts[0] ? parts[0].split(":") : [];
+        const right = parts[1] ? parts[1].split(":") : [];
+        const missing = 8 - (left.length + right.length);
+        const middle = Array(missing).fill("0000");
+        normalized = [...left, ...middle, ...right].join(":");
+      } else {
+        const parts = normalized.split(":");
+        if (parts.length !== 8) return null;
+      }
+      return normalized.split(":").map(g => parseInt(g, 16) || 0);
+    };
+
+    try {
+      const g1 = normalize(ip1);
+      const g2 = normalize(ip2);
+      if (!g1 || !g2) return 0;
+      let prefix = 0;
+      for (let i = 0; i < 8; i++) {
+        const xor = (g1[i] ^ g2[i]) & 0xffff;
+        if (xor === 0) {
+          prefix += 16;
+        } else {
+          // clz32 opère sur des entiers 32 bits, ajuster pour 16 bits
+          prefix += (Math.clz32(xor) - 16);
+          break;
+        }
+      }
+      return prefix;
+    } catch (e) {
+      return 0;
+    }
+  }
+  return 0;
+}
+
+/**
  * Applies temporal decay (half-life of 30 minutes) to subnet metrics.
  * @private
  * @param {object} subnetData The subnet data.
@@ -3079,6 +3145,11 @@ function decaySubnetData(subnetData, now) {
             subnetData.uas = subnetData.uas.slice(0, newLen);
         }
 
+        if (Array.isArray(subnetData.attackerIps)) {
+            const maxAttackerAgeMs = 60 * 60 * 1000; // 1 heure max
+            subnetData.attackerIps = subnetData.attackerIps.filter(a => (now - (a.lastSeen || now)) < maxAttackerAgeMs);
+        }
+
         subnetData.lastActivity = now - (inactivityMs % (30 * 60 * 1000));
     }
     return subnetData;
@@ -3101,7 +3172,8 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
         highScoreDevices: {},
         lastActivity: 0,
         ips: [],
-        uas: []
+        uas: [],
+        attackerIps: []
     };
 
     if (!subnetData.highScoreDevices) {
@@ -3113,6 +3185,9 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
         subnetData.ips = [];
     }
     if (!subnetData.uas) subnetData.uas = [];
+    if (!Array.isArray(subnetData.attackerIps)) {
+        subnetData.attackerIps = [];
+    }
 
     const now = Date.now();
     decaySubnetData(subnetData, now);
@@ -3136,6 +3211,20 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
     }
 
     const userAgent = context.headers?.['user-agent'] || '';
+
+    if (finalScore >= 70) {
+        const existingAttacker = subnetData.attackerIps.find(a => a.ip === context.clientIp);
+        if (existingAttacker) {
+            existingAttacker.lastSeen = now;
+            existingAttacker.score = Math.max(existingAttacker.score || 0, finalScore);
+        } else {
+            subnetData.attackerIps.push({ ip: context.clientIp, lastSeen: now, score: finalScore });
+            if (subnetData.attackerIps.length > 30) {
+                subnetData.attackerIps.shift();
+            }
+        }
+    }
+
     if (userAgent && !subnetData.uas.includes(userAgent)) {
         subnetData.uas.push(userAgent);
     }
@@ -3178,9 +3267,14 @@ export function calculateAnalogInconsistencyScore(consistencyScore, inflectionPo
 /**
  * Calculates a suspicion score based on the historical activity of the IP subnet.
  * @param {object} context The request context.
+ * @param {string} [deviceId=''] The device ID.
+ * @param {object} [securityConfig=null] Security configuration containing thresholds.
  * @returns {Promise<{subnetScore: number}>}
  */
-async function getSubnetScore(context) {
+async function getSubnetScore(context, deviceId = '', securityConfig = null) {
+    if (typeof deviceId === 'object' && deviceId !== null && !securityConfig) {
+        securityConfig = deviceId;
+    }
     const subnet = getIpSubnet(context.clientIp);
     if (!subnet) return { subnetScore: 0 };
     const key = `subnet:${subnet}`;
@@ -3223,14 +3317,61 @@ async function getSubnetScore(context) {
     const uaDispersion = Math.min(3.0, Math.max(1, uaCount) / deviceCount);
     const uaMultiplier = 0.7 + 0.3 * Math.tanh(uaDispersion - 1.0);
 
-    // 4. Intensité brute continue de la menace (sans discontinuité)
+    // 4. Intensité brute continue de la menace
     const rawThreatIntensity = highScoreCount * bayesianDensity * ipMultiplier * uaMultiplier;
 
-    // 5. Saturation asymptotique continue (Asymptote à 99.9)
-    // Même si rawThreatIntensity tend vers l'infini, tanh converge vers 1.0 sans jamais dépasser 85.0
-    const ASYMPTOTE = 99.9;
-    const scaleFactor = 4.0; // Sensibilité de la transition
-    const finalScore = Math.round(ASYMPTOTE * Math.tanh(rawThreatIntensity / scaleFactor) * 10) / 10;
+    // 5. Composante 1 : Score ambiant plafonné en zone Medium (asymptote au seuil medium)
+    const mediumThreshold = (securityConfig?.thresholds?.medium !== undefined)
+        ? Number(securityConfig.thresholds.medium)
+        : 45.0;
+    const ambientAsymptote = mediumThreshold;
+    const maxProximityBoost = Math.max(0.0, 100.0 - ambientAsymptote);
+    const scaleFactor = 10.0;
+    const ambientScore = ambientAsymptote * Math.tanh(rawThreatIntensity / scaleFactor);
+
+    // 6. Composante 2 : Boost de proximité micro-réseau avec des attaquants récents (le reste va jusqu'à 100)
+    let proximityBoost = 0.0;
+    const attackerIps = subnetData.attackerIps || [];
+    const clientIp = context.clientIp;
+
+    if (attackerIps.length > 0 && clientIp) {
+        let maxCommonPrefix = 0;
+        const isClientV4 = isIPv4(clientIp);
+        const isClientV6 = isIPv6(clientIp);
+
+        for (const att of attackerIps) {
+            if (att.ip && (now - (att.lastSeen || now)) <= 30 * 60 * 1000) {
+                const prefixLen = getIpCommonPrefixLength(clientIp, att.ip);
+                if (prefixLen > maxCommonPrefix) {
+                    maxCommonPrefix = prefixLen;
+                }
+            }
+        }
+
+        if (isClientV4) {
+            if (maxCommonPrefix >= 32) {
+                proximityBoost = maxProximityBoost; // Même adresse IP exacte
+            } else if (maxCommonPrefix >= 30) {
+                proximityBoost = maxProximityBoost * (45.0 / 55.0); // Même /30 (écart <= 3 adresses)
+            } else if (maxCommonPrefix >= 28) {
+                proximityBoost = maxProximityBoost * (30.0 / 55.0); // Même /28 (bloc de 16 adresses)
+            } else if (maxCommonPrefix >= 26) {
+                proximityBoost = maxProximityBoost * (15.0 / 55.0); // Même /26 (bloc de 64 adresses)
+            }
+        } else if (isClientV6) {
+            if (maxCommonPrefix >= 128) {
+                proximityBoost = maxProximityBoost; // Même IPv6 exacte
+            } else if (maxCommonPrefix >= 120) {
+                proximityBoost = maxProximityBoost * (45.0 / 55.0); // Même /120
+            } else if (maxCommonPrefix >= 112) {
+                proximityBoost = maxProximityBoost * (30.0 / 55.0); // Même /112
+            } else if (maxCommonPrefix >= 96) {
+                proximityBoost = maxProximityBoost * (15.0 / 55.0); // Même /96
+            }
+        }
+    }
+
+    const finalScore = Math.min(100.0, Math.round((ambientScore + proximityBoost) * 10) / 10);
 
     return { subnetScore: finalScore };
 }
@@ -3809,7 +3950,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         getBehavioralIndicators(context, deviceData), // This modifies deviceData, so it must be done before saving deviceData
         getThreatIntelScore(context, zkpY), // NOUVEAU: Score de Threat Intelligence Fédéré
         getTlsSpoofingScore(context),
-        getSubnetScore(context, deviceId),
+        getSubnetScore(context, deviceId, securityConfig),
         getIpReputationScore(clientIp),
         getBotnetClusterScore(context, stableFpHash),
         store.set(`ip-device:${clientIp}`, deviceId, 600) // Link the IP to the device for 10 minutes
@@ -6774,6 +6915,7 @@ export const __internal = {
     generateCombinedPoWChallengePage,
     problemManager, // Re-export the problemManager promise
     getIpSubnet, // Expose for testing
+    getIpCommonPrefixLength, // Expose for testing
     updateSubnetMetrics, // Expose for testing
     getSubnetScore, // Expose for testing
     getIpReputationScore, // Expose for testing

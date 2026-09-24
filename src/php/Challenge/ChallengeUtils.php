@@ -695,8 +695,8 @@ class ChallengeUtils
     public static function calculateCpuTarget(float $suspicionFactor, array $securityConfig): string
     {
         $cpuConfig = $securityConfig['cpu'] ?? [];
-        $minDifficultyBits = $cpuConfig['minDifficultyBits'] ?? 8;
-        $maxDifficultyBits = $cpuConfig['maxDifficultyBits'] ?? 24;
+        $minDifficultyBits = (float)($cpuConfig['minDifficultyBits'] ?? 4);
+        $maxDifficultyBits = (float)($cpuConfig['maxDifficultyBits'] ?? 22);
 
         $totalDifficultyBits = $minDifficultyBits + $suspicionFactor * ($maxDifficultyBits - $minDifficultyBits);
 
@@ -735,6 +735,18 @@ class ChallengeUtils
         string $deviceId = '',
         string $deviceHash = ''
     ): ?string {
+        // En mode HTTP (non sécurisé), aucun calcul SHA-256 n'est exigé
+        if (!empty($challengeContext['isHttp'])) {
+            error_log('[FP Server Verify] Mode HTTP détecté (insecure policy) : validation sans SHA-256 acceptée.');
+            $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
+            return self::generateStatelessTicket([
+                'expiry' => $expiry,
+                'originalIp' => $clientIp,
+                'deviceId' => $deviceId,
+                'deviceHash' => $deviceHash
+            ]);
+        }
+
         $cpuTargetHex = $challengeContext['cpuTarget'] ?? null;
         $baseBlock = $challengeContext['baseBlock'] ?? null;
 
@@ -871,6 +883,9 @@ class ChallengeUtils
         int $difficulty,
         string $clientSecret
     ): bool {
+        if ($difficulty === 0) {
+            return true;
+        }
         $maxAllowedMemDifficulty = 128; // 128MB
         if ($difficulty > $maxAllowedMemDifficulty) {
             error_log("[Security] Memory PoW verification attempt with excessive difficulty: {$difficulty}MB. Denied.");
@@ -996,13 +1011,27 @@ class ChallengeUtils
      */
     private static function getPowSolverCode(): string
     {
-        // Le chemin doit être relatif à ce fichier ou absolu.
-        $solverPath = __DIR__ . '/../../js/pow.solver.inline.js';
-        if (!file_exists($solverPath)) {
-            error_log("[ChallengeUtils] Erreur: Le fichier pow.solver.inline.js n'a pas été trouvé à l'emplacement attendu.");
-            return '';
+        $candidates = [
+            __DIR__ . '/../../js/pow.solver.inline.js',
+            __DIR__ . '/../assets/pow.solver.inline.js',
+            __DIR__ . '/../js/pow.solver.inline.js',
+            dirname(__DIR__, 2) . '/assets/pow.solver.inline.js',
+            dirname(__DIR__, 2) . '/js/pow.solver.inline.js',
+            dirname(__DIR__, 1) . '/assets/pow.solver.inline.js',
+        ];
+        if (defined('ABSPATH')) {
+            $wpPluginSolver = ABSPATH . 'wp-content/plugins/fingerprint-wordpress/assets/pow.solver.inline.js';
+            if (file_exists($wpPluginSolver)) {
+                return file_get_contents($wpPluginSolver) ?: '';
+            }
         }
-        return file_get_contents($solverPath) ?: '';
+        foreach ($candidates as $solverPath) {
+            if (file_exists($solverPath)) {
+                return file_get_contents($solverPath) ?: '';
+            }
+        }
+        error_log("[ChallengeUtils] Erreur: Le fichier pow.solver.inline.js n'a pas été trouvé à l'emplacement attendu.");
+        return '';
     }
 
     public static function generateSpaceChallengePage(array $challengeDetails, string $clientSecret, array $securityConfig): string
@@ -1210,14 +1239,21 @@ JS;
         string $clientSecret,
         array $securityConfig,
         array $trapUrls,
-        string $originalFingerprint
+        string $originalFingerprint,
+        string $clientIp = '',
+        string $tlsSessionId = '',
+        ?string $baseBlock = null,
+        bool $isHttps = true
     ): string {
         $nonce = $cpuChallengeDetails['nonce'];
         $target = $cpuChallengeDetails['target']; // @phpstan-ignore-line
         $path = $cpuChallengeDetails['path'];
+        $isHttp = !$isHttps;
 
         $solverCode = self::getPowSolverCode();
-        $baseBlock = self::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint);
+        if ($baseBlock === null || $baseBlock === '') {
+            $baseBlock = self::createCpuChallengeBaseBlock($nonce, $clientSecret, $originalFingerprint, $clientIp, $tlsSessionId);
+        }
         $baseBlockBytes = '[' . implode(',', array_values(unpack('C*', $baseBlock))) . ']';
 
         $trapTags = ['div', 'span', 'p', 'section'];
@@ -1241,15 +1277,25 @@ JS;
         $safePath = json_encode($path, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
         $safeNonce = json_encode($nonce, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
         $safeClientSecret = json_encode($clientSecret, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
+        $isHttpJs = $isHttp ? 'true' : 'false';
 
         $challengeScript = <<<JS
           async function solve() {
             const nonce = {$safeNonce};
             const path = {$safePath};
             const clientSecret = {$safeClientSecret};
+            const isHttp = {$isHttpJs};
             const cpuTarget = BigInt("0x" + "{$target}");
             const memDifficulty = {$memoryDifficulty};
             const baseBlock = new Uint8Array({$baseBlockBytes});
+
+            if (isHttp) {
+                document.getElementById('loader').innerText = '⚠️ Connexion HTTP non sécurisée : validation simplifiée en cours...';
+                await new Promise(r => setTimeout(r, 150));
+                const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=http_simulacre_ack&pow_solution_mem=0";
+                window.location.href = finalUrl;
+                return;
+            }
 
             document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
             const cpuSolution = await window.solveCpuChallengeInline(baseBlock, cpuTarget, (progress) => {});

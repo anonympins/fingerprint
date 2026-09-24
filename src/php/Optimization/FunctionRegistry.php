@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Optimization;
 
 /**
- * Registre pour exposer de manière contrôlée les fonctions de la bibliothèque d'optimisation.
+ * Registry to safely expose optimization library routines to task runners.
  */
 class FunctionRegistry
 {
@@ -13,17 +13,17 @@ class FunctionRegistry
     private static array $functions = [];
 
     /**
-     * Initialise le registre avec les fonctions disponibles.
+     * Initializes registry with built-in solvers and evaluators.
      */
     private static function initialize(): void
     {
         if (empty(self::$functions)) {
-            // Fonctions de "Scoring"
+            // Evaluators & Scoring Adapters
             self::$functions['tsp.calculateEnergy'] = [OptimizationUtils::class, 'evaluatePathDistance'];
             self::$functions['portfolio.calculateMetrics'] = [OptimizationOperators::class, 'calculatePortfolioMetrics'];
             self::$functions['facility.calculateEnergy'] = [OptimizationOperators::class, 'evaluateFacilityLocation'];
 
-            // Fonctions de "Résolution"
+            // Full Optimization Solvers
             self::$functions['tsp.solve'] = [OptimizationOperators::class, 'solveTSP'];
             self::$functions['portfolio.solve'] = [OptimizationOperators::class, 'solvePortfolio'];
             self::$functions['fraud.solve'] = [OptimizationOperators::class, 'solveFraudDetection'];
@@ -33,7 +33,7 @@ class FunctionRegistry
     }
 
     /**
-     * Récupère une fonction depuis le registre.
+     * Retrieves a function from the registry.
      */
     public static function get(string $name): ?callable
     {
@@ -41,7 +41,7 @@ class FunctionRegistry
         return self::$functions[$name] ?? null;
     }
     /**
-     * Enregistre une nouvelle fonction. Principalement pour les tests.
+     * Registers a custom function. Primarily intended for testing.
      * @internal
      * @param string $name
      * @param callable $function
@@ -54,7 +54,7 @@ class FunctionRegistry
     }
 
     /**
-     * Réinitialise le registre. Uniquement pour les tests.
+     * Resets function registry. Intended for testing.
      * @internal
      */
     public static function __internal_resetRegistry(): void

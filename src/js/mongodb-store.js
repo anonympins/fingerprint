@@ -49,7 +49,7 @@ export function createMongoDbStore(db, collectionName = 'fingerprint_store') {
         reconnecting = false;
         clearInterval(interval);
       } catch (err) {
-        // Toujours déconnecté
+        // Connection still down, continue retry loop
       }
     }, 5000);
     if (interval.unref) interval.unref();

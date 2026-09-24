@@ -1,17 +1,17 @@
 /**
  * @file @/optimization.worker.js
- * @description Web Worker générique pour exécuter les algorithmes d'optimisation de la bibliothèque `Optimization`.
- * Ce script s'exécute sur un thread séparé pour ne pas bloquer l'interface utilisateur.
+ * @description Generic Web Worker running optimization routines from `Optimization`.
+ * Runs on a dedicated worker thread to maintain main thread responsiveness.
  */
 
 import {parentPort, workerData} from 'worker_threads';
-import {Optimization} from './library.js'; // Assurez-vous que le chemin est correct
+import {Optimization} from './library.js';
 
 if (parentPort) {
-    parentPort.on('message', async () => { // Le message est vide, on utilise workerData
+    parentPort.on('message', async () => { // Empty message payload; parameters loaded via workerData
         const { solverName, solverArgs } = workerData;
 
-        // Gérer les solveurs imbriqués (ex: 'Operators.solvePortfolio')
+        // Resolve nested solver paths (e.g. 'Operators.solvePortfolio')
         const solverFunction = solverName.split('.').reduce((obj, prop) => obj && obj[prop], Optimization);
 
         if (typeof solverFunction === 'function') {

@@ -160,6 +160,16 @@ class IpReputationTest extends TestCase
 
         $scoreWithHistory = RequestUtils::getSubnetScore($context, 'device-1');
         $this->assertGreaterThan(0.0, $scoreWithHistory['subnetScore']);
+        $this->assertLessThanOrEqual(45.0, $scoreWithHistory['subnetScore']);
+
+        // Test avec attaquant proche (/30)
+        RequestUtils::updateSubnetMetrics($context, "attacker-1", 85.0);
+        $scoreWithAttacker = RequestUtils::getSubnetScore($context, 'device-1');
+        $this->assertGreaterThanOrEqual(45.0, $scoreWithAttacker['subnetScore']);
+
+        // Vérification du calcul de préfixe commun
+        $this->assertEquals(32, RequestUtils::getIpCommonPrefixLength('192.168.1.50', '192.168.1.50'));
+        $this->assertEquals(31, RequestUtils::getIpCommonPrefixLength('192.168.1.50', '192.168.1.51'));
     }
 
     public function testTlsSpoofingScoreWithJa4(): void

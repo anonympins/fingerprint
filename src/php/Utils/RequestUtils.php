@@ -411,6 +411,9 @@ class RequestUtils
         }
 
         $score = 0.0;
+        if (!empty($metrics['prototypeTampered'])) {
+            $score += 80.0;
+        }
 
         $mouseAnalysis = self::analyzeMouseMovements($metrics['mouseMovementsHistory'] ?? null);
         $touch = self::analyzeTouchMovements($metrics['touchMovementsHistory'] ?? null);
@@ -499,6 +502,15 @@ class RequestUtils
                 $benfordDev = Optimization::benfordTest($touch['segments']);
                 if ($benfordDev > 0.18) {
                     $score += 35;
+                }
+            }
+
+            // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
+            $ua = $context->getHeader('user-agent') ?? '';
+            $isMobileDevice = str_contains($ua, 'Mobile');
+            if ($isMobileDevice && count($touchHistory) >= 5 && isset($metrics['motionVariance']) && is_numeric($metrics['motionVariance'])) {
+                if ((float)$metrics['motionVariance'] === 0.0) {
+                    $score += 50.0;
                 }
             }
         }
@@ -1245,6 +1257,36 @@ class RequestUtils
     }
 
     /**
+     * Calcule la longueur du préfixe commun (en bits) entre deux adresses IP (IPv4 ou IPv6).
+     */
+    public static function getIpCommonPrefixLength(string $ip1, string $ip2): int
+    {
+        $bin1 = @inet_pton($ip1);
+        $bin2 = @inet_pton($ip2);
+        if ($bin1 === false || $bin2 === false || strlen($bin1) !== strlen($bin2)) {
+            return 0;
+        }
+        $len = strlen($bin1);
+        $bits = 0;
+        for ($i = 0; $i < $len; $i++) {
+            $xor = ord($bin1[$i]) ^ ord($bin2[$i]);
+            if ($xor === 0) {
+                $bits += 8;
+            } else {
+                for ($b = 7; $b >= 0; $b--) {
+                    if (($xor & (1 << $b)) === 0) {
+                        $bits++;
+                    } else {
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        return $bits;
+    }
+
+    /**
      * Met à jour les métriques agrégées pour un sous-réseau IP.
      * @param RequestContext $context
      * @param string $deviceId
@@ -1263,7 +1305,8 @@ class RequestUtils
             'highScoreDevices' => [],
             'lastActivity' => 0,
             'ips' => [],
-            'uas' => []
+            'uas' => [],
+            'attackerIps' => []
         ];
 
         if (!isset($subnetData['highScoreDevices'])) {
@@ -1274,6 +1317,9 @@ class RequestUtils
         }
         if (!isset($subnetData['uas'])) {
             $subnetData['uas'] = [];
+        }
+        if (!isset($subnetData['attackerIps']) || !is_array($subnetData['attackerIps'])) {
+            $subnetData['attackerIps'] = [];
         }
         $now = time();
         self::decaySubnetData($subnetData, $now);
@@ -1297,6 +1343,28 @@ class RequestUtils
         }
 
         $userAgent = $context->getHeader('user-agent') ?? '';
+        if ($finalScore >= 70.0) {
+            $foundAttacker = false;
+            foreach ($subnetData['attackerIps'] as &$att) {
+                if (isset($att['ip']) && $att['ip'] === $context->clientIp) {
+                    $att['lastSeen'] = $now;
+                    $att['score'] = max((float)($att['score'] ?? 0.0), $finalScore);
+                    $foundAttacker = true;
+                    break;
+                }
+            }
+            unset($att);
+            if (!$foundAttacker) {
+                $subnetData['attackerIps'][] = [
+                    'ip' => $context->clientIp,
+                    'lastSeen' => $now,
+                    'score' => $finalScore
+                ];
+                if (count($subnetData['attackerIps']) > 30) {
+                    array_shift($subnetData['attackerIps']);
+                }
+            }
+        }
         if (!empty($userAgent) && !in_array($userAgent, $subnetData['uas'], true)) {
             $subnetData['uas'][] = $userAgent;
         }
@@ -1326,9 +1394,10 @@ class RequestUtils
      * Calcule un score de suspicion basé sur l'activité historique du sous-réseau IP.
      * @param RequestContext $context
      * @param string $currentDeviceId
+     * @param array<string, mixed> $securityConfig
      * @return array{'subnetScore': float}
      */
-    public static function getSubnetScore(RequestContext $context, string $currentDeviceId): array
+    public static function getSubnetScore(RequestContext $context, string $currentDeviceId = '', array $securityConfig = []): array
     {
         $subnet = self::getIpSubnet($context->clientIp);
         if ($subnet === null) {
@@ -1373,14 +1442,61 @@ class RequestUtils
         $uaDispersion = min(3.0, (float)max(1, $uaCount) / (float)$deviceCount);
         $uaMultiplier = 0.7 + 0.3 * tanh($uaDispersion - 1.0);
 
-        // 4. Intensité continue de la menace
+        // 4. Intensité brute globale de la menace
         $rawIntensity = (float)$highScoreCount * $bayesianDensity * $ipMultiplier * $uaMultiplier;
 
-        // 5. Asymptote continue via tanh (99.9 maximum strict, dérivable et sans saut)
-        $asymptote = 99.9;
-        $scale = 4.0;
-        $finalScore = round($asymptote * tanh($rawIntensity / $scale) * 10.0) / 10.0;
+        // 5. Composante 1 : Score ambiant plafonné en zone Medium (asymptote au seuil medium)
+        $mediumThreshold = (float)($securityConfig['thresholds']['medium'] ?? 45.0);
+        $ambientAsymptote = $mediumThreshold;
+        $maxProximityBoost = max(0.0, 100.0 - $ambientAsymptote);
+        $scale = 10.0;
+        $ambientScore = $ambientAsymptote * tanh($rawIntensity / $scale);
 
+        // 6. Composante 2 : Boost de proximité micro-réseau avec des attaquants récents (le reste va jusqu'à 100)
+        $proximityBoost = 0.0;
+        $attackerIps = $subnetData['attackerIps'] ?? [];
+        $clientIp = $context->clientIp;
+
+        if (!empty($attackerIps) && !empty($clientIp)) {
+            $maxCommonPrefix = 0;
+            $isV4 = filter_var($clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
+            $isV6 = filter_var($clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+
+            foreach ($attackerIps as $att) {
+                $attIp = $att['ip'] ?? '';
+                $lastSeen = $att['lastSeen'] ?? $now;
+                if ($attIp !== '' && ($now - $lastSeen) <= 1800) {
+                    $prefixLen = self::getIpCommonPrefixLength($clientIp, $attIp);
+                    if ($prefixLen > $maxCommonPrefix) {
+                        $maxCommonPrefix = $prefixLen;
+                    }
+                }
+            }
+
+            if ($isV4) {
+                if ($maxCommonPrefix >= 32) {
+                    $proximityBoost = $maxProximityBoost; // Même adresse IP exacte
+                } elseif ($maxCommonPrefix >= 30) {
+                    $proximityBoost = $maxProximityBoost * (45.0 / 55.0); // Même /30 (écart <= 3 adresses)
+                } elseif ($maxCommonPrefix >= 28) {
+                    $proximityBoost = $maxProximityBoost * (30.0 / 55.0); // Même /28 (bloc de 16 adresses)
+                } elseif ($maxCommonPrefix >= 26) {
+                    $proximityBoost = $maxProximityBoost * (15.0 / 55.0); // Même /26 (bloc de 64 adresses)
+                }
+            } elseif ($isV6) {
+                if ($maxCommonPrefix >= 128) {
+                    $proximityBoost = $maxProximityBoost; // Même IPv6 exacte
+                } elseif ($maxCommonPrefix >= 120) {
+                    $proximityBoost = $maxProximityBoost * (45.0 / 55.0); // Même /120
+                } elseif ($maxCommonPrefix >= 112) {
+                    $proximityBoost = $maxProximityBoost * (30.0 / 55.0); // Même /112
+                } elseif ($maxCommonPrefix >= 96) {
+                    $proximityBoost = $maxProximityBoost * (15.0 / 55.0); // Même /96
+                }
+            }
+        }
+
+        $finalScore = min(100.0, round(($ambientScore + $proximityBoost) * 10.0) / 10.0);
         return ['subnetScore' => $finalScore];
     }
     /**
@@ -1414,6 +1530,12 @@ class RequestUtils
                     $newLen = max(0, (int)floor(count($subnetData[$field]) / $decay));
                     $subnetData[$field] = array_slice($subnetData[$field], 0, $newLen);
                 }
+            }
+
+            if (isset($subnetData['attackerIps']) && is_array($subnetData['attackerIps'])) {
+                $subnetData['attackerIps'] = array_values(array_filter($subnetData['attackerIps'], function ($att) use ($now) {
+                    return ($now - ($att['lastSeen'] ?? $now)) < 3600;
+                }));
             }
 
             $subnetData['lastActivity'] = $now - ($inactivitySec % 1800);

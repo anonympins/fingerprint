@@ -91,7 +91,7 @@ In your **pom.xml**, add :
 <dependency>
     <groupId>com.anonympins</groupId>
     <artifactId>fingerprint-engine</artifactId>
-    <version>0.7.0</version>
+    <version>0.7.1</version>
 </dependency>
 ```
 ## Documentation

@@ -8,8 +8,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 /**
- * Tente d'exécuter la commande de build pour le module WASM.
- * Ne bloque pas le build si la commande échoue (ex: em++ non trouvé).
+ * Attempts to run the build command for the WASM module.
+ * Does not fail the build if the command fails (e.g. em++ not found).
  */
 function buildWasm() {
   return new Promise((resolve) => {
@@ -22,7 +22,7 @@ function buildWasm() {
       } else {
         console.log('WASM module built successfully.');
       }
-      resolve(); // Toujours résoudre la promesse pour ne pas bloquer le build principal.
+      resolve(); // Always resolve the promise so the main build is not blocked.
     });
   });
 }
@@ -36,14 +36,12 @@ async function buildClientScript() {
     console.log('Obfuscating client script...');
     const obfuscationResult = JavaScriptObfuscator.obfuscate(clientScriptContent, {
       compact: true,
-      controlFlowFlattening: true, // Aplatit le flux de contrôle
-      deadCodeInjection: true, // Injecte du code mort
+      controlFlowFlattening: true, // Flattens control flow
+      deadCodeInjection: true, // Injects dead code
       stringArray: true,
-      stringArrayRotate: true, // Fait tourner le tableau de chaînes
-      stringArrayShuffle: true, // Mélange le tableau de chaînes
-      // L'utilisation d'une graine (seed) de 0 signifie que l'obfuscation sera déterministe
-      // pour une même entrée. Pour une obfuscation unique à chaque build, on peut utiliser
-      // une graine aléatoire, par exemple : seed: Math.random()
+      stringArrayRotate: true, // Rotates the string array
+      stringArrayShuffle: true, // Shuffles the string array
+      // Using a fixed seed yields deterministic obfuscation. For unique builds, use Math.random()
       seed: Math.random(),
       selfDefending: true,
     });

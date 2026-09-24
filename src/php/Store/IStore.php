@@ -5,43 +5,42 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Store;
 
 /**
- * Interface pour un système de stockage persistant.
- * Utilisé pour stocker les données des appareils, les secrets des challenges, etc.
+ * Interface for a persistent storage adapter (device data, challenge nonces, tickets).
  */
 interface IStore
 {
     /**
-     * Récupère une valeur associée à une clé.
+     * Retrieves a value associated with a key.
      * @param string $key
      * @return mixed|null
      */
     public function get(string $key);
 
     /**
-     * Stocke une valeur associée à une clé, avec une durée de vie optionnelle.
+     * Stores a value associated with a key, with an optional TTL.
      * @param string $key
      * @param mixed $value
-     * @param int|null $ttl Durée de vie en secondes.
+     * @param int|null $ttl Time to live in seconds.
      * @return void
      */
     public function set(string $key, $value, ?int $ttl = null): void;
 
     /**
-     * Vérifie si une clé existe dans le stockage.
+     * Checks whether a key exists in storage.
      * @param string $key
      * @return bool
      */
     public function has(string $key): bool;
 
     /**
-     * Supprime une clé du stockage.
+     * Deletes a key from storage.
      * @param string $key
      * @return void
      */
     public function delete(string $key): void;
 
     /**
-     * Supprime toutes les clés du stockage.
+     * Clears all keys from storage.
      * @return void
      */
     public function clear(): void;

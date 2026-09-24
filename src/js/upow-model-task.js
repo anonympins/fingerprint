@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 
 /**
- * Classe de base abstraite pour définir des tâches uPoW basées sur l'entraînement
- * ou l'évaluation de modèles IA (PyTorch exportés au format ONNX).
+ * Abstract base class defining useful Proof-of-Work (uPoW) tasks based on ML training
+ * or inference validation (e.g. PyTorch models exported to ONNX format).
  */
 export class UpowModelTask {
     constructor(problemId, modelPath, config = {}) {
@@ -20,7 +20,7 @@ export class UpowModelTask {
     }
 
     /**
-     * Récupère l'identifiant du problème.
+     * Returns the unique problem identifier.
      * @returns {string}
      */
     getProblemId() {
@@ -28,7 +28,7 @@ export class UpowModelTask {
     }
 
     /**
-     * Récupère le chemin réseau du modèle ONNX.
+     * Returns the network asset path of the model.
      * @returns {string}
      */
     getModelAssetPath() {
@@ -36,18 +36,18 @@ export class UpowModelTask {
     }
 
     /**
-     * Génère la charge utile de travail pour le client.
-     * Envoie l'état actuel des poids du modèle et un lot de données (mini-batch) à traiter.
+     * Dispatches task workload to the client.
+     * Transmits current model weights and mini-batch sample data.
      * @param {number} suspicionFactor
-     * @returns {object} Données à envoyer au client
+     * @returns {object} Task payload dispatched to client
      */
     dispatchTask(suspicionFactor) {
         throw new Error("Method 'dispatchTask(suspicionFactor)' must be implemented.");
     }
 
     /**
-     * Vérifie la validité de la solution retournée par le client.
-     * Implémente des gardes-fous contre l'empoisonnement (ex: vérification des gradients).
+     * Validates solution returned by the client.
+     * Implements anti-poisoning guards and gradient bounds checks.
      * @param {object} taskContext 
      * @param {object} solution 
      * @returns {boolean}
@@ -57,8 +57,7 @@ export class UpowModelTask {
     }
 
     /**
-     * Intègre les gradients ou résultats validés dans le modèle global.
-     * Par exemple : algorithme FedAvg (Federated Averaging).
+     * Integrates validated gradients into global model weights (e.g. FedAvg).
      * @param {object} solution 
      */
     integrateSolution(solution) {
@@ -67,17 +66,17 @@ export class UpowModelTask {
 }
 
 /**
- * Exemple d'implémentation d'une tâche d'entraînement (Classifieur de requêtes suspectes)
+ * Example training task implementation (suspicious request classifier).
  */
 export class RequestClassifierTask extends UpowModelTask {
     constructor(modelPath, config) {
         super("request_classifier_nn", modelPath, config);
-        // Poids initiaux du modèle (Réseau de neurones linéaire simple)
+        // Initial model weights (linear neural network)
         this.weights = [0.1, -0.2, 0.8, 0.5]; 
     }
 
     dispatchTask(suspicionFactor) {
-        // Génération de données d'entraînement anonymisées pour le client
+        // Anonymized sample training batch dispatched to client
         const inputs = [
             [1.0, 0.5, 0.0, 1.2],
             [0.0, 1.0, -0.5, 0.8]
@@ -95,7 +94,7 @@ export class RequestClassifierTask extends UpowModelTask {
         if (!Array.isArray(gradients) || gradients.length !== this.weights.length) {
             return false;
         }
-        // Anti-poisoning : s'assurer que les gradients ne contiennent pas de valeurs aberrantes (clipping)
+        // Anti-poisoning guard: ensure gradients do not exceed threshold norms (gradient clipping)
         const maxGradientNorm = 10.0;
         for (const grad of gradients) {
             if (typeof grad !== 'number' || isNaN(grad) || Math.abs(grad) > maxGradientNorm) {

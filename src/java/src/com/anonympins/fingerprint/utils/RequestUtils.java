@@ -481,6 +481,10 @@ public class RequestUtils {
                         return result;
                     }
 
+                    if (Boolean.TRUE.equals(metrics.get("prototypeTampered"))) {
+                        score += 80.0;
+                    }
+
                     List<Map<String, Object>> mouseHistory = (List<Map<String, Object>>) metrics.get("mouseMovementsHistory");
                     List<Map<String, Object>> touchHistory = (List<Map<String, Object>>) metrics.get("touchMovementsHistory");
 
@@ -579,6 +583,16 @@ public class RequestUtils {
                             score += 35.0;
                         }
                     }
+
+                    // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
+                    String ua = context.getHeader("user-agent");
+                    boolean isMobileDevice = ua != null && ua.contains("Mobile");
+                    Object motionVariance = metrics.get("motionVariance");
+                    if (isMobileDevice && touchHistory != null && touchHistory.size() >= 5 && motionVariance instanceof Number) {
+                        if (((Number) motionVariance).doubleValue() == 0.0) {
+                            score += 50.0;
+                        }
+                    }
                 }
             } catch (Exception e) {
                 score += 10.0; // Malformed header
@@ -620,6 +634,32 @@ public class RequestUtils {
         return result;
     }
 
+    public static int getIpCommonPrefixLength(String ip1, String ip2) {
+        if (ip1 == null || ip2 == null || ip1.isEmpty() || ip2.isEmpty()) {
+            return 0;
+        }
+        try {
+            byte[] b1 = InetAddress.getByName(ip1).getAddress();
+            byte[] b2 = InetAddress.getByName(ip2).getAddress();
+            if (b1.length != b2.length) {
+                return 0;
+            }
+            int bits = 0;
+            for (int i = 0; i < b1.length; i++) {
+                int xor = (b1[i] ^ b2[i]) & 0xFF;
+                if (xor == 0) {
+                    bits += 8;
+                } else {
+                    bits += Integer.numberOfLeadingZeros(xor) - 24;
+                    break;
+                }
+            }
+            return bits;
+        } catch (UnknownHostException e) {
+            return 0;
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private static void decaySubnetData(Map<String, Object> subnetData, long now) {
         long lastActivity = ((Number) subnetData.getOrDefault("lastActivity", now)).longValue();
@@ -658,6 +698,14 @@ public class RequestUtils {
                 }
             }
 
+            List<Map<String, Object>> attackerIps = (List<Map<String, Object>>) subnetData.get("attackerIps");
+            if (attackerIps != null) {
+                attackerIps.removeIf(a -> {
+                    long lastSeen = ((Number) a.getOrDefault("lastSeen", now)).longValue();
+                    return (now - lastSeen) > 3600;
+                });
+            }
+
             subnetData.put("lastActivity", now - (inactivitySec % 1800L));
         }
     }
@@ -677,6 +725,7 @@ public class RequestUtils {
             subnetData.put("lastActivity", 0L);
             subnetData.put("ips", new ArrayList<String>());
             subnetData.put("uas", new ArrayList<String>());
+            subnetData.put("attackerIps", new ArrayList<Map<String, Object>>());
         }
 
         if (!subnetData.containsKey("highScoreDevices")) {
@@ -687,6 +736,9 @@ public class RequestUtils {
         }
         if (!subnetData.containsKey("uas")) {
             subnetData.put("uas", new ArrayList<String>());
+        }
+        if (!subnetData.containsKey("attackerIps")) {
+            subnetData.put("attackerIps", new ArrayList<Map<String, Object>>());
         }
 
         long now = System.currentTimeMillis() / 1000L;
@@ -719,6 +771,31 @@ public class RequestUtils {
             uas.add(userAgent);
         }
 
+        if (finalScore >= 70.0) {
+            List<Map<String, Object>> attackerIps = (List<Map<String, Object>>) subnetData.get("attackerIps");
+            Map<String, Object> existing = null;
+            for (Map<String, Object> a : attackerIps) {
+                if (context.clientIp.equals(a.get("ip"))) {
+                    existing = a;
+                    break;
+                }
+            }
+            if (existing != null) {
+                existing.put("lastSeen", now);
+                double prevScore = ((Number) existing.getOrDefault("score", 0.0)).doubleValue();
+                existing.put("score", Math.max(prevScore, finalScore));
+            } else {
+                Map<String, Object> newAtt = new HashMap<>();
+                newAtt.put("ip", context.clientIp);
+                newAtt.put("lastSeen", now);
+                newAtt.put("score", finalScore);
+                attackerIps.add(newAtt);
+                if (attackerIps.size() > 30) {
+                    attackerIps.remove(0);
+                }
+            }
+        }
+
         subnetData.put("lastActivity", now);
 
         if (deviceIds.size() > 100) {
@@ -737,6 +814,10 @@ public class RequestUtils {
 
     @SuppressWarnings("unchecked")
     public static Map<String, Double> getSubnetScore(IStore store, RequestContext context, String currentDeviceId) {
+        return getSubnetScore(store, context, currentDeviceId, 45.0);
+    }
+
+    public static Map<String, Double> getSubnetScore(IStore store, RequestContext context, String currentDeviceId, double mediumThresold) {
         Map<String, Double> result = new HashMap<>();
         String subnet = getIpSubnet(context.clientIp, 24, 48);
         if (subnet == null) {
@@ -781,11 +862,55 @@ public class RequestUtils {
         // 4. Intensité continue de la menace (sans seuil abrupt ni dérivée nulle)
         double rawThreatIntensity = (double) highScoreCount * bayesianDensity * ipMultiplier * uaMultiplier;
 
-        // 5. Saturation asymptotique continue (Asymptote à 99.9 maximum strict)
-        double asymptote = 99.9;
-        double scaleFactor = 4.0;
-        double finalScore = Math.round(asymptote * Math.tanh(rawThreatIntensity / scaleFactor) * 10.0) / 10.0;
+        // 5. Composante 1 : Score ambiant plafonné en zone Medium (asymptote à 45.0)
+        double ambientAsymptote = 48;
+        double scaleFactor = 6;
+        double ambientScore = ambientAsymptote * Math.tanh(rawThreatIntensity / scaleFactor);
 
+        // 6. Composante 2 : Boost de proximité micro-réseau avec des attaquants récents (jusqu'à +55.0)
+        double proximityBoost = 0.0;
+        List<Map<String, Object>> attackerIps = (List<Map<String, Object>>) subnetData.get("attackerIps");
+        String clientIp = context.clientIp;
+
+        if (attackerIps != null && !attackerIps.isEmpty() && clientIp != null && !clientIp.isEmpty()) {
+            int maxCommonPrefix = 0;
+            boolean isV4 = !clientIp.contains(":");
+
+            for (Map<String, Object> att : attackerIps) {
+                String attIp = (String) att.get("ip");
+                long lastSeen = ((Number) att.getOrDefault("lastSeen", now)).longValue();
+                if (attIp != null && !attIp.isEmpty() && (now - lastSeen) <= 1800) {
+                    int prefixLen = getIpCommonPrefixLength(clientIp, attIp);
+                    if (prefixLen > maxCommonPrefix) {
+                        maxCommonPrefix = prefixLen;
+                    }
+                }
+            }
+
+            if (isV4) {
+                if (maxCommonPrefix >= 32) {
+                    proximityBoost = 55.0;
+                } else if (maxCommonPrefix >= 30) {
+                    proximityBoost = 45.0;
+                } else if (maxCommonPrefix >= 28) {
+                    proximityBoost = 30.0;
+                } else if (maxCommonPrefix >= 26) {
+                    proximityBoost = 15.0;
+                }
+            } else {
+                if (maxCommonPrefix >= 128) {
+                    proximityBoost = 55.0;
+                } else if (maxCommonPrefix >= 120) {
+                    proximityBoost = 45.0;
+                } else if (maxCommonPrefix >= 112) {
+                    proximityBoost = 30.0;
+                } else if (maxCommonPrefix >= 96) {
+                    proximityBoost = 15.0;
+                }
+            }
+        }
+
+        double finalScore = Math.min(100.0, Math.round((ambientScore + proximityBoost) * 10.0) / 10.0);
         result.put("subnetScore", finalScore);
         return result;
     }

@@ -1,7 +1,7 @@
 /**
- * Algorithme de hachage cyrb53 (rapide et faible taux de collision).
+ * cyrb53 hashing algorithm (fast with low collision rate).
  */
-// Exporté pour être utilisé comme fallback par fingerprint.client.js
+// Exported for fallback usage by fingerprint.client.js
 export const cyrb53 = (str, seed = 0) => { 
     const safeStr = (typeof str === 'string' ? str : String(str || '')).slice(0, 10000);
     let h1 = 0xdeadbeef ^ seed,
@@ -21,25 +21,25 @@ export const cyrb53 = (str, seed = 0) => {
 };
 
 /**
- * Classe pour construire une empreinte composite (Multi-Hash).
- * Format de sortie : "grp1:hash1|grp2:hash2|grp3:hash3"
+ * Class for constructing a composite fingerprint (Multi-Hash).
+ * Output format: "grp1:hash1|grp2:hash2|grp3:hash3"
  */
 export class FingerprintBuilder {
     constructor() {
-        // Le hasher est maintenant une propriété pour pouvoir être surchargé par le client WASM.
+        // The hasher is an instance property so it can be overridden by the WASM client.
         this.components = new Map();
-        // FIX: Initialiser le hasher par défaut à l'implémentation JS.
+        // Default hasher set to the JavaScript cyrb53 implementation.
         this.hasher = cyrb53;
     }
 
     /**
-     * Ajoute un composant au hash global.
-     * @param {string} group - Le nom du groupe (ex: 'hw', 'screen', 'geo')
-     * @param {string|number|boolean} value - La valeur brute à hasher
+     * Adds a component to the global hash.
+     * @param {string} group - Component group identifier (e.g. 'hw', 'screen', 'geo').
+     * @param {string|number|boolean} value - Raw value to hash.
      */
     add(group, value) {
         if (value === undefined || value === null) return this;
-        // On hash la valeur individuellement pour l'anonymiser et réduire sa taille
+        // Hash the value individually to anonymize and normalize length
         this.components.set(group, this.hasher(String(value)));
         return this;
     }
@@ -57,8 +57,8 @@ export class FingerprintBuilder {
     }
 
     /**
-     * Affiche les composants actuels dans la console.
-     * @param {string} [title='FingerprintBuilder Components'] - Un titre pour le log.
+     * Prints current components to the console.
+     * @param {string} [title='FingerprintBuilder Components'] - Title for output display.
      */
     log(title = 'FingerprintBuilder Components') {
         console.log(`--- ${title} ---`);
@@ -71,12 +71,12 @@ export class FingerprintBuilder {
     }
 
     /**
-     * Génère la chaîne de signature finale.
-     * Trie les clés pour garantir un ordre déterministe.
+     * Produces the final serialized signature string.
+     * Keys are sorted to guarantee deterministic serialization.
      */
     toString() {
         return Array.from(this.components.entries())
-            .sort((a, b) => a[0].localeCompare(b[0])) // Tri alphabétique des clés
+            .sort((a, b) => a[0].localeCompare(b[0])) // Alphabetical key ordering
             .map(([key, hash]) => `${key}:${hash}`)
             .join("|");
     }
@@ -118,30 +118,29 @@ export class FingerprintBuilder {
             'x_forwarded_for', 'x_real_ip', 'cf_connecting_ip'
         ]);
 
-        // Poids de "véracité" (Entropie/Stabilité)
-        // Les poids sont augmentés pour donner plus d'importance aux signaux forts.
+        // Entropy / stability reliability weights
+        // Strongly invariant signals receive higher weighting
         const weights = {
-            // --- Signaux très forts (difficiles à usurper) ---
-            cvs: 5.0,   // Canvas: Très haute entropie (Rendu unique du GPU/driver)
-            gpu: 4.0,   // GPU: Haute entropie (Matériel spécifique)
-            ja3: 3.5,   // JA3: Identifie la librairie TLS (très stable pour un client donné)
-            ja4: 4.0,   // JA4: Plus moderne, inclut HTTP/2
+            // --- High-entropy invariants (tamper-resistant) ---
+            cvs: 5.0,   // Canvas: High entropy (GPU/driver rendering quirks)
+            gpu: 4.0,   // GPU: High entropy (Physical graphics chipset)
+            ja3: 3.5,   // JA3: TLS client stack fingerprint
+            ja4: 4.0,   // JA4: Modern TLS fingerprint including HTTP/2
             h2: 3.0, // HTTP/2 settings frame fingerprint
             tcp: 2.5, // TCP/IP fingerprint
-            ua: 2.0,    // User-Agent: Signal fort, bien que modifiable
+            ua: 2.0,    // User-Agent string
             
-            // --- Signaux composites et dérivés ---
-            client_fp_hash: 3.0, // Le hash de l'empreinte client est un signal très fort.
-            browser: 1.5,        // Le navigateur extrait du UA.
-            os_version: 1.5,     // L'OS extrait du UA.
-            device_type: 1.0,    // Le type d'appareil extrait du UA.
+            // --- Derived / composite signals ---
+            client_fp_hash: 3.0, // Client-side fingerprint hash
+            browser: 1.5,        // Parsed browser family
+            os_version: 1.5,     // Parsed OS family
+            device_type: 1.0,    // Device form factor
 
-            // --- Signaux moyens ---
-            hw: 1.5,    // Hardware (CPU, RAM): Stabilité moyenne
-            scr: 1.0,   // Screen: Stabilité moyenne
-            // 'os' est souvent la même chose que 'ch_platform', on peut le déprécier ou lui donner un poids faible.
-            os: 0.8,    // OS (nav.platform): Assez stable
-            geo: 0.5,   // Geo/Langue: Peut changer (VPN, voyage)
+            // --- Medium-stability signals ---
+            hw: 1.5,    // Hardware (cores, RAM): Moderate stability
+            scr: 1.0,   // Screen geometry: Moderate stability
+            os: 0.8,    // OS (nav.platform)
+            geo: 0.5,   // Geo/locale: Subject to VPNs and travel
         };
 
         let weightedMatches = 0;
@@ -150,16 +149,16 @@ export class FingerprintBuilder {
         const allKeys = new Set([...map1.keys(), ...map2.keys()]);
 
         allKeys.forEach((key) => {
-            // On ignore les clés volatiles pour cette comparaison spécifique.
+            // Ignore volatile keys during comparative evaluation
             if (volatileKeys.has(key)) {
                 return;
             }
 
             const weight = weights[key] ?? 0;
-            // On ne compte une clé dans le poids total que si elle est présente dans au moins une des deux empreintes.
+            // Only tally total weight if key is present in at least one fingerprint
             if (!map1.has(key) && !map2.has(key)) return;
 
-            totalWeight += weight; // N'incrémenter que si la clé est pertinente.
+            totalWeight += weight;
             if (map1.get(key) === map2.get(key)) {
                 weightedMatches += weight;
             }

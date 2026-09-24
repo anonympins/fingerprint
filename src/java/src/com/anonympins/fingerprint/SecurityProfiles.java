@@ -4,8 +4,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Définit les profils de sécurité prédéfinis pour la bibliothèque Fingerprint en Java.
- * Ces profils contiennent les poids des scores de suspicion et les seuils de déclenchement.
+ * Predefined security profiles for the Fingerprint library in Java.
+ * Contains suspicion indicator weights and enforcement action thresholds.
  */
 public class SecurityProfiles {
 
@@ -176,7 +176,7 @@ public class SecurityProfiles {
         PROFILES.put("api", api);
 
         // ==========================================
-        // BLOG PROFILE (Synchronisé)
+        // BLOG PROFILE
         // ==========================================
         Map<String, Object> blog = new HashMap<>();
         blog.put("summary", "Blog Profile");

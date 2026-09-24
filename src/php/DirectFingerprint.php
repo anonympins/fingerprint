@@ -7,8 +7,8 @@ namespace Anonympins\Fingerprint;
 use Anonympins\Fingerprint\Utils\MetricsManager;
 
 /**
- * Intégration directe du moteur de fingerprinting pour les applications PHP sans framework PSR.
- * Cette classe interagit directement avec les superglobales PHP et les fonctions de réponse.
+ * Direct integration of the fingerprint engine for PHP applications without a PSR framework.
+ * Interacts directly with PHP superglobals and response headers.
  */
 class DirectFingerprint
 {
@@ -16,7 +16,7 @@ class DirectFingerprint
     private FingerprintEngine $engine;
 
     /**
-     * @param array $securityConfig La configuration de sécurité pour le moteur.
+     * @param array $securityConfig Security configuration for the engine.
      */
     public function __construct(array $securityConfig)
     {
@@ -25,15 +25,15 @@ class DirectFingerprint
     }
 
     /**
-     * Protège le point d'entrée actuel.
-     * Analyse la requête entrante et, si nécessaire, envoie une réponse de challenge/blocage et termine le script.
-     * Si la requête est autorisée, la méthode retourne simplement et le reste du script peut s'exécuter.
+     * Protects the current entry point.
+     * Analyzes the incoming request and issues challenges or block responses, exiting the script if necessary.
+     * If the request is allowed, returns the fingerprint data.
      *
-     * @return array{score: float, vector: array}|null Les données du fingerprint si la requête est autorisée, null sinon.
+     * @return array{score: float, vector: array}|null Fingerprint data if allowed, null otherwise.
      */
     public function protect(): ?array
     {
-        // 1. Construire le contexte de la requête à partir des superglobales PHP.
+        // 1. Build request context from PHP superglobals
         $body = $_POST ?: json_decode(file_get_contents('php://input'), true);
         $headers = function_exists('getallheaders') ? getallheaders() : [];
 
@@ -47,13 +47,13 @@ class DirectFingerprint
             $_SERVER['SERVER_PROTOCOL'] ?? '1.1'
         );
 
-        // 2. Traiter la requête avec le moteur.
+        // 2. Process request with engine
         $decision = $this->engine->processRequest($context);
 
-        // 3. Agir sur la décision.
+        // 3. Act on decision
         if (isset($context->newCookieForResponse)) {
             $cookie = $context->newCookieForResponse;
-            setcookie($cookie['name'], $cookie['value'], $cookie['options']);
+            $this->sendCookie($cookie['name'], $cookie['value'], $cookie['options'] ?? []);
         }
 
         switch ($decision['action']) {
@@ -67,20 +67,65 @@ class DirectFingerprint
                     header('Content-Type: text/html; charset=utf-8');
                     echo $decision['body'];
                 }
-                exit(); // Termine le script.
+                exit();
 
             case 'redirect':
                 if (isset($decision['cookie'])) {
-                    setcookie($decision['cookie']['name'], $decision['cookie']['value'], $decision['cookie']['options']);
+                    $this->sendCookie($decision['cookie']['name'], $decision['cookie']['value'], $decision['cookie']['options'] ?? []);
                 }
                 header('Location: ' . $decision['path'], true, 302);
-                exit(); // Termine le script.
+                exit();
 
             case 'next':
             default:
-                // La requête est autorisée, on retourne les informations du fingerprint.
+                // Request allowed, return fingerprint metrics
                 return ['score' => $decision['score'], 'vector' => $decision['vector']];
         }
+    }
+
+    /**
+     * Sends an HTTP cookie while handling modern flags like 'partitioned'.
+     *
+     * @param string $name
+     * @param string $value
+     * @param array<string, mixed> $options
+     */
+    private function sendCookie(string $name, string $value, array $options): void
+    {
+        $isPartitioned = !empty($options['partitioned']);
+        unset($options['partitioned']);
+
+        // PHP setcookie() does not natively support 'partitioned'.
+        // If the cookie is secure and partitioned, emit raw header manually.
+        if ($isPartitioned && !empty($options['secure'])) {
+            $header = rawurlencode($name) . '=' . rawurlencode($value);
+            if (!empty($options['expires'])) {
+                $header .= '; Expires=' . gmdate('D, d M Y H:i:s T', (int)$options['expires']);
+                $header .= '; Max-Age=' . max(0, (int)$options['expires'] - time());
+            }
+            if (!empty($options['path'])) {
+                $header .= '; Path=' . $options['path'];
+            }
+            if (!empty($options['domain'])) {
+                $header .= '; Domain=' . $options['domain'];
+            }
+            if (!empty($options['secure'])) {
+                $header .= '; Secure';
+            }
+            if (!empty($options['httponly'])) {
+                $header .= '; HttpOnly';
+            }
+            if (!empty($options['samesite'])) {
+                $header .= '; SameSite=' . $options['samesite'];
+            }
+            $header .= '; Partitioned';
+            header('Set-Cookie: ' . $header, false);
+            return;
+        }
+
+        $allowedKeys = ['expires', 'path', 'domain', 'secure', 'httponly', 'samesite'];
+        $cleanOptions = array_intersect_key($options, array_flip($allowedKeys));
+        setcookie($name, $value, $cleanOptions);
     }
 
     /**
@@ -92,7 +137,7 @@ class DirectFingerprint
      */
     public function handleMetricsRequest(RequestContext $context): void
     {
-        // 2. Appliquer le callback d'autorisation personnalisé si défini.
+        // 2. Apply custom authorization callback if configured
         $authorizationCallback = $this->securityConfig['metricsAuthorizationCallback'] ?? null;
         if (is_callable($authorizationCallback)) {
             $decision = call_user_func($authorizationCallback, $context);
@@ -113,23 +158,23 @@ class DirectFingerprint
                         header('Location: ' . $decision['path'], true, $decision['status'] ?? 302);
                         exit();
                     case 'next':
-                        // Autorisé, continuer pour servir les métriques
+                        // Authorized; proceed to serve metrics
                         break;
                     default:
-                        // Action inconnue, refuser par défaut
+                        // Unknown action; deny by default
                         http_response_code(403);
                         echo "Invalid authorization decision.";
                         exit();
                 }
             } else {
-                // Retour inattendu du callback, refuser par défaut
+                // Unexpected return type; deny by default
                 http_response_code(403);
                 echo "Invalid authorization callback response.";
                 exit();
             }
         }
 
-        // 3. Si autorisé, servir les métriques.
+        // 3. If authorized, stream metrics output
         header('Content-Type: text/plain; version=0.0.4; charset=utf-8');
         echo MetricsManager::getPrometheusMetrics();
         exit();

@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint;
 
 /**
- * Classe pour construire une empreinte composite (Multi-Hash).
- * Format de sortie : "grp1:hash1|grp2:hash2|grp3:hash3"
+ * Class to build a composite fingerprint (Multi-Hash).
+ * Output format: "grp1:hash1|grp2:hash2|grp3:hash3"
  */
 class FingerprintBuilder
 {
@@ -16,11 +16,10 @@ class FingerprintBuilder
     private array $components = [];
 
     /**
-     * Ajoute un composant à l'empreinte.
-     * La valeur est hachée pour l'anonymiser et réduire sa taille.
+     * Adds a component to the fingerprint.
      *
-     * @param string $group Le nom du groupe (ex: 'hw', 'screen', 'geo').
-     * @param string|int|bool|null $value La valeur brute à hacher.
+     * @param string $group Group name (e.g. 'hw', 'screen', 'geo').
+     * @param string|int|bool|null $value Raw value to hash.
      * @return self
      */
     public function add(string $group, $value): self
@@ -28,17 +27,17 @@ class FingerprintBuilder
         if ($value === null || $value === '') {
             return $this;
         }
-        // On hache la valeur individuellement.
+        // Hash the value individually
         $this->components[$group] = self::cyrb53((string)$value);
         return $this;
     }
 
     /**
-     * Ajoute un composant brut sans le hacher.
-     * Utile pour les métriques qui doivent être lues telles quelles par le serveur.
+     * Adds a raw component without hashing it.
+     * Useful for metrics that need to be read as-is on the server.
      *
-     * @param string $group Le nom du groupe.
-     * @param string|int|null $value La valeur brute.
+     * @param string $group Group name.
+     * @param string|int|null $value Raw value.
      * @return self
      */
     public function addRaw(string $group, $value): self
@@ -51,14 +50,14 @@ class FingerprintBuilder
     }
 
     /**
-     * Génère la chaîne de l'empreinte finale.
-     * Les composants sont triés par clé pour garantir un ordre déterministe.
+     * Generates the final fingerprint string.
+     * Components are sorted by key to guarantee deterministic ordering.
      *
      * @return string
      */
     public function __toString(): string
     {
-        // ksort trie le tableau par clé.
+        // Sort array by key
         ksort($this->components);
 
         $parts = [];
@@ -70,11 +69,11 @@ class FingerprintBuilder
     }
 
     /**
-     * Compare deux empreintes et retourne un score de similarité (de 0 à 1).
-     * Utilise une pondération pour donner plus d'importance aux invariants forts (Canvas, GPU, JA3).
+     * Compares two fingerprints and returns a similarity score (0 to 1).
+     * Uses weights to emphasize strong invariants (Canvas, GPU, JA3).
      *
-     * @param string|null $fpString1 Empreinte A.
-     * @param string|null $fpString2 Empreinte B.
+     * @param string|null $fpString1 Fingerprint A.
+     * @param string|null $fpString2 Fingerprint B.
      * @return float
      */
     public static function compare(?string $fpString1, ?string $fpString2): float
@@ -116,12 +115,12 @@ class FingerprintBuilder
         $allKeys = array_unique(array_merge(array_keys($map1), array_keys($map2)));
 
         foreach ($allKeys as $key) {
-            // On ignore les clés volatiles pour cette comparaison spécifique.
+            // Ignore volatile keys for this comparison
             if (in_array($key, $volatileKeys, true)) { // @phpstan-ignore-line
                 continue;
             }
 
-            // On ne compare que les clés qui ont un poids défini.
+            // Only compare keys that have an assigned weight
             $weight = $weights[$key] ?? null;
             if ($weight === null) continue;
 
@@ -137,12 +136,12 @@ class FingerprintBuilder
     }
 
     /**
-     * Algorithme de hachage cyrb53 (rapide et faible taux de collision).
-     * Porté depuis la version JavaScript.
+     * cyrb53 hashing algorithm (fast and low collision rate).
+     * Ported from the JavaScript version.
      *
-     * @param string $str La chaîne à hacher.
-     * @param int $seed Une graine optionnelle.
-     * @return string Le hash sous forme de chaîne de caractères.
+     * @param string $str String to hash.
+     * @param int $seed Optional seed.
+     * @return string Hash as string.
      */
     public static function cyrb53(string $str, int $seed = 0): string
     {
@@ -158,8 +157,8 @@ class FingerprintBuilder
         $h1 = self::imul($h1 ^ ($h1 >> 16), 2246822507) ^ self::imul($h2 ^ ($h2 >> 13), 3266489909);
         $h2 = self::imul($h2 ^ ($h2 >> 16), 2246822507) ^ self::imul($h1 ^ ($h1 >> 13), 3266489909);
 
-        // Sur les architectures 64 bits (standard en production), PHP gère nativement les entiers 64 bits signés.
-        // Nous pouvons éviter bcmath en effectuant des décalages binaires natifs pour un gain drastique de performances.
+        // On 64-bit platforms, PHP handles 64-bit signed ints natively.
+        // Use native shifts instead of bcmath for better performance.
         if (PHP_INT_SIZE === 8) {
             $h1_u = $h1 & 0xffffffff;
             $h2_u = $h2 & 0xffffffff;
@@ -167,17 +166,17 @@ class FingerprintBuilder
             return (string)$val_h2;
         }
 
-        // Fallback bcmath uniquement sur l'architecture obsolète 32 bits.
+        // Fallback to bcmath on 32-bit platforms
         $val_h2 = bcadd(bcmul((string)(2097151 & $h2), '4294967296'), (string)($h1 >= 0 ? $h1 : $h1 + 4294967296));
         return $val_h2;
     }
 
     /**
-     * Émule la multiplication 32-bit `Math.imul` de JavaScript.
+     * Emulates JavaScript's 32-bit `Math.imul` multiplication.
      *
      * @param int $a
      * @param int $b
-     * @return int Un entier signé 32-bit.
+     * @return int Signed 32-bit integer.
      */
     private static function imul(int $a, int $b): int
     {

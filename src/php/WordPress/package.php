@@ -1,0 +1,123 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Script d'empaquetage automatique du plugin WordPress.
+ * Copie les classes du moteur PHP, les assets JS et génère un ZIP prêt à être installé.
+ *
+ * Usage:
+ *   php src/php/WordPress/package.php
+ */
+
+if (!extension_loaded('zip')) {
+    fwrite(STDERR, "Erreur : L'extension PHP 'zip' est requise pour créer l'archive.\n");
+    exit(1);
+}
+
+$rootDir = dirname(__DIR__, 3);
+$phpSrcDir = $rootDir . '/src/php';
+$jsSrcDir = $rootDir . '/src/js';
+$wpDir = $phpSrcDir . '/WordPress';
+$distDir = $rootDir . '/public';
+$pluginSlug = 'fingerprint-wordpress';
+$buildDir = $distDir . '/' . $pluginSlug;
+$zipFile = $distDir . '/' . $pluginSlug . '.zip';
+
+echo "==> Début du packaging du plugin WordPress...\n";
+
+// 1. Nettoyage du répertoire de build précédent
+if (is_dir($buildDir)) {
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($buildDir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST
+    );
+    foreach ($iterator as $item) {
+        $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+    }
+    rmdir($buildDir);
+}
+if (file_exists($zipFile)) {
+    unlink($zipFile);
+}
+
+@mkdir($buildDir . '/src', 0777, true);
+@mkdir($buildDir . '/assets', 0777, true);
+
+// 2. Copie des fichiers principaux du plugin WordPress
+copy($wpDir . '/fingerprint-wordpress.php', $buildDir . '/fingerprint-wordpress.php');
+copy($wpDir . '/WpDbStore.php', $buildDir . '/WpDbStore.php');
+
+// 3. Copie des assets clients nécessaires (solveur PoW)
+$solverSource = $jsSrcDir . '/pow.solver.inline.js';
+if (file_exists($solverSource)) {
+    copy($solverSource, $buildDir . '/assets/pow.solver.inline.js');
+}
+
+// 4. Copie récursive de la bibliothèque PHP (src/php -> build/src), en excluant les dossiers de dev
+$excludeDirs = ['WordPress', 'Tests', 'bin'];
+$phpIterator = new RecursiveIteratorIterator(
+    new RecursiveDirectoryIterator($phpSrcDir, FilesystemIterator::SKIP_DOTS),
+    RecursiveIteratorIterator::SELF_FIRST
+);
+
+foreach ($phpIterator as $item) {
+    $relativePath = substr($item->getPathname(), strlen($phpSrcDir) + 1);
+    $topDir = explode(DIRECTORY_SEPARATOR, str_replace('/', DIRECTORY_SEPARATOR, $relativePath))[0];
+
+    if (in_array($topDir, $excludeDirs, true)) {
+        continue;
+    }
+
+    $destPath = $buildDir . '/src/' . $relativePath;
+    if ($item->isDir()) {
+        if (!is_dir($destPath)) {
+            mkdir($destPath, 0777, true);
+        }
+    } else {
+        copy($item->getPathname(), $destPath);
+    }
+}
+
+echo "==> Fichiers copiés dans {$buildDir}\n";
+
+// 5. Création de l'archive ZIP
+$zip = new ZipArchive();
+if ($zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+    fwrite(STDERR, "Erreur : Impossible de créer le fichier {$zipFile}\n");
+    exit(1);
+}
+
+$distIterator = new RecursiveIteratorIterator(
+    new RecursiveDirectoryIterator($buildDir, FilesystemIterator::SKIP_DOTS),
+    RecursiveIteratorIterator::LEAVES_ONLY
+);
+
+foreach ($distIterator as $file) {
+    if (!$file->isDir()) {
+        $filePath = $file->getPathname();
+        // Préserve le préfixe du dossier racine dans le ZIP : fingerprint-wordpress/...
+        $relativePath = $pluginSlug . '/' . substr($filePath, strlen($buildDir) + 1);
+        $zip->addFile($filePath, str_replace('\\', '/', $relativePath));
+    }
+}
+function removeDirectory(string $dir): void
+{
+    if (!is_dir($dir)) {
+        return;
+    }
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST
+    );
+    foreach ($iterator as $item) {
+        $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+    }
+    rmdir($dir);
+}
+$zip->close();
+removeDirectory($buildDir);
+$sizeKb = round(filesize($zipFile) / 1024, 2);
+echo "==> Archive ZIP générée avec succès :\n";
+echo "    Fichier : {$zipFile} ({$sizeKb} Ko)\n";
+echo "    Prêt à être installé via wp-admin ou déployé en production !\n";
