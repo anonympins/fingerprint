@@ -551,10 +551,8 @@
 
              $deviceId = bin2hex(random_bytes(16)); // UUID-like
 
-             $isHttps = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
-                 (isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ||
-                 ($context->getHeader('x-forwarded-proto') === 'https');
-             $secureOption = $isHttps || $this->isProduction;
+             $isHttps = !empty($context->isHttps);
+             $secureOption = $isHttps;
 
              // Préparer le cookie à envoyer
              $newCookie = [
@@ -985,13 +983,36 @@
                      // Le fingerprint est cohérent, on peut valider la solution
                      if ($powType === 'cpu_target' || $powType === 'cpu_mem') {
                          $cpuSolution = $context->query['pow_solution_cpu'] ?? $context->query['pow_solution'] ?? null;
-                         if ($cpuSolution) {
-                             $ticket = ChallengeUtils::verifyCpuTargetPoWAndGenerateTicket($context->clientIp, 3600000, $powNonce, $cpuSolution, $challengeContext);
+                         if ($cpuSolution !== null && $cpuSolution !== '') {
+                             $identity = $this->resolveRequestIdentity($context, $suspicionVector);
+                             $deviceId = (string)($identity['deviceId'] ?? '');
+                             $currentDeviceHash = (string)($identity['currentDeviceHash'] ?? RequestUtils::getCompositeDeviceHash($context));
+
+                             $ticket = ChallengeUtils::verifyCpuTargetPoWAndGenerateTicket(
+                                 $context->clientIp,
+                                 3600000,
+                                 $powNonce,
+                                 (string)$cpuSolution,
+                                 $challengeContext,
+                                 $deviceId,
+                                 $currentDeviceHash
+                             );
                              $isValid = $ticket !== null;
  
                              if ($powType === 'cpu_mem') {
-                                 $memSolution = $context->query['pow_solution_mem'] ?? null;
-                                 $isMemValid = $memSolution ? ChallengeUtils::verifyMemoryPoW($powNonce, $memSolution, $challengeContext['memDifficulty'] ?? 0, $challengeContext['clientSecret'] ?? '') : false;
+                                 if (!empty($challengeContext['isHttp'])) {
+                                     $isMemValid = true;
+                                 } else {
+                                     $memSolution = $context->query['pow_solution_mem'] ?? null;
+                                     $isMemValid = ($memSolution !== null && $memSolution !== '')
+                                         ? ChallengeUtils::verifyMemoryPoW(
+                                             $powNonce,
+                                             (string)$memSolution,
+                                             $challengeContext['memDifficulty'] ?? 0,
+                                             $challengeContext['clientSecret'] ?? ''
+                                         )
+                                         : false;
+                                 }
                                  $isValid = $isValid && $isMemValid;
                              }
                          }
@@ -1073,10 +1094,8 @@
                      MetricsManager::incrementCounter('challenges_solved_total');
                      $this->log('Challenge solution valid - issuing ticket', ['ticketMaxAge' => $ticketTtl]);
 
-                     $isHttps = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
-                         (isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443) ||
-                         ($context->getHeader('x-forwarded-proto') === 'https');
-                     $secureOption = $isHttps || $this->isProduction;
+                     $isHttps = !empty($context->isHttps);
+                     $secureOption = $isHttps;
 
                      return [
                          'action' => 'redirect',

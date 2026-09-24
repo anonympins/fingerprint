@@ -660,4 +660,42 @@ class FingerprintEngineTest extends TestCase
         $this->assertEquals('blocked', $result['status']);
         $this->assertEquals(1.0, $result['score']);
     }
+
+    public function testHttpSimulacrumModeValidatesChallenge(): void
+    {
+        $config = SecurityProfiles::createSecurityProfile('balanced', [
+            'verbose' => false,
+            'challengeNewDevices' => true,
+        ]);
+        $engine = new FingerprintEngine($config);
+
+        $context = $this->createRequestContext([
+            'isHttps' => false
+        ]);
+
+        $challengeDecision = $engine->processRequest($context);
+        $this->assertEquals('challenge', $challengeDecision['action']);
+
+        $store = StoreManager::getStore();
+        preg_match('/const nonce = "(.*?)";/', $challengeDecision['body'], $matchesNonce);
+        $nonce = $matchesNonce[1];
+
+        $challengeContext = $store->get("secret:{$nonce}");
+        $this->assertTrue($challengeContext['isHttp']);
+
+        $submitContext = $this->createRequestContext([
+            'isHttps' => false,
+            'query' => [
+                'pow_type' => 'cpu_mem',
+                'pow_nonce' => $nonce,
+                'pow_solution_cpu' => 'http_simulacre_ack',
+                'pow_solution_mem' => '0'
+            ]
+        ]);
+
+        $submitDecision = $engine->processRequest($submitContext);
+        $this->assertEquals('redirect', $submitDecision['action']);
+        $this->assertArrayHasKey('cookie', $submitDecision);
+        $this->assertFalse($submitDecision['cookie']['options']['secure']);
+    }
 }
