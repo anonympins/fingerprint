@@ -129,7 +129,8 @@ class AutoTuner
             try {
                 call_user_func($this->onCleanup, $removed);
             } catch (\Throwable $e) {
-                error_log("[AutoTuning] Error in onCleanup callback: " . $e->getMessage());
+                // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
+                $this->logError("[AutoTuning] Error in onCleanup callback: " . $e->getMessage());
             }
         }
     }
@@ -155,24 +156,24 @@ class AutoTuner
 
         if (count($sanitizedData) < $this->minDataPoints || !$hasEnoughSignal) {
             if (count($sanitizedData) < $this->minDataPoints) {
-                echo sprintf("[AutoTuning] Postponed: %d/%d data points collected.\n", count($sanitizedData), $this->minDataPoints);
+                $this->logMessage(sprintf("[AutoTuning] Postponed: %d/%d data points collected.\n", count($sanitizedData), $this->minDataPoints));
             } else {
-                echo sprintf("[AutoTuning] Postponed: Insufficient confidence signals (Ratio: %.2f%% < %.2f%% and count: %d < %d).\n", $highConfidenceRatio * 100, $minConfidenceRatio * 100, $highConfidenceLogs, $minHighConfidenceCount);
+                $this->logMessage(sprintf("[AutoTuning] Postponed: Insufficient confidence signals (Ratio: %.2f%% < %.2f%% and count: %d < %d).\n", $highConfidenceRatio * 100, $minConfidenceRatio * 100, $highConfidenceLogs, $minHighConfidenceCount));
             }
             return;
         }
 
         if (count($this->trafficData) > $this->maxDataPoints) {
-            echo sprintf("[AutoTuning] Traffic log reached %d entries (max: %d). Truncating oldest logs.\n", count($this->trafficData), $this->maxDataPoints);
+            $this->logMessage(sprintf("[AutoTuning] Traffic log reached %d entries (max: %d). Truncating oldest logs.\n", count($this->trafficData), $this->maxDataPoints));
             $this->trafficData = array_slice($this->trafficData, count($this->trafficData) - $this->maxDataPoints);
         }
 
-        echo sprintf("[AutoTuning] Starting complete optimization cycle with %d sanitized data points.\n", count($sanitizedData));
+        $this->logMessage(sprintf("[AutoTuning] Starting complete optimization cycle with %d sanitized data points.\n", count($sanitizedData)));
 
         $paretoFront = OptimizationOperators::solveFullSecurityTuning(['trafficData' => $sanitizedData, 'currentConfig' => $this->securityConfig], []);
 
         if (empty($paretoFront)) {
-            echo "[AutoTuning] Optimization returned no solutions.\n";
+            $this->logMessage("[AutoTuning] Optimization returned no solutions.\n");
             return;
         }
 
@@ -192,7 +193,7 @@ class AutoTuner
 
         $filteredFront = array_filter($paretoFront, fn ($p) => $isValidSecurityConfig($p['solution']));
         if (empty($filteredFront)) {
-            echo "[AutoTuning] Warning: All Pareto solutions violated sanity guardrails. Restoring raw front.\n";
+            $this->logMessage("[AutoTuning] Warning: All Pareto solutions violated sanity guardrails. Restoring raw front.\n");
             $filteredFront = $paretoFront;
         } else {
             $filteredFront = array_values($filteredFront);
@@ -277,7 +278,8 @@ class AutoTuner
         $validationTolerance = $this->securityConfig['autotuning']['validationTolerance'] ?? $this->validationTolerance;
 
         if ($proposedFPR > $currentFPR + $validationTolerance || $proposedFNR > $currentFNR + $validationTolerance) {
-            error_log(sprintf(
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system alert
+            $this->logError(sprintf(
                 "[AutoTuning] [SECURITY ALERT] Proposed configuration rejected due to instability/poisoning risk! Proposed FPR: %.4f (Current: %.4f), Proposed FNR: %.4f (Current: %.4f)",
                 $proposedFPR, $currentFPR, $proposedFNR, $currentFNR
             ));
@@ -300,22 +302,23 @@ class AutoTuner
 
         self::$lastBestSolution = $bestSolution;
 
-        echo "[AutoTuning] New optimized security configuration applied.\n";
-        echo "[AutoTuning] Objectives achieved: " . json_encode([
+        $this->logMessage("[AutoTuning] New optimized security configuration applied.\n");
+        $this->logMessage("[AutoTuning] Objectives achieved: " . json_encode([
             'falsePositiveRate' => round($bestSolution['objectives'][0], 4),
             'falseNegativeRate' => round($bestSolution['objectives'][1], 4)
-        ]) . "\n";
-        echo "[AutoTuning] New thresholds: " . json_encode($this->securityConfig['thresholds']) . "\n";
-        echo "[AutoTuning] New weights: " . json_encode($this->securityConfig['weights']) . "\n";
-        echo "[AutoTuning] New patterns: " . json_encode($this->securityConfig['patterns']) . "\n";
+        ]) . "\n");
+        $this->logMessage("[AutoTuning] New thresholds: " . json_encode($this->securityConfig['thresholds']) . "\n");
+        $this->logMessage("[AutoTuning] New weights: " . json_encode($this->securityConfig['weights']) . "\n");
+        $this->logMessage("[AutoTuning] New patterns: " . json_encode($this->securityConfig['patterns']) . "\n");
 
         // Persist best configuration if savePath is configured
         if ($this->savePath !== null) {
             try {
                 file_put_contents($this->savePath, json_encode($bestSolution['solution'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                echo "[AutoTuning] Best configuration saved to: {$this->savePath}\n";
+                $this->logMessage("[AutoTuning] Best configuration saved to: {$this->savePath}\n");
             } catch (\Throwable $e) {
-                error_log("[AutoTuning] Error saving optimized configuration: " . $e->getMessage());
+                // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
+                $this->logError("[AutoTuning] Error saving optimized configuration: " . $e->getMessage());
             }
         }
 
@@ -325,11 +328,26 @@ class AutoTuner
                 try {
                     call_user_func($this->onCleanup, $cleared);
                 } catch (\Throwable $e) {
-                    error_log("[AutoTuning] Error in onCleanup callback after clearing: " . $e->getMessage());
+                    // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
+                    $this->logError("[AutoTuning] Error in onCleanup callback after clearing: " . $e->getMessage());
                 }
             }
-            echo sprintf("[AutoTuning] Explicitly cleared %d processed traffic data points.\n", count($cleared));
+            $this->logMessage(sprintf("[AutoTuning] Explicitly cleared %d processed traffic data points.\n", count($cleared)));
         }
+    }
+
+    private function logMessage(string $message): void
+    {
+        if (PHP_SAPI === 'cli') {
+            // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CLI message output
+            echo $message;
+        }
+    }
+
+    private function logError(string $message): void
+    {
+        // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
+        error_log($message);
     }
 
     /**

@@ -17,7 +17,11 @@ class Optimization
         try {
             return random_int(0, PHP_INT_MAX - 1) / PHP_INT_MAX;
         } catch (\Exception $e) {
-            return (float)mt_rand() / (float)mt_getrandmax(); // Fallback
+            if (function_exists('wp_rand')) {
+                return (float)wp_rand(0, 1000000) / 1000000.0;
+            }
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.rand_mt_rand -- Standalone fallback
+            return (float)mt_rand() / (float)mt_getrandmax();
         }
     }
 

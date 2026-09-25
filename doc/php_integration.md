@@ -19,10 +19,10 @@ You can integrate the library into WordPress in two ways: using the ready-to-use
 
 A pre-packaged WordPress plugin zip is available directly in the GitHub repository:
 
-* **Download link:** `public/fingerprint-wordpress.zip`
+* **Download link:** `public/fingerprint-anti-bot.zip`
 
 #### Installation Steps:
-1. Download `public/fingerprint-wordpress.zip` from the GitHub repository.
+1. Download `public/fingerprint-anti-bot.zip` from the GitHub repository.
 2. In your WordPress Dashboard, go to **Plugins > Add New > Upload Plugin**.
 3. Select the downloaded `.zip` file and click **Install Now**.
 4. Click **Activate Plugin**.

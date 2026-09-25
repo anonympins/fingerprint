@@ -12,10 +12,10 @@
 
 ## Version 0.7.1
 
-- 🔌 **Native WordPress Plugin Integration (`fingerprint-wordpress`)**:
-  - Full official WordPress plugin integration (`fingerprint-wordpress.php`) without external runtime dependencies, leveraging `$wpdb` through a dedicated `WpDbStore` adapter.
+- 🔌 **Native WordPress Plugin Integration (`fingerprint-anti-bot`)**:
+  - Full official WordPress plugin integration (`fingerprint-anti-bot.php`) without external runtime dependencies, leveraging `$wpdb` through a dedicated `WpDbStore` adapter.
   - Automatic SQL cache table provisioning and periodic cleanup of expired tickets via WP-Cron (`fingerprint_prune_expired_entries`).
-  - Automated packaging script (`package.php`) generating a ready-to-deploy ZIP archive (`fingerprint-wordpress.zip`).
+  - Automated packaging script (`package.php`) generating a ready-to-deploy ZIP archive (`fingerprint-anti-bot.zip`).
   - Cross-environment honeypot tripwires: immediately detects and drops automated scanners probing for non-WordPress entrypoints (Laravel, Symfony, Django, Spring Boot `/actuator`, phpMyAdmin, `.env`, `.git`).
   - Admin dashboard security notice if running over unencrypted HTTP (warning about modern browsers disabling native `crypto.subtle` APIs in insecure contexts).
 - 🔬 **JavaScript Prototype Tampering Detection (`detectTamperedPrototypes`)**:

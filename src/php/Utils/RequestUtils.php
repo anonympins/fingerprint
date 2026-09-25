@@ -1160,7 +1160,8 @@ class RequestUtils
      */
     public static function cleanUrlFromPowParams(string $originalPath, array $incomingQuery): string
     {
-        $urlParts = parse_url($originalPath);
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- Uses wp_parse_url when running inside WordPress
+        $urlParts = function_exists('wp_parse_url') ? wp_parse_url($originalPath) : parse_url($originalPath);
         $path = $urlParts['path'] ?? '/';
         $finalQuery = $incomingQuery;
 

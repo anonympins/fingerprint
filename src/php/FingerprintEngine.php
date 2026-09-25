@@ -127,41 +127,27 @@
          $useAsymmetric = ($securityConfig['useAsymmetricTickets'] ?? false) === true || ($securityConfig['ed25519'] ?? '') === 'auto';
          $envPrivate = Env::get('ED25519_PRIVATE_KEY');
          if ($useAsymmetric && ($envPrivate === null || $envPrivate === '')) {
-             $configDir = dirname(__DIR__, 1) . '/config';
-             $persistentKeyPath = $configDir . '/ed25519_key.json';
-
-             if (file_exists($persistentKeyPath)) {
-                 try {
-                     $keys = json_decode(file_get_contents($persistentKeyPath), true);
-                     if (isset($keys['privateKey'], $keys['publicKey'])) {
-                         Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
-                         Env::set('ED25519_PUBLIC_KEY', $keys['publicKey']);
+             if (function_exists('get_option') && function_exists('update_option')) {
+                 // In WordPress, persist cryptographic keys in the database options table
+                 $storedKeys = get_option('fingerprint_ed25519_keys');
+                 if (is_array($storedKeys) && isset($storedKeys['privateKey'], $storedKeys['publicKey'])) {
+                     Env::set('ED25519_PRIVATE_KEY', $storedKeys['privateKey']);
+                     Env::set('ED25519_PUBLIC_KEY', $storedKeys['publicKey']);
+                 } elseif (defined('OPENSSL_KEYTYPE_ED25519')) {
+                     $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
+                     if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
+                         $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
+                         $publicKeyPem = $details['key'] ?? ''; // @phpstan-ignore-line
+                         Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
+                         Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                         update_option('fingerprint_ed25519_keys', [
+                             'privateKey' => $privateKeyPem,
+                             'publicKey'  => $publicKeyPem,
+                         ], false);
                      }
-                 } catch (\Throwable $e) {
-                     error_log('[Fingerprint] Failed to load persistent Ed25519 keys: ' . $e->getMessage());
                  }
              } else {
-                 try {
-                     if (defined('OPENSSL_KEYTYPE_ED25519')) {
-                         $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
-                         if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
-                             $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
-                             $publicKeyPem = $details['key']; // @phpstan-ignore-line
-                             Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
-                             Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
-                             // Also update $_ENV and $_SERVER for consistency
-                             if (!is_dir($configDir)) {
-                                 mkdir($configDir, 0777, true);
-                             }
-                             file_put_contents($persistentKeyPath, json_encode([
-                                 'privateKey' => $privateKeyPem,
-                                 'publicKey' => $publicKeyPem
-                             ], JSON_PRETTY_PRINT));
-                         }
-                     }
-                 } catch (\Throwable $e) {
-                     error_log('[Fingerprint] Native Ed25519 key generation failed: ' . $e->getMessage());
-                 }
+                 self::initStandaloneEd25519Keys();
              }
          }
 
@@ -175,7 +161,7 @@
                          $securityConfig = SecurityProfiles::deepMerge($securityConfig, $savedConfig);
                      }
                  } catch (\Throwable $e) {
-                     error_log("[FingerprintEngine] Failed to auto-load optimized config from {$savePath}: " . $e->getMessage());
+                     self::logError("[FingerprintEngine] Failed to auto-load optimized config from {$savePath}: " . $e->getMessage());
                  }
              }
          }
@@ -193,6 +179,46 @@
          $this->validateConfig($securityConfig);
          if ($this->securityConfig['reset'] ?? false) {
              $this->resetStore();
+         }
+     }
+
+     /**
+      * Initialise et persiste les cles Ed25519 pour les environnements PHP hors WordPress.
+      */
+     private static function initStandaloneEd25519Keys(): void
+     {
+         $configDir = dirname(__DIR__, 1) . '/config';
+         $persistentKeyPath = $configDir . '/ed25519_key.json';
+
+         if (file_exists($persistentKeyPath)) {
+             try {
+                 $keys = json_decode((string)file_get_contents($persistentKeyPath), true);
+                 if (isset($keys['privateKey'], $keys['publicKey'])) {
+                     Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
+                     Env::set('ED25519_PUBLIC_KEY', $keys['publicKey']);
+                 }
+             } catch (\Throwable $e) {
+                 self::logError('[Fingerprint] Failed to load persistent Ed25519 keys: ' . $e->getMessage());
+             }
+         } else {
+             try {
+                 if (defined('OPENSSL_KEYTYPE_ED25519')) {
+                     $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
+                     if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
+                         $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
+                         $publicKeyPem = $details['key'] ?? ''; // @phpstan-ignore-line
+                         Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
+                         Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                         // phpcs:ignore PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- Non-WordPress standalone environment fallback
+                         file_put_contents($persistentKeyPath, json_encode([
+                             'privateKey' => $privateKeyPem,
+                             'publicKey' => $publicKeyPem
+                         ], JSON_PRETTY_PRINT));
+                     }
+                 }
+             } catch (\Throwable $e) {
+                 self::logError('[Fingerprint] Native Ed25519 key generation failed: ' . $e->getMessage());
+             }
          }
      }
 
@@ -266,7 +292,7 @@
                      }
                  }
              } catch (\Throwable $e) {
-                 error_log("[Fingerprint] Error loading whitelist file {$filename}: " . $e->getMessage());
+                 self::logError("[Fingerprint] Error loading whitelist file {$filename}: " . $e->getMessage());
              }
          }
          return $fallbackEntries;
@@ -358,7 +384,7 @@
              } else {
                  $logMessage = "[FingerprintEngine] {$message}";
                  if (!empty($data)) $logMessage .= ' ' . json_encode($data);
-                 error_log($logMessage);
+                 self::logError($logMessage);
              }
          }
      }
@@ -1554,7 +1580,7 @@
                      $isAsymmetric = true;
                  }
              } catch (\Throwable $e) {
-                 error_log('[Fingerprint] Asymmetric broadcast signing failed: ' . $e->getMessage());
+                 self::logError('[Fingerprint] Asymmetric broadcast signing failed: ' . $e->getMessage());
              }
          }
 
@@ -1575,7 +1601,8 @@
 
      private function asyncPost(string $url, array $params): void
      {
-         $parts = parse_url($url);
+         // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- wp_parse_url used if available
+         $parts = function_exists('wp_parse_url') ? wp_parse_url($url) : parse_url($url);
          if ($parts === false) return;
 
          $host = $parts['host'];
@@ -1605,7 +1632,9 @@
              $out .= "Connection: Close\r\n\r\n";
              $out .= $postData;
 
+             // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite -- Socket stream write
              @fwrite($fp, $out);
+             // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Socket stream close
              @fclose($fp);
          }
      }
@@ -1732,7 +1761,7 @@
                 $b3 = ord($str[$offset++]); $b4 = ord($str[$offset++]);
                 return ($b1 << 24) | ($b2 << 16) | ($b3 << 8) | $b4;
             }
-            throw new \Exception("Unsupported integer size: " . $val);
+            throw new \Exception("Unsupported integer size: " . (int)$val);
         };
 
         if ($major === 0) {
@@ -1854,8 +1883,14 @@
                 return openssl_verify($verifyBuffer, base64_decode($anchor['signature']), $publicKey, OPENSSL_ALGO_SHA256) === 1;
             }
         } catch (\Throwable $e) {
-            error_log('[WebAuthn-Server] PHP verification failed: ' . $e->getMessage());
+            self::logError('[WebAuthn-Server] PHP verification failed: ' . $e->getMessage());
         }
         return false;
+    }
+
+    private static function logError(string $message): void
+    {
+        // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Engine diagnostic error log
+        error_log($message);
     }
  }

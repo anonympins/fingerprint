@@ -63,9 +63,9 @@ class MaliciousPatterns
                    if (preg_match(self::INJECTION_PATTERNS[$type], $str)) {
                        return true;
                    }
-               }catch (\Exception $e){
-                   error_log($type);
-                   error_log($e->getMessage());
+               } catch (\Exception $e) {
+                   // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- WAF regex validation diagnostic
+                   error_log("Pattern inspection failed for {$type}: " . $e->getMessage());
                 }
             }
         }

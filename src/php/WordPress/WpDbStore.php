@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Anonympins\Fingerprint\WordPress;
 
+if (!defined('ABSPATH')) {
+    exit;
+}
+
 use Anonympins\Fingerprint\Store\IStore;
 
 // Polyfill pour ARRAY_A si chargé hors du cycle de vie standard de WordPress

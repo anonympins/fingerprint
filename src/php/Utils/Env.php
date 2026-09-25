@@ -19,12 +19,14 @@ class Env
         if (array_key_exists($key, self::$localCache)) {
             return self::$localCache[$key];
         }
+        // phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Environment and server variables may contain raw cryptographic keys.
         if (isset($_ENV[$key]) && $_ENV[$key] !== '') {
             return $_ENV[$key];
         }
         if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') {
             return $_SERVER[$key];
         }
+        // phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash
         $val = getenv($key);
         if ($val !== false && $val !== '') {
             return $val;

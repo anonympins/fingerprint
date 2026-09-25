@@ -59,17 +59,17 @@ class ProblemManager
     private function loadProblems(): void
     {
         if (!file_exists($this->configPath)) {
-            error_log("[ProblemManager] Problem config file not found: {$this->configPath}");
+            self::logError("[ProblemManager] Problem config file not found: {$this->configPath}");
             return;
         }
         $data = file_get_contents($this->configPath);
         if ($data === false) {
-            error_log("[ProblemManager] Failed to read problem config file: {$this->configPath}");
+            self::logError("[ProblemManager] Failed to read problem config file: {$this->configPath}");
             return;
         }
         $problemsFromFile = json_decode($data, true);
         if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log("[ProblemManager] Failed to parse problem config JSON: " . json_last_error_msg());
+            self::logError("[ProblemManager] Failed to parse problem config JSON: " . json_last_error_msg());
             return;
         }
 
@@ -88,7 +88,7 @@ class ProblemManager
                 $problem['workUnit']['scoreFunction'] = FunctionRegistry::get($problem['workUnit']['scoreFunction']);
                 if ($problem['workUnit']['scoreFunction'] === null) {
                     // @codeCoverageIgnoreStart
-                    error_log("[ProblemManager] Warning: scoreFunction '{$problem['workUnit']['scoreFunction']}' not found in registry for problem '{$problem['id']}'.");
+                    self::logError("[ProblemManager] Warning: scoreFunction '{$problem['workUnit']['scoreFunction']}' not found in registry for problem '{$problem['id']}'.");
                     // @codeCoverageIgnoreEnd
                 }
             }
@@ -167,7 +167,7 @@ class ProblemManager
                 $task['solverName'] = $problem['workUnit']['solverName'];
                 break;
             default:
-                error_log("[ProblemManager] Unknown useful work type: {$problem['workUnit']['type']}");
+                self::logError("[ProblemManager] Unknown useful work type: {$problem['workUnit']['type']}");
                 return null;
         }
 
@@ -198,17 +198,17 @@ class ProblemManager
                 if (isset($solutionData['solution']) && isset($solutionData['energy'])) {
                     $scoreFunction = $problem['workUnit']['scoreFunction'] ?? null;
                     if (!$scoreFunction) {
-                        error_log("[ProblemManager] No score function defined for {$problemId}.");
+                        self::logError("[ProblemManager] No score function defined for {$problemId}.");
                         return;
                     }
                 // DoS mitigation: validate solution size and structure
                 if (is_array($solutionData['solution']) && count($solutionData['solution']) > 500) {
-                    error_log("[ProblemManager] Solution array too large for {$problemId} verification.");
+                    self::logError("[ProblemManager] Solution array too large for {$problemId} verification.");
                     return;
                 }
                 $serializedSolution = json_encode($solutionData['solution']);
                 if ($serializedSolution !== false && strlen($serializedSolution) > 65536) {
-                    error_log("[ProblemManager] Solution payload size exceeds safe limit for {$problemId}.");
+                    self::logError("[ProblemManager] Solution payload size exceeds safe limit for {$problemId}.");
                     return;
                 }
                     // 1. Never trust client-reported score. Recalculate server-side.
@@ -222,19 +222,19 @@ class ProblemManager
                         $problem['state']['bestEnergy'] = $recalculatedEnergy; // 3. Store verified score
                         $problem['state']['lastUpdate'] = (new \DateTime())->format(\DateTime::ATOM);
                         $stateChanged = true;
-                        error_log("[ProblemManager] New best solution for {$problemId}: {$recalculatedEnergy}"); // @phpstan-ignore-line
+                        self::logError("[ProblemManager] New best solution for {$problemId}: {$recalculatedEnergy}"); // @phpstan-ignore-line
                     }
                 }
                 break;
             case 'genetic_algorithm_generations':
                 if (isset($solutionData['population']) && is_array($solutionData['population'])) {
                 if (count($solutionData['population']) > 150) {
-                    error_log("[ProblemManager] Population size exceeds safe limit for {$problemId}.");
+                    self::logError("[ProblemManager] Population size exceeds safe limit for {$problemId}.");
                     return;
                 }
                 foreach ($solutionData['population'] as $ind) {
                     if (isset($ind['chromosome']) && is_array($ind['chromosome']) && count($ind['chromosome']) > 100) {
-                        error_log("[ProblemManager] Chromosome size too large for {$problemId}.");
+                        self::logError("[ProblemManager] Chromosome size too large for {$problemId}.");
                         return;
                     }
                 }
@@ -251,7 +251,7 @@ class ProblemManager
                                 $recalculated = $fitnessFunction($individual['chromosome'], $problem['payload'] ?? []);
                                 if (isset($individual['fitness']) && $individual['fitness'] !== -1) {
                                     if (abs($individual['fitness'] - $recalculated) > 1e-4) {
-                                        error_log("[ProblemManager] Cheating detected for {$problemId}! Reported: {$individual['fitness']}, recalculated: {$recalculated}");
+                                        self::logError("[ProblemManager] Cheating detected for {$problemId}! Reported: {$individual['fitness']}, recalculated: {$recalculated}");
                                         return; // Reject inconsistent population
                                     }
                                 }
@@ -272,7 +272,7 @@ class ProblemManager
                 }
                 break;
             default:
-                error_log("[ProblemManager] Integration not implemented for useful work type: {$problem['workUnit']['type']}");
+                self::logError("[ProblemManager] Integration not implemented for useful work type: {$problem['workUnit']['type']}");
                 break;
         }
         // Persist updated state to datastore
@@ -294,7 +294,7 @@ class ProblemManager
         if (!empty($newFront) && json_encode($newFront) !== json_encode($currentFront)) {
             $problem['state']['paretoFront'] = $newFront;
             $problem['state']['lastUpdate'] = (new \DateTime())->format(\DateTime::ATOM);
-            error_log("[ProblemManager] New Pareto front for {$problem['id']} with " . count($newFront) . " solutions."); // @phpstan-ignore-line
+            self::logError("[ProblemManager] New Pareto front for {$problem['id']} with " . count($newFront) . " solutions."); // @phpstan-ignore-line
             return true;
         }
         return false;
@@ -406,5 +406,11 @@ class ProblemManager
     public function getProblems(): array
     {
         return $this->problems;
+    }
+
+    private static function logError(string $message): void
+    {
+        // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- ProblemManager logging
+        error_log($message);
     }
 }
