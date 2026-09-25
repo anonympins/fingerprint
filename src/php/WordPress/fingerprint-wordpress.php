@@ -3,7 +3,7 @@
  * Plugin Name: Fingerprint Anti-Bot & Proof-of-Work
  * Plugin URI: https://github.com/anonympins/fingerprint
  * Description: High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress.
- * Version: 0.7.1
+ * Version: 0.7.2
  * Author: Anonympins
  * License: MIT
  * Text Domain: fingerprint-wordpress
