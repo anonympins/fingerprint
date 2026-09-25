@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: Fingerprint Anti-Bot 0.7.2\n"
+"Project-Id-Version: Fingerprint Anti-Bot 0.7.3\n"
 "Report-Msgid-Bugs-To: https://github.com/anonympins/fingerprint/issues\n"
 "POT-Creation-Date: 2026-09-24 12:00+0000\n"
 "PO-Revision-Date: 2026-09-24 12:00+0000\n"

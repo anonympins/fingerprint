@@ -1,3 +1,16 @@
+## Version 0.7.3
+
+- 🛡️ **Scoring Corrections & Anti-Spoofing Fixes**:
+  - **TLS Spoofing Score Fix**: Resolved false positive detections where legitimate Chrome browsers were erroneously flagged as spoofed (`tlsSpoofingScore`), improving GREASE cipher/extension inspection and ALPN protocol validation.
+  - **Threat Intelligence Rework (`threatIntelScore`)**: Overhauled the threat intelligence scoring mechanism, refining the correlation between low-level TCP RTT and application-layer transit discrepancies while streamlining federated ZKP blacklist checks.
+- 🌐 **Cross-Language Score Parity**:
+  - Resolved calculation discrepancies and harmonized scoring formulas across Node.js, PHP, and Java implementations to guarantee deterministic and identical results across all runtimes.
+  - Fixed all known scoring edge cases primarily affecting the Node.js module.
+- 🔌 **WordPress Plugin Hardening & Compliance**:
+  - **Full WordPress Plugin Check Compliance**: Resolved all errors, warnings, and notices reported by the official WordPress Plugin Check tool, ensuring strict adherence to WordPress coding and security standards.
+- 👥 **Contributors**:
+  - Contributed by @anonympins.
+
 ## Version 0.7.2
 
 - 🔌 **WordPress Plugin Enhancements**:

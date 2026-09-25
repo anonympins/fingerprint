@@ -4,7 +4,7 @@ Tags: bot protection, security, proof of work, firewall, anti scraping
 Requires at least: 5.9
 Tested up to: 7.1
 Requires PHP: 8.0
-Stable tag: 0.7.2
+Stable tag: 0.7.3
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -34,13 +34,3 @@ No. All evaluations, challenges, and validations occur directly on your WordPres
 
 = Is HTTPS required? =
 HTTPS is strongly recommended. Under unencrypted HTTP, modern browsers disable the Web Cryptography API (`crypto.subtle`), which reduces challenge verification performance.
-
-== Changelog ==
-
-= 0.7.2 =
-* Added support for JA4 and QUIC protocol anomaly inspection.
-* Improved subnet reputation tracking and Bayesian density scoring.
-* Fixed WordPress Plugin Check compliance and removed restricted trademark terms.
-
-= 0.7.0 =
-* Initial release of Fingerprint Anti-Bot for WordPress.
