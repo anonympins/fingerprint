@@ -348,6 +348,15 @@ def get_ip_common_prefix_length(ip1: str, ip2: str) -> int:
         except Exception:
             return 0
 
+def is_loopback_ip(ip: str) -> bool:
+    """Checks if an IP address is a loopback/local address."""
+    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
+
 GREASE_VALUES = {
     2570, 6682, 10794, 14906, 19018, 23130, 27242, 31354,
     35466, 39578, 43690, 47802, 51914, 55926, 60038, 64150
@@ -1404,34 +1413,46 @@ class ChallengeUtils:
         return expected_solution == int(sol)
 
     @staticmethod
-    async def check_challenge_rate_limit(store, client_ip: str) -> bool:
+    async def check_challenge_rate_limit(
+        store,
+        client_ip: str,
+        domain: str = "default",
+        rate_limit_config: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """
-        Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+        Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau par domaine.
         """
-        subnet = get_ip_subnet(client_ip)
+        rate_limit_config = rate_limit_config or {}
+        if rate_limit_config.get("enabled") is False:
+            return True
+
+        if not client_ip or is_loopback_ip(client_ip):
+            return True
+
+        subnet = get_ip_subnet(client_ip) or client_ip
         if not subnet:
             return False
 
-        key = f"rate-limit:{subnet}"
-        rate_limit_data = await store.get(key)
-        if not rate_limit_data:
-            rate_limit_data = {
-                "tokens": 5.0,
-                "lastRefill": time.time()
-            }
+        host = (domain or "default").lower().split(":")[0]
+        key = f"rate-limit:{host}:{subnet}"
 
-        capacity = 5.0
-        refill_rate = 0.1  # 1 token toutes les 10 secondes
+        capacity = float(rate_limit_config.get("capacity", 30.0))
+        refill_rate = float(rate_limit_config.get("refillRate", 1.0))
         now = time.time()
 
-        elapsed = now - rate_limit_data["lastRefill"]
-        tokens = min(capacity, rate_limit_data["tokens"] + elapsed * refill_rate)
+        rate_limit_data = await store.get(key)
+        if not rate_limit_data:
+            rate_limit_data = {"tokens": capacity, "lastRefill": now}
+
+        elapsed = max(0.0, now - rate_limit_data.get("lastRefill", now))
+        tokens = min(capacity, float(rate_limit_data.get("tokens", capacity)) + elapsed * refill_rate)
+        ttl = max(60, int(math.ceil(capacity / max(0.1, refill_rate))))
 
         if tokens < 1.0:
-            await store.set(key, {"tokens": tokens, "lastRefill": now}, 60)
+            await store.set(key, {"tokens": tokens, "lastRefill": now}, ttl)
             return False
 
-        await store.set(key, {"tokens": tokens - 1.0, "lastRefill": now}, 60)
+        await store.set(key, {"tokens": tokens - 1.0, "lastRefill": now}, ttl)
         return True
 
 
@@ -4301,8 +4322,10 @@ class FingerprintEngine:
         low_threshold = self.thresholds.get("low", 20)
 
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
-            # --- AJOUT: Limiteur de débit (Token Bucket) ---
-            rate_limit_passed = await ChallengeUtils.check_challenge_rate_limit(self.store, client_ip)
+            # --- Limiteur de débit par domaine et sous-réseau (Token Bucket) ---
+            domain = context.headers.get("host", "default")
+            rate_limit_config = self.config.get("challengeRateLimit", {})
+            rate_limit_passed = await ChallengeUtils.check_challenge_rate_limit(self.store, client_ip, domain, rate_limit_config)
             if not rate_limit_passed:
                 decision = {
                     "action": "block",

@@ -149,6 +149,22 @@ class ChallengeUtilsTest extends TestCase
         $this->assertFalse(ChallengeUtils::isTicketValid($ip, 'invalid-ticket-format'), "Un format de ticket invalide doit être rejeté.");
     }
 
+    public function testCheckChallengeRateLimit(): void
+    {
+        $ip = '192.168.1.100';
+
+        // 5 premières demandes autorisées avec la capacité par défaut (5.0)
+        for ($i = 0; $i < 5; $i++) {
+            $this->assertTrue(ChallengeUtils::checkChallengeRateLimit($ip));
+        }
+
+        // La 6e demande consécutive doit être rejetée (tokens épuisés)
+        $this->assertFalse(ChallengeUtils::checkChallengeRateLimit($ip));
+
+        // Une autre adresse IP sur un autre sous-réseau doit disposer de son propre réservoir
+        $this->assertTrue(ChallengeUtils::checkChallengeRateLimit('10.0.0.1'));
+    }
+
     public function testCpuTargetCalculation(): void
     {
         $config = ['cpu' => ['minDifficultyBits' => 8, 'maxDifficultyBits' => 24]];

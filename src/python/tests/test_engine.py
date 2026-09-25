@@ -1114,16 +1114,18 @@ async def test_challenge_rate_limiting():
     """Vérifie le fonctionnement du limiteur de débit pour les challenges (Token Bucket)."""
     store = InMemoryStore()
     client_ip = "1.2.3.4"
-    
+    # On utilise une configuration stricte pour ce test, avec une capacité de 5 jetons.
+    rate_limit_config = {"capacity": 5.0, "refillRate": 0.1}
+
     # Premier appel : doit passer
-    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is True
-    
+    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip, rate_limit_config=rate_limit_config) is True
+
     # On vide le seau artificiellement (on consomme les jetons restants)
     for _ in range(4):
-        assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is True
-        
+        assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip, rate_limit_config=rate_limit_config) is True
+
     # Le 6ème appel doit être rejeté (False)
-    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is False
+    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip, rate_limit_config=rate_limit_config) is False
 
 def test_get_behavior_score_with_bot_like_touch_movements():
     """Vérifie la détection de l'émulation tactile (mouvements robotiques / variance de pression nulle)."""

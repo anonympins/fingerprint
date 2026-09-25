@@ -218,16 +218,16 @@ public class ChallengeUtilsTest {
     public void testCheckChallengeRateLimit() {
         String ip = "192.168.1.100";
 
-        // 10 premières demandes autorisées
-        for (int i = 0; i < 10; i++) {
+        // 5 premières demandes autorisées avec la capacité par défaut (5.0)
+        for (int i = 0; i < 5; i++) {
             assertTrue(ChallengeUtils.checkChallengeRateLimit(ip));
         }
 
-        // La 11e demande doit échouer (limite atteinte)
+        // La 6e demande doit échouer (seuil atteint)
         assertFalse(ChallengeUtils.checkChallengeRateLimit(ip));
 
-        // Une autre IP doit être indépendante et réussir
-        assertTrue(ChallengeUtils.checkChallengeRateLimit("192.168.1.101"));
+        // Une autre adresse IP sur un sous-réseau indépendant doit réussir
+        assertTrue(ChallengeUtils.checkChallengeRateLimit("10.0.0.1"));
     }
 
 

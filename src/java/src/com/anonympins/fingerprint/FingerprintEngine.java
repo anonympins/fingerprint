@@ -779,6 +779,18 @@ public class FingerprintEngine {
                 }
             }
         } else if ("challenge".equals(action)) {
+            if (!ChallengeUtils.checkChallengeRateLimit(context.clientIp)) {
+                response.put("action", "block");
+                response.put("status", 429);
+                response.put("body", "Too Many Requests");
+                if (dryRun) {
+                    response.put("intendedAction", "block");
+                    response.put("action", "next");
+                    response.remove("status");
+                    response.remove("body");
+                }
+                return response;
+            }
             response.put("status", 403);
             String nonce = UUID.randomUUID().toString().replace("-", "");
             String clientSecret = UUID.randomUUID().toString().replace("-", "");

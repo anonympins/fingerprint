@@ -580,33 +580,45 @@ export function parseStatelessTicket(ticket) {
 }
 
 /**
- * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+ * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau par domaine.
  * @param {string} clientIp - L'adresse IP du client.
+ * @param {string} [domain='default'] - Le domaine/hôte ciblé (en-tête Host).
+ * @param {object} [rateLimitConfig] - Configuration optionnelle du limiteur.
  * @returns {Promise<boolean>} True si la requête est autorisée, false si elle est limitée.
  */
-async function checkChallengeRateLimit(clientIp) {
-  const subnet = getIpSubnet(clientIp);
+async function checkChallengeRateLimit(clientIp, domain = 'default', rateLimitConfig = {}) {
+  if (rateLimitConfig && rateLimitConfig.enabled === false) {
+    return true;
+  }
+  if (!clientIp || isLoopbackIp(clientIp)) {
+    return true; // Bypass local/dev
+  }
+
+  const subnet = getIpSubnet(clientIp) || clientIp;
   if (!subnet) return false;
 
-  const key = `rate-limit:${subnet}`;
-  const rateLimitData = (await store.get(key)) || {
-    tokens: 5.0,
-    lastRefill: Date.now() / 1000
-  };
+  const host = (domain || 'default').toLowerCase().split(':')[0];
+  const key = `rate-limit:${host}:${subnet}`;
 
-  const capacity = 5.0;
-  const refillRate = 0.1; // 1 token toutes les 10 secondes
+  const capacity = Number(rateLimitConfig?.capacity ?? 30.0);
+  const refillRate = Number(rateLimitConfig?.refillRate ?? 1.0); // 1 token par seconde (au lieu de 0.1)
   const now = Date.now() / 1000;
 
-  const elapsed = now - rateLimitData.lastRefill;
+  const rateLimitData = (await store.get(key)) || {
+    tokens: capacity,
+    lastRefill: now
+  };
+
+  const elapsed = Math.max(0, now - rateLimitData.lastRefill);
   const tokens = Math.min(capacity, rateLimitData.tokens + elapsed * refillRate);
+  const ttl = Math.max(60, Math.ceil(capacity / Math.max(0.1, refillRate)));
 
   if (tokens < 1.0) {
-    await store.set(key, { tokens, lastRefill: now }, 60);
+    await store.set(key, { tokens, lastRefill: now }, ttl);
     return false;
   }
 
-  await store.set(key, { tokens: tokens - 1.0, lastRefill: now }, 60);
+  await store.set(key, { tokens: tokens - 1.0, lastRefill: now }, ttl);
   return true;
 }
 
@@ -4577,7 +4589,8 @@ export class FingerprintEngine {
       'wasm',
       'similarityThreshold', 'reset',
       'ed25519_private_key', 'ed25519_public_key', 'upowModel',
-      'federatedPeers', 'federationSecret', 'filterWhitelist'
+      'federatedPeers', 'federationSecret', 'filterWhitelist',
+      'challengeRateLimit'
     ]);
 
     // 1. Check for essential keys
@@ -5589,10 +5602,11 @@ export class FingerprintEngine {
             this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
         }
 
-        // --- AJOUT : Limiteur de débit (Token Bucket) ---
-        const rateLimitPassed = await checkChallengeRateLimit(clientIp);
+        // --- Limiteur de débit par domaine et sous-réseau (Token Bucket) ---
+        const domain = requestContext.headers?.host || 'default';
+        const rateLimitPassed = await checkChallengeRateLimit(clientIp, domain, this.securityConfig?.challengeRateLimit);
         if (!rateLimitPassed) {
-            this._log('Challenge rate limit exceeded - blocking with 429', { clientIp });
+            this._log('Challenge rate limit exceeded - blocking with 429', { clientIp, domain });
             const decision = {
                 action: 'block',
                 status: 429,
@@ -6962,6 +6976,7 @@ export const powMiddleware = (securityConfig) => {
  */
 export const __internal = {
     get store() { return store; }, // Export the store for testing
+    checkChallengeRateLimit,
     getDeviceHash,
     getCompositeDeviceHash,
     getSuspicionVector,
