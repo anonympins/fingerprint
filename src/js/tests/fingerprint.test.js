@@ -10,6 +10,8 @@ import * as fingerprint from '../fingerprint.js';
 vi.mock('import-meta-env', () => ({
     env: { NODE_ENV: 'test', POW_SECRET: 'fallback-dev-secret-32-chars-minimum' },
 }));
+// Mock the entire dns module
+vi.mock('node:dns/promises');
 // Mock readFileSync for custom challenge page tests
 vi.mock('node:fs', async () => {
     const actualFs = await vi.importActual('node:fs');
@@ -35,9 +37,8 @@ const {
 } = fingerprint;
 const { store, getRequestPatternScore, getDeviceHash } = __internal;
 const { getRenderingAnomalyScore } = __internal;
-let { getBehaviorScore, getClickVarianceScore } = __internal;
-// Mock the entire dns module
-vi.mock('node:dns/promises');
+let { getBehaviorScore, getClickVarianceScore } = __internal; // eslint-disable-line prefer-const
+
 
 describe('Fingerprint & PoW Security Suite', () => {
     test('cyrb53 should be deterministic', () => {
@@ -1762,6 +1763,92 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[Fingerprint] Invalid regex in whitelist rule'));
             consoleErrorSpy.mockRestore();
         });
+    });
+});
+describe('Googlebot Whitelisting (Node.js)', () => {
+    const inMemoryStore = {
+        _map: new Map(),
+        async get(key) { return this._map.get(key); },
+        async set(key, value) { this._map.set(key, value); },
+        async has(key) { return this._map.has(key); },
+        async delete(key) { this._map.delete(key); },
+    };
+
+    const securityConfig = {
+        weights: { headerAnomalyScore: 1.0, tlsSpoofingScore: 1.0 }, // Simple config for testing
+        thresholds: { low: 20, medium: 45, high: 75, block: 95 },
+        whitelist: [
+            { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' }
+        ]
+    };
+
+    let engine;
+
+    beforeEach(() => {
+        inMemoryStore._map.clear();
+        configureStore(inMemoryStore);
+        vi.clearAllMocks(); // Clear mocks before each test
+        engine = new FingerprintEngine(securityConfig);
+    });
+
+    it('should correctly identify and allow a legitimate Googlebot request', async () => {
+        const googleIp = '::ffff:66.249.66.39'; // An IP from the official list
+        const googleHostname = 'crawl-66-249-66-39.googlebot.com';
+        const googleUa = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
+
+        // Mock the DNS verification process
+        vi.mocked(dns.reverse).mockResolvedValue([googleHostname]);
+        vi.mocked(dns.resolve).mockResolvedValue([googleIp]);
+
+        const requestContext = {
+            clientIp: googleIp,
+            path: '/',
+            headers: { 'user-agent': googleUa },
+            isStatic: false,
+            cookies: {},
+            query: {},
+            body: null,
+            httpVersion: '1.1',
+            rawHeaders: ['user-agent', googleUa]
+        };
+
+        const decision = await engine.processRequest(requestContext);
+
+        expect(decision.action).toBe('next');
+        expect(decision.score).toBe(0);
+        expect(decision.vector.whitelisted).toBe(100);
+        expect(decision.vector.type).toBe('bot');
+
+        expect(dns.reverse).toHaveBeenCalledWith(googleIp);
+        expect(dns.resolve).toHaveBeenCalledWith(googleHostname);
+    });
+
+    it('should challenge or block a request spoofing a Googlebot User-Agent from a non-Google IP', async () => {
+        const fakeGoogleIp = '1.2.3.4';
+        const googleUa = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
+
+        vi.mocked(dns.reverse).mockRejectedValue(new Error('Host not found'));
+
+        const requestContext = {
+            clientIp: fakeGoogleIp,
+            path: '/',
+            headers: { 'user-agent': googleUa, 'accept-language': 'en-US' },
+            isStatic: false,
+            cookies: {},
+            query: {},
+            body: null,
+            httpVersion: '1.1',
+            rawHeaders: ['user-agent', googleUa, 'accept-language', 'en-US']
+        };
+
+        const decision = await engine.processRequest(requestContext);
+
+        expect(decision.action).toBe('block');
+        expect(decision.score).toBeGreaterThan(0);
+        expect(decision.vector.whitelisted).toBeUndefined();
+
+        expect(dns.reverse).toHaveBeenCalledWith(fakeGoogleIp);
+        expect(dns.resolve).not.toHaveBeenCalled();
     });
 });
 

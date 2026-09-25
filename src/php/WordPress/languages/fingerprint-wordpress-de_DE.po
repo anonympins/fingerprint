@@ -1,0 +1,262 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Fingerprint Anti-Bot 0.7.2\n"
+"Report-Msgid-Bugs-To: https://github.com/anonympins/fingerprint/issues\n"
+"POT-Creation-Date: 2026-09-24 12:00+0000\n"
+"PO-Revision-Date: 2026-09-24 12:00+0000\n"
+"Last-Translator: Anonympins\n"
+"Language-Team: German\n"
+"Language: de_DE\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "Fingerprint Anti-Bot"
+msgstr "Fingerprint Anti-Bot"
+
+msgid "High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress."
+msgstr "Hochleistungsfähiger clientseitiger Bot-Schutz und Proof-of-Work Challenge-Verifizierung für WordPress."
+
+msgid "[Fingerprint Anti-Bot Security Warning]"
+msgstr "[Fingerprint Anti-Bot Sicherheitswarnung]"
+
+msgid "Your website is currently running on unencrypted HTTP. In this mode, modern web browsers disable the native Web Cryptography API (crypto.subtle) for security reasons, forcing a JavaScript fallback simulation that is slower and vulnerable to Man-in-the-Middle (MitM) attacks. We strongly recommend deploying a TLS/SSL certificate and enforcing HTTPS to ensure the cryptographic integrity of Proof-of-Work computations and identity protection."
+msgstr "Ihre Website läuft derzeit über unverschlüsseltes HTTP. In diesem Modus deaktivieren moderne Webbrowser die native Web Cryptography API (crypto.subtle) aus Sicherheitsgründen, was zu einer langsameren JavaScript-Fallback-Simulation führt, die anfällig für Man-in-the-Middle-Angriffe (MitM) ist. Wir empfehlen dringend, ein TLS/SSL-Zertifikat einzurichten und HTTPS zu erzwingen."
+
+msgid "You do not have sufficient permissions to access this page."
+msgstr "Sie haben nicht die erforderlichen Berechtigungen, um auf diese Seite zuzugreifen."
+
+msgid "Fingerprint settings updated successfully."
+msgstr "Fingerprint-Einstellungen wurden erfolgreich aktualisiert."
+
+msgid "SQL cache table ($wpdb) cleared successfully."
+msgstr "SQL-Cache-Tabelle ($wpdb) wurde erfolgreich geleert."
+
+msgid "Client-side behavioral and cryptographic anti-bot protection without third-party CAPTCHA for WordPress."
+msgstr "Verhaltensbasierter und kryptografischer Bot-Schutz ohne Drittanbieter-CAPTCHA für WordPress."
+
+msgid "Official documentation reference:"
+msgstr "Offizielle Referenzdokumentation:"
+
+msgid "View Full Configuration Options on GitHub"
+msgstr "Vollständige Konfigurationsoptionen auf GitHub ansehen"
+
+msgid "GitHub Repository"
+msgstr "GitHub Repository"
+
+msgid "HTTPS Status"
+msgstr "HTTPS-Status"
+
+msgid "Active (WebCrypto Subtle available)"
+msgstr "Aktiv (WebCrypto Subtle verfügbar)"
+
+msgid "Insecure (Unencrypted HTTP)"
+msgstr "Unsicher (Unverschlüsseltes HTTP)"
+
+msgid "SQL Cache ($wpdb)"
+msgstr "SQL-Cache ($wpdb)"
+
+msgid "keys in database"
+msgstr "Schlüssel in Datenbank"
+
+msgid "%d expired keys awaiting cron purge"
+msgstr "%d abgelaufene Schlüssel warten auf Cron-Bereinigung"
+
+msgid "Active Profiles"
+msgstr "Aktive Profile"
+
+msgid "Frontend:"
+msgstr "Frontend:"
+
+msgid "Admin:"
+msgstr "Admin:"
+
+msgid "REST API:"
+msgstr "REST-API:"
+
+msgid "Settings & Profiles"
+msgstr "Einstellungen & Profile"
+
+msgid "Metrics & Weights View"
+msgstr "Metriken- & Gewichtungsansicht"
+
+msgid "Prometheus Stream"
+msgstr "Prometheus-Stream"
+
+msgid "1. Target Security Profiles"
+msgstr "1. Ziel-Sicherheitsprofile"
+
+msgid "Visitors & Frontend"
+msgstr "Besucher & Frontend"
+
+msgid "Blog (Optimal for content, smooth UX)"
+msgstr "Blog (Optimal für Inhalte, flüssige Benutzererfahrung)"
+
+msgid "Balanced (General purpose)"
+msgstr "Balanced (Ausgewogen)"
+
+msgid "Strict (Maximum protection)"
+msgstr "Strict (Maximaler Schutz)"
+
+msgid "E-commerce (Anti-scraping / scalping)"
+msgstr "E-Commerce (Anti-Scraping / Scalping)"
+
+msgid "Profile applied to all public pages of the WordPress site."
+msgstr "Profil, das auf alle öffentlichen Seiten der WordPress-Website angewendet wird."
+
+msgid "Administration Area (wp-login / wp-admin)"
+msgstr "Administrationsbereich (wp-login / wp-admin)"
+
+msgid "Strict (Recommended to secure logins)"
+msgstr "Strict (Empfohlen zur Absicherung von Anmeldungen)"
+
+msgid "Balanced"
+msgstr "Balanced"
+
+msgid "REST API (/wp-json/)"
+msgstr "REST-API (/wp-json/)"
+
+msgid "API (JSON challenges & machine PoW)"
+msgstr "API (JSON-Challenges & Maschinen-PoW)"
+
+msgid "Strict"
+msgstr "Strict"
+
+msgid "2. Action Thresholds (Frontend)"
+msgstr "2. Handlungsschwellenwerte (Frontend)"
+
+msgid "Suspicion Score Thresholds (0 - 100)"
+msgstr "Verdachtswert-Schwellenwerte (0 - 100)"
+
+msgid "Low (Initial challenge):"
+msgstr "Low (Erste Überprüfung):"
+
+msgid "Medium (Hardened challenge):"
+msgstr "Medium (Verstärkte Überprüfung):"
+
+msgid "High (Heavy Proof-of-Work):"
+msgstr "High (Schwerer Proof-of-Work):"
+
+msgid "Block (Immediate 403 Forbidden):"
+msgstr "Block (Sofortige 403-Sperre):"
+
+msgid "Advanced Behaviors"
+msgstr "Erweitertes Verhalten"
+
+msgid "Automatically challenge unknown new devices (without device_id cookie)"
+msgstr "Unbekannte neue Geräte automatisch prüfen (ohne device_id-Cookie)"
+
+msgid "Enable recursive WAF inspection (SQL, NoSQL, Log4j, Traversal in GET/POST)"
+msgstr "Rekursive WAF-Prüfung aktivieren (SQL, NoSQL, Log4j, Traversal in GET/POST)"
+
+msgid "Verbose mode in PHP logs (Debugging)"
+msgstr "Ausführlicher Modus in PHP-Logs (Debugging)"
+
+msgid "Save Changes"
+msgstr "Änderungen speichern"
+
+msgid "Store Maintenance:"
+msgstr "Speicher-Wartung:"
+
+msgid "Purge all stored sessions and nonces?"
+msgstr "Alle gespeicherten Sitzungen und Nonces löschen?"
+
+msgid "Clear SQL cache table ($wpdb)"
+msgstr "SQL-Cache-Tabelle leeren ($wpdb)"
+
+msgid "Behavioral & Transport Indicator Weights (Active Frontend Profile)"
+msgstr "Verhaltens- & Transportindikator-Gewichtungen (Aktives Frontend-Profil)"
+
+msgid "The final score of each request is computed using the weighted sum: <code>Score = &Sigma; (Metric &times; Weight)</code>."
+msgstr "Die Gesamtpunktzahl jeder Anfrage berechnet sich aus der gewichteten Summe: <code>Score = &Sigma; (Metrik &times; Gewichtung)</code>."
+
+msgid "Indicator / Metric"
+msgstr "Indikator / Metrik"
+
+msgid "Current Weight"
+msgstr "Aktuelle Gewichtung"
+
+msgid "Description & Detection Role"
+msgstr "Beschreibung & Erkennungsrolle"
+
+msgid "Update Metric Weights"
+msgstr "Metrikgewichtungen aktualisieren"
+
+msgid "Real-Time Prometheus Metrics"
+msgstr "Echtzeit-Prometheus-Metriken"
+
+msgid "Raw text format exported for scraping by Prometheus, Grafana Agent, or Datadog."
+msgstr "Rohdatenformat exportiert für das Scraping durch Prometheus, Grafana Agent oder Datadog."
+
+msgid "Triggering of invisible trap links, multi-framework honeypots, and injection probes."
+msgstr "Auslösen von unsichtbaren Fallen-Links, Multi-Framework-Honeypots und Injektionssonden."
+
+msgid "Missing, malformed, or out-of-order HTTP headers inconsistent with legitimate browsers."
+msgstr "Fehlende, fehlerhafte oder falsch angeordnete HTTP-Header, die nicht zu legitimen Browsern passen."
+
+msgid "Discrepancy between User-Agent and TLS cryptographic fingerprints (JA3/JA4, extensions, GREASE)."
+msgstr "Diskrepanz zwischen User-Agent und kryptografischen TLS-Fingerprints (JA3/JA4, Erweiterungen, GREASE)."
+
+msgid "Dynamic biometrics: mouse movements, keystroke dynamics, and mobile touch anomalies."
+msgstr "Dynamische Biometrie: Mausbewegungen, Tastaturanschlagsdynamik und mobile Touch-Anomalien."
+
+msgid "Velocity, robotic bursts, request standard deviation, and Benford's law statistical analysis."
+msgstr "Geschwindigkeit, automatisierte Bursts, Anfrage-Standardabweichung und Benfordsche Gesetzesanalyse."
+
+msgid "Alteration or drift in the hardware fingerprint between visits with the same cookie."
+msgstr "Veränderung oder Drift des Hardware-Fingerprints zwischen Besuchen mit demselben Cookie."
+
+msgid "Aggregated IP reputation of the network subnet (/24 or /48) and nearby attacker density."
+msgstr "Aggregierte IP-Reputation des Subnetzes (/24 oder /48) und Dichte nahegelegener Angreifer."
+
+msgid "Local historical reputation score of the client IP address with temporal decay over time."
+msgstr "Lokaler historischer Reputationswert der Client-IP-Adresse mit zeitlichem Abklingen über die Zeit."
+
+msgid "Display rendering anomalies, V-Sync/FPS cadence, and OffscreenCanvas hooking."
+msgstr "Grafik-Rendering-Anomalien, V-Sync/FPS-Kadenz und OffscreenCanvas-Hooking."
+
+msgid "Divergence in HTTP/2 and QUIC / HTTP/3 flow control frame settings."
+msgstr "Divergenz in HTTP/2- und QUIC / HTTP/3-Flusssteuerungsrahmeneinstellungen."
+
+msgid "Anomalies in QUIC transport parameters (flow control windows, max streams, and control frame ordering)."
+msgstr "Anomalien bei QUIC-Transportparametern (Flusssteuerungsfenster, maximale Streams und Kontrollrahmen-Reihenfolge)."
+
+msgid "Passive TCP/IP stack fingerprinting (SYN packet TTL, window size, MSS, options) vs declared operating system."
+msgstr "Passives TCP/IP-Stack-Fingerprinting (SYN-Paket-TTL, Fenstergröße, MSS, Optionen) vs. deklariertes Betriebssystem."
+
+msgid "Suspicious rotation of multiple IP addresses associated with a single hardware identity."
+msgstr "Verdächtige Rotation mehrerer IP-Adressen bei gleicher Hardware-Identität."
+
+msgid "Rapid and abnormal modifications to the application stack."
+msgstr "Schnelle und abnormale Änderungen des Anwendungs-Stacks."
+
+msgid "Detection of native automation attributes (navigator.webdriver, Chrome CDP)."
+msgstr "Erkennung nativer Automatisierungsattribute (navigator.webdriver, Chrome CDP)."
+
+msgid "Detection of cookie deletion, dropping, or refusal between consecutive requests to bypass device identification."
+msgstr "Erkennung von Cookie-Löschung, -Verwerfung oder -Verweigerung zwischen aufeinanderfolgenden Anfragen zur Umgehung der Geräteidentifikation."
+
+msgid "Correlation with known proxy IPs, Tor exit nodes, and federated threat intelligence blacklist."
+msgstr "Korrelation mit bekannten Proxy-IPs, Tor-Exit-Nodes und föderierter Threat-Intelligence-Sperrliste."
+
+msgid "Discrepancies between standard User-Agent and Sec-CH-UA Client Hints headers (browser family, version drift)."
+msgstr "Diskrepanzen zwischen Standard-User-Agent und Sec-CH-UA Client-Hints-Headern (Browser-Familie, Versionsabweichung)."
+
+msgid "Statistical analysis of click coordinate variance; flags unnaturally low pixel variance typical of click bots."
+msgstr "Statistische Analyse der Klick-Koordinatenvarianz; markiert unnatürlich niedrige Pixelvarianz typisch für Klick-Bots."
+
+msgid "Clustering of volatile client requests sharing identical hardware signatures across distinct IP addresses."
+msgstr "Clustering flüchtiger Client-Anfragen mit identischen Hardware-Signaturen über verschiedene IP-Adressen hinweg."
+
+msgid "Time delta between client timestamp and server reception to detect replay and automated delay attacks."
+msgstr "Zeitdifferenz zwischen Client-Zeitstempel und Serverempfang zur Erkennung von Replay- und automatisierten Verzögerungsangriffen."
+
+msgid "Detection of headless browsers, virtual GPU renderers (SwiftShader, llvmpipe) and emulated display resolutions."
+msgstr "Erkennung von Headless-Browsern, virtuellen GPU-Renderern (SwiftShader, llvmpipe) und emulierten Bildschirmauflösungen."
+
+msgid "Strict contradiction between layers (e.g. declared OS in User-Agent vs network TCP/IP stack OS)."
+msgstr "Strikter Widerspruch zwischen Schichten (z. B. im User-Agent deklariertes OS vs. TCP/IP-Netzwerk-OS)."
+
+msgid "Behavioral suspicion indicator."
+msgstr "Verhaltensbasierter Verdachtsindikator."

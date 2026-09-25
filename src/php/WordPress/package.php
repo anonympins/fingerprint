@@ -43,6 +43,89 @@ if (file_exists($zipFile)) {
 
 @mkdir($buildDir . '/src', 0777, true);
 @mkdir($buildDir . '/assets', 0777, true);
+@mkdir($buildDir . '/languages', 0777, true);
+
+/**
+ * Compile un fichier .po gettext en binaire .mo compatible WordPress.
+ */
+function compilePoToMo(string $poFile, string $moFile): bool {
+    if (!file_exists($poFile)) return false;
+    $content = file_get_contents($poFile);
+    if ($content === false) return false;
+
+    $entries = [];
+    $currentMsgId = null;
+    $currentMsgStr = null;
+    $lines = explode("\n", str_replace(["\r\n", "\r"], "\n", $content));
+    $state = '';
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) continue;
+        if (preg_match('/^msgid\s+"(.*)"$/', $line, $m)) {
+            if ($currentMsgId !== null && $currentMsgStr !== null) {
+                $entries[$currentMsgId] = $currentMsgStr;
+            }
+            $currentMsgId = stripcslashes($m[1]);
+            $currentMsgStr = null;
+            $state = 'msgid';
+        } elseif (preg_match('/^msgstr\s+"(.*)"$/', $line, $m)) {
+            $currentMsgStr = stripcslashes($m[1]);
+            $state = 'msgstr';
+        } elseif (preg_match('/^"(.*)"$/', $line, $m)) {
+            if ($state === 'msgid') {
+                $currentMsgId .= stripcslashes($m[1]);
+            } elseif ($state === 'msgstr') {
+                $currentMsgStr .= stripcslashes($m[1]);
+            }
+        }
+    }
+    if ($currentMsgId !== null && $currentMsgStr !== null) {
+        $entries[$currentMsgId] = $currentMsgStr;
+    }
+
+    ksort($entries);
+    $count = count($entries);
+    $originals = '';
+    $translations = '';
+    $origTable = [];
+    $transTable = [];
+
+    $headerSize = 28;
+    $tablesSize = $count * 8 * 2;
+    $curOffset = $headerSize + $tablesSize;
+
+    foreach ($entries as $orig => $trans) {
+        $origLen = strlen($orig);
+        $origTable[] = ['len' => $origLen, 'off' => $curOffset + strlen($originals)];
+        $originals .= $orig . "\0";
+    }
+
+    $transOffset = $curOffset + strlen($originals);
+    foreach ($entries as $orig => $trans) {
+        $transLen = strlen($trans);
+        $transTable[] = ['len' => $transLen, 'off' => $transOffset + strlen($translations)];
+        $translations .= $trans . "\0";
+    }
+
+    $mo = pack('V*',
+        0x950412de, // Magic Number
+        0,          // Revision
+        $count,     // Number of strings
+        28,         // Offset of table with original string lengths and offsets
+        28 + ($count * 8), // Offset of table with translation string lengths and offsets
+        0, 0        // Hash table size and offset
+    );
+
+    foreach ($origTable as $t) {
+        $mo .= pack('VV', $t['len'], $t['off']);
+    }
+    foreach ($transTable as $t) {
+        $mo .= pack('VV', $t['len'], $t['off']);
+    }
+    $mo .= $originals . $translations;
+    return file_put_contents($moFile, $mo) !== false;
+}
 
 // 2. Copie des fichiers principaux du plugin WordPress
 copy($wpDir . '/fingerprint-wordpress.php', $buildDir . '/fingerprint-wordpress.php');
@@ -54,7 +137,19 @@ if (file_exists($solverSource)) {
     copy($solverSource, $buildDir . '/assets/pow.solver.inline.js');
 }
 
-// 4. Copie récursive de la bibliothèque PHP (src/php -> build/src), en excluant les dossiers de dev
+// 4. Copie et compilation des fichiers de traduction i18n (FR / DE / EN)
+$langSourceDir = $wpDir . '/languages';
+if (is_dir($langSourceDir)) {
+    foreach (glob($langSourceDir . '/*.po') as $poFile) {
+        $baseName = basename($poFile);
+        copy($poFile, $buildDir . '/languages/' . $baseName);
+        $moTarget = $buildDir . '/languages/' . preg_replace('/\.po$/', '.mo', $baseName);
+        compilePoToMo($poFile, $moTarget);
+        compilePoToMo($poFile, $langSourceDir . '/' . preg_replace('/\.po$/', '.mo', $baseName));
+    }
+}
+
+// 5. Copie récursive de la bibliothèque PHP (src/php -> build/src), en excluant les dossiers de dev
 $excludeDirs = ['WordPress', 'Tests', 'bin'];
 $phpIterator = new RecursiveIteratorIterator(
     new RecursiveDirectoryIterator($phpSrcDir, FilesystemIterator::SKIP_DOTS),

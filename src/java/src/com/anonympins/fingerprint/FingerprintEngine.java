@@ -33,6 +33,11 @@ public class FingerprintEngine {
         this.weights = (Map<String, Object>) this.config.getOrDefault("weights", createDefaultWeights());
         this.verbose = Boolean.TRUE.equals(this.config.get("verbose"));
         this.dryRun = Boolean.TRUE.equals(this.config.get("dryRun"));
+
+        if (!this.config.containsKey("whitelist")) {
+            this.config.put("whitelist", defaultWhitelist());
+        }
+
         this.allowlist = buildAllowlist();
         this.blocklist = buildBlocklist();
 
@@ -115,6 +120,31 @@ public class FingerprintEngine {
         int end = json.indexOf("\"", start);
         if (end == -1) return null;
         return json.substring(start, end).replace("\\n", "\n");
+    }
+
+    /**
+     * Provides a default list of whitelisting rules for common and legitimate web crawlers.
+     * @return A list of rule maps.
+     */
+    public static List<Map<String, Object>> defaultWhitelist() {
+        List<Map<String, Object>> whitelist = new ArrayList<>();
+
+        // Major search engines with DNS verification
+        whitelist.add(Map.of("userAgent", "Googlebot", "hostnameSuffix", ".googlebot.com"));
+        whitelist.add(Map.of("userAgent", "AdsBot-Google", "hostnameSuffix", ".googlebot.com"));
+        whitelist.add(Map.of("userAgent", "(bingbot|adidxbot)", "hostnameSuffix", ".search.msn.com"));
+        whitelist.add(Map.of("userAgent", "YandexBot", "hostnameSuffix", ".yandex.com"));
+        
+        // SEO tools
+        whitelist.add(Map.of("userAgent", "AhrefsBot", "hostnameSuffix", ".ahrefs.com"));
+        whitelist.add(Map.of("userAgent", "SemrushBot", "hostnameSuffix", ".semrush.com"));
+        
+        // AI crawlers
+        whitelist.add(Map.of("userAgent", "GPTBot", "hostnameSuffix", ".openai.com"));
+        whitelist.add(Map.of("userAgent", "Applebot", "hostnameSuffix", ".applebot.apple.com"));
+        whitelist.add(Map.of("userAgent", "CCBot", "hostnameSuffix", ".commoncrawl.org"));
+
+        return whitelist;
     }
 
     public Map<String, Object> getThresholds() {

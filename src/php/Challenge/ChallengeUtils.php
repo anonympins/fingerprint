@@ -892,7 +892,7 @@ class ChallengeUtils
             return false;
         }
 
-        if (empty($solution)) {
+        if ($solution === '') {
             return false;
         }
 
