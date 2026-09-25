@@ -304,6 +304,9 @@ class FingerprintEngineTest extends TestCase
         }
 
         $configDir = dirname(__FILE__, 3) . '/config'; // Match engine's behavior
+        if (!is_dir($configDir)) {
+            mkdir($configDir, 0777, true);
+        }
         $keyPath = $configDir . '/ed25519_key.json';
 
         Env::clear('ED25519_PRIVATE_KEY');
@@ -328,7 +331,9 @@ class FingerprintEngineTest extends TestCase
         $this->assertEquals(Env::get('ED25519_PRIVATE_KEY'), $stored['privateKey']);
         $this->assertEquals(Env::get('ED25519_PUBLIC_KEY'), $stored['publicKey']);
 
-        unlink($keyPath);
+        if (file_exists($keyPath)) {
+            unlink($keyPath);
+        }
     }
 
     public function testEd25519KeyLoadingFromDisk(): void

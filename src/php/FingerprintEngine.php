@@ -209,6 +209,9 @@
                          $publicKeyPem = $details['key'] ?? ''; // @phpstan-ignore-line
                          Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
                          Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                         if (!is_dir($configDir)) {
+                             mkdir($configDir, 0777, true);
+                         }
                          // phpcs:ignore PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- Non-WordPress standalone environment fallback
                          file_put_contents($persistentKeyPath, json_encode([
                              'privateKey' => $privateKeyPem,
