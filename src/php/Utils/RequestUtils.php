@@ -1038,19 +1038,34 @@ class RequestUtils
     public static function getThreatIntelScore(RequestContext $context, array $threatIntelConfig): array
     {
         $score = 0.0;
+        $signals = [];
+
         $zkpY = $context->zkpY;
         if (!empty($zkpY)) {
             $store = StoreManager::getStore();
             $isBanned = $store->has("banned-zkp-y:{$zkpY}");
             if ($isBanned) {
                 $score = 100.0;
+                $signals[] = [
+                    'ruleId' => 'FEDERATED_ZKP_BANNED',
+                    'confidence' => 1.0,
+                    'score' => 100.0,
+                    'rationale' => 'Cryptographic identity matched federated banned list consensus'
+                ];
             }
         }
 
-        $rttProxyScore = \Anonympins\Fingerprint\Ja3AnomalyDetector::getRttProxyScore($context);
-        $score = max($score, (float)$rttProxyScore);
+        $rttProxyScore = (float)\Anonympins\Fingerprint\Ja3AnomalyDetector::getRttProxyScore($context);
+        if ($rttProxyScore > 0.0) {
+            $score = max($score, $rttProxyScore);
+            $signals[] = [
+                'ruleId' => 'RESIDENTIAL_PROXY_RTT_DISCREPANCY',
+                'score' => $rttProxyScore,
+                'rationale' => 'Physical discrepancy between TCP edge RTT and application transit latency'
+            ];
+        }
 
-        return ['threatIntelScore' => $score];
+        return ['threatIntelScore' => $score, 'threatIntelSignals' => $signals];
     }
 
     /**
@@ -1145,7 +1160,8 @@ class RequestUtils
      */
     public static function cleanUrlFromPowParams(string $originalPath, array $incomingQuery): string
     {
-        $urlParts = parse_url($originalPath);
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- Uses wp_parse_url when running inside WordPress
+        $urlParts = function_exists('wp_parse_url') ? wp_parse_url($originalPath) : parse_url($originalPath);
         $path = $urlParts['path'] ?? '/';
         $finalQuery = $incomingQuery;
 
@@ -1326,7 +1342,8 @@ class RequestUtils
 
         // Utilisation de la partie stable du fingerprint matériel plutôt que l'ID de cookie volatil
         $currentDeviceHash = self::getCompositeDeviceHash($context);
-        $stableFpId = FingerprintBuilder::cyrb53(self::extractStablePart($currentDeviceHash));
+        $stablePart = self::extractStablePart($currentDeviceHash);
+        $stableFpId = !empty($stablePart) ? (string)FingerprintBuilder::cyrb53($stablePart) : (!empty($deviceId) ? $deviceId : (string)FingerprintBuilder::cyrb53($currentDeviceHash));
 
         $currentDeviceContributions = $subnetData['highScoreDevices'][$stableFpId] ?? 0;
         if ($currentDeviceContributions < 1 && $finalScore < 95) {

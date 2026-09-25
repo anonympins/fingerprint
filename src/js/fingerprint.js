@@ -20,6 +20,7 @@ import {
     modPow,
     hashNetwork,
     normalizeReferer,
+    isLoopbackIp,
     isPrivateIp,
     parseUserAgent,
     safeJsonStringify
@@ -2666,9 +2667,6 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
 
     // Check for known spoofed/suspicious JA4 fingerprints
     const spoofedJa4s = [
-        't13d1516h2_8daaf6152771_390237aa04be', // Chrome classique (curl-impersonate / tls-client)
-        't13d1413h2_bc66258908f0_bc2531da1615', // Firefox statique (curl-impersonate-ff / curl_cffi)
-        't13d1515h2_8daaf6152771_a729e2f67de4', // Safari statique (curl-impersonate-safari / tls-client)
         't13d1516h2_8daaf6152771_4be0df930c2c', // Alternatif Chrome (tls-client Go)
         't12d1516h2_8daaf6152771_390237aa04be', // Chrome usurpé dégradé en TLS 1.2
         't13d1516h2_e822d36d892d_93ec3f0b2f5b'  // Scraping bot OpenSSL customisé
@@ -3162,6 +3160,9 @@ function decaySubnetData(subnetData, now) {
  * @param {number} finalScore The final suspicion score.
  */
 async function updateSubnetMetrics(context, deviceId, finalScore) {
+    if (!context.clientIp || isLoopbackIp(context.clientIp)) {
+        return;
+    }
     const subnet = getIpSubnet(context.clientIp);
     if (!subnet) return;
 
@@ -3194,7 +3195,8 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
 
     // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
     const currentDeviceHash = getCompositeDeviceHash(context);
-    const stableFpId = cyrb53(extractStablePart(currentDeviceHash)).toString();
+    const stablePart = extractStablePart(currentDeviceHash);
+    const stableFpId = stablePart ? cyrb53(stablePart).toString() : (deviceId || cyrb53(currentDeviceHash).toString());
 
     const currentDeviceContributions = subnetData.highScoreDevices[stableFpId] || 0;
     if (currentDeviceContributions < 1) {
@@ -3212,7 +3214,9 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
 
     const userAgent = context.headers?.['user-agent'] || '';
 
-    if (finalScore >= 70) {
+    // Ne pas enregistrer une IP en attaquant si le score élevé provient uniquement d'un seul appareil isolé
+    const isConfirmedClusterAttack = (subnetData.deviceIds.length > 1 && finalScore >= 70) || finalScore >= 95;
+    if (isConfirmedClusterAttack) {
         const existingAttacker = subnetData.attackerIps.find(a => a.ip === context.clientIp);
         if (existingAttacker) {
             existingAttacker.lastSeen = now;
@@ -3272,6 +3276,9 @@ export function calculateAnalogInconsistencyScore(consistencyScore, inflectionPo
  * @returns {Promise<{subnetScore: number}>}
  */
 async function getSubnetScore(context, deviceId = '', securityConfig = null) {
+    if (!context.clientIp || isLoopbackIp(context.clientIp)) {
+        return { subnetScore: 0.0 };
+    }
     if (typeof deviceId === 'object' && deviceId !== null && !securityConfig) {
         securityConfig = deviceId;
     }
@@ -3299,7 +3306,7 @@ async function getSubnetScore(context, deviceId = '', securityConfig = null) {
     }
     let uaCount = subnetData.uas ? subnetData.uas.length : 1;
 
-    if (deviceCount === 0) {
+    if (deviceCount <= 1 && highScoreCount <= 1) {
         return { subnetScore: 0.0 };
     }
 
@@ -3948,7 +3955,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         _ // store.set result
       ] = await Promise.all([
         getBehavioralIndicators(context, deviceData), // This modifies deviceData, so it must be done before saving deviceData
-        getThreatIntelScore(context, zkpY), // NOUVEAU: Score de Threat Intelligence Fédéré
+        getThreatIntelScore(context, zkpY, securityConfig), // NOUVEAU: Score de Threat Intelligence Fédéré
         getTlsSpoofingScore(context),
         getSubnetScore(context, deviceId, securityConfig),
         getIpReputationScore(clientIp),
@@ -4383,15 +4390,27 @@ function parseGraphQLQuery(body) {
  * @param {string} zkpY - The 'y' component of the ZKP proof (public key).
  * @returns {Promise<{threatIntelScore: number}>}
  */
-async function getThreatIntelScore(context, zkpY) {
-    let score = 0;
+async function getThreatIntelScore(context, zkpY, threatIntelConfig = {}) {
+    let score = 0.0;
+    const signals = [];
+
+    // 1. Détection déterministe : Clé publique ZKP bannie par consensus fédéré
     if (zkpY) {
         const isBanned = await store.has(`banned-zkp-y:${zkpY}`);
         if (isBanned) {
-            score = 100;
+            score = 100.0;
+            signals.push({
+                ruleId: 'FEDERATED_ZKP_BANNED',
+                confidence: 1.0,
+                score: 100.0,
+                rationale: 'Cryptographic identity matched banned list consensus'
+            });
         }
     }
 
+    // 2. Détection physique : Modélisation continue du différentiel de transport (RTT TCP Edge vs Transit Applicatif)
+    // Rationale : Un RTT TCP de socket très faible (datacenter/edge CDN) couplé à un délai applicatif WAN élevé
+    // prouve l'interposition d'un relais/tunnel/proxy résidentiel entre le client réel et le point d'entrée.
     const tcpRttHeader = context.headers?.['x-tcp-rtt'] || context.headers?.['x-real-rtt'];
     const tcpRtt = tcpRttHeader ? parseInt(tcpRttHeader, 10) : null;
 
@@ -4399,24 +4418,40 @@ async function getThreatIntelScore(context, zkpY) {
     if (behaviorHeader) {
         try {
             const metrics = JSON.parse(behaviorHeader);
-            if (metrics && metrics.clientTimestamp && context.requestTimestamp) {
+            if (metrics && typeof metrics.clientTimestamp === 'number' && typeof context.requestTimestamp === 'number') {
                 const appLatency = context.requestTimestamp - metrics.clientTimestamp;
-                if (tcpRtt !== null && !isNaN(tcpRtt) && tcpRtt > 0) {
-                    const clientToProxyDelta = appLatency - tcpRtt;
-                    if (tcpRtt < 35 && clientToProxyDelta > 150) {
-                        score = Math.max(score, 85);
-                    }
-                } else {
-                    if (appLatency > 350) {
-                        score = Math.max(score, 40);
+
+                // Évaluation uniquement si la latence est mesurable et positive avec une mesure socket RTT valide
+                if (tcpRtt !== null && !isNaN(tcpRtt) && tcpRtt > 0 && appLatency > 0) {
+                    // Marge de tolérance contre le jitter réseau et le scheduling JS (Garbage Collector, event-loop)
+                    const jitterAllowance = 60.0;
+                    const effectiveRtt = Math.max(tcpRtt, 5.0);
+                    const tunnelDelta = appLatency - (tcpRtt + jitterAllowance);
+                    const divergenceRatio = appLatency / effectiveRtt;
+
+                    // Condition de disjonction : liaison edge ultra-proche (< 40ms) + transit applicatif au moins 3x supérieur
+                    if (tcpRtt <= 40 && divergenceRatio >= 3.0 && tunnelDelta > 0) {
+                        // Progression sigmoïdale continue calibrée sur la propagation optique intercontinentale (120ms)
+                        const scaling = 120.0;
+                        const ratioWeight = Math.min(1.0, (divergenceRatio - 3.0) / 5.0);
+                        const proxyScore = Math.min(95.0, 40.0 + 55.0 * Math.tanh(tunnelDelta / scaling) * ratioWeight);
+                        const finalProxyScore = Math.round(proxyScore * 10) / 10;
+
+                        score = Math.max(score, finalProxyScore);
+                        signals.push({
+                            ruleId: 'RESIDENTIAL_PROXY_RTT_DISCREPANCY',
+                            confidence: Math.round(ratioWeight * 100) / 100,
+                            score: finalProxyScore,
+                            rationale: `TCP RTT (${tcpRtt}ms) diverges from application transit (${appLatency}ms) with ratio ${divergenceRatio.toFixed(1)}:1`
+                        });
                     }
                 }
             }
         } catch (e) {
-            // Ignorer silencieusement
+            // Ignorer silencieusement les erreurs de parsing des métriques
         }
     }
-    return { threatIntelScore: score };
+    return { threatIntelScore: score, threatIntelSignals: signals };
 }
 
 export class FingerprintEngine {
@@ -4603,6 +4638,9 @@ export class FingerprintEngine {
             (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
             (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
             (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) + // NOUVEAU: HTTP/2 Anomaly
+            (suspicionVector.protocolAnomalyScore || 0) * (weights.protocolAnomalyScore || 0) +
+            (suspicionVector.cookieDroppingScore || 0) * (weights.cookieDroppingScore || 0) +
+            (suspicionVector.virtualizationScore || 0) * (weights.virtualizationScore || 0) +
             (suspicionVector.threatIntelScore || 0) * (weights.threatIntelScore || 0) + // NOUVEAU: QUIC Anomaly
             (suspicionVector.renderingAnomalyScore || 0) * (weights.renderingAnomalyScore || 0); // NOUVEAU: Rendering Anomaly
 
@@ -4802,7 +4840,7 @@ export class FingerprintEngine {
     const { whitelist = [] } = this.securityConfig;
     const botRules = whitelist.filter(rule => rule.hostnameSuffix);
     if (botRules.length === 0) {
-      return false;
+      return null;
     }
 
     const { clientIp, headers } = requestContext;
@@ -4818,7 +4856,7 @@ export class FingerprintEngine {
       }
     });
     if (!matchedRule) {
-      return false;
+      return null;
     }
 
     const botName = matchedRule.userAgent; // e.g., 'Googlebot'
@@ -4885,6 +4923,13 @@ export class FingerprintEngine {
   }
 
   async processRequest(requestContext) {
+      if (this.securityConfig?.reset) {
+          const subnet = getIpSubnet(requestContext.clientIp);
+          if (subnet) {
+              await store.delete(`subnet:${subnet}`);
+          }
+          await store.delete(`ip-reputation:${requestContext.clientIp}`);
+      }
       sanitizeProxyHeaders(requestContext, this.securityConfig);
 
       const { clientIp = "unknown", path, cookies = {}, query = {}, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;

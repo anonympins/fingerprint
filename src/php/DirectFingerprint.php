@@ -34,17 +34,25 @@ class DirectFingerprint
     public function protect(): ?array
     {
         // 1. Build request context from PHP superglobals
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.NonceVerification.Recommended -- Direct WAF inspection firewall before WP core logic
         $body = $_POST ?: json_decode(file_get_contents('php://input'), true);
         $headers = function_exists('getallheaders') ? getallheaders() : [];
 
+        $remoteAddr = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '127.0.0.1';
+        $rawUri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- Uses wp_parse_url when available
+        $path = function_exists('wp_parse_url') ? (string)wp_parse_url($rawUri, PHP_URL_PATH) : (string)parse_url($rawUri, PHP_URL_PATH);
+        $serverProtocol = isset($_SERVER['SERVER_PROTOCOL']) ? sanitize_text_field(wp_unslash($_SERVER['SERVER_PROTOCOL'])) : '1.1';
+
         $context = new RequestContext(
-            $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1',
-            parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '/',
+            $remoteAddr,
+            !empty($path) ? $path : '/',
             $headers,
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended
             $_GET,
             $body,
             $_COOKIE,
-            $_SERVER['SERVER_PROTOCOL'] ?? '1.1'
+            $serverProtocol
         );
 
         // 2. Process request with engine
@@ -62,9 +70,11 @@ class DirectFingerprint
                 http_response_code($decision['status'] ?? 403);
                 if (is_array($decision['body'])) {
                     header('Content-Type: application/json');
+                    // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON API challenge payload
                     echo json_encode($decision['body']);
                 } else {
                     header('Content-Type: text/html; charset=utf-8');
+                    // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Proof-of-Work challenge HTML page
                     echo $decision['body'];
                 }
                 exit();
@@ -152,7 +162,8 @@ class DirectFingerprint
                 switch ($decision['action']) {
                     case 'block':
                         http_response_code($decision['status'] ?? 403);
-                        echo $decision['body'] ?? "Access denied.";
+                        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+                        echo esc_html($decision['body'] ?? "Access denied.");
                         exit();
                     case 'redirect':
                         header('Location: ' . $decision['path'], true, $decision['status'] ?? 302);
@@ -176,6 +187,7 @@ class DirectFingerprint
 
         // 3. If authorized, stream metrics output
         header('Content-Type: text/plain; version=0.0.4; charset=utf-8');
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Prometheus exposition format output
         echo MetricsManager::getPrometheusMetrics();
         exit();
     }

@@ -20,7 +20,7 @@ $phpSrcDir = $rootDir . '/src/php';
 $jsSrcDir = $rootDir . '/src/js';
 $wpDir = $phpSrcDir . '/WordPress';
 $distDir = $rootDir . '/public';
-$pluginSlug = 'fingerprint-wordpress';
+$pluginSlug = 'fingerprint-anti-bot';
 $buildDir = $distDir . '/' . $pluginSlug;
 $zipFile = $distDir . '/' . $pluginSlug . '.zip';
 
@@ -128,8 +128,11 @@ function compilePoToMo(string $poFile, string $moFile): bool {
 }
 
 // 2. Copie des fichiers principaux du plugin WordPress
-copy($wpDir . '/fingerprint-wordpress.php', $buildDir . '/fingerprint-wordpress.php');
+copy($wpDir . '/fingerprint-anti-bot.php', $buildDir . '/fingerprint-anti-bot.php');
 copy($wpDir . '/WpDbStore.php', $buildDir . '/WpDbStore.php');
+if (file_exists($wpDir . '/readme.txt')) {
+    copy($wpDir . '/readme.txt', $buildDir . '/readme.txt');
+}
 
 // 3. Copie des assets clients nécessaires (solveur PoW)
 $solverSource = $jsSrcDir . '/pow.solver.inline.js';
@@ -191,7 +194,7 @@ $distIterator = new RecursiveIteratorIterator(
 foreach ($distIterator as $file) {
     if (!$file->isDir()) {
         $filePath = $file->getPathname();
-        // Préserve le préfixe du dossier racine dans le ZIP : fingerprint-wordpress/...
+        // Préserve le préfixe du dossier racine dans le ZIP : fingerprint-anti-bot/...
         $relativePath = $pluginSlug . '/' . substr($filePath, strlen($buildDir) + 1);
         $zip->addFile($filePath, str_replace('\\', '/', $relativePath));
     }

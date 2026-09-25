@@ -157,6 +157,16 @@ export function hashNetwork(ip, prefix = 24) {
     }
     return hash.toString(16);
 }
+export function isLoopbackIp(ip) {
+    if (!ip || typeof ip !== 'string') return true;
+    let cleanIp = ip.trim().toLowerCase();
+    if (cleanIp.startsWith('::ffff:')) {
+        cleanIp = cleanIp.substring(7);
+    }
+    return cleanIp === '127.0.0.1' || cleanIp === '::1' || cleanIp === 'localhost' ||
+           cleanIp.startsWith('127.') || cleanIp === '0.0.0.0' || cleanIp === '::';
+}
+
 export function normalizeReferer(referer) {
     try {
         const url = new URL(referer);
@@ -167,11 +177,28 @@ export function normalizeReferer(referer) {
 }
 
 export function isPrivateIp(ip) {
-    // Check whether the IP address is private
-    const parts = ip.split('.');
-    if (parts.length !== 4) return false;
-    const first = parseInt(parts[0]);
-    return (first === 10) || (first === 172 && parseInt(parts[1]) >= 16 && parseInt(parts[1]) <= 31) || (first === 192 && parseInt(parts[1]) === 168);
+    if (!ip || typeof ip !== 'string') return false;
+    let cleanIp = ip.trim().toLowerCase();
+    if (cleanIp.startsWith('::ffff:')) {
+        cleanIp = cleanIp.substring(7);
+    }
+    if (cleanIp === '127.0.0.1' || cleanIp === '::1' || cleanIp === 'localhost' || cleanIp.startsWith('127.')) {
+        return true;
+    }
+    const parts = cleanIp.split('.');
+    if (parts.length === 4) {
+        const first = parseInt(parts[0], 10);
+        const second = parseInt(parts[1], 10);
+        if (first === 127 || first === 10 || first === 0) return true;
+        if (first === 172 && second >= 16 && second <= 31) return true;
+        if (first === 192 && second === 168) return true;
+        if (first === 169 && second === 254) return true;
+        if (first === 100 && second >= 64 && second <= 127) return true;
+    }
+    if (cleanIp.startsWith('fc') || cleanIp.startsWith('fd') || cleanIp.startsWith('fe80:')) {
+        return true;
+    }
+    return false;
 }
 // Utility parsing functions
 export function parseUserAgent(ua) {

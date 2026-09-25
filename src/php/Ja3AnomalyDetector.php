@@ -212,10 +212,12 @@ class Ja3AnomalyDetector
 
     /**
      * Correlates low-level TCP RTT with application layer latency to detect residential proxy hops.
+     * Evaluates continuous physical transit discrepancies rather than arbitrary step numbers.
+     * 
      * @param RequestContext $context
-     * @return int Suspicion score
+     * @return float Suspicion score between 0.0 and 95.0
      */
-    public static function getRttProxyScore(RequestContext $context): int
+    public static function getRttProxyScore(RequestContext $context): float
     {
         $tcpRttHeader = $context->headers['x-tcp-rtt'] ?? $context->headers['x-real-rtt'] ?? null;
         $tcpRtt = $tcpRttHeader !== null ? (int)$tcpRttHeader : null;
@@ -223,22 +225,28 @@ class Ja3AnomalyDetector
         $behaviorHeader = $context->headers['x-behavior-metrics'] ?? null;
         if ($behaviorHeader) {
             $metrics = json_decode($behaviorHeader, true);
-            if (json_last_error() === JSON_ERROR_NONE && isset($metrics['clientTimestamp'])) {
+            if (json_last_error() === JSON_ERROR_NONE && isset($metrics['clientTimestamp']) && is_numeric($metrics['clientTimestamp'])) {
                 $clientTimestamp = (int)$metrics['clientTimestamp'];
                 $appLatency = $context->requestTimestamp - $clientTimestamp;
-                if ($tcpRtt !== null && $tcpRtt > 0) {
-                    $clientToProxyDelta = $appLatency - $tcpRtt;
-                    if ($tcpRtt < 35 && $clientToProxyDelta > 150) {
-                        return 85;
-                    }
-                } else {
-                    if ($appLatency > 350) {
-                        return 40;
+
+                if ($tcpRtt !== null && $tcpRtt > 0 && $appLatency > 0) {
+                    // Marge de tolérance défensive contre le jitter réseau et le scheduling JS / Garbage Collection
+                    $jitterAllowance = 60.0;
+                    $effectiveRtt = max((float)$tcpRtt, 5.0);
+                    $tunnelDelta = $appLatency - ($tcpRtt + $jitterAllowance);
+                    $divergenceRatio = $appLatency / $effectiveRtt;
+
+                    // Condition de disjonction : liaison edge ultra-proche (< 40ms) + transit applicatif au moins 3x supérieur
+                    if ($tcpRtt <= 40 && $divergenceRatio >= 3.0 && $tunnelDelta > 0) {
+                        $scaling = 120.0;
+                        $ratioWeight = min(1.0, ($divergenceRatio - 3.0) / 5.0);
+                        $proxyScore = min(95.0, 40.0 + 55.0 * tanh($tunnelDelta / $scaling) * $ratioWeight);
+                        return round($proxyScore, 1);
                     }
                 }
             }
         }
-        return 0;
+        return 0.0;
     }
 }
 

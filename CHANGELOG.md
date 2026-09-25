@@ -1,21 +1,34 @@
+## Version 0.7.3
+
+- 🛡️ **Scoring Corrections & Anti-Spoofing Fixes**:
+  - **TLS Spoofing Score Fix**: Resolved false positive detections where legitimate Chrome browsers were erroneously flagged as spoofed (`tlsSpoofingScore`), improving GREASE cipher/extension inspection and ALPN protocol validation.
+  - **Threat Intelligence Rework (`threatIntelScore`)**: Overhauled the threat intelligence scoring mechanism, refining the correlation between low-level TCP RTT and application-layer transit discrepancies while streamlining federated ZKP blacklist checks.
+- 🌐 **Cross-Language Score Parity**:
+  - Resolved calculation discrepancies and harmonized scoring formulas across Node.js, PHP, and Java implementations to guarantee deterministic and identical results across all runtimes.
+  - Fixed all known scoring edge cases primarily affecting the Node.js module.
+- 🔌 **WordPress Plugin Hardening & Compliance**:
+  - **Full WordPress Plugin Check Compliance**: Resolved all errors, warnings, and notices reported by the official WordPress Plugin Check tool, ensuring strict adherence to WordPress coding and security standards.
+- 👥 **Contributors**:
+  - Contributed by @anonympins.
+
 ## Version 0.7.2
 
 - 🔌 **WordPress Plugin Enhancements**:
-  - `🌐 **Full Internationalization (i18n)**: The WordPress plugin is now fully translated into French (fr_FR) and German (de_DE), providing a native experience for administrators in those languages.`
-  - `🐛 **HTTP Fallback Fix**: Resolved a critical issue where challenges would fail on non-HTTPS (HTTP) sites. The system now transparently falls back to a secure server-side validation mechanism when the browser's `crypto.subtle` API is unavailable, ensuring functionality in all environments.`
+  - 🌐 **Full Internationalization (i18n)**: The WordPress plugin is now fully translated into French (fr_FR) and German (de_DE), providing a native experience for administrators in those languages.
+  - 🐛 **HTTP Fallback Fix**: Resolved a critical issue where challenges would fail on non-HTTPS (HTTP) sites. The system now transparently falls back to a secure server-side validation mechanism when the browser's `crypto.subtle` API is unavailable, ensuring functionality in all environments.
 - 🛡️ **Security & Bot Detection Hardening**:
-  - `🔐 **Obfuscated Client Script (`fingerprint.client.obfuscated.js`)**: Introduced a new build step that generates a heavily obfuscated version of the client-side library. This makes reverse-engineering of the fingerprinting and behavioral analysis logic significantly more difficult for attackers.`
-  - `🤖 **Default Bot Whitelist**: The engine now applies a comprehensive default whitelist for major search engine crawlers (Googlebot, Bingbot, Yandex, etc.) out-of-the-box. This ensures zero-configuration SEO compatibility and prevents legitimate bots from being challenged.`
-  - `📡 **Updated Googlebot IPs**: The list of official Googlebot IP ranges has been updated to ensure the latest crawlers are correctly identified and allowed.`
+  - 🔐 **Obfuscated Client Script (`fingerprint.client.obfuscated.js`)**: Introduced a new build step that generates a heavily obfuscated version of the client-side library. This makes reverse-engineering of the fingerprinting and behavioral analysis logic significantly more difficult for attackers.
+  - 🤖 **Default Bot Whitelist**: The engine now applies a comprehensive default whitelist for major search engine crawlers (Googlebot, Bingbot, Yandex, etc.) out-of-the-box. This ensures zero-configuration SEO compatibility and prevents legitimate bots from being challenged.
+  - 📡 **Updated Googlebot IPs**: The list of official Googlebot IP ranges has been updated to ensure the latest crawlers are correctly identified and allowed.
 - 🔧 **Developer Experience & Debugging**:
-  - `📝 **Reverse DNS Logging**: Added detailed logging to the bot verification workflow. This provides clear insights into the reverse and forward DNS lookup process, making it easier to debug whitelisting and identify spoofing attempts.`
+  - 📝 **Reverse DNS Logging**: Added detailed logging to the bot verification workflow. This provides clear insights into the reverse and forward DNS lookup process, making it easier to debug whitelisting and identify spoofing attempts.
 
 ## Version 0.7.1
 
-- 🔌 **Native WordPress Plugin Integration (`fingerprint-wordpress`)**:
-  - Full official WordPress plugin integration (`fingerprint-wordpress.php`) without external runtime dependencies, leveraging `$wpdb` through a dedicated `WpDbStore` adapter.
+- 🔌 **Native WordPress Plugin Integration (`fingerprint-anti-bot`)**:
+  - Full official WordPress plugin integration (`fingerprint-anti-bot.php`) without external runtime dependencies, leveraging `$wpdb` through a dedicated `WpDbStore` adapter.
   - Automatic SQL cache table provisioning and periodic cleanup of expired tickets via WP-Cron (`fingerprint_prune_expired_entries`).
-  - Automated packaging script (`package.php`) generating a ready-to-deploy ZIP archive (`fingerprint-wordpress.zip`).
+  - Automated packaging script (`package.php`) generating a ready-to-deploy ZIP archive (`fingerprint-anti-bot.zip`).
   - Cross-environment honeypot tripwires: immediately detects and drops automated scanners probing for non-WordPress entrypoints (Laravel, Symfony, Django, Spring Boot `/actuator`, phpMyAdmin, `.env`, `.git`).
   - Admin dashboard security notice if running over unencrypted HTTP (warning about modern browsers disabling native `crypto.subtle` APIs in insecure contexts).
 - 🔬 **JavaScript Prototype Tampering Detection (`detectTamperedPrototypes`)**:

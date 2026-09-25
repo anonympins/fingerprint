@@ -87,7 +87,7 @@ class FingerprintClient
         $containerTags = ['div', 'span', 'p', 'section'];
         $tag = $containerTags[array_rand($containerTags)];
 
-        $nestingType = rand(0, 1);
+        $nestingType = function_exists('wp_rand') ? wp_rand(0, 1) : random_int(0, 1);
         if ($nestingType === 1) {
             return '<' . $tag . ' style="' . $styles . '" aria-hidden="true">'
                 . '<label for="' . htmlspecialchars($fieldName) . '">' . htmlspecialchars($fieldName) 
@@ -113,26 +113,24 @@ class FingerprintClient
         $nonceAttr = $this->nonce ? ' nonce="' . $this->nonce . '"' : '';
 
         // Inline initialization script embedded in HTML
-        $initScript = <<<JS
-document.addEventListener('DOMContentLoaded', function() {
-    const config = {$configJson};
-    if (window.ClientLibrary) {
-        if (config.wasmPath) {
-            const wasmScript = document.createElement('script');
-            wasmScript.src = config.wasmPath;
-            wasmScript.async = true;
-            wasmScript.nonce = '{$this->nonce}';
-            document.head.appendChild(wasmScript);
-        }
-
-        window.ClientLibrary.initializeClient(config);
-    } else {
-        console.error('Fingerprint client library not loaded.');
-    }
-});
-JS;
+        $initScript = "document.addEventListener('DOMContentLoaded', function() {\n"
+            . "    const config = " . $configJson . ";\n"
+            . "    if (window.ClientLibrary) {\n"
+            . "        if (config.wasmPath) {\n"
+            . "            const wasmScript = document.createElement('script');\n"
+            . "            wasmScript.src = config.wasmPath;\n"
+            . "            wasmScript.async = true;\n"
+            . "            wasmScript.nonce = '" . addslashes((string)$this->nonce) . "';\n"
+            . "            document.head.appendChild(wasmScript);\n"
+            . "        }\n"
+            . "        window.ClientLibrary.initializeClient(config);\n"
+            . "    } else {\n"
+            . "        console.error('Fingerprint client library not loaded.');\n"
+            . "    }\n"
+            . "});";
 
         // Combine library loader script and inline initialization
+        // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedScript -- Polymorphic dynamic client script tag generation
         return '<script src="' . htmlspecialchars($this->clientScriptPath) . '"' . $nonceAttr . '></script>'
             . '<script' . $nonceAttr . '>' . $initScript . '</script>';
     }

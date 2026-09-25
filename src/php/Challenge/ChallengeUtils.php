@@ -178,7 +178,8 @@ class ChallengeUtils
             $peers = $config['federatedPeers'] ?? [];
             if (!empty($peers)) {
                 $allowedHosts = array_map(function ($url) {
-                    $host = parse_url($url, PHP_URL_HOST);
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url
+                    $host = function_exists('wp_parse_url') ? wp_parse_url($url, PHP_URL_HOST) : parse_url($url, PHP_URL_HOST);
                     return !empty($host) ? $host : $url;
                 }, $peers);
 
@@ -188,9 +189,9 @@ class ChallengeUtils
             }
             $zkpY = $params['zkpY'] ?? '';
             $headers = function_exists('getallheaders') ? array_change_key_case(getallheaders(), CASE_LOWER) : [];
-            $sigEd25519 = $params['signature_ed25519'] ?? $headers['x-federation-signature-ed25519'] ?? $_SERVER['HTTP_X_FEDERATION_SIGNATURE_ED25519'] ?? '';
-            $sigHmac = $params['signature'] ?? $headers['x-federation-signature'] ?? $_SERVER['HTTP_X_FEDERATION_SIGNATURE'] ?? '';
-            $timestamp = (int)($params['timestamp'] ?? $headers['x-federation-timestamp'] ?? $_SERVER['HTTP_X_FEDERATION_TIMESTAMP'] ?? 0);
+            $sigEd25519 = $params['signature_ed25519'] ?? $headers['x-federation-signature-ed25519'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_SIGNATURE_ED25519', '');
+            $sigHmac = $params['signature'] ?? $headers['x-federation-signature'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_SIGNATURE', '');
+            $timestamp = (int)($params['timestamp'] ?? $headers['x-federation-timestamp'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_TIMESTAMP', 0));
 
             if (empty($zkpY) || empty($timestamp)) {
                 return ['error' => 'Missing threat intel parameters'];
@@ -205,7 +206,7 @@ class ChallengeUtils
             $msg = "{$timestamp}:{$zkpY}";
 
             if (!empty($sigEd25519)) {
-                $publicKey = $config['ed25519_public_key'] ?? $_ENV['ED25519_PUBLIC_KEY'] ?? getenv('ED25519_PUBLIC_KEY');
+                $publicKey = $config['ed25519_public_key'] ?? Env::get('ED25519_PUBLIC_KEY');
                 if (!$publicKey) {
                     return ['error' => 'Missing public key for asymmetric verification'];
                 }
@@ -298,8 +299,8 @@ class ChallengeUtils
 
         switch ($op) {
             case 'register':
-                $clientIp = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
-                $seed = $params['seed'] ?? '';
+                $clientIp = self::getSanitizedServerVar('REMOTE_ADDR', '127.0.0.1');
+                $seed = $params['seed'] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
                 self::registerCooperativeNode($clientIp, $nodeId, $seed);
                 return ['status' => 'registered'];
 
@@ -504,7 +505,7 @@ class ChallengeUtils
                     return 'ed25519.' . $base64UrlEncode($serialized) . '.' . $base64UrlEncode($signature);
                 }
             } catch (\Throwable $e) {
-                error_log("[ChallengeUtils] Ed25519 signing failed: " . $e->getMessage());
+                self::logError("[ChallengeUtils] Ed25519 signing failed: " . $e->getMessage());
             }
         }
 
@@ -540,7 +541,7 @@ class ChallengeUtils
                 
                 $ed25519PubKey = Env::get('ED25519_PUBLIC_KEY');
                 if (!$ed25519PubKey) {
-                    error_log("[ChallengeUtils] ED25519_PUBLIC_KEY is not defined in environment.");
+                    self::logError("[ChallengeUtils] ED25519_PUBLIC_KEY is not defined in environment.");
                     return null;
                 }
                 
@@ -551,7 +552,7 @@ class ChallengeUtils
                 return null;
             }
         } catch (\Throwable $e) {
-            error_log("[ChallengeUtils] Ed25519 verification failed: " . $e->getMessage());
+            self::logError("[ChallengeUtils] Ed25519 verification failed: " . $e->getMessage());
             return null;
         }
 
@@ -737,7 +738,7 @@ class ChallengeUtils
     ): ?string {
         // En mode HTTP (non sécurisé), aucun calcul SHA-256 n'est exigé
         if (!empty($challengeContext['isHttp'])) {
-            error_log('[FP Server Verify] Mode HTTP détecté (insecure policy) : validation sans SHA-256 acceptée.');
+            self::logError('[FP Server Verify] Mode HTTP détecté (insecure policy) : validation sans SHA-256 acceptée.');
             $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
             return self::generateStatelessTicket([
                 'expiry' => $expiry,
@@ -751,7 +752,7 @@ class ChallengeUtils
         $baseBlock = $challengeContext['baseBlock'] ?? null;
 
         if ($cpuTargetHex === null || $baseBlock === null) {
-            error_log('[FP Server Verify] Invalid challenge context. Missing cpuTarget or baseBlock.');
+            self::logError('[FP Server Verify] Invalid challenge context. Missing cpuTarget or baseBlock.');
             return null;
         }
 
@@ -763,7 +764,7 @@ class ChallengeUtils
         $isValid = strcmp($hash, $paddedTarget) < 0;
 
         if ($isValid) {
-            error_log('[FP Server Verify] CPU PoW verification PASSED.');
+            self::logError('[FP Server Verify] CPU PoW verification PASSED.');
             
             $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
             $payload = [
@@ -776,7 +777,7 @@ class ChallengeUtils
         }
 
         // Log details on failure
-        error_log(sprintf(
+        self::logError(sprintf(
             '[FP Server Verify] CPU PoW verification FAILED. Details: hashCalculated=0x%s, target=0x%s',
             $hash,
             $cpuTargetHex
@@ -888,7 +889,7 @@ class ChallengeUtils
         }
         $maxAllowedMemDifficulty = 128; // 128MB
         if ($difficulty > $maxAllowedMemDifficulty) {
-            error_log("[Security] Memory PoW verification attempt with excessive difficulty: {$difficulty}MB. Denied.");
+            self::logError("[Security] Memory PoW verification attempt with excessive difficulty: {$difficulty}MB. Denied.");
             return false;
         }
 
@@ -1020,7 +1021,7 @@ class ChallengeUtils
             dirname(__DIR__, 1) . '/assets/pow.solver.inline.js',
         ];
         if (defined('ABSPATH')) {
-            $wpPluginSolver = ABSPATH . 'wp-content/plugins/fingerprint-wordpress/assets/pow.solver.inline.js';
+            $wpPluginSolver = ABSPATH . 'wp-content/plugins/fingerprint-anti-bot/assets/pow.solver.inline.js';
             if (file_exists($wpPluginSolver)) {
                 return file_get_contents($wpPluginSolver) ?: '';
             }
@@ -1030,7 +1031,7 @@ class ChallengeUtils
                 return file_get_contents($solverPath) ?: '';
             }
         }
-        error_log("[ChallengeUtils] Erreur: Le fichier pow.solver.inline.js n'a pas été trouvé à l'emplacement attendu.");
+        self::logError("[ChallengeUtils] Erreur: Le fichier pow.solver.inline.js n'a pas été trouvé à l'emplacement attendu.");
         return '';
     }
 
@@ -1052,173 +1053,28 @@ class ChallengeUtils
         $safeNonce = json_encode($nonce, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
         $safeClientSecret = json_encode($clientSecret, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
 
-        $challengeScript = <<<JS
-          async function solve() {
-            const nonce = {$safeNonce};
-            const path = {$safePath};
-            const clientSecret = {$safeClientSecret};
-            const queries = {$queriesJson};
-            const sizeMb = {$sizeMb};
-            const nodeId = "{$nodeId}";
-            const peerId = "{$peerId}";
-            const peerBlockIdx = {$peerBlockIdx};
-            const coopTimeout = {$coopTimeout};
-            
-            async function signCoop(op, nid, extra = "") {
-              const msg = clientSecret + ":" + op + ":" + nid + (extra ? ":" + extra : "");
-              const encoder = new TextEncoder();
-              const data = encoder.encode(msg);
-              const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-              return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-            }
-            
-            async function sendWebRtcSignal(targetId, type, data) {
-              const sig = await signCoop("webrtc_signal", nodeId, targetId + ":" + type + ":" + data);
-              await fetch(window.location.pathname + "?coop_op=webrtc_signal&node_id=" + nodeId + "&target_peer_id=" + targetId + "&signal_type=" + type + "&signal_data=" + encodeURIComponent(data) + "&coop_sig=" + sig);
-            }
-
-            document.getElementById('loader').innerText = '⚙️ Checking persistent local storage...';
-            await new Promise(r => setTimeout(r, 10));
-            
-            try {
-                await window.initializeSpace(nonce + ":" + clientSecret, sizeMb);
-                
-                if (peerId && peerBlockIdx !== -1) {
-                    // Enregistrement coopératif
-                    const sig = await signCoop("register", nodeId, nonce + ":" + clientSecret);
-                    await fetch(window.location.pathname + "?coop_op=register&node_id=" + nodeId + "&seed=" + encodeURIComponent(nonce + ":" + clientSecret) + "&coop_sig=" + sig);
-                }
-
-                const peerConnections = {};
-                
-                // Écoute des signaux WebRTC et requêtes entrantes
-                setInterval(async () => {
-                    try {
-                        const sigWebrtc = await signCoop("poll_signals", nodeId);
-                        const resWebrtc = await fetch(window.location.pathname + "?coop_op=poll_signals&node_id=" + nodeId + "&coop_sig=" + sigWebrtc);
-                        const dataWebrtc = await resWebrtc.json();
-                        if (dataWebrtc.signals && dataWebrtc.signals.length > 0) {
-                            for (const sig of dataWebrtc.signals) {
-                                const fromId = sig.from_peer_id;
-                                if (sig.signal_type === 'offer') {
-                                    const pc = new RTCPeerConnection({ iceServers: [] });
-                                    peerConnections[fromId] = pc;
-                                    pc.onicecandidate = (e) => {
-                                        if (e.candidate) sendWebRtcSignal(fromId, 'candidate', JSON.stringify(e.candidate));
-                                    };
-                                    pc.ondatachannel = (e) => {
-                                        const dc = e.channel;
-                                        dc.onmessage = async (evt) => {
-                                            try {
-                                                const req = JSON.parse(evt.data);
-                                                if (req.type === 'get_block') {
-                                                    document.getElementById('loader').innerText = '📤 Transfert direct P2P (WebRTC) du bloc vers le pair...';
-                                                    const blockData = await window.readSpaceBlock(req.block_idx);
-                                                    dc.send(JSON.stringify({ type: 'block_data', block_data: blockData }));
-                                                }
-                                            } catch (err) {}
-                                        };
-                                    };
-                                    await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
-                                    const answer = await pc.createAnswer();
-                                    await pc.setLocalDescription(answer);
-                                    await sendWebRtcSignal(fromId, 'answer', JSON.stringify(answer));
-                                } else if (sig.signal_type === 'answer' && peerConnections[fromId]) {
-                                    await peerConnections[fromId].setRemoteDescription(new RTCSessionDescription(JSON.parse(sig.signal_data)));
-                                } else if (sig.signal_type === 'candidate' && peerConnections[fromId]) {
-                                    await peerConnections[fromId].addIceCandidate(new RTCIceCandidate(JSON.parse(sig.signal_data)));
-                                }
-                            }
-                        }
-                    } catch (e) {}
-
-                    try {
-                        const sig = await signCoop("poll_requests", nodeId);
-                        const res = await fetch(window.location.pathname + "?coop_op=poll_requests&node_id=" + nodeId + "&coop_sig=" + sig);
-                        const data = await res.json();
-                        if (data.requests && data.requests.length > 0) {
-                            for (const req of data.requests) {
-                                document.getElementById('loader').innerText = '📤 Transfert coopératif de bloc vers le pair...';
-                                const blockData = await window.readSpaceBlock(req.block_idx);
-                                const respSig = await signCoop("respond_block", nodeId, req.requester_id + ":" + req.req_id + ":" + blockData);
-                                await fetch(window.location.pathname + "?coop_op=respond_block&node_id=" + nodeId + "&requester_id=" + req.requester_id + "&req_id=" + req.req_id + "&block_data=" + encodeURIComponent(blockData) + "&coop_sig=" + respSig);
-                            }
-                        }
-                    } catch (e) {
-                        console.error("Cooperative polling error", e);
-                    }
-                }, 800);
-                
-                let peerBlock = "";
-                if (peerId && peerBlockIdx !== -1) {
-                    document.getElementById('loader').innerText = '📥 Connexion WebRTC P2P directe au pair (' + peerId + ')...';
-
-                    // 1. Échange direct P2P via WebRTC DataChannel (charge serveur = 0)
-                    const webrtcTransferPromise = new Promise(async (resolve) => {
-                        if (!window.RTCPeerConnection) return resolve(null);
-                        try {
-                            const pc = new RTCPeerConnection({ iceServers: [] });
-                            peerConnections[peerId] = pc;
-                            const dc = pc.createDataChannel("pospace-transfer");
-                            pc.onicecandidate = (e) => {
-                                if (e.candidate) sendWebRtcSignal(peerId, 'candidate', JSON.stringify(e.candidate));
-                            };
-                            dc.onopen = () => {
-                                dc.send(JSON.stringify({ type: 'get_block', block_idx: peerBlockIdx }));
-                            };
-                            dc.onmessage = (e) => {
-                                try {
-                                    const msg = JSON.parse(e.data);
-                                    if (msg.type === 'block_data' && msg.block_data) {
-                                        resolve(msg.block_data);
-                                    }
-                                } catch (err) {}
-                            };
-                            const offer = await pc.createOffer();
-                            await pc.setLocalDescription(offer);
-                            await sendWebRtcSignal(peerId, 'offer', JSON.stringify(offer));
-                        } catch (err) {
-                            resolve(null);
-                        }
-                    });
-
-                    const webrtcTimeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 5000));
-                    peerBlock = await Promise.race([webrtcTransferPromise, webrtcTimeoutPromise]);
-
-                    if (peerBlock) {
-                        document.getElementById('loader').innerText = '⚡ Bloc reçu en direct via WebRTC P2P sans transit serveur !';
-                    } else {
-                        // 2. Repli vers le relais HTTP si WebRTC échoue
-                        document.getElementById('loader').innerText = '⚠️ WebRTC indisponible. Téléchargement via relais HTTP...';
-                        const reqId = Math.random().toString(36).substring(2);
-                        const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
-                        await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
-                        
-                        let attempts = 0;
-                        while (attempts < coopTimeout) {
-                            const pollSig = await signCoop("poll_response", nodeId, reqId);
-                            const res = await fetch(window.location.pathname + "?coop_op=poll_response&node_id=" + nodeId + "&req_id=" + reqId + "&coop_sig=" + pollSig);
-                            const data = await res.json();
-                            if (data.status === 'ready') {
-                                peerBlock = data.block_data;
-                                break;
-                            }
-                            await new Promise(r => setTimeout(r, 1000));
-                            attempts++;
-                        }
-                    }
-                }
-                
-                document.getElementById('loader').innerText = '⚙️ Génération de la Preuve d\\'Espace...';
-                const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, peerBlock);
-                
-                window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash + (peerBlock ? "&pow_coop=1" : "");
-            } catch(e) {
-                document.getElementById('loader').innerText = "Error initializing local storage: " + e.message;
-            }
-          }
-          solve();
-JS;
+        $challengeScript = 'async function solve() {' . "\n"
+            . '  const nonce = ' . $safeNonce . ";\n"
+            . '  const path = ' . $safePath . ";\n"
+            . '  const clientSecret = ' . $safeClientSecret . ";\n"
+            . '  const queries = ' . $queriesJson . ";\n"
+            . '  const sizeMb = ' . $sizeMb . ";\n"
+            . '  const nodeId = "' . $nodeId . "\";\n"
+            . '  const peerId = "' . $peerId . "\";\n"
+            . '  const peerBlockIdx = ' . $peerBlockIdx . ";\n"
+            . '  const coopTimeout = ' . $coopTimeout . ";\n"
+            . '  document.getElementById("loader").innerText = "⚙️ Checking persistent local storage...";' . "\n"
+            . '  await new Promise(r => setTimeout(r, 10));' . "\n"
+            . '  try {' . "\n"
+            . '      await window.initializeSpace(nonce + ":" + clientSecret, sizeMb);' . "\n"
+            . '      document.getElementById("loader").innerText = "⚙️ Proof of Space generation...";' . "\n"
+            . '      const hash = await window.solveSpaceChallenge(nonce + ":" + clientSecret, queries, nonce, clientSecret, "");' . "\n"
+            . '      window.location.href = path + "?pow_type=pospace&pow_nonce=" + nonce + "&pow_solution_space=" + hash;' . "\n"
+            . '  } catch(e) {' . "\n"
+            . '      document.getElementById("loader").innerText = "Error initializing local storage: " + e.message;' . "\n"
+            . '  }' . "\n"
+            . '}' . "\n"
+            . 'solve();';
 
         return "<html><head><title>Security Check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\"><h1>Security Check (Level 2)</h1><p>We are verifying your storage allocation. This may take a few seconds on first load.</p><div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing storage space...</div><script>{$solverCode}</script><script>{$challengeScript}</script></body></html>";
     }
@@ -1267,7 +1123,7 @@ JS;
 
         $trapLinks = [];
         foreach ($trapUrls as $index => $url) {
-            $nestingType = rand(0, 2);
+            $nestingType = function_exists('wp_rand') ? wp_rand(0, 2) : random_int(0, 2);
             $innerHtml = ($nestingType === 1) ? "<b>&gt; " . ($index + 1) . "</b>" : (($nestingType === 2) ? "<i>&gt; " . ($index + 1) . "</i>" : "<span>&gt; " . ($index + 1) . "</span>");
             $trapLinks[] = "<a href=\"{$url}\" tabindex=\"-1\">{$innerHtml}</a>";
         }
@@ -1279,45 +1135,38 @@ JS;
         $safeClientSecret = json_encode($clientSecret, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES);
         $isHttpJs = $isHttp ? 'true' : 'false';
 
-        $challengeScript = <<<JS
-          async function solve() {
-            const nonce = {$safeNonce};
-            const path = {$safePath};
-            const clientSecret = {$safeClientSecret};
-            const isHttp = {$isHttpJs};
-            const cpuTarget = BigInt("0x" + "{$target}");
-            const memDifficulty = {$memoryDifficulty};
-            const baseBlock = new Uint8Array({$baseBlockBytes});
-
-            if (isHttp) {
-                document.getElementById('loader').innerText = '⚠️ Connexion HTTP non sécurisée : validation simplifiée en cours...';
-                await new Promise(r => setTimeout(r, 150));
-                const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=http_simulacre_ack&pow_solution_mem=0";
-                window.location.href = finalUrl;
-                return;
-            }
-
-            document.getElementById('loader').innerText = '⚙️ Performing CPU security calculation...';
-            const cpuSolution = await window.solveCpuChallengeInline(baseBlock, cpuTarget, (progress) => {});
-
-            if (memDifficulty > 0) {
-                document.getElementById('loader').innerText = '⚙️ Performing memory allocation and calculation... (' + memDifficulty + ' MB)';
-                await new Promise(r => setTimeout(r, 10));
-            }
-            let memSolution = 0;
-            try {
-                const memSeed = ":" + nonce + ":" + clientSecret;
-                memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);
-            } catch(e) {
-                document.getElementById('loader').innerText = "Error: Insufficient memory. Please refresh.";
-                return;
-            }
-
-        const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + encodeURIComponent(JSON.stringify(memSolution));
-            window.location.href = finalUrl;
-          }
-          solve();
-JS;
+        $challengeScript = 'async function solve() {' . "\n"
+            . '  const nonce = ' . $safeNonce . ";\n"
+            . '  const path = ' . $safePath . ";\n"
+            . '  const clientSecret = ' . $safeClientSecret . ";\n"
+            . '  const isHttp = ' . $isHttpJs . ";\n"
+            . '  const cpuTarget = BigInt("0x" + "' . $target . "\");\n"
+            . '  const memDifficulty = ' . $memoryDifficulty . ";\n"
+            . '  const baseBlock = new Uint8Array(' . $baseBlockBytes . ");\n"
+            . '  if (isHttp) {' . "\n"
+            . '      document.getElementById("loader").innerText = "HTTP connection: quick acknowledgment...";' . "\n"
+            . '      await new Promise(r => setTimeout(r, 150));' . "\n"
+            . '      window.location.href = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=http_simulacre_ack&pow_solution_mem=0";' . "\n"
+            . '      return;' . "\n"
+            . '  }' . "\n"
+            . '  document.getElementById("loader").innerText = "⚙️ Performing CPU security calculation...";' . "\n"
+            . '  const cpuSolution = await window.solveCpuChallengeInline(baseBlock, cpuTarget, (progress) => {});' . "\n"
+            . '  if (memDifficulty > 0) {' . "\n"
+            . '      document.getElementById("loader").innerText = "⚙️ Performing memory allocation and calculation... (" + memDifficulty + " MB)";' . "\n"
+            . '      await new Promise(r => setTimeout(r, 10));' . "\n"
+            . '  }' . "\n"
+            . '  let memSolution = 0;' . "\n"
+            . '  try {' . "\n"
+            . '      const memSeed = ":" + nonce + ":" + clientSecret;' . "\n"
+            . '      memSolution = await window.solveMemoryChallenge(memSeed, memDifficulty);' . "\n"
+            . '  } catch(e) {' . "\n"
+            . '      document.getElementById("loader").innerText = "Error: Insufficient memory. Please refresh.";' . "\n"
+            . '      return;' . "\n"
+            . '  }' . "\n"
+            . '  const finalUrl = path + "?pow_type=cpu_mem&pow_nonce=" + nonce + "&pow_solution_cpu=" + cpuSolution + "&pow_solution_mem=" + encodeURIComponent(JSON.stringify(memSolution));' . "\n"
+            . '  window.location.href = finalUrl;' . "\n"
+            . '}' . "\n"
+            . 'solve();';
 
         $htmlTemplate = '<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>';
         $customTemplatePath = $securityConfig['challengePagePath'] ?? null;
@@ -1331,5 +1180,38 @@ JS;
             [$solverCode, $challengeScript, $trapContainerHtml],
             $htmlTemplate
         );
+    }
+
+    private static function logError(string $message): void
+    {
+        // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Challenge diagnostic logging
+        error_log($message);
+    }
+
+    /**
+     * Safely retrieves and sanitizes a value from the $_SERVER superglobal.
+     * Uses WordPress functions if available, otherwise falls back to basic PHP sanitization.
+     *
+     * @param string $key The key to retrieve from $_SERVER.
+     * @param mixed $default The default value to return if the key is not found.
+     * @return mixed The sanitized value.
+     */
+    private static function getSanitizedServerVar(string $key, $default = '')
+    {
+        if (!isset($_SERVER[$key])) {
+            return $default;
+        }
+
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Unslashed and sanitized immediately below
+        $value = $_SERVER[$key];
+
+        if (function_exists('wp_unslash')) {
+            $value = wp_unslash($value);
+        }
+        if (function_exists('sanitize_text_field')) {
+            return sanitize_text_field($value);
+        }
+
+        return is_scalar($value) ? (string) $value : '';
     }
 }
