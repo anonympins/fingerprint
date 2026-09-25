@@ -4670,7 +4670,8 @@ export class FingerprintEngine {
     return false;
   }
   _isIpInAllowlist(clientIp) {
-    return this._allowlist.check(clientIp);
+      const family = isIPv6(clientIp) ? 'ipv6' : 'ipv4';
+      return this._allowlist.check(clientIp, family);
   }
   /**
    * Checks if the request's host and path match an entry in the host+path allowlist.
@@ -4809,7 +4810,10 @@ export class FingerprintEngine {
       return false;
     }
 
+    const botName = matchedRule.userAgent; // e.g., 'Googlebot'
+
     if (!canAttemptDns()) {
+      this._log(`[Bot Verification] DNS circuit breaker is open. Skipping check for ${botName}.`, { clientIp });
       return false;
     }
 
@@ -4817,9 +4821,11 @@ export class FingerprintEngine {
     const cachedStatus = await store.get(cacheKey);
 
     if (cachedStatus === 'verified') {
+      this._log(`[Bot Verification] PASSED (cached): ${botName}`, { clientIp });
       return true;
     }
     if (cachedStatus === 'failed') {
+      this._log(`[Bot Verification] FAILED (cached): ${botName}`, { clientIp });
       return false;
     }
 
@@ -4829,25 +4835,35 @@ export class FingerprintEngine {
       const validHostname = hostnames.find(h => h.endsWith(matchedRule.hostnameSuffix));
 
       if (!validHostname) {
+        this._log(`[Bot Verification] FAILED: Reverse DNS lookup for ${clientIp} did not yield a valid hostname ending in '${matchedRule.hostnameSuffix}'.`, { clientIp, resolvedHostnames: hostnames });
         await store.set(cacheKey, 'failed', 300); // Temporary negative caching (5 minutes)
         return false;
       }
+
+      this._log(`[Bot Verification] Reverse DNS OK for ${botName}.`, { clientIp, validHostname });
 
       // 2. Forward DNS lookup
     let addresses = [];
     try {
         addresses = await withTimeout(dns.resolve(validHostname), 500);
-    } catch (e) {}
+    } catch (e) {
+        this._log(`[Bot Verification] Forward DNS (A) lookup FAILED for ${validHostname}.`, { error: e.message });
+    }
     try {
         const ipv6 = await withTimeout(dns.resolve(validHostname, 'AAAA'), 500);
       addresses = addresses.concat(ipv6);
-    } catch (e) {}
+    } catch (e) {
+        this._log(`[Bot Verification] Forward DNS (AAAA) lookup FAILED for ${validHostname}.`, { error: e.message });
+    }
     if (addresses.includes(clientIp)) {
+        this._log(`[Bot Verification] PASSED: Forward DNS IP matches original IP for ${botName}.`, { clientIp, validHostname, resolvedIps: addresses });
         recordDnsSuccess();
         await store.set(cacheKey, 'verified', 86400); // Cache success for 24h (TTL in seconds)
         return true;
       }
+      this._log(`[Bot Verification] FAILED: IP mismatch for ${botName}. Original IP not in resolved addresses.`, { clientIp, validHostname, resolvedIps: addresses });
     } catch (error) {
+      this._log(`[Bot Verification] FAILED: DNS lookup error for ${botName}.`, { clientIp, error: error.message });
       recordDnsFailure();
       await store.set(cacheKey, 'failed', 300); // Temporary negative caching (5 minutes)
       return false;
@@ -4965,15 +4981,15 @@ export class FingerprintEngine {
         }
     }
 
-    // Check if the request is from a verified, whitelisted bot (e.g., Googlebot)
-    if (await this._verifyWhitelistedBot(requestContext)) {
+    const botVerificationResult = await this._verifyWhitelistedBot(requestContext);
+    if (botVerificationResult === true) {
       const filterWhitelist = this.securityConfig.filterWhitelist || false;
       let bypassWhitelist = false;
       if (filterWhitelist === true) {
         bypassWhitelist = this._hasCertainAttack(requestContext);
       } else if (typeof filterWhitelist === 'number') {
         const res = await getScoreAndVector();
-        if (res.score > filterWhitelist) {
+        if (res.score > filterWhitelist) { // NOSONAR
           bypassWhitelist = true;
         }
       }
@@ -5013,6 +5029,11 @@ export class FingerprintEngine {
 
     // The engine now works with the context directly, no more rawReq dependency here.
     const suspicionVector = preCalculatedVector || await __internal.getSuspicionVector(requestContext, this.securityConfig);
+    if (botVerificationResult === false) {
+        // This means it claimed to be a bot but failed verification.
+        // This is a strong signal of spoofing.
+        suspicionVector.tlsSpoofingScore = Math.max(suspicionVector.tlsSpoofingScore || 0, 95);
+    }
     let finalScore = preCalculatedScore !== null ? preCalculatedScore : this.calculateFinalScore(suspicionVector);
 
     this._log('Suspicion vector calculated', { 

@@ -55,44 +55,44 @@ class BlockList
      */
     private function ipInCidr(string $ip, string $cidr): bool
     {
-        [$network, $mask] = explode('/', $cidr);
+        // Handle IPv4-mapped IPv6 addresses by converting them to IPv4
+        if (str_starts_with(strtolower($ip), '::ffff:') && filter_var(substr($ip, 7), FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            $ip = substr($ip, 7);
+        }
+
+        [$network, $mask] = explode('/', $cidr, 2);
         $mask = (int)$mask;
 
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && filter_var($network, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-            // IPv6
+        // Now, both $ip and $network should be in the same family for a valid comparison
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && filter_var($network, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            if ($mask < 0 || $mask > 32) { return false; }
+            $ipLong = ip2long($ip);
+            $networkLong = ip2long($network);
+            if ($ipLong === false || $networkLong === false) return false;
+            $netmask = -1 << (32 - $mask);
+            return ($ipLong & $netmask) === ($networkLong & $netmask);
+        } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) && filter_var($network, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            // IPv6 vs IPv6 CIDR
+            if ($mask < 0 || $mask > 128) { return false; }
             $ipBinary = inet_pton($ip);
             $networkBinary = inet_pton($network);
+            if ($ipBinary === false || $networkBinary === false) return false;
 
-            if ($ipBinary === false || $networkBinary === false) {
+            $bytesToCompare = (int)floor($mask / 8);
+            if (strncmp($ipBinary, $networkBinary, $bytesToCompare) !== 0) {
                 return false;
             }
 
-            $ipHex = bin2hex($ipBinary);
-            $networkHex = bin2hex($networkBinary);
-
-            $numBytes = (int)ceil($mask / 8);
-            $compareLength = $numBytes * 2;
-
-            if (substr($ipHex, 0, $compareLength) !== substr($networkHex, 0, $compareLength)) {
-                return false;
-            }
-
-            if ($mask % 8 !== 0) {
-                $bitMask = (0xFF << (8 - ($mask % 8))) & 0xFF;
-                $ipByte = hexdec(substr($ipHex, $numBytes * 2 - 2, 2));
-                $networkByte = hexdec(substr($networkHex, $numBytes * 2 - 2, 2));
-                return ($ipByte & $bitMask) === ($networkByte & $bitMask);
+            $bitsToCompare = $mask % 8;
+            if ($bitsToCompare > 0) {
+                $byteIndex = $bytesToCompare;
+                $bitmask = (0xFF << (8 - $bitsToCompare)) & 0xFF;
+                if ((ord($ipBinary[$byteIndex]) & $bitmask) !== (ord($networkBinary[$byteIndex]) & $bitmask)) {
+                    return false;
+                }
             }
 
             return true;
-
-        } elseif (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && filter_var($network, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
-            // IPv4
-            $ipLong = ip2long($ip);
-            $networkLong = ip2long($network);
-            $wildcard = pow(2, (32 - $mask)) - 1;
-            $netmask = ~$wildcard;
-            return (($ipLong & $netmask) === ($networkLong & $netmask));
         }
 
         return false;
