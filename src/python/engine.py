@@ -3049,6 +3049,9 @@ class FingerprintEngine:
         self.initialize_ed25519_keys(config)
 
         self.config = config
+        if not self.config.get("whitelist"):
+            self.config["whitelist"] = default_whitelist()
+
         self.store = store
         self.thresholds = config.get("thresholds", {"low": 20, "medium": 45, "high": 75, "block": 95})
         self.weights = config.get("weights", {})
@@ -3105,11 +3108,10 @@ class FingerprintEngine:
     def _build_allowlist(self) -> BlockList:
          block_list = BlockList()
          whitelist_rules = self.config.get("whitelist", [])
-         allowlist_rule = next((r for r in whitelist_rules if r.get("type") == "allowlist"), None)
-         if not allowlist_rule or not allowlist_rule.get("entries"):
-             return block_list
-         for entry in allowlist_rule["entries"]:
-             block_list.add(entry)
+         for rule in whitelist_rules:
+            if rule.get("type") == "allowlist" and rule.get("entries"):
+                for entry in rule["entries"]:
+                    block_list.add(entry)
          return block_list
  
     def _is_ip_in_allowlist(self, client_ip: str) -> bool:

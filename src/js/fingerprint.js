@@ -4472,6 +4472,17 @@ export class FingerprintEngine {
         }
       }
     }
+
+    // If no security config is provided at all, create a base one.
+    if (!finalConfig) {
+        finalConfig = {};
+    }
+    // If the whitelist is not explicitly provided in the configuration,
+    // apply the default whitelist which includes common search engine bots.
+    if (!finalConfig.whitelist) {
+        finalConfig.whitelist = default_whitelist();
+    }
+
     this.securityConfig = finalConfig;
     this.isProduction = isProduction;
     this._allowlist = this._buildAllowlist();

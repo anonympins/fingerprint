@@ -179,6 +179,12 @@
                  }
              }
          }
+
+         // Si aucune liste blanche n'est explicitement fournie, appliquer la liste par défaut.
+         if (!isset($securityConfig['whitelist'])) {
+             $securityConfig['whitelist'] = self::default_whitelist();
+         }
+
          $this->securityConfig = $securityConfig;
          $this->verbose = $securityConfig['verbose'] ?? false;
          $this->allowlist = $this->buildAllowlist();
