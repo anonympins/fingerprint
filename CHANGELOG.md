@@ -1,14 +1,14 @@
 ## Version 0.7.2
 
 - 🔌 **WordPress Plugin Enhancements**:
-  - `🌐 **Full Internationalization (i18n)**: The WordPress plugin is now fully translated into French (fr_FR) and German (de_DE), providing a native experience for administrators in those languages.`
-  - `🐛 **HTTP Fallback Fix**: Resolved a critical issue where challenges would fail on non-HTTPS (HTTP) sites. The system now transparently falls back to a secure server-side validation mechanism when the browser's `crypto.subtle` API is unavailable, ensuring functionality in all environments.`
+  - 🌐 **Full Internationalization (i18n)**: The WordPress plugin is now fully translated into French (fr_FR) and German (de_DE), providing a native experience for administrators in those languages.
+  - 🐛 **HTTP Fallback Fix**: Resolved a critical issue where challenges would fail on non-HTTPS (HTTP) sites. The system now transparently falls back to a secure server-side validation mechanism when the browser's `crypto.subtle` API is unavailable, ensuring functionality in all environments.
 - 🛡️ **Security & Bot Detection Hardening**:
-  - `🔐 **Obfuscated Client Script (`fingerprint.client.obfuscated.js`)**: Introduced a new build step that generates a heavily obfuscated version of the client-side library. This makes reverse-engineering of the fingerprinting and behavioral analysis logic significantly more difficult for attackers.`
-  - `🤖 **Default Bot Whitelist**: The engine now applies a comprehensive default whitelist for major search engine crawlers (Googlebot, Bingbot, Yandex, etc.) out-of-the-box. This ensures zero-configuration SEO compatibility and prevents legitimate bots from being challenged.`
-  - `📡 **Updated Googlebot IPs**: The list of official Googlebot IP ranges has been updated to ensure the latest crawlers are correctly identified and allowed.`
+  - 🔐 **Obfuscated Client Script (`fingerprint.client.obfuscated.js`)**: Introduced a new build step that generates a heavily obfuscated version of the client-side library. This makes reverse-engineering of the fingerprinting and behavioral analysis logic significantly more difficult for attackers.
+  - 🤖 **Default Bot Whitelist**: The engine now applies a comprehensive default whitelist for major search engine crawlers (Googlebot, Bingbot, Yandex, etc.) out-of-the-box. This ensures zero-configuration SEO compatibility and prevents legitimate bots from being challenged.
+  - 📡 **Updated Googlebot IPs**: The list of official Googlebot IP ranges has been updated to ensure the latest crawlers are correctly identified and allowed.
 - 🔧 **Developer Experience & Debugging**:
-  - `📝 **Reverse DNS Logging**: Added detailed logging to the bot verification workflow. This provides clear insights into the reverse and forward DNS lookup process, making it easier to debug whitelisting and identify spoofing attempts.`
+  - 📝 **Reverse DNS Logging**: Added detailed logging to the bot verification workflow. This provides clear insights into the reverse and forward DNS lookup process, making it easier to debug whitelisting and identify spoofing attempts.
 
 ## Version 0.7.1
 

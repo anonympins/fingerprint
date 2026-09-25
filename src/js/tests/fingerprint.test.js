@@ -1759,7 +1759,7 @@ describe('Fingerprint & PoW Security Suite', () => {
             };
 
             const isVerified = await engine._verifyWhitelistedBot({ ...requestContext, fingerprint: {} });
-            expect(isVerified).toBe(false);
+            expect(isVerified).toBeNull();
             expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining('[Fingerprint] Invalid regex in whitelist rule'));
             consoleErrorSpy.mockRestore();
         });

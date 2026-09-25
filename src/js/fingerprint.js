@@ -4802,7 +4802,7 @@ export class FingerprintEngine {
     const { whitelist = [] } = this.securityConfig;
     const botRules = whitelist.filter(rule => rule.hostnameSuffix);
     if (botRules.length === 0) {
-      return false;
+      return null;
     }
 
     const { clientIp, headers } = requestContext;
@@ -4818,7 +4818,7 @@ export class FingerprintEngine {
       }
     });
     if (!matchedRule) {
-      return false;
+      return null;
     }
 
     const botName = matchedRule.userAgent; // e.g., 'Googlebot'
