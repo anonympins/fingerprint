@@ -157,6 +157,16 @@ export function hashNetwork(ip, prefix = 24) {
     }
     return hash.toString(16);
 }
+export function isLoopbackIp(ip) {
+    if (!ip || typeof ip !== 'string') return true;
+    let cleanIp = ip.trim().toLowerCase();
+    if (cleanIp.startsWith('::ffff:')) {
+        cleanIp = cleanIp.substring(7);
+    }
+    return cleanIp === '127.0.0.1' || cleanIp === '::1' || cleanIp === 'localhost' ||
+           cleanIp.startsWith('127.') || cleanIp === '0.0.0.0' || cleanIp === '::';
+}
+
 export function normalizeReferer(referer) {
     try {
         const url = new URL(referer);

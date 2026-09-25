@@ -1341,7 +1341,8 @@ class RequestUtils
 
         // Utilisation de la partie stable du fingerprint matériel plutôt que l'ID de cookie volatil
         $currentDeviceHash = self::getCompositeDeviceHash($context);
-        $stableFpId = FingerprintBuilder::cyrb53(self::extractStablePart($currentDeviceHash));
+        $stablePart = self::extractStablePart($currentDeviceHash);
+        $stableFpId = !empty($stablePart) ? (string)FingerprintBuilder::cyrb53($stablePart) : (!empty($deviceId) ? $deviceId : (string)FingerprintBuilder::cyrb53($currentDeviceHash));
 
         $currentDeviceContributions = $subnetData['highScoreDevices'][$stableFpId] ?? 0;
         if ($currentDeviceContributions < 1 && $finalScore < 95) {

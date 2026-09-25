@@ -20,6 +20,7 @@ import {
     modPow,
     hashNetwork,
     normalizeReferer,
+    isLoopbackIp,
     isPrivateIp,
     parseUserAgent,
     safeJsonStringify
@@ -3159,7 +3160,7 @@ function decaySubnetData(subnetData, now) {
  * @param {number} finalScore The final suspicion score.
  */
 async function updateSubnetMetrics(context, deviceId, finalScore) {
-    if (!context.clientIp || isPrivateIp(context.clientIp)) {
+    if (!context.clientIp || isLoopbackIp(context.clientIp)) {
         return;
     }
     const subnet = getIpSubnet(context.clientIp);
@@ -3194,7 +3195,8 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
 
     // Utilisation d'un identifiant d'appareil stable (fingerprint matériel) plutôt que l'ID de cookie volatil
     const currentDeviceHash = getCompositeDeviceHash(context);
-    const stableFpId = cyrb53(extractStablePart(currentDeviceHash)).toString();
+    const stablePart = extractStablePart(currentDeviceHash);
+    const stableFpId = stablePart ? cyrb53(stablePart).toString() : (deviceId || cyrb53(currentDeviceHash).toString());
 
     const currentDeviceContributions = subnetData.highScoreDevices[stableFpId] || 0;
     if (currentDeviceContributions < 1) {
@@ -3274,7 +3276,7 @@ export function calculateAnalogInconsistencyScore(consistencyScore, inflectionPo
  * @returns {Promise<{subnetScore: number}>}
  */
 async function getSubnetScore(context, deviceId = '', securityConfig = null) {
-    if (!context.clientIp || isPrivateIp(context.clientIp)) {
+    if (!context.clientIp || isLoopbackIp(context.clientIp)) {
         return { subnetScore: 0.0 };
     }
     if (typeof deviceId === 'object' && deviceId !== null && !securityConfig) {
