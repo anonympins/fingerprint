@@ -3948,7 +3948,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         _ // store.set result
       ] = await Promise.all([
         getBehavioralIndicators(context, deviceData), // This modifies deviceData, so it must be done before saving deviceData
-        getThreatIntelScore(context, zkpY), // NOUVEAU: Score de Threat Intelligence Fédéré
+        getThreatIntelScore(context, zkpY, securityConfig), // NOUVEAU: Score de Threat Intelligence Fédéré
         getTlsSpoofingScore(context),
         getSubnetScore(context, deviceId, securityConfig),
         getIpReputationScore(clientIp),
@@ -4383,15 +4383,27 @@ function parseGraphQLQuery(body) {
  * @param {string} zkpY - The 'y' component of the ZKP proof (public key).
  * @returns {Promise<{threatIntelScore: number}>}
  */
-async function getThreatIntelScore(context, zkpY) {
-    let score = 0;
+async function getThreatIntelScore(context, zkpY, threatIntelConfig = {}) {
+    let score = 0.0;
+    const signals = [];
+
+    // 1. Détection déterministe : Clé publique ZKP bannie par consensus fédéré
     if (zkpY) {
         const isBanned = await store.has(`banned-zkp-y:${zkpY}`);
         if (isBanned) {
-            score = 100;
+            score = 100.0;
+            signals.push({
+                ruleId: 'FEDERATED_ZKP_BANNED',
+                confidence: 1.0,
+                score: 100.0,
+                rationale: 'Cryptographic identity matched banned list consensus'
+            });
         }
     }
 
+    // 2. Détection physique : Modélisation continue du différentiel de transport (RTT TCP Edge vs Transit Applicatif)
+    // Rationale : Un RTT TCP de socket très faible (datacenter/edge CDN) couplé à un délai applicatif WAN élevé
+    // prouve l'interposition d'un relais/tunnel/proxy résidentiel entre le client réel et le point d'entrée.
     const tcpRttHeader = context.headers?.['x-tcp-rtt'] || context.headers?.['x-real-rtt'];
     const tcpRtt = tcpRttHeader ? parseInt(tcpRttHeader, 10) : null;
 
@@ -4399,24 +4411,40 @@ async function getThreatIntelScore(context, zkpY) {
     if (behaviorHeader) {
         try {
             const metrics = JSON.parse(behaviorHeader);
-            if (metrics && metrics.clientTimestamp && context.requestTimestamp) {
+            if (metrics && typeof metrics.clientTimestamp === 'number' && typeof context.requestTimestamp === 'number') {
                 const appLatency = context.requestTimestamp - metrics.clientTimestamp;
-                if (tcpRtt !== null && !isNaN(tcpRtt) && tcpRtt > 0) {
-                    const clientToProxyDelta = appLatency - tcpRtt;
-                    if (tcpRtt < 35 && clientToProxyDelta > 150) {
-                        score = Math.max(score, 85);
-                    }
-                } else {
-                    if (appLatency > 350) {
-                        score = Math.max(score, 40);
+
+                // Évaluation uniquement si la latence est mesurable et positive avec une mesure socket RTT valide
+                if (tcpRtt !== null && !isNaN(tcpRtt) && tcpRtt > 0 && appLatency > 0) {
+                    // Marge de tolérance contre le jitter réseau et le scheduling JS (Garbage Collector, event-loop)
+                    const jitterAllowance = 60.0;
+                    const effectiveRtt = Math.max(tcpRtt, 5.0);
+                    const tunnelDelta = appLatency - (tcpRtt + jitterAllowance);
+                    const divergenceRatio = appLatency / effectiveRtt;
+
+                    // Condition de disjonction : liaison edge ultra-proche (< 40ms) + transit applicatif au moins 3x supérieur
+                    if (tcpRtt <= 40 && divergenceRatio >= 3.0 && tunnelDelta > 0) {
+                        // Progression sigmoïdale continue calibrée sur la propagation optique intercontinentale (120ms)
+                        const scaling = 120.0;
+                        const ratioWeight = Math.min(1.0, (divergenceRatio - 3.0) / 5.0);
+                        const proxyScore = Math.min(95.0, 40.0 + 55.0 * Math.tanh(tunnelDelta / scaling) * ratioWeight);
+                        const finalProxyScore = Math.round(proxyScore * 10) / 10;
+
+                        score = Math.max(score, finalProxyScore);
+                        signals.push({
+                            ruleId: 'RESIDENTIAL_PROXY_RTT_DISCREPANCY',
+                            confidence: Math.round(ratioWeight * 100) / 100,
+                            score: finalProxyScore,
+                            rationale: `TCP RTT (${tcpRtt}ms) diverges from application transit (${appLatency}ms) with ratio ${divergenceRatio.toFixed(1)}:1`
+                        });
                     }
                 }
             }
         } catch (e) {
-            // Ignorer silencieusement
+            // Ignorer silencieusement les erreurs de parsing des métriques
         }
     }
-    return { threatIntelScore: score };
+    return { threatIntelScore: score, threatIntelSignals: signals };
 }
 
 export class FingerprintEngine {

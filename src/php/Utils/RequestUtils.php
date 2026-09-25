@@ -1038,19 +1038,34 @@ class RequestUtils
     public static function getThreatIntelScore(RequestContext $context, array $threatIntelConfig): array
     {
         $score = 0.0;
+        $signals = [];
+
         $zkpY = $context->zkpY;
         if (!empty($zkpY)) {
             $store = StoreManager::getStore();
             $isBanned = $store->has("banned-zkp-y:{$zkpY}");
             if ($isBanned) {
                 $score = 100.0;
+                $signals[] = [
+                    'ruleId' => 'FEDERATED_ZKP_BANNED',
+                    'confidence' => 1.0,
+                    'score' => 100.0,
+                    'rationale' => 'Cryptographic identity matched federated banned list consensus'
+                ];
             }
         }
 
-        $rttProxyScore = \Anonympins\Fingerprint\Ja3AnomalyDetector::getRttProxyScore($context);
-        $score = max($score, (float)$rttProxyScore);
+        $rttProxyScore = (float)\Anonympins\Fingerprint\Ja3AnomalyDetector::getRttProxyScore($context);
+        if ($rttProxyScore > 0.0) {
+            $score = max($score, $rttProxyScore);
+            $signals[] = [
+                'ruleId' => 'RESIDENTIAL_PROXY_RTT_DISCREPANCY',
+                'score' => $rttProxyScore,
+                'rationale' => 'Physical discrepancy between TCP edge RTT and application transit latency'
+            ];
+        }
 
-        return ['threatIntelScore' => $score];
+        return ['threatIntelScore' => $score, 'threatIntelSignals' => $signals];
     }
 
     /**
