@@ -1203,6 +1203,7 @@ async def test_real_world_console_botnet_clustering():
     }
     store = InMemoryStore()
     engine = FingerprintEngine(config, store)
+    RequestUtils._botnet_clusters.clear()
 
     ps4_headers = {
         "user-agent": "Mozilla/5.0 (PlayStation 4 11.50) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/11.50 Safari/605.1.15",
@@ -1231,15 +1232,36 @@ async def test_real_world_console_botnet_clustering():
         if i == 1:
             assert score_data["botnetClusterScore"] == 0.0
         elif i == 2:
-            assert score_data["botnetClusterScore"] == 29.5
+            assert score_data["botnetClusterScore"] == 17.7
         elif i == 3:
-            assert score_data["botnetClusterScore"] == 50.3
+            assert score_data["botnetClusterScore"] == 30.2
         elif i == 4:
-            assert score_data["botnetClusterScore"] == 65.0
+            assert score_data["botnetClusterScore"] == 39.0
         elif i == 5:
-            assert score_data["botnetClusterScore"] == 75.3
+            assert score_data["botnetClusterScore"] == 45.2
         elif i == 10:
-            assert score_data["botnetClusterScore"] == 95.7
+            assert score_data["botnetClusterScore"] == 57.4
+
+def test_botnet_cluster_score_based_on_unique_ips():
+    """Vérifie le calcul du botnetClusterScore selon les IPs uniques au sein du même sous-réseau (parité Node.js/PHP)."""
+    stable_fp_hash = "test-stable-hash"
+    RequestUtils._botnet_clusters.clear()
+
+    ctx1 = RequestContext(client_ip="192.168.1.1", path="/", headers={}, query_params={}, cookies={})
+    score_data = RequestUtils.get_botnet_cluster_score(ctx1, stable_fp_hash)
+    assert score_data["botnetClusterScore"] == 0.0
+
+    RequestUtils.get_botnet_cluster_score(RequestContext(client_ip="192.168.1.2", path="/", headers={}, query_params={}, cookies={}), stable_fp_hash)
+    score_data = RequestUtils.get_botnet_cluster_score(RequestContext(client_ip="192.168.1.3", path="/", headers={}, query_params={}, cookies={}), stable_fp_hash)
+    assert score_data["botnetClusterScore"] == 30.2
+
+    RequestUtils.get_botnet_cluster_score(RequestContext(client_ip="192.168.1.4", path="/", headers={}, query_params={}, cookies={}), stable_fp_hash)
+    score_data = RequestUtils.get_botnet_cluster_score(RequestContext(client_ip="192.168.1.5", path="/", headers={}, query_params={}, cookies={}), stable_fp_hash)
+    assert score_data["botnetClusterScore"] == 45.2
+
+    for i in range(6, 11):
+        score_data = RequestUtils.get_botnet_cluster_score(RequestContext(client_ip=f"192.168.1.{i}", path="/", headers={}, query_params={}, cookies={}), stable_fp_hash)
+    assert score_data["botnetClusterScore"] == 57.4
 
 def test_rendering_anomaly_score_empty():
     context = RequestContext(

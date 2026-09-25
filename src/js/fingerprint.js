@@ -4638,6 +4638,9 @@ export class FingerprintEngine {
             (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
             (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
             (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) + // NOUVEAU: HTTP/2 Anomaly
+            (suspicionVector.protocolAnomalyScore || 0) * (weights.protocolAnomalyScore || 0) +
+            (suspicionVector.cookieDroppingScore || 0) * (weights.cookieDroppingScore || 0) +
+            (suspicionVector.virtualizationScore || 0) * (weights.virtualizationScore || 0) +
             (suspicionVector.threatIntelScore || 0) * (weights.threatIntelScore || 0) + // NOUVEAU: QUIC Anomaly
             (suspicionVector.renderingAnomalyScore || 0) * (weights.renderingAnomalyScore || 0); // NOUVEAU: Rendering Anomaly
 

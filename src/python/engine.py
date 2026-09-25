@@ -317,6 +317,47 @@ def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Opti
         except socket.error:
             return None
 
+def get_ip_common_prefix_length(ip1: str, ip2: str) -> int:
+    """Calculates the common prefix length in bits between two IP addresses (IPv4 or IPv6)."""
+    import socket
+    if not ip1 or not ip2:
+        return 0
+    try:
+        socket.inet_pton(socket.AF_INET, ip1)
+        socket.inet_pton(socket.AF_INET, ip2)
+        b1 = [int(x) for x in ip1.split('.')]
+        b2 = [int(x) for x in ip2.split('.')]
+        int1 = (b1[0] << 24) | (b1[1] << 16) | (b1[2] << 8) | b1[3]
+        int2 = (b2[0] << 24) | (b2[1] << 16) | (b2[2] << 8) | b2[3]
+        xor = (int1 ^ int2) & 0xffffffff
+        if xor == 0:
+            return 32
+        return 32 - xor.bit_length()
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip1)
+            socket.inet_pton(socket.AF_INET6, ip2)
+            addr1 = ipaddress.IPv6Address(ip1)
+            addr2 = ipaddress.IPv6Address(ip2)
+            int1 = int(addr1)
+            int2 = int(addr2)
+            xor = int1 ^ int2
+            if xor == 0:
+                return 128
+            return 128 - xor.bit_length()
+        except Exception:
+            return 0
+
+GREASE_VALUES = {
+    2570, 6682, 10794, 14906, 19018, 23130, 27242, 31354,
+    35466, 39578, 43690, 47802, 51914, 55926, 60038, 64150
+}
+
+def has_grease(values: list) -> bool:
+    if not isinstance(values, list):
+        return False
+    return any(v in GREASE_VALUES for v in values)
+
 async def generate_space_challenge(store, client_ip: str, nonce: str, suspicion_factor: float, original_url: str, security_config: dict) -> dict:
     pospace_config = security_config.get("pospace", {}) or {}
     size_mb = pospace_config.get("sizeMb", 100)
@@ -643,6 +684,7 @@ class RequestContext:
     new_cookies: List[Dict[str, Any]] = field(default_factory=list)
     tls_session_id: Optional[str] = None
     quic_fingerprint: Optional[str] = None
+    http2_fingerprint: Optional[str] = None
 
     def __post_init__(self):
         # Normalize headers to lowercase for consistent lookup
@@ -651,6 +693,8 @@ class RequestContext:
             self.tls_session_id = self.headers.get("x-tls-session-id") or self.headers.get("x-ssl-session-id")
         if not self.quic_fingerprint:
             self.quic_fingerprint = self.headers.get("x-quic-fp")
+        if not self.http2_fingerprint:
+            self.http2_fingerprint = self.headers.get("x-http2-fingerprint")
 
     def get_header(self, name: str) -> Optional[str]:
         return self.headers.get(name.lower())
@@ -1627,6 +1671,47 @@ class RequestUtils:
         return 0.0
 
     @staticmethod
+    def get_protocol_anomaly_score(context: RequestContext) -> Dict[str, float]:
+        http2_anomaly = 0.0
+        ua = context.headers.get("user-agent", "")
+        ua_parts = RequestUtils.parse_user_agent(ua)
+        browser = ua_parts.get("browser") or ""
+
+        h2_fp = context.headers.get("x-http2-fingerprint") or getattr(context, "http2_fingerprint", None)
+        if browser and h2_fp and isinstance(h2_fp, str):
+            parts = h2_fp.split("|")
+            if len(parts) >= 4:
+                try:
+                    conn_window = int(parts[1])
+                except ValueError:
+                    conn_window = 0
+                header_order = parts[3].strip().lower()
+                is_chromium = browser.startswith("Chrome") or browser.startswith("Edge")
+                is_firefox = browser.startswith("Firefox")
+                is_safari = browser.startswith("Safari")
+
+                if is_chromium:
+                    if header_order and header_order != "m,a,s,p":
+                        http2_anomaly += 60.0
+                    if conn_window in (65535, 65536):
+                        http2_anomaly += 40.0
+                elif is_firefox:
+                    if header_order and header_order != "m,s,p,a":
+                        http2_anomaly += 60.0
+                elif is_safari:
+                    if header_order and header_order != "m,s,p,a":
+                        http2_anomaly += 60.0
+
+        quic_res = RequestUtils.get_quic_anomaly_score(context)
+        quic_anomaly = quic_res.get("quicAnomalyScore", 0.0)
+        proto_score = max(0.0, min(100.0, http2_anomaly), min(100.0, quic_anomaly))
+        return {
+            "protocolAnomalyScore": proto_score,
+            "http2AnomalyScore": min(100.0, http2_anomaly),
+            "quicAnomalyScore": quic_anomaly
+        }
+
+    @staticmethod
     def get_quic_anomaly_score(context: RequestContext) -> Dict[str, float]:
         quic_fp = context.headers.get("x-quic-fp") or getattr(context, "quic_fingerprint", None)
         if not quic_fp or not isinstance(quic_fp, str):
@@ -2178,6 +2263,10 @@ class RequestUtils:
                 new_len = max(0, int(math.floor(len(subnet_data["uas"]) / decay)))
                 subnet_data["uas"] = subnet_data["uas"][:new_len]
 
+            if "attackerIps" in subnet_data and isinstance(subnet_data["attackerIps"], list):
+                max_attacker_age_sec = 3600
+                subnet_data["attackerIps"] = [a for a in subnet_data["attackerIps"] if (now - a.get("lastSeen", now)) < max_attacker_age_sec]
+
             subnet_data["lastActivity"] = now - (inactivity_sec % 1800)
             return True
         return False
@@ -2201,11 +2290,13 @@ class RequestUtils:
             "highScoreDevices": {},
             "lastActivity": 0,
             "ips": [],
-            "uas": []
+            "uas": [],
+            "attackerIps": []
         }
         subnet_data.setdefault("highScoreDevices", {})
         subnet_data.setdefault("ips", [])
         subnet_data.setdefault("uas", [])
+        subnet_data.setdefault("attackerIps", [])
         now = int(time.time())
         RequestUtils._decay_subnet_data(subnet_data, now)
 
@@ -2226,6 +2317,17 @@ class RequestUtils:
         if user_agent and user_agent not in subnet_data["uas"]:
             subnet_data["uas"].append(user_agent)
 
+        is_confirmed_cluster_attack = (len(subnet_data["deviceIds"]) > 1 and final_score >= 70) or final_score >= 95
+        if is_confirmed_cluster_attack:
+            existing_attacker = next((a for a in subnet_data["attackerIps"] if a.get("ip") == client_ip), None)
+            if existing_attacker:
+                existing_attacker["lastSeen"] = now
+                existing_attacker["score"] = max(existing_attacker.get("score", 0.0), final_score)
+            else:
+                subnet_data["attackerIps"].append({"ip": client_ip, "lastSeen": now, "score": final_score})
+                if len(subnet_data["attackerIps"]) > 30:
+                    subnet_data["attackerIps"].pop(0)
+
         subnet_data["lastActivity"] = now
         if len(subnet_data["deviceIds"]) > 100:
             old_device_id = subnet_data["deviceIds"].pop(0)
@@ -2239,7 +2341,7 @@ class RequestUtils:
         await store.set(key, subnet_data, 86400)
 
     @staticmethod
-    async def get_subnet_score(store, client_ip_or_context: str, current_device_id: str) -> Dict[str, float]:
+    async def get_subnet_score(store, client_ip_or_context: str, current_device_id: str, security_config: Optional[Dict[str, Any]] = None) -> Dict[str, float]:
         if isinstance(client_ip_or_context, str):
             client_ip = client_ip_or_context
         else:
@@ -2262,7 +2364,7 @@ class RequestUtils:
         uas = subnet_data.get("uas", [])
         ua_count = len(uas) if uas else 1
 
-        if device_count == 0:
+        if device_count <= 1 and high_score_count <= 1:
             return {"subnetScore": 0.0}
 
         # 1. Estimation Bayésienne de densité (évite les sur-réactions sur de faibles échantillons)
@@ -2279,11 +2381,53 @@ class RequestUtils:
         # 4. Intensité continue de la menace (sans seuil abrupt ni dérivée nulle)
         raw_threat_intensity = high_score_count * bayesian_density * ip_multiplier * ua_multiplier
 
-        # 5. Saturation asymptotique continue (Asymptote à 99.9 maximum strict)
-        asymptote = 99.9
-        scale_factor = 4.0
-        final_score = round(asymptote * math.tanh(raw_threat_intensity / scale_factor) * 10.0) / 10.0
+        # 5. Composante 1 : Score ambiant plafonné au seuil Medium (par défaut 45.0)
+        medium_threshold = 45.0
+        if security_config and "thresholds" in security_config and "medium" in security_config["thresholds"]:
+            try:
+                medium_threshold = float(security_config["thresholds"]["medium"])
+            except (ValueError, TypeError):
+                medium_threshold = 45.0
+        ambient_asymptote = medium_threshold
+        max_proximity_boost = max(0.0, 100.0 - ambient_asymptote)
+        scale_factor = 10.0
+        ambient_score = ambient_asymptote * math.tanh(raw_threat_intensity / scale_factor)
 
+        # 6. Composante 2 : Boost de proximité micro-réseau avec des attaquants récents
+        proximity_boost = 0.0
+        attacker_ips = subnet_data.get("attackerIps", [])
+        if attacker_ips and client_ip:
+            max_common_prefix = 0
+            is_client_v4 = "." in client_ip
+            is_client_v6 = ":" in client_ip
+
+            for att in attacker_ips:
+                att_ip = att.get("ip")
+                if att_ip and (now - att.get("lastSeen", now)) <= 1800:
+                    prefix_len = get_ip_common_prefix_length(client_ip, att_ip)
+                    if prefix_len > max_common_prefix:
+                        max_common_prefix = prefix_len
+
+            if is_client_v4:
+                if max_common_prefix >= 32:
+                    proximity_boost = max_proximity_boost
+                elif max_common_prefix >= 30:
+                    proximity_boost = max_proximity_boost * (45.0 / 55.0)
+                elif max_common_prefix >= 28:
+                    proximity_boost = max_proximity_boost * (30.0 / 55.0)
+                elif max_common_prefix >= 26:
+                    proximity_boost = max_proximity_boost * (15.0 / 55.0)
+            elif is_client_v6:
+                if max_common_prefix >= 128:
+                    proximity_boost = max_proximity_boost
+                elif max_common_prefix >= 120:
+                    proximity_boost = max_proximity_boost * (45.0 / 55.0)
+                elif max_common_prefix >= 112:
+                    proximity_boost = max_proximity_boost * (30.0 / 55.0)
+                elif max_common_prefix >= 96:
+                    proximity_boost = max_proximity_boost * (15.0 / 55.0)
+
+        final_score = min(100.0, round((ambient_score + proximity_boost) * 10.0) / 10.0)
         return {"subnetScore": final_score}
 
     @staticmethod
@@ -2453,33 +2597,43 @@ class RequestUtils:
 
         now = int(time.time())
         ten_minutes_ago = now - 600
+        user_agent = context.headers.get("user-agent", "")
+        subnet = get_ip_subnet(context.client_ip) or "unknown"
 
         cluster_data = RequestUtils._botnet_clusters.get(stable_fp_hash, [])
         if not isinstance(cluster_data, list):
             cluster_data = []
 
-        # Filter out entries older than 10 minutes
         cluster_data = [entry for entry in cluster_data if entry.get("timestamp", 0) > ten_minutes_ago]
 
-        # Check if the client IP already exists in the cluster
         found = False
         for entry in cluster_data:
             if entry.get("ip") == context.client_ip:
                 entry["timestamp"] = now
+                entry["ua"] = user_agent
+                entry["subnet"] = subnet
                 found = True
                 break
 
         if not found:
-            cluster_data.append({"ip": context.client_ip, "timestamp": now})
+            cluster_data.append({
+                "ip": context.client_ip,
+                "timestamp": now,
+                "ua": user_agent,
+                "subnet": subnet
+            })
 
-        # Save back to class-level cache
         RequestUtils._botnet_clusters[stable_fp_hash] = cluster_data
 
         unique_ips_count = len(cluster_data)
         botnet_cluster_score = 0.0
         if unique_ips_count >= 2:
-            raw_score = 100.0 * (1.0 - math.exp(-0.35 * (unique_ips_count - 1)))
-            botnet_cluster_score = min(100.0, round(raw_score, 1))
+            unique_subnets = len(set(e.get("subnet") for e in cluster_data))
+            unique_user_agents = len(set(e.get("ua") for e in cluster_data if e.get("ua")))
+            subnet_multiplier = 1.3 if unique_subnets > 1 else 0.6
+            ua_rotation_multiplier = 1.5 if unique_user_agents > 1 else 1.0
+            base_score = 100.0 * (1.0 - math.exp(-0.35 * (unique_ips_count - 1)))
+            botnet_cluster_score = min(100.0, round(base_score * subnet_multiplier * ua_rotation_multiplier * 10.0) / 10.0)
 
         return {"botnetClusterScore": botnet_cluster_score}
 
@@ -3535,6 +3689,66 @@ class FingerprintEngine:
         ua = context.headers.get("user-agent", "")
         ja3 = context.headers.get("x-ja3-hash")
         ja4 = context.headers.get("x-ja4-hash")
+        ja3_raw = context.headers.get("x-ja3-raw")
+        http_version = getattr(context, "http_version", "") or ""
+
+        spoofed_ja4s = {
+            "t13d1516h2_8daaf6152771_4be0df930c2c",
+            "t12d1516h2_8daaf6152771_390237aa04be",
+            "t13d1516h2_e822d36d892d_93ec3f0b2f5b"
+        }
+        if ja4 and ja4 in spoofed_ja4s:
+            tls_spoofing_score = max(tls_spoofing_score, 100.0)
+
+        claimed_browser_info = RequestUtils.parse_user_agent(ua).get("browser")
+        claimed_browser = claimed_browser_info.split("/")[0] if claimed_browser_info else None
+        is_human_browser = claimed_browser in ("Chrome", "Firefox", "Safari", "Edge")
+
+        if ja3_raw and isinstance(ja3_raw, str):
+            raw_parts = ja3_raw.split(",")
+            if len(raw_parts) >= 3:
+                try:
+                    raw_version = int(raw_parts[0])
+                    raw_ciphers = [int(x) for x in raw_parts[1].split("-") if x]
+                    raw_extensions = [int(x) for x in raw_parts[2].split("-") if x]
+                except ValueError:
+                    raw_version, raw_ciphers, raw_extensions = 0, [], []
+
+                if claimed_browser in ("Chrome", "Edge"):
+                    if not has_grease(raw_ciphers) and not has_grease(raw_extensions):
+                        tls_spoofing_score = max(tls_spoofing_score, 75.0)
+
+                is_h2_or_higher = ("2.0" in http_version) or ("HTTP/2" in http_version) or ("HTTP/3" in http_version)
+                if is_h2_or_higher and 16 not in raw_extensions:
+                    tls_spoofing_score = max(tls_spoofing_score, 70.0)
+
+                if is_human_browser and raw_version < 771:
+                    tls_spoofing_score = max(tls_spoofing_score, 80.0)
+
+        if ja4 and isinstance(ja4, str):
+            parts = ja4.split("_")
+            ja4a = parts[0]
+            if len(ja4a) >= 10:
+                ja4_version = ja4a[1:3]
+                alpn = ja4a[8:10]
+                try:
+                    ext_count = int(ja4a[6:8])
+                except ValueError:
+                    ext_count = 0
+                ua_parts = RequestUtils.parse_user_agent(ua)
+
+                if alpn == "h2" and (http_version in ("1.1", "1.0", "HTTP/1.1", "HTTP/1.0")):
+                    has_proxy = any(context.headers.get(h) for h in ("via", "forwarded", "x-forwarded-proto", "x-forwarded-for"))
+                    if not has_proxy:
+                        tls_spoofing_score = max(tls_spoofing_score, 40.0)
+
+                if ja4_version == "12" and ua_parts.get("os") in ("iOS", "macOS") and (ua_parts.get("browser") or "").startswith("Safari"):
+                    tls_spoofing_score = max(tls_spoofing_score, 60.0)
+
+                if (ua_parts.get("browser") or "").startswith("Chrome") and alpn == "00":
+                    tls_spoofing_score = max(tls_spoofing_score, 50.0)
+                if (ua_parts.get("browser") or "").startswith("Firefox") and ext_count > 15:
+                    tls_spoofing_score = max(tls_spoofing_score, 50.0)
 
         tls_fingerprint_db = {
             "e188a442b87f422c5a1e80b05399435b": ["Chrome"],
@@ -3552,16 +3766,40 @@ class FingerprintEngine:
         }
 
         if (ja3 or ja4) and (not ua or len(ua) < 10 or "python" in ua.lower() or "curl" in ua.lower()):
-            tls_spoofing_score = 50.0
+            tls_spoofing_score = max(tls_spoofing_score, 50.0)
         else:
-            claimed_browser = RequestUtils.parse_user_agent(ua).get("browser")
             if claimed_browser:
                 if ja4 == "t13d1517h2_8daaf61527d5" and "Chrome" not in claimed_browser:
-                    tls_spoofing_score = 90.0
+                    tls_spoofing_score = max(tls_spoofing_score, 90.0)
                 elif ja3 in tls_fingerprint_db:
                     expected_browsers = tls_fingerprint_db[ja3]
-                    if not any(exp in claimed_browser for exp in expected_browsers):
-                        tls_spoofing_score = 80.0
+                    is_library = any(lib in ("Python", "Go", "Java", "curl") for lib in expected_browsers)
+                    if is_library and is_human_browser:
+                        tls_spoofing_score = max(tls_spoofing_score, 90.0)
+                    elif not any(exp in claimed_browser for exp in expected_browsers):
+                        tls_spoofing_score = max(tls_spoofing_score, 80.0)
+
+        if claimed_browser:
+            if ja4:
+                ja4_key = f"ja4-browsers:{ja4}"
+                seen_browsers = await self.store.get(ja4_key) or []
+                if not isinstance(seen_browsers, list):
+                    seen_browsers = []
+                if claimed_browser not in seen_browsers:
+                    seen_browsers.append(claimed_browser)
+                    await self.store.set(ja4_key, seen_browsers, 86400)
+                if len(seen_browsers) > 1:
+                    tls_spoofing_score = max(tls_spoofing_score, 80.0)
+            if ja3:
+                ja3_key = f"ja3-browsers:{ja3}"
+                seen_browsers = await self.store.get(ja3_key) or []
+                if not isinstance(seen_browsers, list):
+                    seen_browsers = []
+                if claimed_browser not in seen_browsers:
+                    seen_browsers.append(claimed_browser)
+                    await self.store.set(ja3_key, seen_browsers, 86400)
+                if len(seen_browsers) > 1:
+                    tls_spoofing_score = max(tls_spoofing_score, 85.0)
 
         # Calculate weighted average
         bot_score = RequestUtils.get_bot_score(context)
@@ -3572,21 +3810,26 @@ class FingerprintEngine:
         click_variance_score = RequestUtils.get_click_variance_score(context)
         request_pattern_score = RequestUtils.get_request_pattern_score(context, device_data, self.config.get("patterns", {}))["requestPatternScore"]
         
+        stable_hash_for_cluster = str(cyrb53(self._extract_stable_part(current_hash)))
+        botnet_cluster_score = RequestUtils.get_botnet_cluster_score(context, stable_hash_for_cluster)["botnetClusterScore"]
+
         # Extraction et validation de la clé publique ZKP du client
         zkp_proof = context.headers.get("x-zkp-proof") or context.query_params.get("pow_zkp") or ""
         zkp_y = zkp_proof.split(":")[0] if zkp_proof and ":" in zkp_proof else None
         threat_intel_score = await self.calculate_threat_intel_score(context, zkp_y)
 
         ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
-        subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id))["subnetScore"]
+        subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id, self.config))["subnetScore"]
 
         tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
         tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
 
-        virtualization_score = RequestUtils.get_virtualization_anomaly_score(context)
+        protocol_anomaly_data = RequestUtils.get_protocol_anomaly_score(context)
+        protocol_anomaly_score = protocol_anomaly_data.get("protocolAnomalyScore", 0.0)
+        http2_anomaly_score = protocol_anomaly_data.get("http2AnomalyScore", 0.0)
+        quic_anomaly_score = protocol_anomaly_data.get("quicAnomalyScore", 0.0)
 
-        quic_anomaly = RequestUtils.get_quic_anomaly_score(context)
-        quic_anomaly_score = quic_anomaly.get("quicAnomalyScore", 0.0)
+        virtualization_score = RequestUtils.get_virtualization_anomaly_score(context)
 
         rendering_anomaly = RequestUtils.get_rendering_anomaly_score(context)
         rendering_anomaly_score = rendering_anomaly.get("renderingAnomalyScore", 0.0)
@@ -3612,6 +3855,9 @@ class FingerprintEngine:
             "ipReputationScore": ip_reputation_score,
             "cookieDroppingScore": cookie_dropping_score,
             "subnetScore": subnet_score,
+            "botnetClusterScore": botnet_cluster_score,
+            "protocolAnomalyScore": protocol_anomaly_score,
+            "http2AnomalyScore": http2_anomaly_score,
             "quicAnomalyScore": quic_anomaly_score,
             "tcpAnomalyScore": tcp_anomaly_score,
             "renderingAnomalyScore": rendering_anomaly_score,
@@ -3704,14 +3950,17 @@ class FingerprintEngine:
                 client_timestamp = metrics.get("clientTimestamp")
                 if client_timestamp is not None:
                     app_latency = context.request_timestamp - int(client_timestamp)
-
                     if tcp_rtt is not None and tcp_rtt > 0:
-                        client_to_proxy_delta = app_latency - tcp_rtt
-                        # RTT très court vers le proxy de sortie, mais latence applicative totale anormale
-                        if tcp_rtt < 35 and client_to_proxy_delta > 150:
-                            return 85.0
+                        jitter_allowance = 60.0
+                        effective_rtt = max(float(tcp_rtt), 5.0)
+                        tunnel_delta = app_latency - (tcp_rtt + jitter_allowance)
+                        divergence_ratio = app_latency / effective_rtt
+                        if tcp_rtt <= 40 and divergence_ratio >= 3.0 and tunnel_delta > 0:
+                            scaling = 120.0
+                            ratio_weight = min(1.0, (divergence_ratio - 3.0) / 5.0)
+                            proxy_score = min(95.0, 40.0 + 55.0 * math.tanh(tunnel_delta / scaling) * ratio_weight)
+                            return round(proxy_score * 10.0) / 10.0
                     else:
-                        # Analyse de secours sans RTT TCP (latence brute élevée)
                         if app_latency > 350:
                             return 40.0
             except Exception:
