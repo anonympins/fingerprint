@@ -2092,8 +2092,13 @@ class RequestUtils:
             elif hl >= 5: score -= 20.0
             elif hl >= 2: score -= 10.0
         else:
+            # Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
+            # On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
+            # signaux passifs de bot (ex: rendu offscreen) sont présents.
             if mouse_analysis["avgSpeed"] == 0.0 and touch_analysis["avgSpeed"] == 0.0 and metrics.get("keystrokeLatency", 0.0) == 0.0:
-                score += 40.0
+                no_interaction_penalty = 5.0
+                if metrics.get("rendering", {}).get("offscreenAnom"): no_interaction_penalty += 40.0
+                score += no_interaction_penalty
         if mouse_analysis["avgSpeed"] > 0.0:
             if mouse_analysis["avgSpeed"] > 3.0: score += 25.0
             if mouse_analysis["avgAcceleration"] > 0.5: score += 20.0
@@ -2152,9 +2157,8 @@ class RequestUtils:
         ua = context.headers.get("user-agent", "")
         is_mobile_device = "Mobile" in ua
         motion_variance = metrics.get("motionVariance")
-        if is_mobile_device and len(touch_history) >= 5 and isinstance(motion_variance, (int, float)):
-            if motion_variance == 0:
-                score += 50.0
+        if is_mobile_device and isinstance(motion_variance, (int, float)) and motion_variance == 0.0:
+            score += 50.0 # Terminal fixé sur un châssis mécanique (rack ADB)
         return min(100.0, score)
 
     @staticmethod

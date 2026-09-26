@@ -2291,9 +2291,18 @@ function getBehaviorScore(context) {
     const { avgSpeed, avgAcceleration, straightness, pauses, segments } = analyzeMouseMovements(metrics.mouseMovementsHistory);
     const touchAnalysis = analyzeTouchMovements(metrics.touchMovementsHistory);
 
-    // Pénalité pour absence totale d'interaction (pas de mouvements, pas de frappes).
+    // Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
+    // On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
+    // signaux passifs de bot (ex: rendu offscreen) sont présents.
     if (avgSpeed === 0 && touchAnalysis.avgSpeed === 0 && metrics.keystrokeLatency === 0) {
-      score += 40;
+      let noInteractionPenalty = 5; // Pénalité de base très faible.
+
+      // Amplification si d'autres signaux passifs de bot sont présents.
+      if (metrics.rendering?.offscreenAnom) {
+        noInteractionPenalty += 40;
+      }
+      
+      score += noInteractionPenalty;
     }
 
     // 3. (NOUVEAU) Analyse de la longueur de l'historique de navigation.
@@ -2333,19 +2342,17 @@ function getBehaviorScore(context) {
             if (touch.avgRadius > 0 && touch.radiusVariance === 0) {
                 score += 30; // Spoofed pointer area size
             }
-        }
-        if (touch.segments.length > 10) {
-            const benfordDev = Optimization.Operators.benfordTest(touch.segments);
-            if (benfordDev > 0.18) score += 35;
-        }
-
-        // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
-        const isMobileDevice = (context.headers['user-agent'] || '').includes('Mobile');
-        if (isMobileDevice && touchHistory.length >= 5 && typeof metrics.motionVariance === 'number') {
-            if (metrics.motionVariance === 0) {
-                score += 50; // Terminal fixé sur un châssis mécanique (rack ADB)
+            if (touch.segments.length > 10) {
+                const benfordDev = Optimization.Operators.benfordTest(touch.segments);
+                if (benfordDev > 0.18) score += 35;
             }
         }
+    }
+
+    // Détection de ferme mobile : un appareil mobile parfaitement immobile est suspect, indépendamment des interactions tactiles.
+    const isMobileDevice = (context.headers['user-agent'] || '').includes('Mobile');
+    if (isMobileDevice && typeof metrics.motionVariance === 'number' && metrics.motionVariance === 0) {
+        score += 50; // Terminal fixé sur un châssis mécanique (rack ADB)
     }
 
     // Plausibilité de la latence de frappe

@@ -1560,11 +1560,11 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(behaviorScore).toBe(100);
         });
 
-        it('should return a score of 40 for no mouse or keyboard activity', () => {
+        it('should return a score of 5 for no mouse or keyboard activity', () => {
             const metrics = { honeypotInteraction: false, mouseMovementsHistory: [], keystrokeLatency: 0 };
             const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
             const { behaviorScore } = getBehaviorScore(context);
-            expect(behaviorScore).toBe(40);
+            expect(behaviorScore).toBe(5);
         });
 
         it('should return a score of 0 for normal user activity', () => {
