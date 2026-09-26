@@ -159,9 +159,14 @@ const ClientLibrary = {
      * @param {object} [detail={}] - The data to include in the event's detail property.
      */
     _dispatchEvent(eventName, detail = {}) {
-        if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return;
-        const event = new CustomEvent(`fingerprint:${eventName}`, { detail });
-        window.dispatchEvent(event);
+        if (typeof window === 'undefined') return;
+        const CustomEventCtor = window.CustomEvent || (typeof CustomEvent !== 'undefined' ? CustomEvent : null);
+        if (!CustomEventCtor) return;
+        try {
+            const event = new CustomEventCtor(`fingerprint:${eventName}`, { detail });
+            window.dispatchEvent(event);
+        } catch (e) {
+        }
     },
 
     /**
@@ -1097,6 +1102,8 @@ const ClientLibrary = {
     _isFetchPatched: false,
     _interceptorChain: [],
     // Store original fetch bound to window to prevent illegal invocation errors
+    _targetDomains: [],
+    _swRegistration: null,
     _originalFetch: (typeof window !== 'undefined') ? window.fetch.bind(window) : null,
 
 /**
@@ -1134,8 +1141,76 @@ const ClientLibrary = {
      */
     onHoneypotTrigger() {
         metrics.honeypotInteraction = true;
+        if (this.workerPath) {
+            this.syncServiceWorkerCredentials();
+        }
         // Dispatch event allowing host applications to react
         this._dispatchEvent('honeypotTriggered');
+    },
+
+    /**
+     * Registers and manages the Service Worker for transparent HTTPS request decoration.
+     * @param {string} workerPath - Path to the worker script.
+     * @param {string[]} [targetDomains=[]] - Domains to intercept.
+     * @param {string} [scope] - Service Worker registration scope.
+     * @returns {Promise<ServiceWorkerRegistration|null>}
+     */
+    async initServiceWorker(workerPath, targetDomains = [], scope = undefined) {
+        if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+            console.warn('[Fingerprint] Service Worker is not supported in this browser.');
+            return null;
+        }
+
+        try {
+            const registerOptions = scope ? { scope } : {};
+            const registration = await navigator.serviceWorker.register(workerPath, registerOptions);
+            this._swRegistration = registration;
+
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                this.syncServiceWorkerCredentials(targetDomains);
+            });
+
+            await navigator.serviceWorker.ready;
+            this.syncServiceWorkerCredentials(targetDomains);
+
+            if (typeof window !== 'undefined') {
+                window.addEventListener('focus', () => this.syncServiceWorkerCredentials(targetDomains), { passive: true });
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') {
+                        this.syncServiceWorkerCredentials(targetDomains);
+                    }
+                }, { passive: true });
+            }
+
+            console.log('[Fingerprint] Network Service Worker active and synchronized.');
+            return registration;
+        } catch (error) {
+            console.warn('[Fingerprint] Failed to register Service Worker:', error);
+            return null;
+        }
+    },
+
+    /**
+     * Synchronizes device fingerprint and behavior metrics with the active Service Worker.
+     * @param {string[]} [targetDomains=[]]
+     */
+    syncServiceWorkerCredentials(targetDomains = []) {
+        if (typeof navigator === 'undefined' || !navigator.serviceWorker) return;
+        const domains = (Array.isArray(targetDomains) && targetDomains.length > 0)
+            ? targetDomains
+            : (this._targetDomains || []);
+        const payload = {
+            type: 'UPDATE_CREDENTIALS',
+            fp: this.getDeviceFingerprint(),
+            behavior: this.getClientBehaviorMetrics(),
+            targetDomains: domains
+        };
+
+        if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage(payload);
+        } else if (this._swRegistration && this._swRegistration.active) {
+            this._swRegistration.active.postMessage(payload);
+        }
     },
 
   /**
@@ -1281,10 +1356,20 @@ const ClientLibrary = {
    * @param {Response} response - Initial response (status 404/challenge).
    * @param {RequestInfo} resource - Original request resource.
    * @param {RequestInit} options - Original request options.
+   * @param {number} [maxRetries=3] - Maximum allowed challenge retry attempts.
    * @returns {Promise<Response>} - Retried response.
    * @private
    */
-  async solveChallengeAndRetry(response, resource, options) {
+  async solveChallengeAndRetry(response, resource, options = {}, maxRetries = 3) {
+    const effectiveMaxRetries = (options && typeof options._powMaxRetries === 'number')
+      ? options._powMaxRetries
+      : (typeof maxRetries === 'number' ? maxRetries : 3);
+    const currentRetries = (options && options._powRetryCount) || (resource && resource._powRetryCount) || 0;
+    if (currentRetries >= effectiveMaxRetries) {
+      console.warn(`[Fingerprint] Challenge retry limit reached (${effectiveMaxRetries}). Aborting challenge retry loop.`);
+      return response;
+    }
+
     if (!response || response.status !== 404 || !response.headers?.get?.('content-type')?.includes('application/json') || response.bodyUsed) {
       return response;
     }
@@ -1311,8 +1396,16 @@ const ClientLibrary = {
       // Attach solver fingerprint to retry request
       url.searchParams.set('pow_fp', solverFp);
 
-      // Use fetch to retry with appropriate execution context
-      return window.fetch(url.toString(), options);
+      // Use fetch to retry with incremented retry count to prevent infinite challenge loops
+      const retryOptions = {
+        ...options,
+        _powRetryCount: currentRetries + 1,
+        _powMaxRetries: effectiveMaxRetries
+      };
+      const fetchFn = (typeof window !== 'undefined' && typeof window.fetch === 'function')
+        ? window.fetch
+        : fetch;
+      return fetchFn(url.toString(), retryOptions);
     } catch (e) {
       console.error('[Fingerprint] Failed to solve or retry challenge:', e);
       return response; // Retourne la réponse 429 originale en cas d'échec
@@ -1337,6 +1430,7 @@ const ClientLibrary = {
         honeypots = [],
         trapUrls = [], // Trap URLs
         wasmPath,
+        worker = false,
         workerPath, // NOUVEAU
         fetch: fetchConfig = {}
     } = config;
@@ -1350,8 +1444,30 @@ const ClientLibrary = {
     if (mouse) {
         this.startMouseEntropyTracker();
     }
-    if (workerPath) {
-        this.workerPath = workerPath;
+
+    // Instantiation du Service Worker via initializeClient
+    let resolvedWorkerPath = null;
+    let workerScope = undefined;
+    let workerTargetDomains = fetchConfig.targetDomains || [];
+
+    if (typeof worker === 'string') {
+        resolvedWorkerPath = worker;
+    } else if (typeof worker === 'object' && worker !== null) {
+        resolvedWorkerPath = worker.path || '/fingerprint.worker.js';
+        workerScope = worker.scope;
+        if (Array.isArray(worker.targetDomains)) {
+            workerTargetDomains = worker.targetDomains;
+        }
+    } else if (worker === true) {
+        resolvedWorkerPath = '/fingerprint.worker.js';
+    } else if (workerPath) {
+        resolvedWorkerPath = workerPath;
+    }
+
+    if (resolvedWorkerPath) {
+        this.workerPath = resolvedWorkerPath;
+        this._targetDomains = workerTargetDomains;
+        this.initServiceWorker(resolvedWorkerPath, workerTargetDomains, workerScope);
     }
     if (keystrokes) {
         this.startKeystrokeDynamicsTracker();
@@ -1382,16 +1498,17 @@ const ClientLibrary = {
     if (trapUrls.length > 0) {
         this.injectTrapLinks(trapUrls);
     }
-    // Enable fetch interception if configured
-    if (config.fetch) {
+    // Enable fetch monkey-patching only if explicitly configured and no Service Worker is used
+    if (config.fetch && !resolvedWorkerPath) {
         this.initializeFetch(fetchConfig.targetDomains);
 
         // Add challenge resolution interceptor
         if (fetchConfig.handleChallenges !== false) {
+            const maxRetries = typeof fetchConfig.maxRetries === 'number' ? fetchConfig.maxRetries : 3;
             this.addFetchInterceptor(async (resource, options, next) => {
                 const originalResponse = await next(resource, options);
                 // Clone response to prevent draining the body stream for original caller
-                return this.solveChallengeAndRetry(originalResponse.clone(), resource, options);
+                return this.solveChallengeAndRetry(originalResponse.clone(), resource, options, maxRetries);
             });
         }
     }
@@ -1609,6 +1726,8 @@ export const generateZkpProof = ClientLibrary.generateZkpProof.bind(ClientLibrar
 export const initializeSpace = ClientLibrary.initializeSpace.bind(ClientLibrary);
 export const readSpaceBlock = ClientLibrary.readSpaceBlock.bind(ClientLibrary);
 export const solveSpaceChallenge = ClientLibrary.solveSpaceChallenge.bind(ClientLibrary);
+export const initServiceWorker = ClientLibrary.initServiceWorker.bind(ClientLibrary);
+export const syncServiceWorkerCredentials = ClientLibrary.syncServiceWorkerCredentials.bind(ClientLibrary);
 
 // Export the internal object for testing purposes
 export default ClientLibrary;

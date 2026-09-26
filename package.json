@@ -18,6 +18,10 @@
       "import": "./src/js/fingerprint.client.obfuscated.js",
       "browser": "./src/js/fingerprint.client.obfuscated.js"
     },
+    "./worker": {
+      "import": "./src/js/fingerprint.worker.js",
+      "default": "./src/js/fingerprint.worker.js"
+    },
     "./fp.wasm": "./public/fp.wasm",
     "./fp.js": "./public/fp.js",
     "./package.json": "./package.json"
