@@ -5045,8 +5045,10 @@ export class FingerprintEngine {
       let bypassWhitelist = false;
       if (filterWhitelist === true) {
         bypassWhitelist = this._hasCertainAttack(requestContext);
+      } else if (typeof filterWhitelist === 'number' && (whitelistType === 'allowlist' || whitelistType === 'hostname_allowlist')) {
+          bypassWhitelist = this._hasCertainAttack(requestContext);
       } else if (typeof filterWhitelist === 'number') {
-        const res = await getScoreAndVector();
+          const res = await getScoreAndVector();
         if (res.score > filterWhitelist) {
           bypassWhitelist = true;
         }
