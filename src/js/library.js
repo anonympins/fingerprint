@@ -1774,18 +1774,22 @@ Optimization.Operators.solveFullSecurityTuning = (context, options = {}) => {
       inconsistencyScore: 0.8,
       honeypotScore: 1.0,
       behaviorScore: 0.7,
+      botScore: 1.0,
+      cookieDroppingScore: 0.9,
       crossLayerInconsistencyScore: 0.4,
       timeInconsistencyScore: 0.9,
       tlsSpoofingScore: 0.8,
-      botScore: 1.0,
+      clientHintsInconsistencyScore: 0.7,
+      clickVarianceScore: 0.6,
       subnetScore: 0.4,
       ipReputationScore: 0.5,
       botnetClusterScore: 0.6,
       tcpAnomalyScore: 0.8,
       quicAnomalyScore: 0.8,
+      protocolAnomalyScore: 0.8,
       renderingAnomalyScore: 0.8,
       threatIntelScore: 1.0,
-      virtualizationScore: 0.8
+      virtualizationScore: 0.8,
     };
 
     // An "individual" is a complete security configuration object

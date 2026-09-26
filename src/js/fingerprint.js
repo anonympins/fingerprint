@@ -668,15 +668,19 @@ const securityProfiles = {
             headerAnomalyScore: 0.1,
             requestPatternScore: 0.6,
             inconsistencyScore: 0.8,
-            behaviorScore: 0.7, // Poids pour les métriques comportementales (souris, clavier)
+            behaviorScore: 0.7,
             honeypotScore: 1.0,
+            botScore: 1.0,
+            cookieDroppingScore: 0.9,
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.9,
-            tlsSpoofingScore: 0.8, // NOUVEAU: Poids pour la détection de spoofing TLS
-            subnetScore: 0.4, // NOUVEAU: Poids pour la réputation du sous-réseau
-            ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.6, // NOUVEAU: Poids pour le clustering botnet
-            tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
+            tlsSpoofingScore: 0.8,
+            clientHintsInconsistencyScore: 0.7,
+            clickVarianceScore: 0.6,
+            subnetScore: 0.4,
+            ipReputationScore: 0.5,
+            botnetClusterScore: 0.6,
+            tcpAnomalyScore: 0.8,
             quicAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie QUIC
             protocolAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
@@ -715,15 +719,22 @@ const securityProfiles = {
             inconsistencyScore: 1.0,
             behaviorScore: 0.8,
             honeypotScore: 1.0,
+            botScore: 1.0,
+            cookieDroppingScore: 1.0,
             crossLayerInconsistencyScore: 0.6,
             timeInconsistencyScore: 1.0,
-            tlsSpoofingScore: 1.0, // Plus agressif pour le spoofing TLS
+            tlsSpoofingScore: 1.0,
+            clientHintsInconsistencyScore: 0.9,
+            clickVarianceScore: 0.7,
             subnetScore: 0.5,
-            ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.8, // NOUVEAU: Poids pour le clustering botnet
-            renderingAnomalyScore: 1.0, // NOUVEAU: Poids pour l'anomalie de rendu
-            protocolAnomalyScore: 1.0, // NOUVEAU
-            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
+            ipReputationScore: 0.6,
+            botnetClusterScore: 0.8,
+            tcpAnomalyScore: 1.0,
+            protocolAnomalyScore: 1.0,
+            quicAnomalyScore: 1.0,
+            renderingAnomalyScore: 1.0,
+            threatIntelScore: 1.0,
+            virtualizationScore: 1.0,
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -758,15 +769,22 @@ const securityProfiles = {
             inconsistencyScore: 0.7,
             behaviorScore: 0.2, // Lower weight, as browser behavior is not applicable
             honeypotScore: 1.0,
+            botScore: 0.8,
+            cookieDroppingScore: 0.8,
             crossLayerInconsistencyScore: 0.5,
             timeInconsistencyScore: 0.8,
-            tlsSpoofingScore: 0.7, // Important pour les API
+            tlsSpoofingScore: 0.7,
+            clientHintsInconsistencyScore: 0.6,
+            clickVarianceScore: 0.3,
             subnetScore: 0.4,
-            ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.7, // NOUVEAU: Poids pour le clustering botnet
-            tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
+            ipReputationScore: 0.5,
+            botnetClusterScore: 0.7,
+            tcpAnomalyScore: 0.8,
             protocolAnomalyScore: 0.8,
-            quicAnomalyScore: 0.8 // NOUVEAU: Poids pour l'anomalie QUIC
+            quicAnomalyScore: 0.8,
+            renderingAnomalyScore: 0.2,
+            threatIntelScore: 0.6,
+            virtualizationScore: 0.8,
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -816,6 +834,7 @@ const securityProfiles = {
             protocolAnomalyScore: 0.5,
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
+            virtualizationScore: 0.8,
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -844,7 +863,6 @@ const securityProfiles = {
             historyScore: 0.4,
             rotationScore: 0.6,
             headerAnomalyScore: 0.2,
-            // Utilisation d'un score de pattern unifié avec un poids très élevé
             requestPatternScore: 0.9,
             inconsistencyScore: 1.0, // Crucial for preventing account takeover
             behaviorScore: 0.8, // Important for checkout/login forms
@@ -863,7 +881,8 @@ const securityProfiles = {
             tcpAnomalyScore: 0.9, // NEW: Anomalie de pile TCP/IP
             protocolAnomalyScore: 0.9,
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
-            renderingAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie de rendu,threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
+            renderingAnomalyScore: 0.9,
+            virtualizationScore: 0.8,
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -4039,7 +4058,31 @@ export const identifyRequest = (securityConfig) => async (req, res) => {
   // This function now acts as a lightweight wrapper around the engine's identifyRequest method.
   // It requires a default configuration to work.
   const config = securityConfig || {
-    weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8, honeypotScore: 1.0 },
+    weights: {
+      historyScore: 0.3,
+      rotationScore: 0.5,
+      headerAnomalyScore: 0.2,
+      requestPatternScore: 0.6,
+      inconsistencyScore: 0.8,
+      behaviorScore: 0.7,
+      honeypotScore: 1.0,
+      botScore: 1.0,
+      cookieDroppingScore: 0.9,
+      crossLayerInconsistencyScore: 0.4,
+      timeInconsistencyScore: 0.9,
+      tlsSpoofingScore: 0.8,
+      clientHintsInconsistencyScore: 0.7,
+      clickVarianceScore: 0.6,
+      subnetScore: 0.4,
+      ipReputationScore: 0.5,
+      botnetClusterScore: 0.7,
+      tcpAnomalyScore: 0.8,
+      quicAnomalyScore: 0.8,
+      protocolAnomalyScore: 0.8,
+      renderingAnomalyScore: 0.8,
+      threatIntelScore: 1.0,
+      virtualizationScore: 0.8
+    },
     thresholds: { low: 20, medium: 40, high: 75 },
     honeypot: { fields: [] } // Ensure honeypot config exists to prevent errors
   };

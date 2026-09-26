@@ -156,6 +156,32 @@ def default_whitelist() -> list:
      {"userAgent": "Yeti", "hostnameSuffix": ".naver.com"},
  ]
 
+DEFAULT_WEIGHTS = {
+    "historyScore": 0.3,
+    "rotationScore": 0.5,
+    "headerAnomalyScore": 0.2,
+    "requestPatternScore": 0.6,
+    "inconsistencyScore": 0.8,
+    "behaviorScore": 0.7,
+    "honeypotScore": 1.0,
+    "botScore": 1.0,
+    "cookieDroppingScore": 0.9,
+    "crossLayerInconsistencyScore": 0.4,
+    "timeInconsistencyScore": 0.9,
+    "tlsSpoofingScore": 0.8,
+    "clientHintsInconsistencyScore": 0.7,
+    "clickVarianceScore": 0.6,
+    "subnetScore": 0.4,
+    "ipReputationScore": 0.5,
+    "botnetClusterScore": 0.7,
+    "tcpAnomalyScore": 0.8,
+    "protocolAnomalyScore": 0.8,
+    "quicAnomalyScore": 0.8,
+    "renderingAnomalyScore": 0.8,
+    "threatIntelScore": 1.0,
+    "virtualizationScore": 0.8
+}
+
 def imul(a: int, b: int) -> int:
     """
     Emulates JavaScript Math.imul (signed 32-bit integer multiplication).
@@ -3229,7 +3255,9 @@ class FingerprintEngine:
 
         self.store = store
         self.thresholds = config.get("thresholds", {"low": 20, "medium": 45, "high": 75, "block": 95})
-        self.weights = config.get("weights", {})
+        self.weights = copy.deepcopy(DEFAULT_WEIGHTS)
+        if "weights" in config and isinstance(config["weights"], dict):
+            self.weights.update(config["weights"])
         self.dry_run = config.get("dryRun", False)
         self._allowlist = self._build_allowlist()
 
@@ -4764,6 +4792,16 @@ class OptimizationOperators:
                     "botScore": random.random(),
                     "cookieDroppingScore": random.random(),
                     "threatIntelScore": random.random(),
+                    "clientHintsInconsistencyScore": random.random(),
+                    "clickVarianceScore": random.random(),
+                    "subnetScore": random.random(),
+                    "ipReputationScore": random.random(),
+                    "botnetClusterScore": random.random(),
+                    "tcpAnomalyScore": random.random(),
+                    "protocolAnomalyScore": random.random(),
+                    "quicAnomalyScore": random.random(),
+                    "renderingAnomalyScore": random.random(),
+                    "virtualizationScore": random.random(),
                 },
                 "patterns": {
                     "velocityThreshold": 100 + random.random() * 400,
@@ -5950,11 +5988,25 @@ if __name__ == "__main__":
         config = {
             "thresholds": {"low": 20, "high": 75, "block": 95},
             "weights": {
+                "historyScore": 0.3,
+                "rotationScore": 0.5,
                 "inconsistencyScore": 0.8,
-                "headerAnomalyScore": 0.1,
+                "headerAnomalyScore": 0.2,
+                "requestPatternScore": 0.6,
+                "behaviorScore": 0.7,
                 "clientHintsInconsistencyScore": 0.7,
+                "clickVarianceScore": 0.6,
+                "crossLayerInconsistencyScore": 0.4,
+                "timeInconsistencyScore": 0.9,
                 "tlsSpoofingScore": 0.8,
                 "botScore": 1.0,
+                "cookieDroppingScore": 0.9,
+                "subnetScore": 0.4,
+                "ipReputationScore": 0.5,
+                "botnetClusterScore": 0.7,
+                "tcpAnomalyScore": 0.8,
+                "protocolAnomalyScore": 0.8,
+                "threatIntelScore": 1.0,
                 "honeypotScore": 1.0,
                 "quicAnomalyScore": 0.8,
                 "renderingAnomalyScore": 0.8,
