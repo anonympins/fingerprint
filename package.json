@@ -16,10 +16,8 @@
     ".": "./index.js",
     "./client": {
       "import": "./src/js/fingerprint.client.obfuscated.js",
-      "require": "./src/js/fingerprint.client.obfuscated.js",
       "browser": "./src/js/fingerprint.client.obfuscated.js"
     },
-    "./client/src/*": "./src/js/*",
     "./fp.wasm": "./public/fp.wasm",
     "./fp.js": "./public/fp.js",
     "./package.json": "./package.json"

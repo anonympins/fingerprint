@@ -398,7 +398,7 @@ export async function solveCpuTargetInline(baseBlock, target, progressCallback) 
  * @returns {Promise<number>} Solution integer.
  */
 export async function solveCpuTarget(message, target) {
-    // Vérifie si les Web Workers sont supportés par le navigateur.
+    // Check if Web Workers are supported by the browser.
     if (typeof(Worker) === "undefined") {
         console.warn("Web Workers not supported. Falling back to main thread calculation (UI may freeze).");
         // An inline fallback implementation could be placed here if needed.
@@ -555,7 +555,7 @@ export async function solveTsp(cities, targetMaxDistance) {
         return totalDistance;
     }
 
-    // Solveur simple du TSP (heuristique du plus proche voisin)
+    // Simple TSP solver (nearest-neighbor heuristic)
     function solveTspNearestNeighbor(cities) {
         const numCities = cities.length;
         if (numCities === 0) return [];
@@ -1046,7 +1046,6 @@ async function solveUsefulWorkTask(task) {
             if (!solverFunction) {
                 throw new Error(`Solver '${task.solverName}' not found on client.`);
             }
-            // On appelle le solveur en lui passant le payload et les options.
             // Invoke solver with payload and options.
             return solverFunction(task.payload, { generations: task.generations, initialFront: task.initialFront });
         }

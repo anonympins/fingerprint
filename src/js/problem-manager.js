@@ -8,22 +8,22 @@ const __dirname = dirname(__filename);
 
 /**
  * @namespace FunctionRegistry
- * @description Registre pour exposer de manière contrôlée les fonctions de la bibliothèque.
- * Permet de les appeler dynamiquement depuis la configuration des problèmes.
- * Utilise la notation par points pour accéder aux fonctions imbriquées (ex: 'tsp.calculateEnergy').
+ * @description Registry to expose library functions in a controlled manner.
+ * Allows dynamic invocation from problem configurations.
+ * Uses dot notation to access nested functions (e.g. 'tsp.calculateEnergy').
  */
 const FunctionRegistry = {};
 
-// --- Fonctions de "Scoring" (évaluation d'une solution) ---
-// Ces fonctions sont des adaptateurs pour utiliser les utilitaires de la bibliothèque
-// avec la structure attendue par le ProblemManager.
-FunctionRegistry['cpc.solve'] = Optimization.Operators.solveOptimalCPC; // NOUVEAU: Enregistrement du solveur CPC
+// --- Scoring functions (solution evaluation) ---
+// These functions are adapters to use library utilities
+// with the structure expected by the ProblemManager.
+FunctionRegistry['cpc.solve'] = Optimization.Operators.solveOptimalCPC; // Register CPC solver
 
 /**
- * Évalue le coût total pour le problème de placement d'infrastructures.
- * @param {Array<{x: number, y: number}>} facilities - Les installations.
- * @param {object} payload - Le payload contenant les clients et les options.
- * @returns {number} Le coût total.
+ * Evaluates total cost for the facility location problem.
+ * @param {Array<{x: number, y: number}>} facilities - Facilities.
+ * @param {object} payload - Payload containing customers and options.
+ * @returns {number} Total cost.
  */
 FunctionRegistry['facility.calculateEnergy'] = (facilities, payload) => {
     const customers = payload.customers || [];
@@ -44,50 +44,50 @@ FunctionRegistry['facility.calculateEnergy'] = (facilities, payload) => {
 };
 
 /**
- * Évalue la distance totale d'un chemin pour le problème du voyageur de commerce (TSP).
- * @param {Array<{x: number, y: number}>} path - Un tableau de points représentant le chemin.
- * @returns {number} La distance totale du chemin.
+ * Evaluates total distance of a path for the traveling salesperson problem (TSP).
+ * @param {Array<{x: number, y: number}>} path - Array of points representing the path.
+ * @returns {number} Total path distance.
  */
 FunctionRegistry['tsp.calculateEnergy'] = (path, payload) => {
     const cities = payload?.cities || payload?.points || [];
     if (path && typeof path[0] === 'number') {
         return Optimization.Utils.evaluatePathDistance(cities, path);
     }
-    // Fallback: Crée un tableau d'indices [0, 1, 2, ...] pour la fonction evaluatePathDistance.
+    // Fallback: Creates an array of indices [0, 1, 2, ...] for evaluatePathDistance.
     const indices = Array.from({ length: path.length }, (_, i) => i);
     return Optimization.Utils.evaluatePathDistance(path, indices);
 };
 
 /**
- * Évalue les métriques d'un portefeuille (rendement et volatilité).
- * Pour l'instant, retourne le rendement négatif pour correspondre à l'objectif de minimisation
- * de l'algorithme génétique de la bibliothèque.
- * @param {Array<number>} weights - Les poids des actifs dans le portefeuille.
- * @param {object} payload - Le payload du problème, contenant les actifs.
- * @returns {number} Le rendement négatif du portefeuille.
+ * Evaluates portfolio metrics (return and volatility).
+ * Currently returns negative return to match the minimization objective
+ * of the library's genetic algorithm.
+ * @param {Array<number>} weights - Asset weights in the portfolio.
+ * @param {object} payload - Problem payload, containing assets.
+ * @returns {number} Negative return of the portfolio.
  */
 FunctionRegistry['portfolio.calculateMetrics'] = (weights, payload) => {
     const { assets, maxVolatility } = payload;
-    // On utilise l'opérateur de la bibliothèque pour créer la fonction de fitness
-    // et on l'appelle immédiatement.
+    // Use the library operator to create the fitness function
+    // and invoke it immediately.
     const fitnessFunction = Optimization.Operators.createPortfolioAllocator({
         assets,
         maxVolatility,
     });
-    // La fonction de fitness retourne le rendement négatif, ce qui est ce que nous voulons
-    // stocker comme "énergie" ou score.
+    // Fitness function returns negative return, which is what we want
+    // to store as "energy" or score.
     return fitnessFunction(weights);
 };
 
-// --- Fonctions de "Résolution" (algorithmes complets) ---
-// Utiles pour les workers qui exécutent une tâche de bout en bout.
+// --- Solving functions (complete algorithms) ---
+// Useful for workers running end-to-end tasks.
 FunctionRegistry['tsp.solve'] = Optimization.Operators.solveTSP;
 FunctionRegistry['portfolio.solve'] = Optimization.Operators.solvePortfolio;
-FunctionRegistry['fraud.solve'] = Optimization.Operators.solveFraudDetection; // NOUVEAU: Enregistrement du solveur de fraude
+FunctionRegistry['fraud.solve'] = Optimization.Operators.solveFraudDetection; // Register fraud solver
 FunctionRegistry['facility.solve'] = Optimization.Operators.solveFacilityLocation;
 FunctionRegistry['security.tune'] = Optimization.Operators.solveFullSecurityTuning;
 
-// --- Fonctions "Utilitaires" ---
+// --- Utility functions ---
 FunctionRegistry['utils.evaluatePathDistance'] = Optimization.Utils.evaluatePathDistance;
 
 const yieldToEventLoop = () => new Promise(resolve => {
@@ -100,14 +100,14 @@ const yieldToEventLoop = () => new Promise(resolve => {
 
 /**
  * @namespace ProblemInitializers
- * @description Fonctions pour générer dynamiquement les données d'un problème.
+ * @description Functions to dynamically generate problem data.
  */
 const ProblemInitializers = {
     /**
-     * Génère un ensemble de points aléatoires pour un problème de TSP.
-     * @param {object} params - Les paramètres de génération.
-     * @param {number} params.count - Le nombre de points à générer.
-     * @param {{x: number, y: number}} [params.bounds={x: 1000, y: 1000}] - Les limites spatiales.
+     * Generates a set of random points for a TSP problem.
+     * @param {object} params - Generation parameters.
+     * @param {number} params.count - Number of points to generate.
+     * @param {{x: number, y: number}} [params.bounds={x: 1000, y: 1000}] - Spatial bounds.
      * @returns {Promise<Array<{x: number, y: number}>>}
      */
     'generate:randomPoints': async (params) => {
@@ -125,9 +125,9 @@ const ProblemInitializers = {
     },
 
     /**
-     * Génère un ensemble d'actifs financiers aléatoires pour un problème de portefeuille.
-     * @param {object} params - Les paramètres de génération.
-     * @param {number} params.count - Le nombre d'actifs à générer.
+     * Generates a set of random financial assets for a portfolio problem.
+     * @param {object} params - Generation parameters.
+     * @param {number} params.count - Number of assets to generate.
      * @returns {Promise<Array<{expectedReturn: number, volatility: number}>>}
      */
     'generate:randomAssets': async (params) => {
@@ -148,18 +148,18 @@ const ProblemInitializers = {
     },
 
     /**
-     * Crée une fonction qui génère des arguments pour chaque worker de `runMultipleParallel`.
-     * Permet de faire varier les paramètres (ex: solution initiale) pour chaque cycle.
-     * @param {object} params - Les paramètres de configuration.
-     * @param {Array<any>} params.baseArgs - Les arguments de base, communs à tous les workers.
-     * @param {object} params.variations - Décrit comment faire varier un argument.
-     * @returns {function(number): Array<any>} La fonction `workerDataGenerator`.
+     * Creates a function that generates arguments for each worker in `runMultipleParallel`.
+     * Allows varying parameters (e.g. initial solution) for each cycle.
+     * @param {object} params - Configuration parameters.
+     * @param {Array<any>} params.baseArgs - Base arguments common to all workers.
+     * @param {object} params.variations - Describes how to vary an argument.
+     * @returns {function(number): Array<any>} The `workerDataGenerator` function.
      */
     'generate:parallelArgs': (params) => {
         const { baseArgs, variations } = params || {};
         return (cycleIndex) => {
             const cycleArgs = baseArgs ? [...baseArgs] : [];
-            // Pour l'instant, on gère la variation de la solution initiale pour le TSP
+            // For now, handle initial solution variation for TSP
             if (variations?.initialSolution === 'random') {
                 cycleArgs[0] = cycleArgs[0]?.sort(() => Math.random() - 0.5);
             }
@@ -171,11 +171,11 @@ const ProblemInitializers = {
 class ProblemManager {
     /**
      * @private
-     * Le constructeur est privé. Utilisez la méthode de fabrique asynchrone `create()`.
-     * @param {object} options - Les options d'initialisation.
-     * @param {string} [options.configPath] - Le chemin vers le fichier de configuration.
-     * @param {object} [options.config] - L'objet de configuration des problèmes.
-     * @param {Array<object>} problems - Les problèmes pré-chargés.
+     * The constructor is private. Use the asynchronous factory method `create()`.
+     * @param {object} options - Initialization options.
+     * @param {string} [options.configPath] - Path to the configuration file.
+     * @param {object} [options.config] - Problem configuration object.
+     * @param {Array<object>} problems - Pre-loaded problems.
      * @param {IStore} store - The datastore for synchronization.
      */
     constructor(options, problems, store) {
@@ -187,8 +187,8 @@ class ProblemManager {
     }
 
     /**
-     * Méthode de fabrique asynchrone pour créer et initialiser une instance de ProblemManager.
-     * @param {object} options - Les options d'initialisation.
+     * Asynchronous factory method to create and initialize a ProblemManager instance.
+     * @param {object} options - Initialization options.
      * @returns {Promise<ProblemManager>}
      */
     static async create(options, store) {
@@ -233,22 +233,22 @@ class ProblemManager {
                 problem.state = storedState;
                 return problem;
             }));
-            // Initialisation dynamique des problèmes
+            // Dynamic problem initialization
             for (const problem of problems) {
-                // Résolution des fonctions via le registre
+                // Resolve functions via registry
                     if (problem.workUnit && problem.workUnit.scoreFunction) {
                     problem.workUnit.scoreFunction = FunctionRegistry[problem.workUnit.scoreFunction] || null;
                 }
                     if (problem.payload) {
                         for (const key in problem.payload) {
                             const value = problem.payload[key];
-                            // On cherche une instruction d'initialisation (ex: { "$init": "generate:randomPoints", ... })
+                            // Look for an initialization instruction (e.g. { "$init": "generate:randomPoints", ... })
                             if (typeof value === 'object' && value !== null && value.$init) {
                                 const initializer = ProblemInitializers[value.$init];
-                                // On cherche une instruction de fonction (ex: { "$func": "tsp.calculateEnergy" })
-                                // Note: Actuellement non utilisé, mais prêt pour une future extension.
+                                // Look for a function instruction (e.g. { "$func": "tsp.calculateEnergy" })
+                                // Note: Currently unused, but ready for future extension.
                                 if (initializer) {
-                                    // On remplace l'objet d'instruction par les données générées de manière asynchrone.
+                                    // Replace instruction object with dynamically generated data.
                                     problem.payload[key] = await initializer(value.params || {});
                                 }
                         }
@@ -263,8 +263,8 @@ class ProblemManager {
     }
 
     /**
-     * Sélectionne un problème et génère une unité de travail.
-     * @param {number} suspicionFactor - Le facteur de suspicion pour ajuster la difficulté.
+     * Selects a problem and generates a work unit.
+     * @param {number} suspicionFactor - Suspicion factor to adjust difficulty.
      * @returns {{problemId: string, task: object}|null}
      */
     dispatchWork(suspicionFactor) {
@@ -278,7 +278,7 @@ class ProblemManager {
 
         switch (problem.workUnit.type) {
             case 'simulated_annealing_iterations':
-                // Assurer une difficulté minimale pour que le challenge soit significatif
+                // Ensure a minimum difficulty so the challenge is meaningful
                 const baseIterations = Math.max(15000, problem.workUnit.baseIterations || 0);
                 task.iterations = scalingFactor
                     ? Math.floor(baseIterations * Math.pow(scalingFactor, suspicionFactor))
@@ -288,7 +288,7 @@ class ProblemManager {
                 break;
 
             case 'genetic_algorithm_generations':
-                // Assurer une difficulté minimale pour que le challenge soit significatif
+                // Ensure a minimum difficulty so the challenge is meaningful
                 const baseGenerations = Math.max(50, problem.workUnit.baseGenerations || 0);
                 task.generations = scalingFactor
                     ? Math.floor(baseGenerations * Math.pow(scalingFactor, suspicionFactor))
@@ -300,7 +300,7 @@ class ProblemManager {
             case 'run_multiple_parallel':
                 task.solverName = problem.workUnit.solverName;
                 task.numCycles = problem.workUnit.numCycles;
-                // Les arguments et le générateur sont dans le payload pour plus de flexibilité
+                // Arguments and generator are in payload for added flexibility
                 task.baseSolverArgs = problem.payload.baseSolverArgs;
                 task.workerDataGenerator = problem.payload.workerDataGenerator;
                 task.logProgress = problem.payload.logProgress || false;
@@ -308,15 +308,15 @@ class ProblemManager {
                 break;
             
             case 'multi_objective_genetic_algorithm':
-                // La difficulté s'applique au nombre de générations
+                // Difficulty applies to the number of generations
                 const baseGenerationsMulti = Math.max(30, problem.workUnit.baseGenerations || 0);
                 task.generations = scalingFactor
                     ? Math.floor(baseGenerationsMulti * Math.pow(scalingFactor, suspicionFactor))
                     : Math.floor(baseGenerationsMulti * (0.5 + suspicionFactor));
                 task.payload = problem.payload;
-                // L'état initial est le front de Pareto actuel, que le client peut utiliser pour l'élitisme
+                // Initial state is current Pareto front, which client can use for elitism
                 task.initialFront = problem.state.paretoFront;
-                task.solverName = problem.workUnit.solverName; // Le nom du solveur à utiliser (ex: 'cpc.solve')
+                task.solverName = problem.workUnit.solverName; // Name of solver to use (e.g. 'cpc.solve')
                 break;
 
             case 'tfjs_learning':
@@ -330,9 +330,9 @@ class ProblemManager {
     }
 
     /**
-     * Intègre la solution d'un client dans l'état du problème.
-     * @param {string} problemId - L'ID du problème.
-     * @param {object} solutionData - La solution renvoyée par le client.
+     * Integrates a client's solution into the problem state.
+     * @param {string} problemId - Problem ID.
+     * @param {object} solutionData - Solution returned by client.
      */
     async integrateSolution(problemId, solutionData) {
         const problem = this.problems.find(p => p.id === problemId);
@@ -363,7 +363,7 @@ class ProblemManager {
                     return;
                 }
             } catch (e) {}
-                    // 1. Ne JAMAIS faire confiance au score du client. Recalculer systématiquement.
+                    // 1. NEVER trust client score. Always recalculate.
                     const scoreFunction = problem.workUnit.scoreFunction;
                     if (!scoreFunction) {
                         console.error(`[ProblemManager] Aucune fonction de score définie pour ${problemId}. Impossible de vérifier la solution.`);
@@ -372,25 +372,25 @@ class ProblemManager {
                     const recalculatedEnergy = scoreFunction(solutionData.solution, problem.payload);
 
                     const currentBest = parseFloat(problem.state.bestEnergy) || Infinity;
-                    // 2. Comparer le score recalculé, pas celui du client.
+                    // 2. Compare recalculated score, not client score.
                     const isBetter = recalculatedEnergy < currentBest;
 
                     if (isBetter) {
                         problem.state.bestSolution = solutionData.solution;
-                        problem.state.bestEnergy = recalculatedEnergy; // 3. Stocker le score vérifié.
+                        problem.state.bestEnergy = recalculatedEnergy; // 3. Store verified score.
                         problem.state.lastUpdate = new Date().toISOString();
                         console.log(`[ProblemManager] Nouvelle meilleure solution pour ${problemId}: ${recalculatedEnergy.toFixed(2)}`);
                     }
                     break;
                 case 'genetic_algorithm_generations':
-                    // VÉRIFICATION PAR ÉCHANTILLONNAGE pour équilibrer sécurité et performance.
-                    const fitnessFunction = FunctionRegistry['portfolio.calculateMetrics']; // Ou une fonction plus générique
+                    // SAMPLING VERIFICATION to balance security and performance.
+                    const fitnessFunction = FunctionRegistry['portfolio.calculateMetrics']; // Or a more generic function
                     if (!solutionData || !Array.isArray(solutionData.population)) {
                         console.error(`[ProblemManager] Propriété 'population' manquante ou invalide dans solutionData pour ${problemId}.`);
                         return;
                     }
                     if (solutionData.population.length === 0) {
-                        return; // Retour gracieux si la population est vide (ex: fallback de redirection)
+                        return; // Graceful return if population is empty (e.g. redirect fallback)
                     }
                     if (!fitnessFunction) {
                         console.error(`[ProblemManager] Impossible de vérifier la population pour ${problemId} (fonction de fitness manquante).`);
@@ -407,14 +407,14 @@ class ProblemManager {
                     return;
                 }
             }
-                    // 1. On choisit un petit échantillon aléatoire de la population soumise.
+                    // 1. Choose a small random sample of the submitted population.
                     const sampleSize = Math.min(5, solutionData.population.length);
                     const sampleIndices = new Set();
                     while (sampleIndices.size < sampleSize) {
                         sampleIndices.add(Math.floor(Math.random() * solutionData.population.length));
                     }
 
-                    // 2. On recalcule le score pour cet échantillon.
+                    // 2. Recalculate score for this sample.
                     let totalRecalculatedFitness = 0;
                     for (const index of sampleIndices) {
                         const individual = solutionData.population[index];
@@ -426,14 +426,14 @@ class ProblemManager {
                         if (individual.fitness !== undefined && individual.fitness !== -1) {
                             if (Math.abs(individual.fitness - recalculated) > 1e-4) {
                                 console.error(`[ProblemManager] Triche détectée pour ${problemId}! Fitness déclaré: ${individual.fitness}, recalculé: ${recalculated}`);
-                                return; // Rejeter immédiatement toute la population
+                                return; // Immediately reject entire population
                             }
                         }
-                        individual.fitness = recalculated; // Forcer la valeur exacte recalculée
+                        individual.fitness = recalculated; // Enforce exact recalculated value
                         totalRecalculatedFitness += recalculated;
                     }
 
-                    problem.state.population = solutionData.population; // On accepte la population
+                    problem.state.population = solutionData.population; // Accept population
                     console.log(`[ProblemManager] Population mise à jour pour ${problemId}. Fitness moyen de l'échantillon: ${(totalRecalculatedFitness / sampleSize).toFixed(4)}`);
                     break;
                 
@@ -442,7 +442,7 @@ class ProblemManager {
                         console.error(`[ProblemManager] Propriété 'paretoFront' manquante ou invalide dans solutionData pour ${problemId}.`);
                         return;
                     }
-                    // Pour le multi-objectifs, on fusionne le front de Pareto existant avec celui du client.
+                    // For multi-objective, merge existing Pareto front with client's.
                     await this._integrateParetoFront(problem, solutionData.paretoFront);
                     break;
                 }
@@ -454,31 +454,31 @@ class ProblemManager {
     }
 
     /**
-     * S'assure qu'un problème a une solution initiale. Si non, en génère une.
-     * @param {object} problem - L'objet problème.
+     * Ensures a problem has an initial solution. If not, generates one.
+     * @param {object} problem - Problem object.
      * @private
      */
     async _ensureInitialSolution(problem) {
         if (problem.state.bestSolution) {
-            return; // Une solution existe déjà
+            return; // A solution already exists
         }
 
         console.log(`[ProblemManager] Génération d'une solution initiale pour le problème ${problem.id}...`);
 
-        // On utilise la fonction de score définie dans la config
+        // Use score function defined in config
         const scoreFunction = problem.workUnit.scoreFunction;
-        // On suppose que la source de la solution initiale est définie dans la config
+        // Assume initial solution source is defined in config
         const initialSolutionSource = problem.payload[problem.workUnit.initialSolutionSource];
 
         if (scoreFunction && initialSolutionSource && Array.isArray(initialSolutionSource)) {
             const initialSolution = initialSolutionSource;
-            // On calcule le score (énergie, fitness, etc.) de cette solution initiale.
-            // La fonction de scoring peut nécessiter des arguments supplémentaires du payload.
+            // Calculate score (energy, fitness, etc.) of this initial solution.
+            // Scoring function may require additional arguments from payload.
             const score = scoreFunction(initialSolution, problem.payload);
 
             problem.state.bestSolution = initialSolution;
-            // Le nom de la propriété du score dépend du type de problème
-            problem.state.bestEnergy = score; // Pourrait être généralisé si besoin
+            // Score property name depends on problem type
+            problem.state.bestEnergy = score; // Could be generalized if needed
             problem.state.lastUpdate = new Date().toISOString();
 
             console.log(`[ProblemManager] Solution initiale pour ${problem.id} générée avec un score de ${score.toFixed(2)}.`);
@@ -488,9 +488,9 @@ class ProblemManager {
     }
 
     /**
-     * Intègre un nouveau front de Pareto dans l'état du problème.
-     * @param {object} problem - L'objet problème.
-     * @param {Array<object>} newFront - Le front de Pareto renvoyé par un client.
+     * Integrates a new Pareto front into problem state.
+     * @param {object} problem - Problem object.
+     * @param {Array<object>} newFront - Pareto front returned by client.
      * @private
      */
     async _integrateParetoFront(problem, newFront) {
@@ -499,13 +499,13 @@ class ProblemManager {
         const currentFront = problem.state.paretoFront || []; // eslint-disable-line no-unused-vars
         const combined = [...currentFront, ...newFront];
 
-        // --- Logique de tri non-dominé pour trouver le nouveau meilleur front ---
+        // --- Non-dominated sorting logic to find new best front ---
         const paretoDominates = (a, b) => {
             let aIsBetterInOne = false;
-            // On suppose que les objectifs sont à minimiser
+            // Assume objectives are to be minimized
             for (let i = 0; i < a.objectives.length; i++) {
-                if (a.objectives[i] > b.objectives[i]) return false; // A est pire sur au moins un objectif
-                if (a.objectives[i] < b.objectives[i]) aIsBetterInOne = true; // A est strictement meilleur sur au moins un
+                if (a.objectives[i] > b.objectives[i]) return false; // A is worse on at least one objective
+                if (a.objectives[i] < b.objectives[i]) aIsBetterInOne = true; // A is strictly better on at least one
             }
             return aIsBetterInOne;
         };
@@ -543,33 +543,33 @@ class ProblemManager {
     }
 
     /**
-     * Récupère la meilleure solution actuellement connue pour un ou plusieurs problèmes.
-     * @param {string} [problemId] - L'ID optionnel du problème à consulter.
-     * Si non fourni, retourne les meilleures solutions pour tous les problèmes.
+     * Retrieves currently known best solution for one or more problems.
+     * @param {string} [problemId] - Optional problem ID to inspect.
+     * If omitted, returns best solutions for all problems.
      * @returns {object|Array<object>|null}
-     * - Si un `problemId` est fourni, retourne un objet `{ id, solution, score }` ou `null` si non trouvé.
-     * - Si aucun `problemId` n'est fourni, retourne un tableau de ces objets.
+     * - If `problemId` is provided, returns `{ id, solution, score }` or `null` if not found.
+     * - If no `problemId` is provided, returns array of these objects.
      */
     async getBestSolutions(problemId) {
         const problemsToProcess = problemId
             ? this.problems.filter(p => p.id === problemId)
             : this.problems;
 
-        // On ne génère une solution initiale que pour les problèmes mono-objectif
+        // Only generate an initial solution for single-objective problems
         for (const p of problemsToProcess.filter(p => p.workUnit.type !== 'multi_objective_genetic_algorithm')) {
             await this._ensureInitialSolution(p);
         }
 
         const formatSolution = (p) => {
-            // Après _ensureInitialSolution, on peut supposer que p.state existe.
+            // After _ensureInitialSolution, p.state can be assumed to exist.
             if (!p || !p.state) return null;
 
-            // Cas spécial pour les problèmes multi-objectifs
+            // Special case for multi-objective problems
             if (p.workUnit.type === 'multi_objective_genetic_algorithm') {
                 return {
                     id: p.id,
-                    solution: p.state.paretoFront, // La "solution" est l'ensemble du front
-                    score: p.state.paretoFront?.length || 0, // Le "score" est le nombre de points sur le front
+                    solution: p.state.paretoFront, // "solution" is the entire front
+                    score: p.state.paretoFront?.length || 0, // "score" is number of points on front
                     lastUpdate: p.state.lastUpdate,
                 };
             }
@@ -584,18 +584,18 @@ class ProblemManager {
 
         if (problemId) {
             const problem = this.problems.find(p => p.id === problemId);
-            return problem ? formatSolution(problem) : null; // Le filtrage initial a déjà fait le travail
+            return problem ? formatSolution(problem) : null; // Initial filtering already done
         }
 
-        // Retourne un aperçu pour tous les problèmes
+        // Return overview for all problems
         return this.problems.map(formatSolution).filter(s => s && s.solution);
     }
 
     /**
-     * Met à jour le payload d'un problème spécifique par son ID.
-     * @param {string} problemId - L'ID du problème à mettre à jour.
-     * @param {object} newPayload - Le nouvel objet payload qui remplacera l'ancien.
-     * @returns {boolean} - True si la mise à jour a réussi, false sinon.
+     * Updates payload of a specific problem by its ID.
+     * @param {string} problemId - ID of problem to update.
+     * @param {object} newPayload - New payload object to replace old one.
+     * @returns {boolean} - True if update succeeded, false otherwise.
      */
     async updateProblemPayload(problemId, newPayload) {
         const problem = this.problems.find(p => p.id === problemId);
@@ -607,7 +607,7 @@ class ProblemManager {
         console.log(`[ProblemManager] Mise à jour du payload pour le problème '${problemId}'.`);
         problem.payload = newPayload;
 
-        // Invalider l'état actuel car le problème a changé
+        // Invalidate current state because problem has changed
         problem.state.bestSolution = null;
         problem.state.bestEnergy = "Infinity";
 

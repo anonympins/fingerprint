@@ -158,25 +158,12 @@ const loadBotWhitelist = (filename, fallbackEntries) => {
 };
 
 const googlebotEntries = loadBotWhitelist('googlebot.json', [
-  "2001:4860:4801:10::/64",
-  "2001:4860:4801:11::/64",
-  "2001:4860:4801:12::/64",
-  // ... [Keep fallback inline values for safety]
-  "66.249.79.64"
 ]);
 
 const bingbotEntries = loadBotWhitelist('bingbot.json', [
-  "157.55.39.0/24",
-  "207.46.13.0/24",
-  // ... [Keep fallback inline values for safety]
-  "40.77.178.0/23"
 ]);
 
 const yandexEntries = loadBotWhitelist('yandex.json', [
-  "2a02:6b8::/29",
-  "5.45.192.0/18",
-  // ... [Keep fallback inline values for safety]
-  "213.180.192.0/19"
 ]);
 
 function generateSessionMapping() {
@@ -1496,88 +1483,6 @@ export const verifyTspChallenge = (
     return false;
   }
 };
-
-/**
- * Generates the HTML content for a memory-intensive PoW challenge.
- */
-const generateMemoryPoWChallenge = (
-  clientIp,
-  nonce,
-  difficulty = 16,
-  path = "",
-) => {
-    const safePath = sanitizeRedirectPath(path);
-  // difficulty here is the buffer size in MB.
-  return `
-      <html>
-        <head><title>Advanced Security Check</title></head>
-        <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
-          <h1>Enhanced Verification... (Level 2)</h1>
-          <p>Your activity requires an additional security check.</p>
-          <div id="loader" style="margin:20px;">⚙️ Performing memory allocation and calculation... (${difficulty} MB)</div>
-          <script>
-            async function solve() {
-              const nonce = ${safeJsonStringify(nonce)};
-                   const size = ${difficulty} * 1024 * 1024; // en octets
-              const iterations = size / 16;
-              
-              try {
-                const buffer = new Uint32Array(size / 4);
-                let h = new TextEncoder().encode(nonce).reduce((acc, v) => acc + v, 0);
-                for (let i = 0; i < buffer.length; i++) {
-                    buffer[i] = (h = Math.imul(h ^ i, 1597334677));
-                }
-                
-                let finalHash = 0;
-                for(let i = 0; i < iterations; i++) {
-                    const addr = buffer[i % buffer.length] % buffer.length;
-                    finalHash ^= buffer[addr];
-                }
-                window.location.href = "${path}" + "?pow_type=mem&pow_nonce=" + nonce + "&pow_solution=" + finalHash;
-              } catch(e) {
-                window.location.href = ${safeJsonStringify(safePath)} + "?pow_type=mem&pow_nonce=" + nonce + "&pow_solution=" + finalHash;
-                 }
-            }
-            solve();
-          </script>
-        </body>
-      </html>`;
-};
-
-/**
- * Verifies if a PoW solution is valid and generates a clearance ticket.
- */
-export const verifyPoWAndGenerateTicket = async (
-  ip,
-  nonce,
-  solution,
-  difficulty = 4,
-  deviceId = '',
-  deviceHash = ''
-) => {
-  // 1. Verify the solution: hash(ip + nonce + solution) must start with N zeros
-  const hash = crypto
-    .createHash("sha256")
-    .update(`${ip}:${nonce}:${solution}`)
-    .digest("hex");
-
-  if (!hash.startsWith("0".repeat(difficulty))) {
-    return null;
-  }
-
-  // 2. Generate a signed and encrypted stateless ticket
-  const expiry = Date.now() + 3600000; // 1 hour
-  const payload = {
-    expiry,
-    originalIp: ip,
-    deviceId,
-    deviceHash
-  };
-
-  return generateStatelessTicket(payload);
-};
-
-
 
 /**
  * Verifies a memory PoW solution.
