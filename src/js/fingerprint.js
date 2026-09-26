@@ -348,7 +348,7 @@ export function generateStatelessTicket(payload) {
  * @param {object} context - Le contexte de la requête.
  * @returns {{protocolAnomalyScore: number}}
  */
-function getProtocolAnomalyScore(context) {
+export function getProtocolAnomalyScore(context) {
     let http2Anomaly = 0.0;
     let quicAnomaly = 0.0;
 
@@ -361,9 +361,10 @@ function getProtocolAnomalyScore(context) {
         const h2Fp = context.headers?.['x-http2-fingerprint'] || context.http2Fingerprint || null;
         if (h2Fp && typeof h2Fp === 'string') {
             const parts = h2Fp.split('|');
-            if (parts.length >= 4) {
+            if (parts.length >= 3) {
                 const connWindow = parseInt(parts[1], 10);
-                const headerOrder = parts[3];
+                const streamPriority = parts[2] || '';
+                const headerOrder = parts.length > 3 ? parts[3] : '';
                 const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
                 const isFirefox = browser.startsWith('Firefox');
                 const isSafari = browser.startsWith('Safari');
@@ -371,10 +372,42 @@ function getProtocolAnomalyScore(context) {
                 if (isChromium) {
                     if (headerOrder && headerOrder !== 'm,a,s,p') http2Anomaly += 60.0;
                     if (connWindow === 65535 || connWindow === 65536) http2Anomaly += 40.0;
+                    if (streamPriority === '0' || streamPriority === '') http2Anomaly += 50.0;
                 } else if (isFirefox) {
                     if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
                 } else if (isSafari) {
                     if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
+                }
+
+                // Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
+                if (parts.length >= 5) {
+                    const frameCountsStr = parts[4];
+                    const frameCounts = {};
+                    frameCountsStr.split(',').forEach(item => {
+                        const kv = item.split(':');
+                        if (kv.length === 2) {
+                            frameCounts[kv[0]] = parseInt(kv[1], 10);
+                        }
+                    });
+
+                    const priorityCount = frameCounts.p || 0;
+                    const windowUpdateCount = frameCounts.w || 0;
+                    const continuationCount = frameCounts.c || 0;
+
+                    if (isChromium) {
+                        // Chrome envoie des trames PRIORITY pour l'arbre de dépendances
+                        if (priorityCount === 0) http2Anomaly += 25.0;
+                        // Chrome est agressif avec les WINDOW_UPDATE
+                        if (windowUpdateCount < 2) http2Anomaly += 20.0;
+                    } else if (isFirefox) {
+                        // Firefox utilise un schéma de priorité différent, souvent avec moins de trames PRIORITY
+                        if (priorityCount > 1) http2Anomaly += 20.0;
+                    }
+
+                    // Les bots génériques n'envoient souvent pas de trames CONTINUATION pour les en-têtes longs
+                    if (continuationCount === 0 && (headerOrder.match(/,/g) || []).length > 3) {
+                        http2Anomaly += 30.0;
+                    }
                 }
             }
         }
@@ -669,8 +702,8 @@ const securityProfiles = {
             botnetClusterScore: 0.6,
             tcpAnomalyScore: 0.8,
             quicAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie QUIC
-            protocolAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
+            http2AnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
             virtualizationScore: 0.8,
         },
@@ -717,9 +750,9 @@ const securityProfiles = {
             ipReputationScore: 0.6,
             botnetClusterScore: 0.8,
             tcpAnomalyScore: 1.0,
-            protocolAnomalyScore: 1.0,
             quicAnomalyScore: 1.0,
             renderingAnomalyScore: 1.0,
+            http2AnomalyScore: 1.0,
             threatIntelScore: 1.0,
             virtualizationScore: 1.0,
         },
@@ -767,8 +800,8 @@ const securityProfiles = {
             ipReputationScore: 0.5,
             botnetClusterScore: 0.7,
             tcpAnomalyScore: 0.8,
-            protocolAnomalyScore: 0.8,
             quicAnomalyScore: 0.8,
+            http2AnomalyScore: 0.8,
             renderingAnomalyScore: 0.2,
             threatIntelScore: 0.6,
             virtualizationScore: 0.8,
@@ -818,8 +851,8 @@ const securityProfiles = {
             ipReputationScore: 0.3, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.5, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.5, // NEW: Anomalie de pile TCP/IP
-            protocolAnomalyScore: 0.5,
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
+            http2AnomalyScore: 0.5,
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
             virtualizationScore: 0.8,
         },
@@ -866,8 +899,8 @@ const securityProfiles = {
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.9, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.9, // NEW: Anomalie de pile TCP/IP
-            protocolAnomalyScore: 0.9,
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
+            http2AnomalyScore: 0.9,
             renderingAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
@@ -3933,7 +3966,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   const { tcpAnomalyScore } = getTcpAnomalyScore(context);
-    const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
+    const { protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore } = getProtocolAnomalyScore(context);
     const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
     const virtualizationScore = getVirtualizationAnomalyScore(context);
 
@@ -3946,8 +3979,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Array.isArray(deviceData.ips)) {
       deviceData.ips = new Set(deviceData.ips);
   }
-  // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore };
+    // Le vecteur de suspicion est maintenant complet.
+    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -3990,8 +4023,8 @@ export const identifyRequest = (securityConfig) => async (req, res) => {
       botnetClusterScore: 0.7,
       tcpAnomalyScore: 0.8,
       quicAnomalyScore: 0.8,
-      protocolAnomalyScore: 0.8,
       renderingAnomalyScore: 0.8,
+      http2AnomalyScore: 0.8,
       threatIntelScore: 1.0,
       virtualizationScore: 0.8
     },
@@ -4605,8 +4638,7 @@ export class FingerprintEngine {
             (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
             (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
             (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
-            (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) + // NOUVEAU: HTTP/2 Anomaly
-            (suspicionVector.protocolAnomalyScore || 0) * (weights.protocolAnomalyScore || 0) +
+            (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) +
             (suspicionVector.cookieDroppingScore || 0) * (weights.cookieDroppingScore || 0) +
             (suspicionVector.virtualizationScore || 0) * (weights.virtualizationScore || 0) +
             (suspicionVector.threatIntelScore || 0) * (weights.threatIntelScore || 0) + // NOUVEAU: QUIC Anomaly

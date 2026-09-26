@@ -1459,28 +1459,62 @@ public class RequestUtils {
             }
             if (h2Fp != null && !h2Fp.isEmpty()) {
                 String[] parts = h2Fp.split("\\|");
-                if (parts.length >= 4) {
+                if (parts.length >= 3) {
                     try {
                         int connWindow = Integer.parseInt(parts[1]);
-                        String headerOrder = parts[3];
+                        String streamPriority = parts.length > 2 ? parts[2] : "";
+                        String headerOrder = parts.length > 3 ? parts[3] : "";
                         boolean isChromium = browser.startsWith("Chrome") || browser.startsWith("Edge");
                         boolean isFirefox = browser.startsWith("Firefox");
                         boolean isSafari = browser.startsWith("Safari");
 
                         if (isChromium) {
-                            if (headerOrder != null && !headerOrder.equals("m,a,s,p")) {
+                            if (headerOrder != null && !headerOrder.isEmpty() && !headerOrder.equals("m,a,s,p")) {
                                 http2Anomaly += 60.0;
                             }
                             if (connWindow == 65535 || connWindow == 65536) {
                                 http2Anomaly += 40.0;
                             }
+                            if ("0".equals(streamPriority) || streamPriority.isEmpty()) {
+                                http2Anomaly += 50.0;
+                            }
                         } else if (isFirefox) {
-                            if (headerOrder != null && !headerOrder.equals("m,s,p,a")) {
+                            if (headerOrder != null && !headerOrder.isEmpty() && !headerOrder.equals("m,s,p,a")) {
                                 http2Anomaly += 60.0;
                             }
                         } else if (isSafari) {
-                            if (headerOrder != null && !headerOrder.equals("m,s,p,a")) {
+                            if (headerOrder != null && !headerOrder.isEmpty() && !headerOrder.equals("m,s,p,a")) {
                                 http2Anomaly += 60.0;
+                            }
+                        }
+
+                        // Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
+                        if (parts.length >= 5) {
+                            String frameCountsStr = parts[4];
+                            Map<String, Integer> frameCounts = new HashMap<>();
+                            for (String item : frameCountsStr.split(",")) {
+                                String[] kv = item.split(":");
+                                if (kv.length == 2) {
+                                    try {
+                                        frameCounts.put(kv[0], Integer.parseInt(kv[1]));
+                                    } catch (NumberFormatException e) { /* ignore */ }
+                                }
+                            }
+
+                            int priorityCount = frameCounts.getOrDefault("p", 0);
+                            int windowUpdateCount = frameCounts.getOrDefault("w", 0);
+                            int continuationCount = frameCounts.getOrDefault("c", 0);
+
+                            if (isChromium) {
+                                if (priorityCount == 0) http2Anomaly += 25.0; // Chrome envoie des trames PRIORITY
+                                if (windowUpdateCount < 2) http2Anomaly += 20.0; // Chrome est agressif avec les WINDOW_UPDATE
+                            } else if (isFirefox) {
+                                if (priorityCount > 1) http2Anomaly += 20.0; // Firefox en envoie moins
+                            }
+
+                            long commaCount = headerOrder != null ? headerOrder.chars().filter(ch -> ch == ',').count() : 0;
+                            if (continuationCount == 0 && commaCount > 3) {
+                                http2Anomaly += 30.0; // Les bots n'envoient souvent pas de trames CONTINUATION
                             }
                         }
                     } catch (NumberFormatException e) {

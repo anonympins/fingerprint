@@ -2011,6 +2011,21 @@ class RequestUtils
     }
 
     /**
+     * Helper to find the first key of a value from a list of needles in an array.
+     * @param array<int, string> $haystack
+     * @param array<int, string> $needles
+     * @return int|null
+     */
+    private static function array_find_key(array $haystack, array $needles): ?int
+    {
+        foreach ($needles as $needle) {
+            $key = array_search($needle, $haystack, true);
+            if ($key !== false) return (int)$key;
+        }
+        return null;
+    }
+
+    /**
      * Détecte les anomalies de protocole (HTTP/2 et QUIC/HTTP3) par rapport au User-Agent.
      * @param RequestContext $context
      * @return array{'protocolAnomalyScore': float}
@@ -2024,51 +2039,95 @@ class RequestUtils
         $uaParts = self::parseUserAgent($ua);
         $browser = $uaParts['browser'] ?? null;
 
-        // HTTP/2 Anomaly logic
-        $h2Fp = $context->getHeader('x-http2-fingerprint') ?? $context->http2Fingerprint ?? null;
-        if ($h2Fp && is_string($h2Fp) && $browser) {
-            $parts = explode('|', $h2Fp);
-            if (count($parts) >= 4) {
-                $connWindow = (int)$parts[1];
-                $headerOrder = $parts[3];
-                $isChromium = str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge');
-                $isFirefox = str_starts_with($browser, 'Firefox');
-                $isSafari = str_starts_with($browser, 'Safari');
+        if ($browser) {
+            // HTTP/2 Anomaly logic
+            $h2Fp = $context->getHeader('x-http2-fingerprint') ?? $context->http2Fingerprint ?? null;
+            if ($h2Fp && is_string($h2Fp)) {
+                $parts = explode('|', $h2Fp);
+                if (count($parts) >= 3) {
+                    $connWindow = (int)$parts[1];
+                    $streamPriority = $parts[2] ?? '';
+                    $headerOrder = $parts[3] ?? '';
+                    $isChromium = str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge');
+                    $isFirefox = str_starts_with($browser, 'Firefox');
+                    $isSafari = str_starts_with($browser, 'Safari');
 
-                if ($isChromium) {
-                    if ($headerOrder && $headerOrder !== 'm,a,s,p') $http2Anomaly += 60.0;
-                    if ($connWindow === 65535 || $connWindow === 65536) $http2Anomaly += 40.0;
-                } elseif ($isFirefox) {
-                    if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
-                } elseif ($isSafari) {
-                    if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
-                }
-            }
-        }
-
-        // QUIC Anomaly logic
-        $quicFp = $context->getHeader('x-quic-fp') ?? $context->quicFingerprint ?? null;
-        if ($quicFp && is_string($quicFp) && $browser) {
-            $parts = explode(';', $quicFp);
-            if (count($parts) >= 2) {
-                $params = [];
-                foreach (explode(',', $parts[1]) as $p) {
-                    $kv = explode('=', $p, 2);
-                    if (count($kv) === 2) {
-                        $params[$kv[0]] = $kv[1];
+                    if ($isChromium) {
+                        if ($headerOrder && $headerOrder !== 'm,a,s,p') $http2Anomaly += 60.0;
+                        if ($connWindow === 65535 || $connWindow === 65536) $http2Anomaly += 40.0;
+                        if ($streamPriority === '0' || $streamPriority === '') $http2Anomaly += 50.0;
+                    } elseif ($isFirefox) {
+                        if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
+                    } elseif ($isSafari) {
+                        if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
                     }
                 }
-                $priorityOrder = $parts[2] ?? '';
+            }
 
-                if (str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge')) {
-                    $maxData = isset($params['1']) ? (int)$params['1'] : 0;
-                    $maxStreams = isset($params['4']) ? (int)$params['4'] : 0;
-                    if ($maxData > 0 && $maxData < 1048576) $quicAnomaly += 40.0;
-                    if ($maxStreams > 0 && $maxStreams !== 100) $quicAnomaly += 30.0;
-                    if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $quicAnomaly += 30.0;
-                } elseif (str_starts_with($browser, 'Firefox')) {
-                    $maxData = isset($params['1']) ? (int)$params['1'] : 0;
-                    if ($maxData > 0 && $maxData > 5000000) $quicAnomaly += 40.0;
+            // QUIC Anomaly logic
+            $quicFp = $context->getHeader('x-quic-fp') ?? $context->quicFingerprint ?? null;
+            if ($quicFp && is_string($quicFp)) {
+                $parts = explode(';', $quicFp);
+                if (count($parts) >= 2) {
+                    $params = [];
+                    foreach (explode(',', $parts[1]) as $p) {
+                        $kv = explode('=', $p, 2);
+                        if (count($kv) === 2) {
+                            $params[$kv[0]] = $kv[1];
+                        }
+                    }
+                    $priorityOrder = $parts[2] ?? '';
+                    $frameOrderRaw = $parts[3] ?? $context->getHeader('x-quic-frame-order') ?? '';
+                    $frameOrder = array_values(array_filter(array_map('trim', explode(',', strtolower($frameOrderRaw)))));
+
+                    $isChromium = str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge');
+                    $isFirefox = str_starts_with($browser, 'Firefox');
+                    $isSafari = str_starts_with($browser, 'Safari');
+
+                    $maxData = (int)($params['1'] ?? $params['0x01'] ?? 0);
+                    $maxStreams = (int)($params['4'] ?? $params['8'] ?? $params['0x08'] ?? 0);
+                    $bidiLocal = (int)($params['5'] ?? $params['0x05'] ?? 0);
+                    $bidiRemote = (int)($params['6'] ?? $params['0x06'] ?? 0);
+
+                    if ($isChromium) {
+                        if ($maxData > 0 && $maxData < 1048576) $quicAnomaly += 40.0;
+                        if ($maxStreams > 0 && $maxStreams !== 100) $quicAnomaly += 30.0;
+                        if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $quicAnomaly += 30.0;
+                        if ($bidiLocal > 0 && ($bidiLocal < 524288 || $bidiLocal === 262144)) $quicAnomaly += 40.0;
+                        if ($bidiRemote > 0 && ($bidiRemote < 524288 || $bidiRemote === 262144)) $quicAnomaly += 30.0;
+
+                        if (count($frameOrder) >= 2) {
+                            $sIdx = self::array_find_key($frameOrder, ['s', 'settings', '4']);
+                            $mIdx = self::array_find_key($frameOrder, ['m', 'max_streams', '18']);
+                            $pIdx = self::array_find_key($frameOrder, ['p', 'priority', 'priority_update', '15']);
+
+                            if ($sIdx !== null && $sIdx !== 0) $quicAnomaly += 50.0;
+                            if ($mIdx !== null && $sIdx !== null && $mIdx < $sIdx) $quicAnomaly += 60.0;
+                            if ($pIdx !== null && $sIdx !== null && $pIdx < $sIdx) $quicAnomaly += 60.0;
+                        }
+                    } elseif ($isFirefox) {
+                        if ($maxData > 0 && $maxData > 5000000) $quicAnomaly += 40.0;
+                        if ($maxStreams === 100) $quicAnomaly += 50.0;
+                        if ($bidiLocal === 6291456) $quicAnomaly += 50.0;
+
+                        if (count($frameOrder) >= 2) {
+                            $sIdx = self::array_find_key($frameOrder, ['s', 'settings', '4']);
+                            if ($sIdx !== null && $sIdx !== 0) $quicAnomaly += 50.0;
+                        }
+                    } elseif ($isSafari) {
+                        if ($maxStreams === 100 && $maxData === 1572864 && str_contains($priorityOrder, 'u=2,i')) {
+                            $quicAnomaly += 60.0;
+                        }
+                        if ($bidiLocal === 6291456) $quicAnomaly += 50.0;
+
+                        if (count($frameOrder) >= 2) {
+                            $sIdx = self::array_find_key($frameOrder, ['s', 'settings', '4']);
+                            $mIdx = self::array_find_key($frameOrder, ['m', 'max_streams']);
+                            if ($mIdx !== null && ($mIdx === 0 || ($sIdx !== null && $mIdx < $sIdx))) {
+                                $quicAnomaly += 50.0;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2078,7 +2137,9 @@ class RequestUtils
                 0.0,
                 min(100.0, $http2Anomaly),
                 min(100.0, $quicAnomaly)
-            )
+            ),
+            'http2AnomalyScore' => min(100.0, $http2Anomaly),
+            'quicAnomalyScore' => min(100.0, $quicAnomaly)
         ];
     }
 

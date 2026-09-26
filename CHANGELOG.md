@@ -1,3 +1,15 @@
+## Version 0.7.4
+
+- 🛡️ **Security & Rate Limiting**:
+  - **Domain-Aware Challenge Rate Limiter**: Implemented a new rate-limiting mechanism that operates on a per-domain basis. This enhances stability in multi-tenant architectures and mitigates challenge-based DoS attacks by isolating traffic per host.
+- ⚖️ **Scoring Parity & Enhancements**:
+  - **`behaviorScore` Overhaul**: Reworked the behavioral scoring logic across all supported languages (Node.js, PHP, Java, Python) for more accurate detection of human-like interactions versus automated patterns.
+  - **Cross-Language Weight Parity**: Harmonized the weights within all security profiles to ensure identical scoring and behavior across every runtime environment.
+  - **HTTP/2 Pseudo-Header Validation**: Hardened `protocolAnomalyScore` to detect and penalize invalid pseudo-headers in HTTP/2 fingerprints, improving detection of non-standard and bot-like clients.
+  - **Java Engine Parity**: The Java engine's auto-tuner and configuration management have been brought to full parity with the other language implementations.
+- 🔧 **Fixes & Maintenance**:
+  - Corrected library import paths and expanded test coverage for the updated `behaviorScore` logic.
+
 ## Version 0.7.3
 
 - 🛡️ **Scoring Corrections & Anti-Spoofing Fixes**:

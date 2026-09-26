@@ -1727,12 +1727,13 @@ class RequestUtils:
         h2_fp = context.headers.get("x-http2-fingerprint") or getattr(context, "http2_fingerprint", None)
         if browser and h2_fp and isinstance(h2_fp, str):
             parts = h2_fp.split("|")
-            if len(parts) >= 4:
+            if len(parts) >= 3:
                 try:
                     conn_window = int(parts[1])
                 except ValueError:
                     conn_window = 0
-                header_order = parts[3].strip().lower()
+                stream_priority = parts[2] if len(parts) > 2 else ''
+                header_order = parts[3].strip().lower() if len(parts) > 3 else ''
                 is_chromium = browser.startswith("Chrome") or browser.startswith("Edge")
                 is_firefox = browser.startswith("Firefox")
                 is_safari = browser.startswith("Safari")
@@ -1742,12 +1743,42 @@ class RequestUtils:
                         http2_anomaly += 60.0
                     if conn_window in (65535, 65536):
                         http2_anomaly += 40.0
+                    if stream_priority == '0' or stream_priority == '':
+                        http2_anomaly += 50.0
                 elif is_firefox:
                     if header_order and header_order != "m,s,p,a":
                         http2_anomaly += 60.0
                 elif is_safari:
                     if header_order and header_order != "m,s,p,a":
                         http2_anomaly += 60.0
+
+                # Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
+                if len(parts) >= 5:
+                    frame_counts_str = parts[4]
+                    frame_counts = {}
+                    for item in frame_counts_str.split(','):
+                        kv = item.split(':')
+                        if len(kv) == 2:
+                            try:
+                                frame_counts[kv[0]] = int(kv[1])
+                            except ValueError:
+                                pass
+
+                    priority_count = frame_counts.get('p', 0)
+                    window_update_count = frame_counts.get('w', 0)
+                    continuation_count = frame_counts.get('c', 0)
+
+                    if is_chromium:
+                        if priority_count == 0:
+                            http2_anomaly += 25.0
+                        if window_update_count < 2:
+                            http2_anomaly += 20.0
+                    elif is_firefox:
+                        if priority_count > 1:
+                            http2_anomaly += 20.0
+
+                    if continuation_count == 0 and header_order.count(',') > 3:
+                        http2_anomaly += 30.0
 
         quic_res = RequestUtils.get_quic_anomaly_score(context)
         quic_anomaly = quic_res.get("quicAnomalyScore", 0.0)

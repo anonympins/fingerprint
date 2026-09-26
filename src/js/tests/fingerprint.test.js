@@ -2394,6 +2394,58 @@ describe('getClientHintsInconsistencyScore', () => {
     });
 });
 
+describe('getProtocolAnomalyScore (HTTP/2 Frame Analysis)', () => {
+    const { getProtocolAnomalyScore } = __internal;
+
+    test('should penalize spoofed Chromium with no PRIORITY frames', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'x-http2-fingerprint': 's:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:0,w:4,c:1'
+            },
+            httpVersion: '2.0'
+        };
+        const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
+        expect(protocolAnomalyScore).toBe(25.0);
+    });
+
+    test('should penalize spoofed Chromium with too few WINDOW_UPDATE frames', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'x-http2-fingerprint': 's:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:3,w:1,c:1'
+            },
+            httpVersion: '2.0'
+        };
+        const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
+        expect(protocolAnomalyScore).toBe(20.0);
+    });
+
+    test('should penalize spoofed Firefox with too many PRIORITY frames', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
+                'x-http2-fingerprint': 's:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,s,p,a|p:3,w:2,c:0'
+            },
+            httpVersion: '2.0'
+        };
+        const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
+        expect(protocolAnomalyScore).toBe(20.0);
+    });
+
+    test('should not penalize a legitimate Chromium fingerprint', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'x-http2-fingerprint': 's:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:3,w:4,c:1'
+            },
+            httpVersion: '2.0'
+        };
+        const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
+        expect(protocolAnomalyScore).toBe(0.0);
+    });
+});
+
 describe('Subnet Scoring (Node.js)', () => {
     const inMemoryStore = {
         _map: new Map(),
