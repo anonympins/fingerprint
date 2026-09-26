@@ -59,6 +59,8 @@ public class FingerprintAutoConfiguration {
         if (properties.getEd25519PublicKey() != null) {
             config.put("ed25519_public_key", properties.getEd25519PublicKey());
         }
+        config.put("differentialPrivacy", properties.getDifferentialPrivacy().toMap());
+        config.put("dpEpsilon", properties.getDpEpsilon());
         return new FingerprintEngine(config, store);
     }
 

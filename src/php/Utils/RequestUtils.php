@@ -117,6 +117,54 @@ class RequestUtils
     }
 
     /**
+     * Analyzes TCP MTU and fragmentation flags to detect network tunnels (VPN/Proxy).
+     * @param RequestContext $context The request context.
+     * @return array{'mtuAnomalyScore': float}
+     */
+    public static function getMtuAnomalyScore(RequestContext $context): array
+    {
+        $mtuHeader = $context->getHeader('x-tcp-mtu-info');
+        if (empty($mtuHeader) || !is_string($mtuHeader)) {
+            return ['mtuAnomalyScore' => 0.0];
+        }
+
+        $parts = explode(':', $mtuHeader);
+        if (count($parts) < 2) {
+            return ['mtuAnomalyScore' => 0.0];
+        }
+
+        $mtu = filter_var($parts[0], FILTER_VALIDATE_INT);
+        $df = filter_var($parts[1], FILTER_VALIDATE_INT);
+
+        if ($mtu === false || $df === false) {
+            return ['mtuAnomalyScore' => 0.0];
+        }
+
+        $score = 0.0;
+
+        // 1. Pénalité modérée pour les MTU typiques des VPNs/tunnels.
+        if ($mtu > 1200 && $mtu <= 1420) {
+            $score += 35.0;
+        } elseif ($mtu > 1420 && $mtu < 1492) {
+            $score += 20.0;
+        }
+
+        // 2. OS vs. Network Stack Inconsistency
+        $ua = $context->getHeader('user-agent') ?? '';
+        $uaParts = self::parseUserAgent($ua);
+        $os = $uaParts['os'] ?? null;
+
+        // Pénalités additionnelles en cas d'incohérence OS vs signature réseau.
+        if ($os) {
+            if (str_starts_with($os, 'Windows') && $mtu < 1492) $score += 20.0;
+            if ((str_starts_with($os, 'Android') || str_starts_with($os, 'iOS')) && $mtu < 1480) $score += 15.0;
+            if ($df === 0 && (str_starts_with($os, 'Windows') || str_starts_with($os, 'Mac') || str_starts_with($os, 'Linux'))) $score += 40.0;
+        }
+
+        return ['mtuAnomalyScore' => min(100.0, $score)];
+    }
+
+    /**
      * Calcule un score d'incohérence entre la signature TLS (JA3) et le User-Agent.
      * @return array{'tlsSpoofingScore': float}
      */

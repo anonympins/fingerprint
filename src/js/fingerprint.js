@@ -68,7 +68,8 @@ function canAttemptDns() {
 }
 
 /**
- * Diffuse un ZKP banni aux pairs fédérés de manière asynchrone (non-bloquante).
+ * Diffuse un ZKP banni aux pairs fédérés de manière asynchrone (non-bloquante)
+ * avec protection par Anonymat Différentiel (Differential Privacy / Bruit de Laplace & Leurres).
  * @private
  * @param {string} zkpY - La clé publique ZKP du terminal banni.
  * @param {object} config - La configuration de sécurité.
@@ -77,46 +78,87 @@ async function broadcastBannedZkp(zkpY, config) {
     const peers = config.federatedPeers || [];
     if (peers.length === 0) return;
 
-    const timestamp = Date.now();
-    const msg = `${timestamp}:${zkpY}`;
-    
-    let signature = '';
-    let isAsymmetric = false;
+    const dpConfig = config.differentialPrivacy || {};
+    const dpEnabled = dpConfig.enabled !== false;
+    const epsilon = typeof dpConfig.epsilon === 'number' ? dpConfig.epsilon : (config.dpEpsilon || 1.0);
 
-    if (process.env.ED25519_PRIVATE_KEY) {
-        try {
-            const cleanKey = process.env.ED25519_PRIVATE_KEY.replace(/\\n/g, '\n');
-            const signBuffer = crypto.sign(null, Buffer.from(msg), {
-                key: cleanKey,
-                format: 'pem',
-                type: 'pkcs8'
+    const sendReport = (targetZkpY, ts) => {
+        const msg = `${ts}:${targetZkpY}`;
+        let signature = '';
+        let isAsymmetric = false;
+
+        if (process.env.ED25519_PRIVATE_KEY) {
+            try {
+                const cleanKey = process.env.ED25519_PRIVATE_KEY.replace(/\\n/g, '\n');
+                const signBuffer = crypto.sign(null, Buffer.from(msg), {
+                    key: cleanKey,
+                    format: 'pem',
+                    type: 'pkcs8'
+                });
+                signature = signBuffer.toString('hex');
+                isAsymmetric = true;
+            } catch (e) {
+                console.error('[Fingerprint] Asymmetric broadcast signing failed, falling back to HMAC:', e.message);
+            }
+        }
+
+        if (!isAsymmetric) {
+            const secret = config.federationSecret || getPowSecret();
+            signature = crypto.createHmac('sha256', secret).update(msg).digest('hex');
+        }
+
+        peers.forEach(peerUrl => {
+            fetch(peerUrl + '?coop_op=share_threat_intel', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Federation-Signature': isAsymmetric ? '' : signature,
+                    'X-Federation-Signature-Ed25519': isAsymmetric ? signature : '',
+                    'X-Federation-Timestamp': String(ts)
+                },
+                body: JSON.stringify({ zkpY: targetZkpY })
+            }).catch(() => {
+                // Échec de propagation silencieux pour ne pas perturber le thread principal
             });
-            signature = signBuffer.toString('hex');
-            isAsymmetric = true;
-        } catch (e) {
-            console.error('[Fingerprint] Asymmetric broadcast signing failed, falling back to HMAC:', e.message);
+        });
+    };
+
+    let reportTimestamp = Date.now();
+
+    // 1. Differential Privacy : Perturbation laplacienne de l'horodatage
+    if (dpEnabled) {
+        const deltaT = 5000; // Sensibilité de 5s
+        const b = deltaT / Math.max(0.1, epsilon);
+        const u = secureRandomFloat() - 0.5;
+        const safeU = Math.abs(u) < 1e-7 ? (u >= 0 ? 1e-7 : -1e-7) : u;
+        const laplaceNoise = -b * Math.sign(safeU) * Math.log(1 - 2 * Math.abs(safeU));
+        const clampedNoise = Math.max(-60000, Math.min(60000, Math.round(laplaceNoise)));
+        reportTimestamp = Date.now() + clampedNoise;
+    }
+
+    sendReport(zkpY, reportTimestamp);
+
+    // 2. Differential Privacy : Réponse randomisée par injection de leurres (Decoy ZKP)
+    if (dpEnabled) {
+        const decoyProbability = dpConfig.dummyRate !== undefined
+            ? dpConfig.dummyRate
+            : (1 / (1 + Math.exp(epsilon)));
+
+        if (secureRandomFloat() < decoyProbability) {
+            const ZKP_P = 115792089237316195423570985008687907853269984665640564039457584007908834671663n;
+            const decoyBytes = crypto.randomBytes(32);
+            const decoyInt = (BigInt('0x' + decoyBytes.toString('hex')) % (ZKP_P - 2n)) + 1n;
+            const decoyZkpY = decoyInt.toString(16);
+
+            const uDecoy = secureRandomFloat() - 0.5;
+            const safeUDecoy = Math.abs(uDecoy) < 1e-7 ? (uDecoy >= 0 ? 1e-7 : -1e-7) : uDecoy;
+            const b = 5000 / Math.max(0.1, epsilon);
+            const decoyNoise = Math.max(-60000, Math.min(60000, Math.round(-b * Math.sign(safeUDecoy) * Math.log(1 - 2 * Math.abs(safeUDecoy)))));
+            const decoyTimestamp = Date.now() + decoyNoise;
+
+            sendReport(decoyZkpY, decoyTimestamp);
         }
     }
-
-    if (!isAsymmetric) {
-        const secret = config.federationSecret || getPowSecret();
-        signature = crypto.createHmac('sha256', secret).update(msg).digest('hex');
-    }
-
-    peers.forEach(peerUrl => {
-        fetch(peerUrl + '?coop_op=share_threat_intel', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Federation-Signature': isAsymmetric ? '' : signature,
-                'X-Federation-Signature-Ed25519': isAsymmetric ? signature : '',
-                'X-Federation-Timestamp': String(timestamp)
-            },
-            body: JSON.stringify({ zkpY })
-        }).catch(() => {
-            // Échec de propagation silencieux pour ne pas perturber le thread principal
-        });
-    });
 }
 
 const withTimeout = (promise, ms) => {
@@ -164,6 +206,9 @@ const bingbotEntries = loadBotWhitelist('bingbot.json', [
 ]);
 
 const yandexEntries = loadBotWhitelist('yandex.json', [
+]);
+
+const facebookEntries = loadBotWhitelist('facebook.json', [
 ]);
 
 function generateSessionMapping() {
@@ -706,6 +751,7 @@ const securityProfiles = {
             http2AnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
             virtualizationScore: 0.8,
+            mtuAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie MTU/fragmentation
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -754,6 +800,7 @@ const securityProfiles = {
             renderingAnomalyScore: 1.0,
             http2AnomalyScore: 1.0,
             threatIntelScore: 1.0,
+            mtuAnomalyScore: 0.9,
             virtualizationScore: 1.0,
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
@@ -805,6 +852,7 @@ const securityProfiles = {
             renderingAnomalyScore: 0.2,
             threatIntelScore: 0.6,
             virtualizationScore: 0.8,
+            mtuAnomalyScore: 0.9,
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -854,6 +902,7 @@ const securityProfiles = {
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
             http2AnomalyScore: 0.5,
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
+            mtuAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
@@ -902,6 +951,7 @@ const securityProfiles = {
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
             http2AnomalyScore: 0.9,
             renderingAnomalyScore: 0.9,
+            mtuAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
@@ -1694,6 +1744,11 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     if (!expiry || Date.now() > expiry) {
       return false;
     }
+    if (statelessData.greenlist || (storedDeviceHash && storedDeviceHash.startsWith('webauthn:greenlist:'))) {
+        if (!deviceId || deviceId === storedDeviceId) {
+            return true;
+        }
+    }
     if (storedDeviceHash && storedDeviceHash.startsWith('zkp:')) {
         const expectedY = storedDeviceHash.split(':')[1];
         if (zkpProof) {
@@ -1720,6 +1775,11 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     if (!expiry || Date.now() > expiry) {
       await store.delete(`ticket:${ticket}`);
       return false;
+    }
+    if (ticketData.greenlist || (storedDeviceHash && storedDeviceHash.startsWith('webauthn:greenlist:'))) {
+        if (!deviceId || deviceId === storedDeviceId) {
+            return true;
+        }
     }
     if (storedDeviceHash && storedDeviceHash.startsWith('zkp:')) {
         const expectedY = storedDeviceHash.split(':')[1];
@@ -3912,6 +3972,52 @@ function getVirtualizationAnomalyScore(context) {
     return Math.min(100.0, score);
 }
 
+/**
+ * @private
+ * Analyzes TCP MTU and fragmentation flags to detect network tunnels (VPN/Proxy).
+ * @param {object} context - The request context.
+ * @returns {{mtuAnomalyScore: number}}
+ */
+function getMtuAnomalyScore(context) {
+    const mtuHeader = context.headers?.['x-tcp-mtu-info'];
+    if (!mtuHeader || typeof mtuHeader !== 'string') {
+        return { mtuAnomalyScore: 0.0 };
+    }
+
+    const parts = mtuHeader.split(':');
+    if (parts.length < 2) {
+        return { mtuAnomalyScore: 0.0 };
+    }
+
+    const mtu = parseInt(parts[0], 10);
+    const df = parseInt(parts[1], 10); // Don't Fragment bit (1 or 0)
+
+    if (isNaN(mtu) || isNaN(df)) {
+        return { mtuAnomalyScore: 0.0 };
+    }
+
+    let score = 0.0;
+
+    // Pénalité modérée pour les MTU typiques des VPNs/tunnels.
+    if (mtu > 1200 && mtu <= 1420) {
+        score += 35.0;
+    } else if (mtu > 1420 && mtu < 1492) {
+        score += 20.0;
+    }
+
+    const ua = context.headers?.['user-agent'] || '';
+    const uaParts = parseUserAgent(ua);
+    const os = uaParts.os;
+
+    // Pénalités additionnelles en cas d'incohérence OS vs signature réseau.
+    if (os) {
+        if (os.startsWith('Windows') && mtu < 1492) score += 20.0;
+        if ((os.startsWith('Android') || os.startsWith('iOS')) && mtu < 1480) score += 15.0;
+        if (df === 0 && (os.startsWith('Windows') || os.startsWith('Mac') || os.startsWith('Linux'))) score += 40.0;
+    }
+
+    return { mtuAnomalyScore: Math.min(100.0, score) };
+}
 
 /**
  * Returns a vector of raw (unweighted) suspicion scores.
@@ -4002,6 +4108,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
     const { protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore } = getProtocolAnomalyScore(context);
     const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
     const virtualizationScore = getVirtualizationAnomalyScore(context);
+    const { mtuAnomalyScore } = getMtuAnomalyScore(context);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -4013,7 +4120,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
     // Le vecteur de suspicion est maintenant complet.
-    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore };
+    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore, mtuAnomalyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -4233,6 +4340,24 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
 }
 
 /**
+ * Generates closed-shadow DOM honeypot markup for server-rendered challenge pages.
+ * Utilizes Declarative Shadow DOM with mode="closed" to prevent screen reader false positives
+ * while capturing bot web scrapers and crawlers.
+ * @param {string[]} trapUrls
+ * @returns {string}
+ */
+function generateClosedShadowTraps(trapUrls = []) {
+  const list = Array.isArray(trapUrls) ? trapUrls : [];
+  if (list.length === 0) return '';
+
+  const trapLinksHtml = list.map((url, idx) => {
+    return `<a href="${url}" rel="nofollow" tabindex="-1"><span>&gt; ${idx + 1}</span></a>`;
+  }).join(' ');
+
+  return `<div style="position:absolute;left:-9999px;top:-9999px;width:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none;" aria-hidden="true"><template shadowrootmode="closed" shadowroot="closed"><style>:host { position: absolute; left: -9999px; top: -9999px; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; } a { color: transparent; text-decoration: none; }</style>${trapLinksHtml}</template></div>`;
+}
+
+/**
  * Generates the HTML content for a combined CPU + Memory PoW challenge.
  * @param {object} cpuChallengeDetails - Details from generateCpuTargetChallenge.
  * @param {number} memoryDifficulty - Memory allocation in MB.
@@ -4248,6 +4373,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     const fingerprint = originalFingerprint;
     const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint, clientIp, tlsSessionId);
     const baseBlockBytes = `[${baseBlock.toString('utf8').split('').map(c => c.charCodeAt(0)).join(',')}]`;
+    const trapContainerHtml = generateClosedShadowTraps(trapUrls);
 
     // Prépare la configuration pour l'initialisation du client, y compris les URL pièges.
     const clientInitConfig = {
@@ -4315,12 +4441,24 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     }
 
     if (!htmlTemplate) {
-        htmlTemplate = `<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script></body></html>`; // eslint-disable-line max-len
+        htmlTemplate = `<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>`; // eslint-disable-line max-len
     }
 
-    return htmlTemplate
+    let renderedHtml = htmlTemplate
         .replace('<!-- FINGERPRINT_SOLVER_SCRIPT -->', solverCode)
         .replace('<!-- FINGERPRINT_CHALLENGE_SCRIPT -->', challengeScript);
+
+    if (renderedHtml.includes('<!-- FINGERPRINT_TRAPS -->')) {
+        renderedHtml = renderedHtml.replace('<!-- FINGERPRINT_TRAPS -->', trapContainerHtml);
+    } else if (trapContainerHtml) {
+        if (renderedHtml.includes('</body>')) {
+            renderedHtml = renderedHtml.replace('</body>', `${trapContainerHtml}</body>`);
+        } else {
+            renderedHtml += trapContainerHtml;
+        }
+    }
+
+    return renderedHtml;
 }
 
 /**
@@ -4611,7 +4749,8 @@ export class FingerprintEngine {
       'similarityThreshold', 'reset',
       'ed25519_private_key', 'ed25519_public_key', 'upowModel',
       'federatedPeers', 'federationSecret', 'filterWhitelist',
-      'challengeRateLimit'
+      'challengeRateLimit',
+      'differentialPrivacy', 'dpEpsilon'
     ]);
 
     // 1. Check for essential keys
@@ -4649,35 +4788,31 @@ export class FingerprintEngine {
     }
   }
     calculateFinalScore(suspicionVector) {
-        const { weights } = this.securityConfig;
-        if (!weights) return 0;
+        const baseWeights = this.securityConfig.weights;
+        if (!baseWeights) return 0;
 
-        const score =
-            (suspicionVector.historyScore || 0) * (weights.historyScore || 0) +
-            (suspicionVector.rotationScore || 0) * (weights.rotationScore || 0) +
-            (suspicionVector.headerAnomalyScore || 0) * (weights.headerAnomalyScore || 0) +
-            (suspicionVector.requestPatternScore || 0) * (weights.requestPatternScore || 0) +
-            (suspicionVector.inconsistencyScore || 0) * (weights.inconsistencyScore || 0) +
-            (suspicionVector.honeypotScore || 0) * (weights.honeypotScore || 0) +
-            (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
-            (suspicionVector.botScore || 0) * (weights.botScore || 0) + // Ajout du nouveau score
-            (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
-            (suspicionVector.botnetClusterScore || 0) * (weights.botnetClusterScore || 0) +
-            (suspicionVector.tlsSpoofingScore || 0) * (weights.tlsSpoofingScore || 0) + // NOUVEAU: TLS Spoofing
-            (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0) +
-            (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
-            (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0) +
-            (suspicionVector.subnetScore || 0) * (weights.subnetScore || 0) +
-            (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
-            (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
-            (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
-            (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) +
-            (suspicionVector.cookieDroppingScore || 0) * (weights.cookieDroppingScore || 0) +
-            (suspicionVector.virtualizationScore || 0) * (weights.virtualizationScore || 0) +
-            (suspicionVector.threatIntelScore || 0) * (weights.threatIntelScore || 0) + // NOUVEAU: QUIC Anomaly
-            (suspicionVector.renderingAnomalyScore || 0) * (weights.renderingAnomalyScore || 0); // NOUVEAU: Rendering Anomaly
+        const dynamicWeights = { ...baseWeights };
+        if ((suspicionVector.mtuAnomalyScore || 0) > 50.0) {
+            this._log('Tunnel detected, amplifying suspicion weights.', { mtuScore: suspicionVector.mtuAnomalyScore });
 
-        return Math.min(100, score);
+            // Augmente le poids des incohérences de bas niveau (difficiles à falsifier)
+            dynamicWeights.tlsSpoofingScore = (baseWeights.tlsSpoofingScore || 0.8) * 1.25;
+            dynamicWeights.crossLayerInconsistencyScore = (baseWeights.crossLayerInconsistencyScore || 0.4) * 1.4;
+            dynamicWeights.clientHintsInconsistencyScore = (baseWeights.clientHintsInconsistencyScore || 0.7) * 1.2;
+
+            // Augmente le poids des anomalies comportementales (un bot derrière un VPN est plus suspect)
+            dynamicWeights.behaviorScore = (baseWeights.behaviorScore || 0.7) * 1.15;
+            dynamicWeights.requestPatternScore = (baseWeights.requestPatternScore || 0.6) * 1.2;
+        }
+
+        let score = 0;
+        for (const key in dynamicWeights) {
+            const metricScore = suspicionVector[key] || 0.0;
+            if (metricScore > 0) {
+                score += metricScore * dynamicWeights[key];
+            }
+        }
+        return Math.min(100.0, score);
     }
 
 
@@ -4998,9 +5133,84 @@ export class FingerprintEngine {
     
     // Bypass instantané si l'appareil a prouvé cryptographiquement son identité matérielle (Secure Enclave / TPM)
     const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
+
+    // Règle Anti-Ferme : Même avec du matériel sécurisé, un appareil condamné ou menant une attaque certaine est révoqué et bloqué
+    if (deviceData?.condemned || this._hasCertainAttack(requestContext)) {
+        if (deviceData) {
+            deviceData.condemned = true;
+            deviceData.webauthnVerified = false;
+            await store.set(`device:${deviceId}`, deviceData);
+        }
+        this._log('Condemned device or attack detected - revoking hardware trust and blocking', { deviceId });
+        const decision = { action: 'block', status: 404, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+        if (this.dryRun) {
+            this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+            decision.intendedAction = decision.action;
+            decision.action = 'next';
+            delete decision.status;
+            delete decision.body;
+            if (requestContext._newCookies) {
+                const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                if (deviceCookie) decision.newCookieForResponse = deviceCookie;
+            }
+        }
+        return decision;
+    }
+
+    // Validation immédiate de l'attestation matérielle WebAuthn si présente dans la requête
+    const behaviorHeader = requestContext.headers?.['x-behavior-metrics'];
+    if (behaviorHeader && typeof behaviorHeader === 'string' && behaviorHeader.startsWith('{')) {
+        try {
+            const parsedMetrics = JSON.parse(behaviorHeader);
+            if (parsedMetrics && parsedMetrics.webauthnAnchor && deviceData) {
+                if (verifyWebAuthnHardwareAnchor(parsedMetrics.webauthnAnchor, deviceData)) {
+                    deviceData.webauthnVerified = true;
+                    await store.set(`device:${deviceId}`, deviceData);
+                }
+            }
+        } catch (e) {}
+    }
+
     if (deviceData && deviceData.webauthnVerified) {
         this._log('Hardware-anchored device verified (WebAuthn) - full bypass granted', { deviceId });
-        return { action: 'next', score: 0, vector: { webauthn_verified: 100 } };
+        const greenlistTtl = 365 * 86400 * 1000; // 1 an (permanent)
+        const greenlistTicket = generateStatelessTicket({
+            expiry: Date.now() + greenlistTtl,
+            originalIp: clientIp,
+            deviceId,
+            deviceHash: 'webauthn:greenlist:' + (deviceData.webauthnCredentialId || deviceId),
+            greenlist: true
+        });
+        const isHttps = requestContext.headers?.['x-forwarded-proto'] === 'https' || 
+                        requestContext.rawReq?.secure || 
+                        requestContext.rawReq?.protocol === 'https' ||
+                        requestContext.rawReq?.connection?.encrypted;
+        const secureOption = isHttps || this.isProduction;
+
+        const decision = {
+            action: 'next',
+            score: 0,
+            vector: { webauthn_verified: 100 },
+            cookie: {
+                name: 'pow_clearance',
+                value: greenlistTicket,
+                options: {
+                    httpOnly: true,
+                    secure: secureOption,
+                    sameSite: 'strict',
+                    ...(secureOption && { partitioned: true }),
+                    maxAge: greenlistTtl,
+                    path: '/'
+                }
+            }
+        };
+        if (requestContext._newCookies) {
+            const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+            if (deviceCookie) {
+                decision.newCookieForResponse = deviceCookie;
+            }
+        }
+        return decision;
     }
 
     if (isStatic) {
@@ -5043,7 +5253,7 @@ export class FingerprintEngine {
       if (filterWhitelist === true) {
         bypassWhitelist = this._hasCertainAttack(requestContext);
       } else if (typeof filterWhitelist === 'number') {
-        const res = await getScoreAndVector();
+          const res = await getScoreAndVector();
         if (res.score > filterWhitelist) {
           bypassWhitelist = true;
         }
@@ -6633,6 +6843,7 @@ export const default_whitelist = () => [
     googlebot_whitelist(),
     bingbot_whitelist(),
     yandex_whitelist(),
+    facebook_whitelist(),
     // === Moteurs de recherche majeurs ===
     { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' },
     { userAgent: 'Google-Extended', hostnameSuffix: '.google.com' },
@@ -6748,6 +6959,11 @@ export const yandex_whitelist = () => ({
 export const bingbot_whitelist = () => ({
     type: 'allowlist',
     entries: bingbotEntries
+});
+
+export const facebook_whitelist = () => ({
+    type: 'allowlist',
+    entries: facebookEntries
 });
 
 
@@ -6983,6 +7199,9 @@ export const powMiddleware = (securityConfig) => {
 
       case 'next':
       default:
+        if (decision.cookie && res && typeof res.cookie === 'function') {
+          res.cookie(decision.cookie.name, decision.cookie.value, decision.cookie.options);
+        }
         return next();
     }
   };
@@ -6999,6 +7218,7 @@ export const __internal = {
     checkChallengeRateLimit,
     getDeviceHash,
     getCompositeDeviceHash,
+    generateClosedShadowTraps,
     getSuspicionVector,
     getTlsSessionId,
     pruneTrafficData,

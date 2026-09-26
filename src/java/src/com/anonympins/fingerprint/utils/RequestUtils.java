@@ -213,6 +213,56 @@ public class RequestUtils {
         return map;
     }
 
+    /**
+     * Analyse les métadonnées MTU et le flag DF (Don't Fragment) de la pile TCP pour détecter
+     * les tunnels VPN / Proxy résidentiels.
+     */
+    public static Map<String, Double> getMtuAnomalyScore(RequestContext context) {
+        Map<String, Double> result = new HashMap<>();
+        result.put("mtuAnomalyScore", 0.0);
+
+        String mtuHeader = context.getHeader("x-tcp-mtu-info");
+        if (mtuHeader == null || mtuHeader.trim().isEmpty()) {
+            return result;
+        }
+
+        String[] parts = mtuHeader.split(":");
+        if (parts.length < 2) {
+            return result;
+        }
+
+        int mtu;
+        int df;
+        try {
+            mtu = Integer.parseInt(parts[0].trim());
+            df = Integer.parseInt(parts[1].trim());
+        } catch (NumberFormatException e) {
+            return result;
+        }
+
+        double score = 0.0;
+
+        // Pénalité modérée pour les MTU typiques des VPNs/tunnels
+        if (mtu > 1200 && mtu <= 1420) {
+            score += 35.0;
+        } else if (mtu > 1420 && mtu < 1492) {
+            score += 20.0;
+        }
+
+        String ua = context.getHeader("user-agent");
+        Map<String, String> uaParts = parseUserAgent(ua != null ? ua : "");
+        String os = uaParts.get("os");
+
+        if (os != null) {
+            if (os.startsWith("Windows") && mtu < 1492) score += 20.0;
+            if ((os.startsWith("Android") || os.startsWith("iOS")) && mtu < 1480) score += 15.0;
+            if (df == 0 && (os.startsWith("Windows") || os.startsWith("Mac") || os.startsWith("Linux"))) score += 40.0;
+        }
+
+        result.put("mtuAnomalyScore", Math.min(100.0, score));
+        return result;
+    }
+
     private static Map<String, String> parseUserAgent(String ua) {
         Map<String, String> result = new HashMap<>();
         if (ua == null) {
