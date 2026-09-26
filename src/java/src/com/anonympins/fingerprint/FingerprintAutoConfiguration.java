@@ -42,7 +42,7 @@ public class FingerprintAutoConfiguration {
         config.put("verbose", properties.isVerbose());
         config.put("dryRun", properties.isDryRun());
         config.put("similarityThreshold", properties.getSimilarityThreshold());
-        config.put("patterns", properties.getPatterns());
+        config.put("patterns", properties.getPatterns().toMap());
         config.put("challengePagePath", properties.getChallengePagePath());
         config.put("enableUsefulWork", properties.isEnableUsefulWork());
         config.put("usefulWorkConfigPath", properties.getUsefulWorkConfigPath());

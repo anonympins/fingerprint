@@ -1,9 +1,13 @@
 package com.anonympins.fingerprint;
 
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.*;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 public class AutoTuner {
     private final FingerprintEngine engine;
@@ -16,6 +20,7 @@ public class AutoTuner {
     private final double validationTolerance;
     private final double maxDensityPercentage;
     private final long intervalMinutes;
+    private final String savePath;
     private static Map<String, Object> lastBestSolution = null;
 
     @SuppressWarnings("unchecked")
@@ -29,6 +34,7 @@ public class AutoTuner {
         this.validationTolerance = config.getValidationTolerance();
         this.maxDensityPercentage = config.getMaxDensityPercentage();
         this.intervalMinutes = config.getInterval();
+        this.savePath = config.getSavePath();
     }
 
     public void start() {
@@ -151,12 +157,14 @@ public class AutoTuner {
         // Application adaptative avec inertie (Inertial Smooth Update)
         double trafficConfidence = Math.min(1.5, Math.max(0.3, highConfidenceRatio * 4.0));
         
-        // Simulation d'une mise à jour temporaire pour la validation croisée
+        // Simulation d'une mise à jour temporaire pour la validation croisée (anti-poisoning)
         Map<String, Object> tempThresholds = new HashMap<>(engine.getThresholds());
         Map<String, Object> tempWeights = new HashMap<>(engine.getWeights());
+        Map<String, Object> tempPatterns = new HashMap<>(engine.getPatterns());
 
         applyInertialUpdate(tempThresholds, bestSolution.thresholds, "thresholds", trafficConfidence);
         applyInertialUpdate(tempWeights, bestSolution.weights, "weights", trafficConfidence);
+        applyInertialUpdate(tempPatterns, bestSolution.patterns, "patterns", trafficConfidence);
 
         // Validation croisée (anti-poisoning)
         double[] currentObj = evaluateFitness(engine.getThresholds(), engine.getWeights(), sanitizedData);
@@ -170,11 +178,29 @@ public class AutoTuner {
         // Application définitive à chaud
         applyInertialUpdate(engine.getThresholds(), bestSolution.thresholds, "thresholds", trafficConfidence);
         applyInertialUpdate(engine.getWeights(), bestSolution.weights, "weights", trafficConfidence);
+        applyInertialUpdate(engine.getPatterns(), bestSolution.patterns, "patterns", trafficConfidence);
 
         lastBestSolution = new HashMap<>();
         lastBestSolution.put("thresholds", engine.getThresholds());
         lastBestSolution.put("weights", engine.getWeights());
+        lastBestSolution.put("patterns", engine.getPatterns());
         lastBestSolution.put("objectives", bestSolution.objectives);
+
+        // Persist best configuration if savePath is configured
+        if (savePath != null && !savePath.isEmpty()) {
+            try {
+                Map<String, Object> solutionToSave = new HashMap<>();
+                solutionToSave.put("thresholds", bestSolution.thresholds);
+                solutionToSave.put("weights", bestSolution.weights);
+                solutionToSave.put("patterns", bestSolution.patterns);
+
+                ObjectMapper mapper = new ObjectMapper();
+                String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(solutionToSave);
+                Files.writeString(Paths.get(savePath), json);
+            } catch (IOException e) {
+                System.err.println("[AutoTuner] Error saving optimized configuration: " + e.getMessage());
+            }
+        }
     }
 
     private void pruneLogs(List<Map<String, Object>> logs) {
@@ -309,6 +335,17 @@ public class AutoTuner {
                     current.put(key, updated);
                 } else if ("thresholds".equals(type)) {
                     current.put(key, (int) Math.round(updated));
+                } else if ("patterns".equals(type)) {
+                    if (key.equals("benfordThreshold")) {
+                        updated = Math.max(0.05, Math.min(0.30, updated));
+                    } else if (key.equals("decayFactor")) {
+                        updated = Math.max(0.70, Math.min(0.98, updated));
+                    } else if (key.equals("minSamples") || key.equals("historySize")) {
+                        updated = Math.max(3, Math.min(30, (int) Math.round(updated)));
+                    } else if (key.endsWith("Threshold")) {
+                        updated = Math.max(50, Math.min(3000, (int) Math.round(updated)));
+                    }
+                    current.put(key, updated);
                 }
             }
         }
@@ -388,6 +425,11 @@ public class AutoTuner {
             double baseW = ((Number) entry.getValue()).doubleValue();
             ind.weights.put(entry.getKey(), baseW * (0.75 + rand.nextDouble() * 0.5)); // +/- 25%
         }
+        for (Map.Entry<String, Object> entry : engine.getPatterns().entrySet()) {
+            if (entry.getValue() instanceof Number) {
+                ind.patterns.put(entry.getKey(), ((Number) entry.getValue()).doubleValue() * (0.75 + rand.nextDouble() * 0.5));
+            }
+        }
         return ind;
     }
 
@@ -398,6 +440,9 @@ public class AutoTuner {
         }
         for (String key : p1.weights.keySet()) {
             child.weights.put(key, (p1.weights.get(key) + p2.weights.get(key)) / 2.0);
+        }
+        for (String key : p1.patterns.keySet()) {
+            child.patterns.put(key, (((Number)p1.patterns.get(key)).doubleValue() + ((Number)p2.patterns.get(key)).doubleValue()) / 2.0);
         }
         return child;
     }
@@ -426,6 +471,13 @@ public class AutoTuner {
                 String k = tKeys[rand.nextInt(tKeys.length)];
                 int mutatedThreshold = (int) Math.round(ind.thresholds.get(k) + (rand.nextDouble() - 0.5) * 5.0);
                 ind.thresholds.put(k, Math.max(10, mutatedThreshold));
+            }
+        } else if ("patterns".equals(sectionToMutate)) {
+            String[] pKeys = ind.patterns.keySet().stream().filter(k -> ind.patterns.get(k) instanceof Number).toArray(String[]::new);
+            if (pKeys.length > 0) {
+                String k = pKeys[rand.nextInt(pKeys.length)];
+                double mutatedPattern = ((Number)ind.patterns.get(k)).doubleValue() * (0.9 + rand.nextDouble() * 0.2);
+                ind.patterns.put(k, mutatedPattern);
             }
         }
     }
@@ -614,6 +666,7 @@ public class AutoTuner {
     private static class Individual {
         Map<String, Integer> thresholds = new HashMap<>();
         Map<String, Double> weights = new HashMap<>();
+        Map<String, Double> patterns = new HashMap<>();
         double[] objectives = new double[2];
         int rank = 0;
         int dominationCount = 0;
