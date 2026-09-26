@@ -124,6 +124,40 @@ public class FingerprintEngine {
         return json.substring(start, end).replace("\\n", "\n");
     }
 
+    private static List<String> loadBotWhitelist(String filename, List<String> fallbackEntries) {
+        java.io.File[] candidateDirs = {
+            new java.io.File("config"),
+            new java.io.File("../config"),
+            new java.io.File("../../config")
+        };
+        for (java.io.File dir : candidateDirs) {
+            java.io.File f = new java.io.File(dir, filename);
+            if (f.exists()) {
+                try {
+                    String content = java.nio.file.Files.readString(f.toPath());
+                    tools.jackson.databind.ObjectMapper mapper = new tools.jackson.databind.ObjectMapper();
+                    return mapper.readValue(content, new tools.jackson.core.type.TypeReference<List<String>>() {});
+                } catch (Exception e) {
+                    System.err.println("[Fingerprint] Error loading whitelist file " + filename + ": " + e.getMessage());
+                }
+            }
+        }
+        return fallbackEntries;
+    }
+
+    public static Map<String, Object> facebookWhitelist() {
+        List<String> entries = loadBotWhitelist("facebook.json", Arrays.asList(
+            "31.13.64.0/18",
+            "66.220.144.0/20",
+            "69.63.176.0/20",
+            "157.240.0.0/16"
+        ));
+        Map<String, Object> map = new HashMap<>();
+        map.put("type", "allowlist");
+        map.put("entries", entries);
+        return map;
+    }
+
     /**
      * Provides a default list of whitelisting rules for common and legitimate web crawlers.
      * @return A list of rule maps.
@@ -131,6 +165,7 @@ public class FingerprintEngine {
     public static List<Map<String, Object>> defaultWhitelist() {
         List<Map<String, Object>> whitelist = new ArrayList<>();
 
+        whitelist.add(facebookWhitelist());
         // Major search engines with DNS verification
         whitelist.add(Map.of("userAgent", "Googlebot", "hostnameSuffix", ".googlebot.com"));
         whitelist.add(Map.of("userAgent", "AdsBot-Google", "hostnameSuffix", ".googlebot.com"));

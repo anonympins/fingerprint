@@ -166,6 +166,9 @@ const bingbotEntries = loadBotWhitelist('bingbot.json', [
 const yandexEntries = loadBotWhitelist('yandex.json', [
 ]);
 
+const facebookEntries = loadBotWhitelist('facebook.json', [
+]);
+
 function generateSessionMapping() {
     const randomStr = (len = 6) => Array.from({ length: len }, () => String.fromCharCode(crypto.randomInt(97, 123))).join('');
     const randomHeader = () => `X-Sess-${crypto.randomBytes(4).toString('hex')}`;
@@ -6633,6 +6636,7 @@ export const default_whitelist = () => [
     googlebot_whitelist(),
     bingbot_whitelist(),
     yandex_whitelist(),
+    facebook_whitelist(),
     // === Moteurs de recherche majeurs ===
     { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' },
     { userAgent: 'Google-Extended', hostnameSuffix: '.google.com' },
@@ -6748,6 +6752,11 @@ export const yandex_whitelist = () => ({
 export const bingbot_whitelist = () => ({
     type: 'allowlist',
     entries: bingbotEntries
+});
+
+export const facebook_whitelist = () => ({
+    type: 'allowlist',
+    entries: facebookEntries
 });
 
 

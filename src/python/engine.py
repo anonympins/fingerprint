@@ -80,6 +80,7 @@ def can_attempt_dns() -> bool:
 _googlebot_entries = None
 _bingbot_entries = None
 _yandex_entries = None
+_facebook_entries = None
 
 def load_bot_whitelist(filename: str, fallback_entries: list) -> list:
  config_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config"))
@@ -132,11 +133,23 @@ def yandex_whitelist() -> dict:
      "entries": _yandex_entries
  }
 
+def facebook_whitelist() -> dict:
+ global _facebook_entries
+ if _facebook_entries is None:
+     _facebook_entries = load_bot_whitelist("facebook.json", [
+         "31.13.64.0/18", "66.220.144.0/20", "69.63.176.0/20", "157.240.0.0/16"
+     ])
+ return {
+     "type": "allowlist",
+     "entries": _facebook_entries
+ }
+
 def default_whitelist() -> list:
  return [
      googlebot_whitelist(),
      bingbot_whitelist(),
      yandex_whitelist(),
+     facebook_whitelist(),
      {"userAgent": "Googlebot", "hostnameSuffix": ".googlebot.com"},
      {"userAgent": "Google-Extended", "hostnameSuffix": ".google.com"},
      {"userAgent": "AdsBot-Google", "hostnameSuffix": ".googlebot.com"},

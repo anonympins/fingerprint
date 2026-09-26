@@ -31,6 +31,7 @@
      private static ?array $googlebotEntries = null;
      private static ?array $yandexEntries = null;
      private static ?array $bingbotEntries = null;
+     private static ?array $facebookEntries = null;
 
      private static array $dnsCircuitBreaker = [
          'state' => 'CLOSED',
@@ -347,12 +348,26 @@
          ];
      }
 
+     public static function facebook_whitelist(): array
+     {
+         if (self::$facebookEntries === null) {
+             self::$facebookEntries = self::loadBotWhitelist('facebook.json', [
+                 "31.13.64.0/18", "66.220.144.0/20", "69.63.176.0/20", "157.240.0.0/16"
+             ]);
+         }
+         return [
+             'type' => 'allowlist',
+             'entries' => self::$facebookEntries
+         ];
+     }
+
      public static function default_whitelist(): array
      {
          return [
              self::googlebot_whitelist(),
              self::bingbot_whitelist(),
              self::yandex_whitelist(),
+             self::facebook_whitelist(),
              ['userAgent' => 'Googlebot', 'hostnameSuffix' => '.googlebot.com'],
              ['userAgent' => 'Google-Extended', 'hostnameSuffix' => '.google.com'],
              ['userAgent' => 'AdsBot-Google', 'hostnameSuffix' => '.googlebot.com'],
