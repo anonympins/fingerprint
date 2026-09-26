@@ -43,6 +43,7 @@ class SecurityProfiles
                 'tcpAnomalyScore' => 0.8,
                 'protocolAnomalyScore' => 0.8, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 0.8, // NEW: Anomalie de rendu
+                'mtuAnomalyScore' => 0.9, // NOUVEAU: Poids pour l'anomalie MTU/fragmentation
                 'ipReputationScore' => 0.5, // NOUVEAU: Poids pour la réputation IP
                 'virtualizationScore' => 0.8,
             ],
@@ -97,6 +98,7 @@ class SecurityProfiles
                 'tcpAnomalyScore' => 1.0, // NEW: Anomalie de pile TCP/IP
                 'protocolAnomalyScore' => 1.0, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 1.0, // NEW: Anomalie de rendu
+                'mtuAnomalyScore' => 0.9,
 
             ],
             'thresholds' => ['low' => 10, 'medium' => 35, 'high' => 65, 'block' => 90],
@@ -149,6 +151,7 @@ class SecurityProfiles
                 'botnetClusterScore' => 0.7, // NOUVEAU: Poids pour le clustering botnet
                 'tcpAnomalyScore' => 0.8, // NEW: Anomalie de pile TCP/IP
                 'protocolAnomalyScore' => 0.8, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
+                'mtuAnomalyScore' => 0.9,
 
             ],
             'thresholds' => ['low' => 25, 'medium' => 50, 'high' => 80, 'block' => 95],
@@ -205,6 +208,7 @@ class SecurityProfiles
                 'tcpAnomalyScore' => 0.5, // NEW: Anomalie de pile TCP/IP
                 'protocolAnomalyScore' => 0.5, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 0.5, // NEW: Anomalie de rendu
+                'mtuAnomalyScore' => 0.9,
 
             ],
             'thresholds' => ['low' => 25, 'medium' => 55, 'high' => 80, 'block' => 95],
@@ -259,6 +263,7 @@ class SecurityProfiles
                 'tcpAnomalyScore' => 0.9, // NEW: Anomalie de pile TCP/IP
                 'protocolAnomalyScore' => 0.9, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
                 'renderingAnomalyScore' => 0.9, // NEW: Anomalie de rendu
+                'mtuAnomalyScore' => 0.9,
 
             ],
             'thresholds' => ['low' => 15, 'medium' => 40, 'high' => 70, 'block' => 90],

@@ -709,6 +709,7 @@ const securityProfiles = {
             http2AnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
             virtualizationScore: 0.8,
+            mtuAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie MTU/fragmentation
         },
         thresholds: { low: 20, medium: 45, high: 75, block: 95 },
         patterns: {
@@ -757,6 +758,7 @@ const securityProfiles = {
             renderingAnomalyScore: 1.0,
             http2AnomalyScore: 1.0,
             threatIntelScore: 1.0,
+            mtuAnomalyScore: 0.9,
             virtualizationScore: 1.0,
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
@@ -808,6 +810,7 @@ const securityProfiles = {
             renderingAnomalyScore: 0.2,
             threatIntelScore: 0.6,
             virtualizationScore: 0.8,
+            mtuAnomalyScore: 0.9,
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -857,6 +860,7 @@ const securityProfiles = {
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
             http2AnomalyScore: 0.5,
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
+            mtuAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
@@ -905,6 +909,7 @@ const securityProfiles = {
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
             http2AnomalyScore: 0.9,
             renderingAnomalyScore: 0.9,
+            mtuAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
@@ -3915,6 +3920,52 @@ function getVirtualizationAnomalyScore(context) {
     return Math.min(100.0, score);
 }
 
+/**
+ * @private
+ * Analyzes TCP MTU and fragmentation flags to detect network tunnels (VPN/Proxy).
+ * @param {object} context - The request context.
+ * @returns {{mtuAnomalyScore: number}}
+ */
+function getMtuAnomalyScore(context) {
+    const mtuHeader = context.headers?.['x-tcp-mtu-info'];
+    if (!mtuHeader || typeof mtuHeader !== 'string') {
+        return { mtuAnomalyScore: 0.0 };
+    }
+
+    const parts = mtuHeader.split(':');
+    if (parts.length < 2) {
+        return { mtuAnomalyScore: 0.0 };
+    }
+
+    const mtu = parseInt(parts[0], 10);
+    const df = parseInt(parts[1], 10); // Don't Fragment bit (1 or 0)
+
+    if (isNaN(mtu) || isNaN(df)) {
+        return { mtuAnomalyScore: 0.0 };
+    }
+
+    let score = 0.0;
+
+    // Pénalité modérée pour les MTU typiques des VPNs/tunnels.
+    if (mtu > 1200 && mtu <= 1420) {
+        score += 35.0;
+    } else if (mtu > 1420 && mtu < 1492) {
+        score += 20.0;
+    }
+
+    const ua = context.headers?.['user-agent'] || '';
+    const uaParts = parseUserAgent(ua);
+    const os = uaParts.os;
+
+    // Pénalités additionnelles en cas d'incohérence OS vs signature réseau.
+    if (os) {
+        if (os.startsWith('Windows') && mtu < 1492) score += 20.0;
+        if ((os.startsWith('Android') || os.startsWith('iOS')) && mtu < 1480) score += 15.0;
+        if (df === 0 && (os.startsWith('Windows') || os.startsWith('Mac') || os.startsWith('Linux'))) score += 40.0;
+    }
+
+    return { mtuAnomalyScore: Math.min(100.0, score) };
+}
 
 /**
  * Returns a vector of raw (unweighted) suspicion scores.
@@ -4005,6 +4056,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
     const { protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore } = getProtocolAnomalyScore(context);
     const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
     const virtualizationScore = getVirtualizationAnomalyScore(context);
+    const { mtuAnomalyScore } = getMtuAnomalyScore(context);
 
   // Save the updated device state to the store
   // Note: deviceData.ips is a Set, which may not serialize correctly in all stores (e.g., JSON). A Redis store should handle this via custom serialization or by converting to an array.
@@ -4016,7 +4068,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
     // Le vecteur de suspicion est maintenant complet.
-    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore };
+    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore, mtuAnomalyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -4652,35 +4704,31 @@ export class FingerprintEngine {
     }
   }
     calculateFinalScore(suspicionVector) {
-        const { weights } = this.securityConfig;
-        if (!weights) return 0;
+        const baseWeights = this.securityConfig.weights;
+        if (!baseWeights) return 0;
 
-        const score =
-            (suspicionVector.historyScore || 0) * (weights.historyScore || 0) +
-            (suspicionVector.rotationScore || 0) * (weights.rotationScore || 0) +
-            (suspicionVector.headerAnomalyScore || 0) * (weights.headerAnomalyScore || 0) +
-            (suspicionVector.requestPatternScore || 0) * (weights.requestPatternScore || 0) +
-            (suspicionVector.inconsistencyScore || 0) * (weights.inconsistencyScore || 0) +
-            (suspicionVector.honeypotScore || 0) * (weights.honeypotScore || 0) +
-            (suspicionVector.behaviorScore || 0) * (weights.behaviorScore || 0) +
-            (suspicionVector.botScore || 0) * (weights.botScore || 0) + // Ajout du nouveau score
-            (suspicionVector.crossLayerInconsistencyScore || 0) * (weights.crossLayerInconsistencyScore || 0) +
-            (suspicionVector.botnetClusterScore || 0) * (weights.botnetClusterScore || 0) +
-            (suspicionVector.tlsSpoofingScore || 0) * (weights.tlsSpoofingScore || 0) + // NOUVEAU: TLS Spoofing
-            (suspicionVector.timeInconsistencyScore || 0) * (weights.timeInconsistencyScore || 0) +
-            (suspicionVector.clickVarianceScore || 0) * (weights.clickVarianceScore || 0) +
-            (suspicionVector.clientHintsInconsistencyScore || 0) * (weights.clientHintsInconsistencyScore || 0) +
-            (suspicionVector.subnetScore || 0) * (weights.subnetScore || 0) +
-            (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
-            (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
-            (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
-            (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) +
-            (suspicionVector.cookieDroppingScore || 0) * (weights.cookieDroppingScore || 0) +
-            (suspicionVector.virtualizationScore || 0) * (weights.virtualizationScore || 0) +
-            (suspicionVector.threatIntelScore || 0) * (weights.threatIntelScore || 0) + // NOUVEAU: QUIC Anomaly
-            (suspicionVector.renderingAnomalyScore || 0) * (weights.renderingAnomalyScore || 0); // NOUVEAU: Rendering Anomaly
+        const dynamicWeights = { ...baseWeights };
+        if ((suspicionVector.mtuAnomalyScore || 0) > 50.0) {
+            this._log('Tunnel detected, amplifying suspicion weights.', { mtuScore: suspicionVector.mtuAnomalyScore });
 
-        return Math.min(100, score);
+            // Augmente le poids des incohérences de bas niveau (difficiles à falsifier)
+            dynamicWeights.tlsSpoofingScore = (baseWeights.tlsSpoofingScore || 0.8) * 1.25;
+            dynamicWeights.crossLayerInconsistencyScore = (baseWeights.crossLayerInconsistencyScore || 0.4) * 1.4;
+            dynamicWeights.clientHintsInconsistencyScore = (baseWeights.clientHintsInconsistencyScore || 0.7) * 1.2;
+
+            // Augmente le poids des anomalies comportementales (un bot derrière un VPN est plus suspect)
+            dynamicWeights.behaviorScore = (baseWeights.behaviorScore || 0.7) * 1.15;
+            dynamicWeights.requestPatternScore = (baseWeights.requestPatternScore || 0.6) * 1.2;
+        }
+
+        let score = 0;
+        for (const key in dynamicWeights) {
+            const metricScore = suspicionVector[key] || 0.0;
+            if (metricScore > 0) {
+                score += metricScore * dynamicWeights[key];
+            }
+        }
+        return Math.min(100.0, score);
     }
 
 

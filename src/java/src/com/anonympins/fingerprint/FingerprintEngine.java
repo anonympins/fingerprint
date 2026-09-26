@@ -275,6 +275,7 @@ public class FingerprintEngine {
         map.put("renderingAnomalyScore", 0.8);
         map.put("ipReputationScore", 0.5);
         map.put("virtualizationScore", 0.8);
+        map.put("mtuAnomalyScore", 0.9);
         return map;
     }
 
@@ -414,9 +415,36 @@ public class FingerprintEngine {
         if (weights == null || weights.isEmpty()) {
             return 0.0;
         }
-        double score = 0.0;
+
+        Map<String, Double> dynamicWeights = new HashMap<>();
         for (Map.Entry<String, Object> entry : weights.entrySet()) {
+            if (entry.getValue() instanceof Number) {
+                dynamicWeights.put(entry.getKey(), ((Number) entry.getValue()).doubleValue());
+            }
+        }
+
+        double mtuScore = suspicionVector.getOrDefault("mtuAnomalyScore", 0.0);
+        if (mtuScore > 50.0) {
+            if (verbose) {
+                System.out.println("[FingerprintEngine] Tunnel detected, amplifying suspicion weights (mtuScore: " + mtuScore + ")");
+            }
+            // Amplifie les incohérences difficiles à falsifier
+            dynamicWeights.put("tlsSpoofingScore", dynamicWeights.getOrDefault("tlsSpoofingScore", 0.8) * 1.25);
+            dynamicWeights.put("crossLayerInconsistencyScore", dynamicWeights.getOrDefault("crossLayerInconsistencyScore", 0.4) * 1.4);
+            dynamicWeights.put("clientHintsInconsistencyScore", dynamicWeights.getOrDefault("clientHintsInconsistencyScore", 0.7) * 1.2);
+
+            // Amplifie les comportements automatisés (un bot sous tunnel VPN est plus suspect)
+            dynamicWeights.put("behaviorScore", dynamicWeights.getOrDefault("behaviorScore", 0.7) * 1.15);
+            dynamicWeights.put("requestPatternScore", dynamicWeights.getOrDefault("requestPatternScore", 0.6) * 1.2);
+        }
+
+        double score = 0.0;
+        for (Map.Entry<String, Double> entry : dynamicWeights.entrySet()) {
             String key = entry.getKey();
+            // Le score MTU et ses poids sont uniquement des amplificateurs, pas des déclencheurs autonomes
+            if ("mtuAnomalyScore".equals(key)) {
+                continue;
+            }
             double weight = ((Number) entry.getValue()).doubleValue();
             score += suspicionVector.getOrDefault(key, 0.0) * weight;
         }
@@ -1070,6 +1098,9 @@ public class FingerprintEngine {
 
         double virtualizationScore = getVirtualizationAnomalyScore(context);
         suspicionVector.put("virtualizationScore", virtualizationScore);
+
+        double mtuAnomalyScore = RequestUtils.getMtuAnomalyScore(context).getOrDefault("mtuAnomalyScore", 0.0);
+        suspicionVector.put("mtuAnomalyScore", mtuAnomalyScore);
 
         suspicionVector.put("inconsistencyScore", inconsistencyScore);
         suspicionVector.put("historyScore", historyScore);

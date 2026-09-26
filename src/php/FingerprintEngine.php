@@ -409,14 +409,30 @@
 
      public function calculateFinalScore(array $suspicionVector): float
      {
-         $weights = $this->securityConfig['weights'] ?? [];
-         if (empty($weights)) {
-             return 0.0;
-         }
+         $baseWeights = $this->securityConfig['weights'] ?? [];
 
          $score = 0.0;
-         foreach ($weights as $key => $weight) {
-             $score += ($suspicionVector[$key] ?? 0) * $weight;
+         // NOUVEAU: Logique d'amplification des poids
+         // Si un tunnel est détecté, on augmente le poids des autres signaux suspects.
+         $dynamicWeights = $baseWeights;
+         if (($suspicionVector['mtuAnomalyScore'] ?? 0.0) > 50.0) {
+             $this->log('Tunnel detected, amplifying suspicion weights.', ['mtuScore' => $suspicionVector['mtuAnomalyScore']]);
+
+             // Augmente le poids des incohérences de bas niveau (difficiles à falsifier)
+             $dynamicWeights['tlsSpoofingScore'] = ($baseWeights['tlsSpoofingScore'] ?? 0.8) * 1.25;
+             $dynamicWeights['crossLayerInconsistencyScore'] = ($baseWeights['crossLayerInconsistencyScore'] ?? 0.4) * 1.4;
+             $dynamicWeights['clientHintsInconsistencyScore'] = ($baseWeights['clientHintsInconsistencyScore'] ?? 0.7) * 1.2;
+
+             // Augmente le poids des anomalies comportementales (un bot derrière un VPN est plus suspect)
+             $dynamicWeights['behaviorScore'] = ($baseWeights['behaviorScore'] ?? 0.7) * 1.15;
+             $dynamicWeights['requestPatternScore'] = ($baseWeights['requestPatternScore'] ?? 0.6) * 1.2;
+         }
+
+         foreach ($dynamicWeights as $key => $weight) {
+             $metricScore = $suspicionVector[$key] ?? 0.0;
+             if ($metricScore > 0) {
+                 $score += $metricScore * $weight;
+             }
          }
 
          return min(100.0, $score);

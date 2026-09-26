@@ -296,6 +296,7 @@ public class FingerprintProperties {
         private double tcpAnomalyScore = 0.8;
             private double protocolAnomalyScore = 0.8;
         private double renderingAnomalyScore = 0.8;
+        private double mtuAnomalyScore = 0.9;
         private double ipReputationScore = 0.5;
 
         public double getHistoryScore() { return historyScore; }
@@ -340,6 +341,9 @@ public class FingerprintProperties {
         public double getThreatIntelScore() { return threatIntelScore; }
         public void setThreatIntelScore(double threatIntelScore) { this.threatIntelScore = threatIntelScore; }
 
+        public double getMtuAnomalyScore() { return mtuAnomalyScore; }
+        public void setMtuAnomalyScore(double mtuAnomalyScore) { this.mtuAnomalyScore = mtuAnomalyScore; }
+
         public Map<String, Object> toMap() {
             Map<String, Object> map = new HashMap<>();
             map.put("historyScore", historyScore);
@@ -362,6 +366,7 @@ public class FingerprintProperties {
             map.put("tcpAnomalyScore", tcpAnomalyScore);
                 map.put("protocolAnomalyScore", protocolAnomalyScore);
             map.put("threatIntelScore", threatIntelScore);
+            map.put("mtuAnomalyScore", mtuAnomalyScore);
             map.put("renderingAnomalyScore", renderingAnomalyScore);
             map.put("ipReputationScore", ipReputationScore);
             return map;
