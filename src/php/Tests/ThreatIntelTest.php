@@ -61,4 +61,38 @@ class ThreatIntelTest extends TestCase
         $this->assertGreaterThan(75.0, $score);
         $this->assertLessThanOrEqual(95.0, $score);
     }
+
+    public function testDifferentialPrivacyDecoyInjectionAndTimestampNoise(): void
+    {
+        $config = [
+            'federatedPeers' => ['https://peer1.example.com'],
+            'federationSecret' => 'test-secret-key-32-chars-long!!',
+            'differentialPrivacy' => [
+                'enabled' => true,
+                'epsilon' => 1.0,
+                'dummyRate' => 1.0 // Forcer l'injection d'un leurre pour le test
+            ]
+        ];
+
+        $postedCalls = [];
+        $engineSub = new class($config, $postedCalls) extends \Anonympins\Fingerprint\FingerprintEngine {
+            public array $calls = [];
+            public function __construct(array $cfg, array &$callsRef) {
+                $this->calls = &$callsRef;
+                parent::__construct($cfg);
+            }
+            protected function asyncPost(string $url, array $params): void {
+                $this->calls[] = ['url' => $url, 'params' => $params];
+            }
+        };
+
+        $refSub = new \ReflectionClass($engineSub);
+        $broadcastMethod = $refSub->getMethod('broadcastBannedZkp');
+        $broadcastMethod->setAccessible(true);
+
+        $realZkpY = 'realzkpykey12345';
+        $broadcastMethod->invoke($engineSub, $realZkpY);
+
+        $this->assertCount(2, $postedCalls, 'Doit diffuser à la fois la clé réelle et la clé leurre');
+    }
 }

@@ -3,6 +3,8 @@ package com.anonympins.fingerprint;
 import com.anonympins.fingerprint.utils.ChallengeUtils;
 import com.anonympins.fingerprint.utils.RequestUtils;
 
+import java.math.BigInteger;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.*;
 
 public class FingerprintEngine {
@@ -124,6 +126,40 @@ public class FingerprintEngine {
         return json.substring(start, end).replace("\\n", "\n");
     }
 
+    private static List<String> loadBotWhitelist(String filename, List<String> fallbackEntries) {
+        java.io.File[] candidateDirs = {
+            new java.io.File("config"),
+            new java.io.File("../config"),
+            new java.io.File("../../config")
+        };
+        for (java.io.File dir : candidateDirs) {
+            java.io.File f = new java.io.File(dir, filename);
+            if (f.exists()) {
+                try {
+                    String content = java.nio.file.Files.readString(f.toPath());
+                    tools.jackson.databind.ObjectMapper mapper = new tools.jackson.databind.ObjectMapper();
+                    return mapper.readValue(content, new tools.jackson.core.type.TypeReference<List<String>>() {});
+                } catch (Exception e) {
+                    System.err.println("[Fingerprint] Error loading whitelist file " + filename + ": " + e.getMessage());
+                }
+            }
+        }
+        return fallbackEntries;
+    }
+
+    public static Map<String, Object> facebookWhitelist() {
+        List<String> entries = loadBotWhitelist("facebook.json", Arrays.asList(
+            "31.13.64.0/18",
+            "66.220.144.0/20",
+            "69.63.176.0/20",
+            "157.240.0.0/16"
+        ));
+        Map<String, Object> map = new HashMap<>();
+        map.put("type", "allowlist");
+        map.put("entries", entries);
+        return map;
+    }
+
     /**
      * Provides a default list of whitelisting rules for common and legitimate web crawlers.
      * @return A list of rule maps.
@@ -131,6 +167,7 @@ public class FingerprintEngine {
     public static List<Map<String, Object>> defaultWhitelist() {
         List<Map<String, Object>> whitelist = new ArrayList<>();
 
+        whitelist.add(facebookWhitelist());
         // Major search engines with DNS verification
         whitelist.add(Map.of("userAgent", "Googlebot", "hostnameSuffix", ".googlebot.com"));
         whitelist.add(Map.of("userAgent", "AdsBot-Google", "hostnameSuffix", ".googlebot.com"));
@@ -240,6 +277,7 @@ public class FingerprintEngine {
         map.put("renderingAnomalyScore", 0.8);
         map.put("ipReputationScore", 0.5);
         map.put("virtualizationScore", 0.8);
+        map.put("mtuAnomalyScore", 0.9);
         return map;
     }
 
@@ -379,9 +417,36 @@ public class FingerprintEngine {
         if (weights == null || weights.isEmpty()) {
             return 0.0;
         }
-        double score = 0.0;
+
+        Map<String, Double> dynamicWeights = new HashMap<>();
         for (Map.Entry<String, Object> entry : weights.entrySet()) {
+            if (entry.getValue() instanceof Number) {
+                dynamicWeights.put(entry.getKey(), ((Number) entry.getValue()).doubleValue());
+            }
+        }
+
+        double mtuScore = suspicionVector.getOrDefault("mtuAnomalyScore", 0.0);
+        if (mtuScore > 50.0) {
+            if (verbose) {
+                System.out.println("[FingerprintEngine] Tunnel detected, amplifying suspicion weights (mtuScore: " + mtuScore + ")");
+            }
+            // Amplifie les incohérences difficiles à falsifier
+            dynamicWeights.put("tlsSpoofingScore", dynamicWeights.getOrDefault("tlsSpoofingScore", 0.8) * 1.25);
+            dynamicWeights.put("crossLayerInconsistencyScore", dynamicWeights.getOrDefault("crossLayerInconsistencyScore", 0.4) * 1.4);
+            dynamicWeights.put("clientHintsInconsistencyScore", dynamicWeights.getOrDefault("clientHintsInconsistencyScore", 0.7) * 1.2);
+
+            // Amplifie les comportements automatisés (un bot sous tunnel VPN est plus suspect)
+            dynamicWeights.put("behaviorScore", dynamicWeights.getOrDefault("behaviorScore", 0.7) * 1.15);
+            dynamicWeights.put("requestPatternScore", dynamicWeights.getOrDefault("requestPatternScore", 0.6) * 1.2);
+        }
+
+        double score = 0.0;
+        for (Map.Entry<String, Double> entry : dynamicWeights.entrySet()) {
             String key = entry.getKey();
+            // Le score MTU et ses poids sont uniquement des amplificateurs, pas des déclencheurs autonomes
+            if ("mtuAnomalyScore".equals(key)) {
+                continue;
+            }
             double weight = ((Number) entry.getValue()).doubleValue();
             score += suspicionVector.getOrDefault(key, 0.0) * weight;
         }
@@ -617,13 +682,16 @@ public class FingerprintEngine {
         }
 
         // Check allowlists
-        boolean whitelisted = allowlist.check(context.clientIp) || isPathInAllowlist(context.path) || isUserAgentInAllowlist(context.getHeader("user-agent"));
+        boolean isIpAllowed = allowlist.check(context.clientIp);
+        boolean isPathAllowed = isPathInAllowlist(context.path);
+        boolean isUaAllowed = isUserAgentInAllowlist(context.getHeader("user-agent"));
+        boolean whitelisted = isIpAllowed || isPathAllowed || isUaAllowed;
         if (whitelisted) {
             Object filterWhitelistObj = config.get("filterWhitelist");
             boolean bypassWhitelist = false;
 
-            if (filterWhitelistObj instanceof Boolean) {
-                if (Boolean.TRUE.equals(filterWhitelistObj) && hasCertainAttack(context)) {
+            if (Boolean.TRUE.equals(filterWhitelistObj) || (filterWhitelistObj instanceof Number && isUaAllowed)) {
+                if (hasCertainAttack(context)) {
                     bypassWhitelist = true;
                     if (verbose) {
                         System.out.println("[FingerprintEngine] Whitelisted request contains a certain attack - bypassing whitelist bypass");
@@ -871,13 +939,65 @@ public class FingerprintEngine {
 
 
     @SuppressWarnings("unchecked")
-    private void broadcastBannedZkp(String zkpY) {
+    protected void broadcastBannedZkp(String zkpY) {
         List<String> peers = (List<String>) config.get("federatedPeers");
         if (peers == null || peers.isEmpty()) return;
 
-        long timestamp = System.currentTimeMillis();
-        String msg = timestamp + ":" + zkpY;
-        
+        Map<String, Object> dpConfig = config.get("differentialPrivacy") instanceof Map
+                ? (Map<String, Object>) config.get("differentialPrivacy")
+                : new HashMap<>();
+        boolean dpEnabled = !Boolean.FALSE.equals(dpConfig.get("enabled"));
+        double epsilon = 1.0;
+        if (dpConfig.get("epsilon") instanceof Number) {
+            epsilon = ((Number) dpConfig.get("epsilon")).doubleValue();
+        } else if (config.get("dpEpsilon") instanceof Number) {
+            epsilon = ((Number) config.get("dpEpsilon")).doubleValue();
+        }
+
+        long now = System.currentTimeMillis();
+        long reportTimestamp = now;
+
+        if (dpEnabled) {
+            // 1. Differential Privacy : Bruit laplacien sur l'horodatage
+            double deltaT = 5000.0;
+            double b = deltaT / Math.max(0.1, epsilon);
+            double u = ThreadLocalRandom.current().nextDouble() - 0.5;
+            double safeU = Math.abs(u) < 1e-7 ? (u >= 0 ? 1e-7 : -1e-7) : u;
+            double signU = safeU > 0 ? 1.0 : (safeU < 0 ? -1.0 : 0.0);
+            double laplaceNoise = -b * signU * Math.log(1.0 - 2.0 * Math.abs(safeU));
+            long clampedNoise = Math.max(-60000L, Math.min(60000L, Math.round(laplaceNoise)));
+            reportTimestamp = now + clampedNoise;
+        }
+
+        sendThreatReport(zkpY, reportTimestamp, peers);
+
+        if (dpEnabled) {
+            // 2. Differential Privacy : Injection de clés leurres (Decoy ZKP)
+            double decoyProb = dpConfig.get("dummyRate") instanceof Number
+                    ? ((Number) dpConfig.get("dummyRate")).doubleValue()
+                    : (1.0 / (1.0 + Math.exp(epsilon)));
+
+            if (ThreadLocalRandom.current().nextDouble() < decoyProb) {
+                BigInteger zkpP = new BigInteger("115792089237316195423570985008687907853269984665640564039457584007908834671663");
+                byte[] decoyBytes = new byte[32];
+                new java.security.SecureRandom().nextBytes(decoyBytes);
+                BigInteger decoyInt = new BigInteger(1, decoyBytes).mod(zkpP.subtract(BigInteger.TWO)).add(BigInteger.ONE);
+                String decoyZkpY = decoyInt.toString(16);
+
+                double uDecoy = ThreadLocalRandom.current().nextDouble() - 0.5;
+                double safeUDecoy = Math.abs(uDecoy) < 1e-7 ? (uDecoy >= 0 ? 1e-7 : -1e-7) : uDecoy;
+                double signUDecoy = safeUDecoy > 0 ? 1.0 : (safeUDecoy < 0 ? -1.0 : 0.0);
+                double b = 5000.0 / Math.max(0.1, epsilon);
+                long decoyNoise = Math.max(-60000L, Math.min(60000L, Math.round(-b * signUDecoy * Math.log(1.0 - 2.0 * Math.abs(safeUDecoy)))));
+                long decoyTimestamp = now + decoyNoise;
+
+                sendThreatReport(decoyZkpY, decoyTimestamp, peers);
+            }
+        }
+    }
+
+    private void sendThreatReport(String targetZkpY, long ts, List<String> peers) {
+        String msg = ts + ":" + targetZkpY;
         String signature = "";
         boolean isAsymmetric = false;
         
@@ -917,11 +1037,11 @@ public class FingerprintEngine {
         }
 
         for (String peerUrl : peers) {
-            asyncPost(peerUrl + "?coop_op=share_threat_intel", zkpY, isAsymmetric ? "" : signature, isAsymmetric ? signature : "", timestamp);
+            asyncPost(peerUrl + "?coop_op=share_threat_intel", targetZkpY, isAsymmetric ? "" : signature, isAsymmetric ? signature : "", ts);
         }
     }
 
-    private void asyncPost(String urlStr, String zkpY, String signature, String signatureEd25519, long timestamp) {
+    protected void asyncPost(String urlStr, String zkpY, String signature, String signatureEd25519, long timestamp) {
         new Thread(() -> {
             try {
                 java.net.URL url = new java.net.URL(urlStr);
@@ -1032,6 +1152,9 @@ public class FingerprintEngine {
 
         double virtualizationScore = getVirtualizationAnomalyScore(context);
         suspicionVector.put("virtualizationScore", virtualizationScore);
+
+        double mtuAnomalyScore = RequestUtils.getMtuAnomalyScore(context).getOrDefault("mtuAnomalyScore", 0.0);
+        suspicionVector.put("mtuAnomalyScore", mtuAnomalyScore);
 
         suspicionVector.put("inconsistencyScore", inconsistencyScore);
         suspicionVector.put("historyScore", historyScore);

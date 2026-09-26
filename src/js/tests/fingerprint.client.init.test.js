@@ -21,6 +21,7 @@ if (typeof globalThis.crypto !== 'undefined') {
     Object.defineProperty(dom.window, 'crypto', { value: globalThis.crypto, writable: true, configurable: true });
 }
 Object.defineProperty(global, 'CustomEvent', { value: dom.window.CustomEvent, writable: true, configurable: true });
+Object.defineProperty(global, 'Event', { value: dom.window.Event, writable: true, configurable: true });
 
 global.fetch = vi.fn(); // Mock global fetch
 window.fetch = (...args) => global.fetch(...args);
@@ -174,4 +175,81 @@ describe('ClientLibrary.initializeClient', () => {
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Challenge retry limit reached (3)'));
     });
 
+    it('should inject phantom traps within closed shadow root and fire trigger on interaction', () => {
+        const onTriggerSpy = vi.spyOn(ClientLibrary, 'onHoneypotTrigger');
+        let capturedShadow = null;
+        const origAttachShadow = dom.window.Element.prototype.attachShadow;
+        vi.spyOn(dom.window.Element.prototype, 'attachShadow').mockImplementation(function (init) {
+            capturedShadow = origAttachShadow.call(this, init);
+            return capturedShadow;
+        });
+
+        // Ensure document.body exists
+        document.body.innerHTML = '';
+
+        ClientLibrary.injectPhantomTraps();
+
+        const host = document.body.lastElementChild;
+        expect(host).not.toBeNull();
+        expect(host.getAttribute('aria-hidden')).toBe('true');
+        // Under closed mode, host.shadowRoot is inaccessible (null) from external callers
+        expect(host.shadowRoot).toBeNull();
+        expect(capturedShadow).not.toBeNull();
+
+        // Dispatch events on attached phantom elements inside closed shadow root
+        const link = capturedShadow.querySelector('a');
+        expect(link).not.toBeNull();
+        link.dispatchEvent(new Event('focus'));
+        expect(onTriggerSpy).toHaveBeenCalled();
+    });
+
+    it('should inject trap links within closed shadow root and trigger on honeypot click', () => {
+        const onTriggerSpy = vi.spyOn(ClientLibrary, 'onHoneypotTrigger');
+        let capturedShadow = null;
+        const origAttachShadow = dom.window.Element.prototype.attachShadow;
+        vi.spyOn(dom.window.Element.prototype, 'attachShadow').mockImplementation(function (init) {
+            capturedShadow = origAttachShadow.call(this, init);
+            return capturedShadow;
+        });
+
+        document.body.innerHTML = '';
+
+        ClientLibrary.injectTrapLinks(['/trap-url-1', '/trap-url-2']);
+
+        const host = document.body.lastElementChild;
+        expect(host).not.toBeNull();
+        expect(host.getAttribute('aria-hidden')).toBe('true');
+        expect(host.shadowRoot).toBeNull(); // Closed Shadow DOM verification
+        expect(capturedShadow).not.toBeNull();
+
+        const link = capturedShadow.querySelector('a');
+        expect(link).not.toBeNull();
+        link.dispatchEvent(new Event('click'));
+        expect(onTriggerSpy).toHaveBeenCalled();
+    });
+
+    it('should initialize honeypot form inputs within closed shadow root', () => {
+        const onTriggerSpy = vi.spyOn(ClientLibrary, 'onHoneypotTrigger');
+        let capturedShadow = null;
+        const origAttachShadow = dom.window.Element.prototype.attachShadow;
+        vi.spyOn(dom.window.Element.prototype, 'attachShadow').mockImplementation(function (init) {
+            capturedShadow = origAttachShadow.call(this, init);
+            return capturedShadow;
+        });
+
+        document.body.innerHTML = '';
+
+        ClientLibrary.initializeHoneypots(['bot_field_trap']);
+
+        const host = document.body.lastElementChild;
+        expect(host).not.toBeNull();
+        expect(host.getAttribute('aria-hidden')).toBe('true');
+        expect(host.shadowRoot).toBeNull();
+        expect(capturedShadow).not.toBeNull();
+
+        const input = capturedShadow.querySelector('input');
+        expect(input).not.toBeNull();
+        input.dispatchEvent(new Event('input'));
+        expect(onTriggerSpy).toHaveBeenCalled();
+    });
 });

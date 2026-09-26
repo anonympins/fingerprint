@@ -1,6 +1,6 @@
 # Configuration Options Reference
 
-This document provides a comprehensive reference for all configuration options available in the `fingerprint` protection engine, with a specific focus on the **21 score weights** used to compute the final suspicion score.
+This document provides a comprehensive reference for all configuration options available in the `fingerprint` protection engine, with a specific focus on the **24 score weights** used to compute the final suspicion score.
  
 ---
 
@@ -8,8 +8,8 @@ This document provides a comprehensive reference for all configuration options a
 
 Here is a complete representation of a custom security configuration containing all available suspicion weights, thresholds, and detection subsystem parameters:
 
- ```json
- {
+```json
+{
   "verbose": false,
   "dryRun": false,
   "challengeNewDevices": false,
@@ -44,7 +44,10 @@ Here is a complete representation of a custom security configuration containing 
     "botnetClusterScore": 0.60,
     "tcpAnomalyScore": 0.80,
     "quicAnomalyScore": 0.80,
+    "http2AnomalyScore": 0.80,
     "renderingAnomalyScore": 0.80,
+    "virtualizationScore": 0.80,
+    "mtuAnomalyScore": 0.90,
     "ipReputationScore": 0.50
   },
   "patterns": {
@@ -86,25 +89,28 @@ Here is a complete representation of a custom security configuration containing 
   "ed25519": "auto",
   "reset": false
 }
- ```
+```
  
 ---
 
-## Detailed Score Weights Reference (The 21 Invariants)
+## Detailed Score Weights Reference (The 24 Invariants)
 
 The following table details the role of each weight in the `weights` object. These weights determine how heavily each suspicion indicator influences the final score (calculated dynamically out of 100).
 
 | Weight Name | Default (`balanced`) | Impact & Role |
- | :--- | :---: | :--- |
+| :--- | :---: | :--- |
 | **`botScore`** | `1.00` | **Extreme**. Triggers when client-side environment checks explicitly detect browser automation frameworks (e.g., Selenium, Puppeteer). |
 | **`honeypotScore`** | `1.00` | **Extreme**. Triggers when a client visits hidden/forbidden trap URLs or enters data in hidden inputs (honeypots). |
+| **`mtuAnomalyScore`** | `0.90` | **Very High**. Inspects raw TCP MTU values and DF (Don't Fragment) flags to detect network tunnels, VPN encapsulation, and proxy hops. Also triggers weight amplification when active. |
 | **`timeInconsistencyScore`** | `0.90` | **Very High**. Penalizes requests where client and server clocks drastically differ, detecting replayed behavioral telemetry. |
 | **`cookieDroppingScore`** | `0.90` | **Very High**. Penalizes clients that make rapid sequential requests but systematically delete or drop their session cookies. |
 | **`inconsistencyScore`** | `0.80` | **High**. Triggered when the current device hardware hash does not match the anchor hash originally bound to the cookie. |
 | **`tlsSpoofingScore`** | `0.80` | **High**. Penalizes TLS signatures (JA3/JA4) that mismatch the claimed HTTP User-Agent. |
 | **`tcpAnomalyScore`** | `0.80` | **High**. Detects OS-level spoofing by comparing TCP packet parameters (TTL, Window Size) with the claimed User-Agent OS. |
-| **`quicAnomalyScore`** | `0.80` | **High**. Identifies spoofed flow parameters on HTTP/3 and QUIC transport streams. |
+| **`quicAnomalyScore`** | `0.80` | **High**. Identifies spoofed flow parameters and frame ordering on HTTP/3 and QUIC transport streams. |
+| **`http2AnomalyScore`** | `0.80` | **High**. Exposes HTTP/2 spoofing via connection window sizes, pseudo-header order (e.g. `m,a,s,p`), PRIORITY frame counts, and WINDOW_UPDATE frequencies. |
 | **`renderingAnomalyScore`** | `0.80` | **High**. Exposes headless browsers and virtualized graphics layers (e.g., SwiftShader) using rendering jitter telemetry. |
+| **`virtualizationScore`** | `0.80` | **High**. Flags headless browsers and virtualized display environments (virtual GPU renderers like Mesa llvmpipe, SwiftShader, Basic Render Driver, and emulated headless display resolutions). |
 | **`behaviorScore`** | `0.70` | **High**. Analyzes real-time mouse speed, acceleration, keystroke latency, and scroll patterns to flag bot-like interactions. |
 | **`clientHintsInconsistencyScore`** | `0.70` | **High**. Detects inconsistencies between user-agent strings and modern client hints headers (`sec-ch-ua`). |
 | **`requestPatternScore`** | `0.60` | **Medium**. Evaluates rate, statistical intervals (Benford's Law), and path traversal patterns for scrapers. |
@@ -135,7 +141,7 @@ The following table details the role of each weight in the `weights` object. The
 *   **`challengeTtl`** *(int, default: `300`)*: Lifespan of a generated challenge session in seconds (default: 5 minutes).
 *   **`deviceIdCookieMaxAge`** *(int, default: `2592000000`)*: Lifespan of the `device_id` cookie in milliseconds (default: 30 days).
 
- ---
+---
 
 ## Subsystems Configuration
 
@@ -167,14 +173,14 @@ The following table details the role of each weight in the `weights` object. The
 *   **`useAsymmetricTickets`** *(bool, default: `false`)*: If `true`, the engine signs and validates stateless tickets asymmetrically using Ed25519 instead of symmetrically using AES-256-CBC.
 *   **`ed25519`** *(string/bool, optional)*: Set to `"auto"` to enable automatic, zero-dependency, on-load key generation if no pre-generated keys are detected in the environment variables (`ED25519_PRIVATE_KEY` & `ED25519_PUBLIC_KEY`).
 
- ---
+---
 
 ## Profiles
 
 For quick starts without manually defining everything, use pre-made profiles:
 
 | Profile Name | Target / Use-case |
- | :--- | :--- |
+| :--- | :--- |
 | `balanced` | Standard websites, balanced UX & security. |
 | `strict` | High security / sensitive dashboards. All new devices are challenged. |
 | `api` | Focused heavily on rate limit patterns and API scrapers. |
@@ -184,44 +190,44 @@ For quick starts without manually defining everything, use pre-made profiles:
 ### Profile Usage
 
 **Node.js**:
-  ```javascript
-  import { createSecurityProfile } from '@anonympins/fingerprint';
+```javascript
+import { createSecurityProfile } from '@anonympins/fingerprint';
 
 const config = createSecurityProfile('ecommerce', {
     verbose: true
     // overrides here...
 });
-  ```
+```
 
-**PHP**
- ```php
- <?php
- 
- declare(strict_types=1);
- 
- require_once __DIR__ . '/vendor/autoload.php';
- 
- use Anonympins\Fingerprint\Config\SecurityProfiles;
- use Anonympins\Fingerprint\DirectFingerprint;
- 
- // Création du profil avec surcharges
+**PHP**:
+```php
+<?php
+
+declare(strict_types=1);
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+use Anonympins\Fingerprint\Config\SecurityProfiles;
+use Anonympins\Fingerprint\DirectFingerprint;
+
+// Création du profil avec surcharges
 $securityConfig = SecurityProfiles::createSecurityProfile('ecommerce', [
-     'verbose' => true, 
- ]);
- 
- // Initialisation du protecteur avec la configuration
-$protector = new DirectFingerprint($securityConfig);
- 
- // Analyse et protection de la requête (bloque ou lance un challenge si suspect)
-$fingerprint = $protector->protect();
- 
- // Si le script continue, la requête est légitime
- echo "Welcome on the secured page !";
- ```
+    'verbose' => true, 
+]);
 
-**Python**
- ```python
- import asyncio
+// Initialisation du protecteur avec la configuration
+$protector = new DirectFingerprint($securityConfig);
+
+// Analyse et protection de la requête (bloque ou lance un challenge si suspect)
+$fingerprint = $protector->protect();
+
+// Si le script continue, la requête est légitime
+echo "Welcome on the secured page !";
+```
+
+**Python**:
+```python
+import asyncio
 from fingerprint.engine import FingerprintEngine, InMemoryStore, RequestContext
 
 # 1. Choose a security profile and customize it if necessary.
@@ -244,6 +250,8 @@ security_config = {
         "tcpAnomalyScore": 0.9,
         "quicAnomalyScore": 0.9,
         "renderingAnomalyScore": 0.9,
+        "virtualizationScore": 0.8,
+        "mtuAnomalyScore": 0.9,
     },
     "honeypot": {
         "fields": ["email_confirm", "admin_login_bypass"],
@@ -259,18 +267,8 @@ fingerprint_store = InMemoryStore()
 
 # 3. Create an instance of the FingerprintEngine.
 protector = FingerprintEngine(security_config, fingerprint_store)
+```
 
-# 4. In an actual application, you would then process an incoming request:
-#    (e.g., in an ASGI/WSGI middleware or a direct HTTP handler)
-#    # context = RequestContext(...) # Construct your request context
-#    # decision = await protector.process_request(context)
-#    # if decision["action"] == "next":
-#    #     print("Welcome on the secured page!")
-#    # else:
-#    #     # Handle blocking, challenging, or redirecting
-#    #     print(f"Request {decision['action']}!")
- ```
- 
 ---
 
 ## Auto-Tuning & Traffic Data Pruning Options
@@ -282,7 +280,7 @@ To prevent unbounded memory growth, the engine features an integrated **Traffic 
 ### Configuration Details
 
 | Property | Type | Default | Description |
- | :--- | :--- | :--- | :--- |
+| :--- | :--- | :--- | :--- |
 | `trafficData` | `Array` | `[]` | In-memory storage array that accumulates incoming request telemetry vectors for analysis. |
 | `interval` | `number` | `1800000` | The frequency (in milliseconds) at which the genetic algorithm runs (e.g., 30 minutes). |
 | `minDataPoints` | `number` | `200` | Minimum number of recorded requests needed before the tuning algorithm can execute. |

@@ -412,54 +412,80 @@ const ClientLibrary = {
     },
 
     /**
-     * Injects invisible phantom interactive elements to trap bots (focus/hover).
+     * Injects invisible phantom interactive elements and forms within a closed Shadow DOM container to trap bots (focus/hover/click).
      */
     injectPhantomTraps() {
-        if (typeof document === 'undefined') return;
+        if (typeof document === 'undefined' || !document.body) return;
 
-        // Create a phantom interactive element
+        const host = document.createElement('div');
+        host.setAttribute('aria-hidden', 'true');
+        host.style.position = 'absolute';
+        host.style.left = '-9999px';
+        host.style.top = '-9999px';
+        host.style.width = '0';
+        host.style.height = '0';
+        host.style.overflow = 'hidden';
+
+        const shadow = typeof host.attachShadow === 'function'
+            ? host.attachShadow({ mode: 'closed' })
+            : host;
+
+        const style = document.createElement('style');
+        style.textContent = `
+            :host {
+                position: absolute;
+                left: -9999px;
+                top: -9999px;
+                width: 0;
+                height: 0;
+                overflow: hidden;
+            }
+            a, input, button, form {
+                opacity: 0.001;
+                pointer-events: auto;
+            }
+        `;
+        shadow.appendChild(style);
+
+        const triggerTrap = () => {
+            this.onHoneypotTrigger();
+        };
+
+        // 1. Phantom interactive link
         const phantom = document.createElement('a');
         phantom.href = '#';
         // Random deceptive name to attract automated link/form parsers
         const phantomNames = ['sys-session-recovery', 'auth-token-refresh', 'debug-console-login', 'admin-portal-access', 'security-bypass-bypass', 'recovery-key-session', 'api-key-test', 'client-secrets-access'];
         phantom.id = phantomNames[Math.floor(secureRandom() * phantomNames.length)] + '-' + genRandStr(6);
         phantom.className = genRandStr(8);
-        phantom.tabIndex = 0; // In natural tab flow
-        phantom.setAttribute('aria-hidden', 'true'); // Hidden from legitimate screen readers
-
-        // Invisible yet interactive style (1px x 1px, nearly transparent)
-        phantom.style.position = 'fixed';
-        phantom.style.top = '1px';
-        phantom.style.left = '1px';
-        phantom.style.width = '1px';
-        phantom.style.height = '1px';
-        phantom.style.opacity = '0.001';
-        phantom.style.zIndex = '99999';
-        phantom.style.overflow = 'hidden';
-        phantom.style.pointerEvents = 'auto';
-
-        const triggerTrap = () => {
-            this.onHoneypotTrigger();
-        };
-
+        phantom.tabIndex = 0; // In natural tab flow for crawler parsers
         phantom.addEventListener('focus', triggerTrap, { passive: true });
         phantom.addEventListener('mouseover', triggerTrap, { passive: true });
+        phantom.addEventListener('click', (e) => {
+            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+            triggerTrap();
+        }, { passive: false });
 
-        // Polymorphic DOM insertion of the phantom trap
-        const nestingOptions = [
-            () => document.body.appendChild(phantom),
-            () => {
-                const wrapper = document.createElement(secureRandom() > 0.5 ? 'span' : 'div');
-                wrapper.className = genRandStr(8);
-                wrapper.style.position = 'absolute';
-                wrapper.style.width = '0';
-                wrapper.style.height = '0';
-                wrapper.style.overflow = 'hidden';
-                wrapper.appendChild(phantom);
-                document.body.appendChild(wrapper);
-            }
-        ];
-        nestingOptions[Math.floor(secureRandom() * nestingOptions.length)]();
+        // 2. Deceptive hidden form with bait input
+        const phantomForm = document.createElement('form');
+        phantomForm.action = '#';
+        phantomForm.tabIndex = -1;
+        const inputNames = ['session_token', 'admin_pwd', 'secret_key', 'auth_bypass'];
+        const phantomInput = document.createElement('input');
+        phantomInput.type = 'text';
+        phantomInput.name = inputNames[Math.floor(secureRandom() * inputNames.length)] + '_' + genRandStr(4);
+        phantomInput.tabIndex = 0;
+        phantomInput.autocomplete = 'off';
+        phantomInput.addEventListener('focus', triggerTrap, { passive: true });
+        phantomInput.addEventListener('input', triggerTrap, { passive: true });
+        phantomInput.addEventListener('click', triggerTrap, { passive: true });
+        phantomInput.addEventListener('change', triggerTrap, { passive: true });
+
+        phantomForm.appendChild(phantomInput);
+        shadow.appendChild(phantom);
+        shadow.appendChild(phantomForm);
+
+        document.body.appendChild(host);
     },
 
     /**
@@ -800,7 +826,7 @@ const ClientLibrary = {
         });
 
         // 3. Generate trap inputs inside a closed Shadow DOM
-        if (typeof document !== 'undefined' && honeypotFieldNames.length > 0) {
+        if (typeof document !== 'undefined' && honeypotFieldNames.length > 0 && document.body) {
             const host = document.createElement('div');
             host.setAttribute('aria-hidden', 'true');
             host.style.position = 'absolute';
@@ -808,7 +834,9 @@ const ClientLibrary = {
             host.style.height = '0';
             host.style.overflow = 'hidden';
 
-            const shadow = host.attachShadow({ mode: 'closed' });
+            const shadow = typeof host.attachShadow === 'function'
+                ? host.attachShadow({ mode: 'closed' })
+                : host;
 
             // Randomize classes, CSS variables, and layout tags
             const wrapperClass = genRandStr(10);
@@ -858,6 +886,7 @@ const ClientLibrary = {
                 input.addEventListener('input', trigger, { passive: true });
                 input.addEventListener('change', trigger, { passive: true });
                 input.addEventListener('focus', trigger, { passive: true });
+                input.addEventListener('click', trigger, { passive: true });
 
                 // Polymorphic nesting of label and input
                 const nestingType = Math.floor(secureRandom() * 3);
@@ -1255,7 +1284,7 @@ const ClientLibrary = {
    * @private
    */
   injectTrapLinks(urls) {
-    if (!urls || urls.length === 0 || typeof document === 'undefined') {
+    if (!urls || urls.length === 0 || typeof document === 'undefined' || !document.body) {
       return;
     }
 
@@ -1266,7 +1295,9 @@ const ClientLibrary = {
     host.style.height = '0';
     host.style.overflow = 'hidden';
 
-    const shadow = host.attachShadow({ mode: 'closed' });
+    const shadow = typeof host.attachShadow === 'function'
+        ? host.attachShadow({ mode: 'closed' })
+        : host;
 
         // Randomize classes, CSS variables, and layout tags
         const wrapperClass = genRandStr(10);
@@ -1330,10 +1361,13 @@ const ClientLibrary = {
               link.innerHTML = `<span>&gt; ${i + 1}</span>`;
           }
 
-      const trigger = () => {
+      const trigger = (e) => {
+        if (e && typeof e.preventDefault === 'function') {
+          e.preventDefault();
+        }
         this.onHoneypotTrigger();
       };
-      link.addEventListener('click', trigger, { passive: true });
+      link.addEventListener('click', trigger, { passive: false });
       link.addEventListener('focus', trigger, { passive: true });
       link.addEventListener('mouseover', trigger, { passive: true });
 

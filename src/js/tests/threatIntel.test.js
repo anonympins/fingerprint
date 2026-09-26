@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { __internal, configureStore } from '../fingerprint.js';
 
 describe('Threat Intelligence - Rationale-Driven Defensive Logic', () => {
@@ -72,5 +72,44 @@ describe('Threat Intelligence - Rationale-Driven Defensive Logic', () => {
         const vector = await __internal.getSuspicionVector(context, { weights: { threatIntelScore: 1.0 } });
         expect(vector.threatIntelScore).toBeGreaterThan(70.0);
         expect(vector.threatIntelScore).toBeLessThanOrEqual(95.0);
+    });
+
+    it('should broadcast banned ZKP with differential privacy (perturbed timestamps and decoy injection)', async () => {
+        const calls = [];
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = vi.fn(async (url, init) => {
+            calls.push({ url, init });
+            return { ok: true, json: async () => ({ status: 'synchronized' }) };
+        });
+
+        const config = {
+            federatedPeers: ['https://peer1.example.com', 'https://peer2.example.com'],
+            federationSecret: 'test-secret-key-32-chars-long!!',
+            differentialPrivacy: {
+                enabled: true,
+                epsilon: 1.0,
+                dummyRate: 1.0 // Force decoy generation for deterministic testing
+            }
+        };
+
+        const realZkpY = 'deadbeef12345678';
+        await __internal.broadcastBannedZkp(realZkpY, config);
+
+        // Should broadcast to 2 peers with real key + 2 peers with decoy key
+        expect(calls.length).toBe(4);
+
+        const bodies = calls.map(c => JSON.parse(c.init.body));
+        const zkpYs = bodies.map(b => b.zkpY);
+
+        expect(zkpYs).toContain(realZkpY);
+        const decoyKey = zkpYs.find(k => k !== realZkpY);
+        expect(decoyKey).toBeDefined();
+        expect(decoyKey).not.toBe(realZkpY);
+
+        for (const call of calls) {
+            const timestamp = Number(call.init.headers['X-Federation-Timestamp']);
+            expect(timestamp).toBeGreaterThan(0);
+        }
+        globalThis.fetch = originalFetch;
     });
 });

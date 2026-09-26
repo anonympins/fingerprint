@@ -625,6 +625,43 @@ public class FingerprintEngineTest {
     }
 
     @Test
+    @DisplayName("MTU anomaly alone should amplify weights but never trigger suspicion alone")
+    void testMtuAnomalyAmplifierOnly() {
+        Map<String, Object> config = new HashMap<>();
+        Map<String, Object> weights = new HashMap<>();
+        weights.put("behaviorScore", 0.7);
+        weights.put("mtuAnomalyScore", 0.9);
+        config.put("weights", weights);
+
+        FingerprintEngine engine = new FingerprintEngine(config, new InMemoryStore());
+
+        // 1. Requête avec seulement MTU anormal (VPN) et aucun autre indicateur de suspicion
+        Map<String, Double> vectorWithoutOtherAnomalies = new HashMap<>();
+        vectorWithoutOtherAnomalies.put("mtuAnomalyScore", 75.0);
+        vectorWithoutOtherAnomalies.put("behaviorScore", 0.0);
+
+        double scoreAlone = engine.calculateFinalScore(vectorWithoutOtherAnomalies);
+        assertEquals(0.0, scoreAlone, "Le MTU seul ne doit jamais déclencher de suspicion directe");
+
+        // 2. Requête avec anomalie comportementale sans détection de tunnel
+        Map<String, Double> vectorNormal = new HashMap<>();
+        vectorNormal.put("mtuAnomalyScore", 0.0);
+        vectorNormal.put("behaviorScore", 40.0);
+
+        double baseScore = engine.calculateFinalScore(vectorNormal);
+        assertEquals(28.0, baseScore, 0.01); // 40.0 * 0.7 = 28.0
+
+        // 3. Même requête sous tunnel VPN (MTU > 50) : amplification du poids behaviorScore (0.7 * 1.15 = 0.805)
+        Map<String, Double> vectorWithTunnel = new HashMap<>();
+        vectorWithTunnel.put("mtuAnomalyScore", 75.0);
+        vectorWithTunnel.put("behaviorScore", 40.0);
+
+        double amplifiedScore = engine.calculateFinalScore(vectorWithTunnel);
+        assertEquals(40.0 * (0.7 * 1.15), amplifiedScore, 0.01);
+        assertTrue(amplifiedScore > baseScore, "Le score final doit être amplifié lors de la détection d'un tunnel");
+    }
+
+    @Test
     void testCombinedChallengePageMemSeedPrefix() {
         // 1. Initialisation triviale du Store (InMemoryStore par défaut)
         IStore store = new InMemoryStore();

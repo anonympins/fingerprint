@@ -1,3 +1,30 @@
+## Version 0.7.5
+
+- 🛡️ **Differential Privacy on Federated Threat Intelligence**:
+  - **Laplacian Noise on Federation Timestamps ($\text{Laplace}(0, b)$)**: Added mathematical perturbation to exact event timestamps in federated ban exchanges (`share_threat_intel`) parameterized by sensitivity $\Delta t = 5000\text{ms}$ and privacy budget $\epsilon$ (`differentialPrivacy.epsilon`). Timestamps are bounded within a safe $\pm 60\text{s}$ window to satisfy anti-replay checks while completely preventing malicious or compromised federation nodes from reconstructing inter-domain browsing trajectories via millisecond timing correlation.
+  - **Randomized Response Decoy Injection (Chaffing)**: Implemented randomized response logic where nodes inject and broadcast synthetic ZKP public keys generated uniformly in $\mathbb{Z}_p$ with probability $p = 1 / (1 + e^{\epsilon})$ (or customizable `dummyRate`). Due to the negligible collision probability of 256-bit keys ($\approx 2^{-256}$), decoys never reach the collaborative consensus threshold ($K \ge 3$), guaranteeing mathematical plausible deniability without causing false positives.
+  - **Multi-Runtime Parity**: Fully implemented across JavaScript (`fingerprint.js`), PHP (`FingerprintEngine.php`), Python (`engine.py`), and Java (`FingerprintEngine.java`, `FingerprintProperties.java`).
+
+- 🌐 **Network Layer Anomaly Detection**:
+  - **MTU Anomaly Scoring (`mtuAnomalyScore`)**: Introduced `mtuAnomalyScore` to the suspicion vector and configuration weights across all runtimes. Evaluates passive TCP SYN options (specifically MSS — Maximum Segment Size) to detect anomalous MTU values typical of VPN/GRE tunneling, WireGuard encapsulation, or residential proxy backconnect chains attempting to masquerade as standard domestic browser connections.
+
+- ♿ **Accessibility (a11y) & Invisible Honeypot Hardening**:
+  - **Screen-Reader Compliant Honeypot Fields**: Hardened dynamic DOM honeypot generation within `FingerprintClient` with `aria-hidden="true"`, `tabindex="-1"`, and `autocomplete="off"` attributes combined with defensive offscreen CSS positioning (`position: absolute; left: -9999px; transform: scale(0); opacity: 0; pointer-events: none;`). Ensures assistive technologies (NVDA, JAWS, VoiceOver) and browser autofill routines ignore honeypot inputs for visually impaired users while maintaining a 100% trap catch rate against automated scrapers.
+
+- 🤖 **Crawler Whitelist Updates & Multi-Language Parity**:
+  - **Meta / Facebook Whitelist Addition**: Added dedicated IP subnets and CIDR definitions for Meta and Facebook crawlers (`facebookexternalhit`, `31.13.64.0/18`, `66.220.144.0/20`, `69.63.176.0/20`, `157.240.0.0/16`) to guarantee smooth link preview generation and indexing without challenge interruptions.
+  - **Cross-Platform Whitelist Synchronization**: Standardized crawler allowlists and DNS verification workflows (Googlebot, Bingbot, Yandex, Facebook) across all supported backend engines (Node.js, PHP, Python, and Java).
+
+- 🔧 **Core Engine Refinements**:
+  - **`fingerprint.js` Updates**: Synchronized client-side metric collectors, refined behavioral input tracking, and plugged federation broadcast hooks directly into the core security pipeline.
+  - **Java Configuration Enhancements**: Added missing getters/setters and mapped configuration fields (`quicAnomalyScore`, `virtualizationScore`, `differentialPrivacy`, `federatedPeers`) in `FingerprintProperties.java`.
+  - **PHP Store Lifecycle**: Resolved initialization order edge cases for store instances during request processing in `FingerprintEngine.php`.
+
+- 📖 **Documentation**:
+  - **Configuration Options Reference (`full_options.md`)**: Documented all new settings, including `mtuAnomalyScore`, `differentialPrivacy` block (`enabled`, `epsilon`, `dummyRate`), and federated threat sharing parameters.
+
+---
+
 ## Version 0.7.4
 
 - 🛡️ **Security & Rate Limiting**:

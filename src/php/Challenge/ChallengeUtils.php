@@ -606,6 +606,11 @@ class ChallengeUtils
             if (!$expiry || (int)floor(microtime(true) * 1000) > (int)$expiry) {
                 return false;
             }
+            if (!empty($ticketData['greenlist']) || str_starts_with((string)$storedDeviceHash, 'webauthn:greenlist:')) {
+                if (empty($deviceId) || $deviceId === $storedDeviceId) {
+                    return true;
+                }
+            }
                 if ($storedDeviceHash && str_starts_with($storedDeviceHash, 'zkp:')) {
                     $expectedY = explode(':', $storedDeviceHash, 2)[1] ?? '';
                     if (!empty($zkpProof)) {
@@ -644,6 +649,11 @@ class ChallengeUtils
             if (!$expiry || (int)floor(microtime(true) * 1000) > (int)$expiry) {
                 $store->delete("ticket:{$ticket}");
                 return false;
+            }
+            if (!empty($ticketData['greenlist']) || str_starts_with((string)$storedDeviceHash, 'webauthn:greenlist:')) {
+                if (empty($deviceId) || $deviceId === $storedDeviceId) {
+                    return true;
+                }
             }
                 if ($storedDeviceHash && str_starts_with($storedDeviceHash, 'zkp:')) {
                     $expectedY = explode(':', $storedDeviceHash, 2)[1] ?? '';

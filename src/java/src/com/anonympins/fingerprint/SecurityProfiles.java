@@ -43,6 +43,7 @@ public class SecurityProfiles {
         balancedWeights.put("virtualizationScore", 0.8);
         balancedWeights.put("quicAnomalyScore", 0.8);
         balancedWeights.put("renderingAnomalyScore", 0.8);
+        balancedWeights.put("mtuAnomalyScore", 0.9);
         balanced.put("weights", balancedWeights);
 
         Map<String, Integer> balancedThresholds = new HashMap<>();
@@ -100,6 +101,7 @@ public class SecurityProfiles {
         strictWeights.put("virtualizationScore", 1.0);
         strictWeights.put("quicAnomalyScore", 1.0);
         strictWeights.put("renderingAnomalyScore", 1.0);
+        strictWeights.put("mtuAnomalyScore", 0.9);
         strict.put("weights", strictWeights);
 
         Map<String, Integer> strictThresholds = new HashMap<>();
@@ -158,6 +160,7 @@ public class SecurityProfiles {
         apiWeights.put("virtualizationScore", 0.8);
         apiWeights.put("quicAnomalyScore", 0.8);
         apiWeights.put("renderingAnomalyScore", 0.2);
+        apiWeights.put("mtuAnomalyScore", 0.9);
         api.put("weights", apiWeights);
 
         Map<String, Integer> apiThresholds = new HashMap<>();
@@ -216,6 +219,7 @@ public class SecurityProfiles {
         blogWeights.put("quicAnomalyScore", 0.5); // NOUVEAU: Poids pour l'anomalie QUIC
         blogWeights.put("renderingAnomalyScore", 0.5); // NOUVEAU: Poids pour l'anomalie de rendu
         blogWeights.put("virtualizationScore", 0.6);
+        blogWeights.put("mtuAnomalyScore", 0.9);
         blog.put("weights", blogWeights);
 
         Map<String, Integer> blogThresholds = new HashMap<>();
