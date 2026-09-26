@@ -3533,18 +3533,38 @@ class FingerprintEngine:
          return False
  
     async def _check_allowlists(self, context: RequestContext) -> bool:
+         whitelisted = False
+         whitelist_type = ""
          if self._is_ip_in_allowlist(context.client_ip):
-             return True
-         if self._is_path_in_allowlist(context.path):
-             return True
-         if self._is_host_path_in_allowlist(context.headers.get("host"), context.path):
-             return True
-         
-         graphql_op = getattr(context, "graphql_operation", None)
-         if graphql_op and self._is_graphql_operation_in_allowlist(graphql_op.get("type"), graphql_op.get("name")):
-             return True
- 
-         if await self._verify_whitelisted_bot(context):
+             whitelisted = True
+             whitelist_type = "allowlist"
+         elif self._is_path_in_allowlist(context.path):
+             whitelisted = True
+             whitelist_type = "path_allowlist"
+         elif self._is_host_path_in_allowlist(context.headers.get("host"), context.path):
+             whitelisted = True
+             whitelist_type = "host_path_allowlist"
+         else:
+             graphql_op = getattr(context, "graphql_operation", None)
+             if graphql_op and self._is_graphql_operation_in_allowlist(graphql_op.get("type"), graphql_op.get("name")):
+                 whitelisted = True
+                 whitelist_type = "graphql_operation_allowlist"
+             elif await self._verify_whitelisted_bot(context):
+                 whitelisted = True
+                 whitelist_type = "bot"
+
+         if whitelisted:
+             filter_whitelist = self.config.get("filterWhitelist", False)
+             bypass_whitelist = False
+             if filter_whitelist is True or (isinstance(filter_whitelist, (int, float)) and whitelist_type == "bot"):
+                 bypass_whitelist = self._has_certain_attack(context)
+             elif isinstance(filter_whitelist, (int, float)):
+                 score = await self.get_suspicion_score(context)
+                 if score > filter_whitelist:
+                     bypass_whitelist = True
+
+             if bypass_whitelist:
+                 return False
              return True
  
          return False

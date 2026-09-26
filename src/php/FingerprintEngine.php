@@ -534,7 +534,7 @@
          if ($whitelisted) {
              $filterWhitelist = $this->securityConfig['filterWhitelist'] ?? false;
              $bypassWhitelist = false;
-             if ($filterWhitelist === true) {
+             if ($filterWhitelist === true || (is_numeric($filterWhitelist) && $type === 'bot')) {
                  $bypassWhitelist = $this->hasCertainAttack($context);
              } elseif (is_numeric($filterWhitelist)) {
                  if ($context->preCalculatedScore === null) {

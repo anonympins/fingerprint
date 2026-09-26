@@ -652,13 +652,16 @@ public class FingerprintEngine {
         }
 
         // Check allowlists
-        boolean whitelisted = allowlist.check(context.clientIp) || isPathInAllowlist(context.path) || isUserAgentInAllowlist(context.getHeader("user-agent"));
+        boolean isIpAllowed = allowlist.check(context.clientIp);
+        boolean isPathAllowed = isPathInAllowlist(context.path);
+        boolean isUaAllowed = isUserAgentInAllowlist(context.getHeader("user-agent"));
+        boolean whitelisted = isIpAllowed || isPathAllowed || isUaAllowed;
         if (whitelisted) {
             Object filterWhitelistObj = config.get("filterWhitelist");
             boolean bypassWhitelist = false;
 
-            if (filterWhitelistObj instanceof Boolean) {
-                if (Boolean.TRUE.equals(filterWhitelistObj) && hasCertainAttack(context)) {
+            if (Boolean.TRUE.equals(filterWhitelistObj) || (filterWhitelistObj instanceof Number && isUaAllowed)) {
+                if (hasCertainAttack(context)) {
                     bypassWhitelist = true;
                     if (verbose) {
                         System.out.println("[FingerprintEngine] Whitelisted request contains a certain attack - bypassing whitelist bypass");
