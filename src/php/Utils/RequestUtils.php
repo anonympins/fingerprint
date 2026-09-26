@@ -423,9 +423,13 @@ class RequestUtils
             elseif ($metrics['historyLength'] >= 5) $score -= 20;
             elseif ($metrics['historyLength'] >= 2) $score -= 10;
         } else {
-            // Pénalité pour absence totale d'interaction si l'historique n'est pas dispo
+            // Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
+            // On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
+            // signaux passifs de bot (ex: rendu offscreen) sont présents.
             if ($mouseAnalysis['avgSpeed'] == 0 && $touch['avgSpeed'] == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
-                $score += 40;
+                $noInteractionPenalty = 5.0;
+                if (!empty($metrics['rendering']['offscreenAnom'])) $noInteractionPenalty += 40.0;
+                $score += $noInteractionPenalty;
             }
         }
 
@@ -504,15 +508,13 @@ class RequestUtils
                     $score += 35;
                 }
             }
+        }
 
-            // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
-            $ua = $context->getHeader('user-agent') ?? '';
-            $isMobileDevice = str_contains($ua, 'Mobile');
-            if ($isMobileDevice && count($touchHistory) >= 5 && isset($metrics['motionVariance']) && is_numeric($metrics['motionVariance'])) {
-                if ((float)$metrics['motionVariance'] === 0.0) {
-                    $score += 50.0;
-                }
-            }
+        // Détection de ferme mobile : un appareil mobile parfaitement immobile est suspect, indépendamment des interactions tactiles.
+        $ua = $context->getHeader('user-agent') ?? '';
+        $isMobileDevice = str_contains($ua, 'Mobile');
+        if ($isMobileDevice && isset($metrics['motionVariance']) && is_numeric($metrics['motionVariance']) && (float)$metrics['motionVariance'] === 0.0) {
+            $score += 50.0; // Terminal fixé sur un châssis mécanique (rack ADB)
         }
 
         return ['behaviorScore' => min(100.0, $score)];

@@ -612,9 +612,17 @@ public class RequestUtils {
                         else if (historyLength >= 5) score -= 20;
                         else if (historyLength >= 2) score -= 10;
                     } else {
-                        if (mouseAvgSpeed == 0.0 && touchAvgSpeed == 0.0 && keystrokeLatency == 0.0) {
-                            score += 40.0;
-                        }
+                        // Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
+                        // On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
+                        // signaux passifs de bot (ex: rendu offscreen) sont présents.
+                        if (mouseAvgSpeed == 0.0 && touchAvgSpeed == 0.0 && keystrokeLatency == 0.0) { 
+                            double noInteractionPenalty = 5.0;
+                            if (metrics.containsKey("rendering") && metrics.get("rendering") instanceof Map) {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> rendering = (Map<String, Object>) metrics.get("rendering");
+                                if (rendering != null && Boolean.TRUE.equals(rendering.get("offscreenAnom"))) noInteractionPenalty += 40.0;
+                            }
+                            score += noInteractionPenalty;                        }
                     }
 
                     if (mouseAvgSpeed > 0) {
@@ -694,20 +702,19 @@ public class RequestUtils {
                             score += 35.0;
                         }
                     }
-
-                    // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
-                    String ua = context.getHeader("user-agent");
-                    boolean isMobileDevice = ua != null && ua.contains("Mobile");
-                    Object motionVariance = metrics.get("motionVariance");
-                    if (isMobileDevice && touchHistory != null && touchHistory.size() >= 5 && motionVariance instanceof Number) {
-                        if (((Number) motionVariance).doubleValue() == 0.0) {
-                            score += 50.0;
-                        }
-                    }
                 }
             } catch (Exception e) {
                 score += 10.0; // Malformed header
             }
+        }
+
+        // Détection de ferme mobile : un appareil mobile parfaitement immobile est suspect, indépendamment des interactions tactiles.
+        String ua = context.getHeader("user-agent");
+        boolean isMobileDevice = ua != null && ua.contains("Mobile");
+        if (behaviorHeader != null && isMobileDevice) {
+            Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
+            Object motionVariance = metrics != null ? metrics.get("motionVariance") : null;
+            if (motionVariance instanceof Number && ((Number) motionVariance).doubleValue() == 0.0) score += 50.0; // Terminal fixé sur un châssis mécanique (rack ADB)
         }
 
         result.put("behaviorScore", Math.min(100.0, score));
