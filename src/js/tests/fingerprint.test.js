@@ -3200,4 +3200,22 @@ describe('IP Registration and Filtering', () => {
             expect(process.env.ED25519_PUBLIC_KEY).toBe(dummyKeys.publicKey);
         });
     });
+
+    describe('Closed-Shadow DOM Honeypot Traps (Feature 19)', () => {
+        it('should generate closed declarative shadow DOM trap container for trap URLs', () => {
+            const trapUrls = ['/trap-1', '/trap-2'];
+            const markup = __internal.generateClosedShadowTraps(trapUrls);
+
+            expect(markup).toContain('aria-hidden="true"');
+            expect(markup).toContain('shadowrootmode="closed"');
+            expect(markup).toContain('shadowroot="closed"');
+            expect(markup).toContain('href="/trap-1"');
+            expect(markup).toContain('href="/trap-2"');
+        });
+
+        it('should return an empty string if trapUrls array is empty or invalid', () => {
+            expect(__internal.generateClosedShadowTraps([])).toBe('');
+            expect(__internal.generateClosedShadowTraps(null)).toBe('');
+        });
+    });
 });

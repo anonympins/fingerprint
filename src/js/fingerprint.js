@@ -4288,6 +4288,24 @@ function generateCpuTargetChallengePage(challengeDetails, clientIp) {
 }
 
 /**
+ * Generates closed-shadow DOM honeypot markup for server-rendered challenge pages.
+ * Utilizes Declarative Shadow DOM with mode="closed" to prevent screen reader false positives
+ * while capturing bot web scrapers and crawlers.
+ * @param {string[]} trapUrls
+ * @returns {string}
+ */
+function generateClosedShadowTraps(trapUrls = []) {
+  const list = Array.isArray(trapUrls) ? trapUrls : [];
+  if (list.length === 0) return '';
+
+  const trapLinksHtml = list.map((url, idx) => {
+    return `<a href="${url}" rel="nofollow" tabindex="-1"><span>&gt; ${idx + 1}</span></a>`;
+  }).join(' ');
+
+  return `<div style="position:absolute;left:-9999px;top:-9999px;width:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none;" aria-hidden="true"><template shadowrootmode="closed" shadowroot="closed"><style>:host { position: absolute; left: -9999px; top: -9999px; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; } a { color: transparent; text-decoration: none; }</style>${trapLinksHtml}</template></div>`;
+}
+
+/**
  * Generates the HTML content for a combined CPU + Memory PoW challenge.
  * @param {object} cpuChallengeDetails - Details from generateCpuTargetChallenge.
  * @param {number} memoryDifficulty - Memory allocation in MB.
@@ -4303,6 +4321,7 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     const fingerprint = originalFingerprint;
     const baseBlock = createCpuChallengeBaseBlock(nonce, clientSecret, fingerprint, clientIp, tlsSessionId);
     const baseBlockBytes = `[${baseBlock.toString('utf8').split('').map(c => c.charCodeAt(0)).join(',')}]`;
+    const trapContainerHtml = generateClosedShadowTraps(trapUrls);
 
     // Prépare la configuration pour l'initialisation du client, y compris les URL pièges.
     const clientInitConfig = {
@@ -4370,12 +4389,24 @@ function generateCombinedPoWChallengePage(cpuChallengeDetails, memoryDifficulty,
     }
 
     if (!htmlTemplate) {
-        htmlTemplate = `<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script></body></html>`; // eslint-disable-line max-len
+        htmlTemplate = `<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>`; // eslint-disable-line max-len
     }
 
-    return htmlTemplate
+    let renderedHtml = htmlTemplate
         .replace('<!-- FINGERPRINT_SOLVER_SCRIPT -->', solverCode)
         .replace('<!-- FINGERPRINT_CHALLENGE_SCRIPT -->', challengeScript);
+
+    if (renderedHtml.includes('<!-- FINGERPRINT_TRAPS -->')) {
+        renderedHtml = renderedHtml.replace('<!-- FINGERPRINT_TRAPS -->', trapContainerHtml);
+    } else if (trapContainerHtml) {
+        if (renderedHtml.includes('</body>')) {
+            renderedHtml = renderedHtml.replace('</body>', `${trapContainerHtml}</body>`);
+        } else {
+            renderedHtml += trapContainerHtml;
+        }
+    }
+
+    return renderedHtml;
 }
 
 /**
@@ -7056,6 +7087,7 @@ export const __internal = {
     checkChallengeRateLimit,
     getDeviceHash,
     getCompositeDeviceHash,
+    generateClosedShadowTraps,
     getSuspicionVector,
     getTlsSessionId,
     pruneTrafficData,
