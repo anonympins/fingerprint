@@ -962,7 +962,7 @@ public class FingerprintEngine {
 
         // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
         String behaviorHeader = context.getHeader("x-behavior-metrics");
-        if (behaviorHeader != null && deviceData != null) {
+        if (behaviorHeader != null && behaviorHeader.startsWith("{") && deviceData != null) {
             try {
                 Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
                 if (metrics != null && metrics.containsKey("webauthnAnchor")) {
@@ -1081,7 +1081,7 @@ public class FingerprintEngine {
         }
 
         String behaviorHeader = context.getHeader("x-behavior-metrics");
-        if (behaviorHeader != null) {
+        if (behaviorHeader != null && behaviorHeader.startsWith("{")) {
             try {
                 Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
                 if (metrics != null && metrics.containsKey("clientTimestamp")) {

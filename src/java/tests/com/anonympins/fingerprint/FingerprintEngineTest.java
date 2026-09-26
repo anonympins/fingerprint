@@ -611,6 +611,20 @@ public class FingerprintEngineTest {
     }
 
     @Test
+    @DisplayName("Should parse x-behavior-metrics direct score")
+    void testDirectBehaviorScore() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        headers.put("accept", "text/html");
+        headers.put("accept-encoding", "gzip");
+        headers.put("x-behavior-metrics", "65.5");
+
+        RequestContext context = new RequestContext("127.0.0.1", "/", headers, null, null, null, "1.1");
+        Map<String, Double> result = RequestUtils.getBehaviorScore(context);
+        assertEquals(65.5, result.get("behaviorScore"), 0.01);
+    }
+
+    @Test
     void testCombinedChallengePageMemSeedPrefix() {
         // 1. Initialisation triviale du Store (InMemoryStore par défaut)
         IStore store = new InMemoryStore();

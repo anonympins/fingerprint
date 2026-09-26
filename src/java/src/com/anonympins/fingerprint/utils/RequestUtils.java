@@ -583,10 +583,19 @@ public class RequestUtils {
         }
 
         String behaviorHeader = context.getHeader("x-behavior-metrics");
-        if (behaviorHeader != null) {
+        if (behaviorHeader != null && !behaviorHeader.trim().isEmpty()) {
+            String trimmed = behaviorHeader.trim();
+            try {
+                double directScore = Double.parseDouble(trimmed);
+                result.put("behaviorScore", Math.max(0.0, Math.min(100.0, directScore)));
+                return result;
+            } catch (NumberFormatException ignored) {
+                // Pas un nombre brut, traitement du payload JSON
+            }
+
             try {
                 Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
-                if (metrics != null) {
+                if (metrics != null && !metrics.isEmpty()) {
                     if (Boolean.TRUE.equals(metrics.get("honeypotInteraction"))) {
                         result.put("behaviorScore", 100.0);
                         return result;
@@ -711,7 +720,7 @@ public class RequestUtils {
         // Détection de ferme mobile : un appareil mobile parfaitement immobile est suspect, indépendamment des interactions tactiles.
         String ua = context.getHeader("user-agent");
         boolean isMobileDevice = ua != null && ua.contains("Mobile");
-        if (behaviorHeader != null && isMobileDevice) {
+        if (behaviorHeader != null && behaviorHeader.startsWith("{") && isMobileDevice) {
             Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
             Object motionVariance = metrics != null ? metrics.get("motionVariance") : null;
             if (motionVariance instanceof Number && ((Number) motionVariance).doubleValue() == 0.0) score += 50.0; // Terminal fixé sur un châssis mécanique (rack ADB)

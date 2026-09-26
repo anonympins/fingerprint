@@ -2105,10 +2105,35 @@ class RequestUtils:
         header = context.headers.get("x-behavior-metrics")
         if not header:
             return 0.0
+
+        if isinstance(header, (int, float)):
+            return max(0.0, min(100.0, float(header)))
+
+        if isinstance(header, str):
+            try:
+                num = float(header.strip())
+                return max(0.0, min(100.0, num))
+            except ValueError:
+                pass
+
         try:
             metrics = json.loads(header)
         except Exception:
             return 10.0
+
+        if isinstance(metrics, (int, float)):
+            return max(0.0, min(100.0, float(metrics)))
+
+        if not isinstance(metrics, dict):
+            return 0.0
+
+        if not isinstance(metrics, dict):
+            return 0.0
+        if not isinstance(metrics, dict):
+            return {"renderingAnomalyScore": 0.0}
+        if not isinstance(metrics, dict):
+            return 0.0
+
         if metrics.get("honeypotInteraction"):
             return 100.0
         score = 0.0
@@ -4031,6 +4056,8 @@ class FingerprintEngine:
         if behavior_header:
             try:
                 metrics = json.loads(behavior_header)
+                if not isinstance(metrics, dict):
+                    return 0.0
                 client_timestamp = metrics.get("clientTimestamp")
                 if client_timestamp is not None:
                     app_latency = context.request_timestamp - int(client_timestamp)

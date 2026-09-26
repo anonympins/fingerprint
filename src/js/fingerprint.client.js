@@ -190,10 +190,20 @@ const ClientLibrary = {
         const canvas2d = typeof CanvasRenderingContext2D !== 'undefined' ? CanvasRenderingContext2D : win.CanvasRenderingContext2D;
         const webgl = typeof WebGLRenderingContext !== 'undefined' ? WebGLRenderingContext : win.WebGLRenderingContext;
 
+        const isFetchTampered = () => {
+            if (ClientLibrary._isFetchPatched) {
+                if (ClientLibrary._originalFetch) {
+                    return !Function.prototype.toString.call(ClientLibrary._originalFetch).includes('[native code]');
+                }
+                return false;
+            }
+            return checkNative(win, 'fetch');
+        };
+
         return checkNative(htmlCanvas?.prototype, 'toDataURL') ||
                checkNative(canvas2d?.prototype, 'getImageData') ||
                checkNative(webgl?.prototype, 'getParameter') ||
-               checkNative(win, 'fetch');
+               isFetchTampered();
     },
 
     /**
@@ -949,38 +959,118 @@ const ClientLibrary = {
     },
 
     /**
-     * Retrieves collected client behavioral metrics.
-     * Call before submitting sensitive requests.
-     * @returns {ClientBehaviorMetrics}
+     * Évalue le comportement côté client en local sans transmettre de données brutes.
+     * Retourne 1 si le comportement est humain/légitime, 0 en cas de suspicion/bot.
+     * @returns {number} 1 ou 0
+     */
+    evaluateBehavior() {
+        let score = 0;
+        if (metrics.honeypotInteraction) return 100;
+        if (ClientLibrary.detectTamperedPrototypes()) score += 80;
+
+        // Vérification du rendu graphique
+        if (metrics.rendering) {
+            if (metrics.rendering.offscreenAnom) return 0;
+            const fps = parseFloat(metrics.rendering.fps || 0);
+            const jitter = parseFloat(metrics.rendering.jitter || 0);
+            if (fps > 250 || (fps > 0 && fps < 15)) score += 50;
+            if (jitter > 6.0) score += Math.min(80, (jitter - 6.0) * 10);
+        }
+
+        // Mouvements de souris robotiques
+        if (mouseMovementsHistory.length >= 3) {
+            let totalDist = 0;
+            let pauses = 0;
+            const segments = [];
+            for (let i = 1; i < mouseMovementsHistory.length; i++) {
+                const p1 = mouseMovementsHistory[i - 1];
+                const p2 = mouseMovementsHistory[i];
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                const dt = p2.t - p1.t;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dt > 0) segments.push(dist / dt);
+                totalDist += dist;
+                if (dt > 100 && dist < 5) pauses++;
+            }
+            if (segments.length >= 2) {
+                const totalTime = mouseMovementsHistory[mouseMovementsHistory.length - 1].t - mouseMovementsHistory[0].t;
+                const avgSpeed = totalTime > 0 ? totalDist / totalTime : 0;
+                const pStart = mouseMovementsHistory[0];
+                const pEnd = mouseMovementsHistory[mouseMovementsHistory.length - 1];
+                const straightDist = Math.sqrt(Math.pow(pEnd.x - pStart.x, 2) + Math.pow(pEnd.y - pStart.y, 2));
+                const straightness = totalDist > 0 ? straightDist / totalDist : 1;
+                if (avgSpeed > 3.0) score += 25;
+                if (straightness > 0.95) score += 30;
+                if (pauses === 0 && segments.length > 20) score += 15;
+            }
+        }
+
+        // Analyse des événements tactiles
+        if (touchMovementsHistory.length >= 3) {
+            let totalDist = 0;
+            let totalPressure = 0;
+            let totalRadius = 0;
+            for (const pt of touchMovementsHistory) {
+                totalPressure += pt.p || 0;
+                totalRadius += pt.r || 0;
+            }
+            const avgPressure = totalPressure / touchMovementsHistory.length;
+            const avgRadius = totalRadius / touchMovementsHistory.length;
+            let sqDiffPressure = 0;
+            let sqDiffRadius = 0;
+            for (const pt of touchMovementsHistory) {
+                sqDiffPressure += Math.pow((pt.p || 0) - avgPressure, 2);
+                sqDiffRadius += Math.pow((pt.r || 0) - avgRadius, 2);
+            }
+            if (avgPressure > 0 && (sqDiffPressure / touchMovementsHistory.length) === 0) {
+                score += 30;
+            }
+            if (avgRadius > 0 && (sqDiffRadius / touchMovementsHistory.length) === 0) {
+                score += 30;
+            }
+        }
+
+        // Détection de rack / ferme de téléphones mobiles immobiles
+        if (typeof window !== 'undefined' && (window.navigator?.userAgent || '').includes('Mobile')) {
+            if (metrics.motionVariance === 0) return 0;
+        }
+
+        // Variance des clics ultra-précise (bot de clic)
+        if (clicksHistory.length >= 3) {
+            const targets = {};
+            for (const c of clicksHistory) {
+                if (!c.targetId) continue;
+                if (!targets[c.targetId]) targets[c.targetId] = [];
+                targets[c.targetId].push(c);
+            }
+            for (const id in targets) {
+                const clks = targets[id];
+                if (clks.length >= 3) {
+                    const mx = clks.reduce((s, c) => s + c.x, 0) / clks.length;
+                    const my = clks.reduce((s, c) => s + c.y, 0) / clks.length;
+                    const v = clks.reduce((s, c) => s + Math.pow(c.x - mx, 2) + Math.pow(c.y - my, 2), 0) / clks.length;
+                    if (v < 1.0) return 0;
+                }
+            }
+        }
+
+        // Dynamique des touches de clavier robotique
+        if (keystrokeDwellTimes.length >= 5) {
+            const mean = keystrokeDwellTimes.reduce((a, b) => a + b, 0) / keystrokeDwellTimes.length;
+            const variance = keystrokeDwellTimes.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / keystrokeDwellTimes.length;
+            if (Math.sqrt(variance) < 2.0 || mean < 15.0) return 0;
+        }
+
+        return 1;
+    },
+
+    /**
+     * Récupère le résultat comportemental sous forme binaire (1 = valide/humain, 0 = suspect).
+     * @returns {number} 1 ou 0
      */
     getClientBehaviorMetrics() {
-        // Add history length as a behavioral signal.
-        metrics.historyLength = window.history.length;
-
-        // Attach collection timestamp for replay detection
-        metrics.clicksHistory = clicksHistory;
-        metrics.clientTimestamp = Date.now();
-
-        metrics.touchMovementsHistory = touchMovementsHistory;
-        if (ClientLibrary.detectTamperedPrototypes()) {
-            metrics.prototypeTampered = true;
-        }
-        metrics.motionVariance = metrics.motionVariance ?? -1;
-        // Include mouse trajectory history for server-side evaluation
-        metrics.mouseMovementsHistory = mouseMovementsHistory;
-
-        // NOUVEAU: Keystroke dynamics metrics (dwell and flight times)
-        metrics.keystrokeDwellTimes = keystrokeDwellTimes;
-        metrics.keystrokeFlightTimes = keystrokeFlightTimes;
-
-        // Calculate mean keystroke latency
-        if (keystrokeLatencies.length > 0) {
-            const sum = keystrokeLatencies.reduce((a, b) => a + b, 0);
-            metrics.keystrokeLatency = sum / keystrokeLatencies.length;
-        } else {
-            metrics.keystrokeLatency = 0;
-        }
-        return metrics;
+        return this.evaluateBehavior();
     },
 
     /**
@@ -991,14 +1081,13 @@ const ClientLibrary = {
      */
     async protectedFetch(resource, options = {}) {
         const fp = this.getDeviceFingerprint();
-        const rawBehavior = this.getClientBehaviorMetrics();
         const zkpProof = await this.generateZkpProof(fp); // Generate ZKP proof
-        const behavior = await signMetrics(rawBehavior);
+        const behavior = this.getClientBehaviorMetrics();
 
         const headers = new Headers(options.headers || {});
         headers.set('X-ZKP-Proof', zkpProof); // Add ZKP proof to headers
         headers.set('X-Device-Fingerprint', fp);
-        headers.set('X-Behavior-Metrics', JSON.stringify(behavior));
+        headers.set('X-Behavior-Metrics', String(behavior));
 
         options.headers = headers;
         return fetch(resource, options);
@@ -1071,11 +1160,10 @@ const ClientLibrary = {
 
         if (shouldProtect) {
             const fp = this.getDeviceFingerprint();
-            const rawBehavior = this.getClientBehaviorMetrics();
-            const behavior = await signMetrics(rawBehavior);
+            const behavior = this.getClientBehaviorMetrics();
             const headers = new Headers(options.headers || {});
             headers.set('X-Device-Fingerprint', fp);
-            headers.set('X-Behavior-Metrics', JSON.stringify(behavior));
+            headers.set('X-Behavior-Metrics', String(behavior));
             options.headers = headers;
         }
 

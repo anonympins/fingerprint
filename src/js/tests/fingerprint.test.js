@@ -906,8 +906,76 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(req.fingerprint.score).toBeGreaterThanOrEqual(blockThreshold);
         });
 
-        test('should redirect after a valid COMBINED (CPU+Mem) PoW solution is provided', async (context) => {
+        test('should redirect after a valid COMBINED (CPU+Mem) PoW solution is provided', async () => {
+            const ip = '127.0.0.1';
+            const originalPath = '/protected/combined';
+            const solverFingerprint = 'fp-combined-solution';
+            const userAgent = 'test-ua-combined';
 
+            vi.spyOn(__internal, 'getSuspicionVector').mockResolvedValue({
+                historyScore: 35,
+            });
+
+            const securityConfigWithLowDiff = {
+                ...securityConfig,
+                cpu: { minDifficultyBits: 4, ...securityConfig.cpu },
+            };
+            const middleware = powMiddleware(securityConfigWithLowDiff);
+
+            // 1. Déclencher le challenge
+            const req1 = {
+                path: originalPath, ip, cookies: {}, query: {},
+                headers: { 'user-agent': userAgent, 'x-device-fingerprint': solverFingerprint },
+                rawHeaders: ['User-Agent', userAgent], httpVersion: '1.1'
+            };
+            let challengeBody;
+            const res1 = {
+                status: () => res1,
+                send: (body) => { challengeBody = body; },
+                cookie: vi.fn()
+            };
+            req1.fingerprint = {};
+            await middleware(req1, res1, vi.fn());
+
+            expect(challengeBody).toContain('Enhanced Verification');
+
+            // 2. Résoudre le challenge
+            const nonce = challengeBody.match(/const nonce = "([^"]+)"/)[1];
+            const clientSecret = challengeBody.match(/const clientSecret = "([^"]+)"/)[1];
+            const cpuTargetHex = challengeBody.match(/const cpuTarget = BigInt\("0x" \+ "([^"]+)"\);/)[1];
+            const memDifficulty = parseInt(challengeBody.match(/const memDifficulty = (\d+)/)[1], 10);
+
+            const baseBlock = new TextEncoder().encode(`${nonce}:${clientSecret}:${solverFingerprint}:${ip}::`);
+            const cpuSolution = await solveCpuTargetInline(baseBlock, cpuTargetHex, () => {});
+            const memSolution = await solveMemory(`:${nonce}:${clientSecret}`, memDifficulty);
+
+            // 3. Soumettre la solution
+            const req2 = {
+                path: originalPath, ip, cookies: {},
+                query: {
+                    pow_type: 'cpu_mem',
+                    pow_nonce: nonce,
+                    pow_solution_cpu: String(cpuSolution),
+                    pow_solution_mem: JSON.stringify(memSolution),
+                    pow_fp: solverFingerprint
+                },
+                headers: { 'user-agent': userAgent, 'x-device-fingerprint': solverFingerprint },
+                rawHeaders: ['User-Agent', userAgent], httpVersion: '1.1'
+            };
+            let capturedCookie;
+            const res2 = {
+                cookie: (name, value, options) => { capturedCookie = { name, value, options }; },
+                redirect: vi.fn(),
+                status: vi.fn(() => res2),
+                send: vi.fn(),
+            };
+
+            req2.fingerprint = {};
+            await middleware(req2, res2, vi.fn());
+
+            expect(res2.redirect).toHaveBeenCalledWith(originalPath);
+            expect(capturedCookie).toBeDefined();
+            expect(capturedCookie.name).toBe('pow_clearance');
         });
     });
 
@@ -1551,6 +1619,18 @@ describe('Fingerprint & PoW Security Suite', () => {
             const context = { headers: {} };
             const { behaviorScore } = getBehaviorScore(context);
             expect(behaviorScore).toBe(0);
+        });
+
+        it('should return a score of 0 when x-behavior-metrics is 1 (human verified client-side)', () => {
+            const context = { headers: { 'x-behavior-metrics': '1' } };
+            const { behaviorScore } = getBehaviorScore(context);
+            expect(behaviorScore).toBe(0);
+        });
+
+        it('should return a score of 100 when x-behavior-metrics is 0 (bot detected client-side)', () => {
+            const context = { headers: { 'x-behavior-metrics': '0' } };
+            const { behaviorScore } = getBehaviorScore(context);
+            expect(behaviorScore).toBe(100);
         });
 
         it('should return a score of 100 for honeypot interaction', () => {

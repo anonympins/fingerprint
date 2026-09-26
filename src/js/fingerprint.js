@@ -510,7 +510,7 @@ export function getProtocolAnomalyScore(context) {
  */
 function getRenderingAnomalyScore(context) {
   const behaviorHeader = context.headers?.['x-behavior-metrics'];
-  if (!behaviorHeader) {
+  if (!behaviorHeader || !isNaN(Number(behaviorHeader))) {
     return { renderingAnomalyScore: 0.0 };
   }
   try {
@@ -2304,13 +2304,37 @@ function analyzeTouchMovements(history) {
  * @returns {{behaviorScore: number}}
  */
 function getBehaviorScore(context) {
-  const behaviorHeader = context.headers["x-behavior-metrics"];
-  if (!behaviorHeader) {
+  const behaviorHeader = context.headers ? (context.headers["x-behavior-metrics"] ?? context.headers["X-Behavior-Metrics"]) : undefined;
+  if (behaviorHeader === undefined || behaviorHeader === null || behaviorHeader === '') {
     return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
+  }
+
+  // Traitement direct si un flag binaire client-side (1 = humain, 0 = bot) est envoyé
+  if (behaviorHeader === 1 || behaviorHeader === '1') {
+    return { behaviorScore: 0 };
+  }
+  if (behaviorHeader === 0 || behaviorHeader === '0') {
+    return { behaviorScore: 100 };
+  }
+
+  // Traitement direct si un score numérique est envoyé côté client
+  if (typeof behaviorHeader === 'number') {
+    return { behaviorScore: Math.max(0, Math.min(100, behaviorHeader)) };
+  }
+  if (typeof behaviorHeader === 'string' && !isNaN(Number(behaviorHeader)) && behaviorHeader.trim() !== '') {
+    const trimmed = behaviorHeader.trim();
+    if (trimmed === '1') return { behaviorScore: 0 };
+    if (trimmed === '0') return { behaviorScore: 100 };
+    return { behaviorScore: Math.max(0, Math.min(100, parseFloat(trimmed))) };
   }
 
   try {
     const metrics = JSON.parse(behaviorHeader);
+    if (metrics === 1) return { behaviorScore: 0 };
+    if (metrics === 0) return { behaviorScore: 100 };
+    if (typeof metrics === 'number') {
+      return { behaviorScore: Math.max(0, Math.min(100, metrics)) };
+    }
     let score = 0;
 
     // 1. Pénalité maximale si un honeypot client a été déclenché.
@@ -2957,6 +2981,10 @@ function analyzeClickPositions(history) {
  * @returns {{clickVarianceScore: number}}
  */
 function getClickVarianceScore(context) {
+    const rawMetrics = context.headers?.['x-behavior-metrics'];
+    if (!rawMetrics || !isNaN(Number(rawMetrics))) {
+        return { clickVarianceScore: 0 };
+    }
     const metrics = JSON.parse(context.headers['x-behavior-metrics'] || '{}');
     const score = analyzeClickPositions(metrics.clicksHistory);
     return { clickVarianceScore: score };
@@ -3808,7 +3836,7 @@ async function getBehavioralIndicators(context, deviceData) {
   // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
   const behaviorHeader = context.headers?.['x-behavior-metrics'];
   let webauthnVerified = false;
-  if (behaviorHeader) {
+  if (behaviorHeader && typeof behaviorHeader === 'string' && behaviorHeader.startsWith('{')) {
       try {
           const metrics = JSON.parse(behaviorHeader);
           if (metrics && metrics.webauthnAnchor) {
@@ -3952,7 +3980,12 @@ export const getSuspicionVector = async (context, securityConfig) => {
       const { botScore } = getBotScore(context);
 
       // NOUVEAU: On calcule le score d'incohérence temporelle.
-      const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'), deviceData);
+      let parsedBehaviorMetrics = {};
+      const rawBehaviorHeader = context.headers?.['x-behavior-metrics'];
+      if (rawBehaviorHeader && typeof rawBehaviorHeader === 'string' && rawBehaviorHeader.startsWith('{')) {
+          try { parsedBehaviorMetrics = JSON.parse(rawBehaviorHeader); } catch (e) {}
+      }
+      const { timeInconsistencyScore } = getTimeInconsistencyScore(context, parsedBehaviorMetrics, deviceData);
 
       // NOUVEAU: On calcule le score d'incohérence entre les couches.
       const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
@@ -4415,7 +4448,7 @@ async function getThreatIntelScore(context, zkpY, threatIntelConfig = {}) {
     const tcpRtt = tcpRttHeader ? parseInt(tcpRttHeader, 10) : null;
 
     const behaviorHeader = context.headers?.['x-behavior-metrics'];
-    if (behaviorHeader) {
+    if (behaviorHeader && typeof behaviorHeader === 'string' && behaviorHeader.startsWith('{')) {
         try {
             const metrics = JSON.parse(behaviorHeader);
             if (metrics && typeof metrics.clientTimestamp === 'number' && typeof context.requestTimestamp === 'number') {

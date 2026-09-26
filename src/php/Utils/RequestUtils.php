@@ -392,133 +392,152 @@ class RequestUtils
 
     /**
      * Calcule un score basé sur les métriques comportementales envoyées par le client.
-     * @return array{'behaviorScore': float}
+     * @param RequestContext $context Le contexte de la requête.
+     * @return array{behaviorScore: float}
      */
     public static function getBehaviorScore(RequestContext $context): array
     {
-        $behaviorHeader = $context->getHeader('x-behavior-metrics');
-        if (!$behaviorHeader) {
+        $header = $context->getHeader('x-behavior-metrics');
+        if (empty($header)) {
             return ['behaviorScore' => 0.0];
         }
 
-        $metrics = json_decode($behaviorHeader, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            return ['behaviorScore' => 10.0]; // En-tête malformé
+        if ($header === '1' || $header === 1) {
+            return ['behaviorScore' => 0.0];
+        }
+        if ($header === '0' || $header === 0) {
+            return ['behaviorScore' => 100.0];
         }
 
-        if (!empty($metrics['honeypotInteraction'])) {
+        if (is_numeric($header)) {
+            $score = max(0.0, min(100.0, (float)$header));
+            return ['behaviorScore' => $score];
+        }
+
+        if (is_string($header)) {
+            $trimmed = trim($header);
+            if (is_numeric($trimmed)) {
+                if ($trimmed === '1') {
+                    return ['behaviorScore' => 0.0];
+                }
+                if ($trimmed === '0') {
+                    return ['behaviorScore' => 100.0];
+                }
+                $score = max(0.0, min(100.0, (float)$trimmed));
+                return ['behaviorScore' => $score];
+            }
+        }
+
+        $metrics = json_decode($header, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return ['behaviorScore' => 10.0];
+        }
+
+        if ($metrics === 1) {
+            return ['behaviorScore' => 0.0];
+        }
+        if ($metrics === 0) {
+            return ['behaviorScore' => 100.0];
+        }
+
+        if (is_numeric($metrics)) {
+            $score = max(0.0, min(100.0, (float)$metrics));
+            return ['behaviorScore' => $score];
+        }
+
+        if (!is_array($metrics)) {
+            return ['behaviorScore' => 0.0];
+        }
+
+        if ($metrics['honeypotInteraction'] ?? false) {
             return ['behaviorScore' => 100.0];
         }
 
         $score = 0.0;
-        if (!empty($metrics['prototypeTampered'])) {
+        if ($metrics['prototypeTampered'] ?? false) {
             $score += 80.0;
         }
 
-        $mouseAnalysis = self::analyzeMouseMovements($metrics['mouseMovementsHistory'] ?? null);
-        $touch = self::analyzeTouchMovements($metrics['touchMovementsHistory'] ?? null);
+        $mouseHistory = $metrics['mouseMovementsHistory'] ?? [];
+        $touchHistory = $metrics['touchMovementsHistory'] ?? [];
+
+        $mouseAnalysis = RequestUtils::analyzeMouseMovements($mouseHistory);
+        $touchAnalysis = RequestUtils::analyzeTouchMovements($touchHistory);
+
+        $mouseAvgSpeed = (float)($mouseAnalysis['avgSpeed'] ?? 0.0);
+        $touchAvgSpeed = (float)($touchAnalysis['avgSpeed'] ?? 0.0);
+        $keystrokeLatency = (float)($metrics['keystrokeLatency'] ?? 0.0);
 
         if (isset($metrics['historyLength'])) {
-            if ($metrics['historyLength'] === 1) $score += 15;
-            elseif ($metrics['historyLength'] >= 5) $score -= 20;
-            elseif ($metrics['historyLength'] >= 2) $score -= 10;
+            $historyLength = (int)$metrics['historyLength'];
+            if ($historyLength === 1) $score += 15;
+            elseif ($historyLength >= 5) $score -= 20;
+            elseif ($historyLength >= 2) $score -= 10;
         } else {
-            // Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
-            // On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
-            // signaux passifs de bot (ex: rendu offscreen) sont présents.
-            if ($mouseAnalysis['avgSpeed'] == 0 && $touch['avgSpeed'] == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
+            if ($mouseAvgSpeed === 0.0 && $touchAvgSpeed === 0.0 && $keystrokeLatency === 0.0) {
                 $noInteractionPenalty = 5.0;
-                if (!empty($metrics['rendering']['offscreenAnom'])) $noInteractionPenalty += 40.0;
+                if ($metrics['rendering']['offscreenAnom'] ?? false) {
+                    $noInteractionPenalty += 40.0;
+                }
                 $score += $noInteractionPenalty;
             }
         }
 
-        if ($mouseAnalysis['avgSpeed'] > 0) {
-            if ($mouseAnalysis['avgSpeed'] > 3) $score += 25;
-            if ($mouseAnalysis['avgAcceleration'] > 0.5) $score += 20;
-            if ($mouseAnalysis['straightness'] > 0.95) $score += 30;
-            if ($mouseAnalysis['pauses'] === 0 && count($mouseAnalysis['segments']) > 20) $score += 15;
+        if ($mouseAvgSpeed > 0) {
+            if ($mouseAvgSpeed > 3.0) $score += 25;
+            if (($mouseAnalysis['avgAcceleration'] ?? 0.0) > 0.5) $score += 20;
+            if (($mouseAnalysis['straightness'] ?? 1.0) > 0.95) $score += 30;
+            if (($mouseAnalysis['pauses'] ?? 0) === 0 && count($mouseAnalysis['segments'] ?? []) > 20) $score += 15;
         }
 
-        if (($metrics['keystrokeLatency'] ?? 0) > 0 && $metrics['keystrokeLatency'] < 40) $score += 25;
-        if (($metrics['keystrokeLatency'] ?? 0) > 1000) $score += 15;
+        if ($touchAvgSpeed > 0 || !empty($touchHistory)) {
+            if (count($touchHistory) >= 3) {
+                if (($touchAnalysis['pressureVariance'] ?? 1.0) < 0.0001) {
+                    $score += 35.0;
+                }
+                if (($touchAnalysis['radiusVariance'] ?? 1.0) < 0.0001) {
+                    $score += 25.0;
+                }
+                if (($touchAnalysis['straightness'] ?? 0.0) > 0.98) {
+                    $score += 20.0;
+                }
+            }
+        }
 
-        // NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
         $dwellTimes = $metrics['keystrokeDwellTimes'] ?? [];
+        if (is_array($dwellTimes) && count($dwellTimes) >= 3) {
+            $dwellNumeric = array_filter($dwellTimes, 'is_numeric');
+            if (count($dwellNumeric) >= 3) {
+                $meanDwell = array_sum($dwellNumeric) / count($dwellNumeric);
+                $dwellVar = array_reduce($dwellNumeric, fn($carry, $val) => $carry + pow((float)$val - $meanDwell, 2), 0.0) / count($dwellNumeric);
+                if ($dwellVar < 2.0) {
+                    $score += 40.0;
+                }
+            }
+        }
+
         $flightTimes = $metrics['keystrokeFlightTimes'] ?? [];
-
-        if (count($dwellTimes) >= 5) {
-            $meanDwell = array_sum($dwellTimes) / count($dwellTimes);
-            $varDwell = array_reduce($dwellTimes, fn($carry, $item) => $carry + pow($item - $meanDwell, 2), 0) / count($dwellTimes);
-            $stdDevDwell = sqrt($varDwell);
-
-            if ($stdDevDwell < 2.0) {
-                $score += 35.0;
-            }
-            if ($meanDwell < 15.0) {
-                $score += 25.0;
-            }
-        }
-
-        if (count($flightTimes) >= 5) {
-            $times = array_column($flightTimes, 'time');
-            $meanFlight = array_sum($times) / count($times);
-            $varFlight = array_reduce($times, fn($carry, $item) => $carry + pow($item - $meanFlight, 2), 0) / count($times);
-            $stdDevFlight = sqrt($varFlight);
-
-            if ($stdDevFlight < 3.0) {
-                $score += 35.0;
-            }
-            if ($meanFlight < 25.0) {
-                $score += 25.0;
-            }
-            $benfordDev = Optimization::benfordTest($times);
-            if ($benfordDev > 0.18) {
-                $score += 30.0;
-            }
-        }
-
-        // Analyse de Benford sur les segments de mouvement de la souris
-        if (count($mouseAnalysis['segments']) > 10) {
-            $benfordDeviation = Optimization::benfordTest($mouseAnalysis['segments']);
-            if ($benfordDeviation > 0.18) {
-                $score += 35;
-            }
-        }
-        // Analyse comportementale des événements tactiles (Touch Move)
-        $touchHistory = $metrics['touchMovementsHistory'] ?? null;
-        if (!empty($touchHistory)) {
-            if ($touch['avgSpeed'] > 0) {
-                if ($touch['avgSpeed'] > 5) $score += 30;
-                if ($touch['avgAcceleration'] > 0.8) $score += 20;
-                if ($touch['straightness'] > 0.98) $score += 35;
-                if ($touch['pauses'] === 0 && count($touch['segments']) > 25) $score += 15;
-
-                // Détection de l'émulation (pression et rayon de contact constants)
-                if ($touch['avgPressure'] > 0 && $touch['pressureVariance'] == 0) {
-                    $score += 30;
-                }
-                if ($touch['avgRadius'] > 0 && $touch['radiusVariance'] == 0) {
-                    $score += 30;
+        if (is_array($flightTimes) && count($flightTimes) >= 3) {
+            $extractedFlightTimes = [];
+            foreach ($flightTimes as $ft) {
+                if (is_array($ft) && isset($ft['time']) && is_numeric($ft['time'])) {
+                    $extractedFlightTimes[] = (float)$ft['time'];
+                } elseif (is_numeric($ft)) {
+                    $extractedFlightTimes[] = (float)$ft;
                 }
             }
-            if (count($touch['segments']) > 10) {
-                $benfordDev = Optimization::benfordTest($touch['segments']);
-                if ($benfordDev > 0.18) {
-                    $score += 35;
+            if (count($extractedFlightTimes) >= 3) {
+                $meanFlight = array_sum($extractedFlightTimes) / count($extractedFlightTimes);
+                $flightVar = array_reduce($extractedFlightTimes, fn($carry, $val) => $carry + pow($val - $meanFlight, 2), 0.0) / count($extractedFlightTimes);
+                if ($flightVar < 2.0) {
+                    $score += 40.0;
                 }
             }
-        }
-
-        // Détection de ferme mobile : un appareil mobile parfaitement immobile est suspect, indépendamment des interactions tactiles.
-        $ua = $context->getHeader('user-agent') ?? '';
-        $isMobileDevice = str_contains($ua, 'Mobile');
-        if ($isMobileDevice && isset($metrics['motionVariance']) && is_numeric($metrics['motionVariance']) && (float)$metrics['motionVariance'] === 0.0) {
-            $score += 50.0; // Terminal fixé sur un châssis mécanique (rack ADB)
         }
 
         return ['behaviorScore' => min(100.0, $score)];
     }
+
 
     /**
      * Calcule un score basé sur la régularité d'affichage (V-Sync) et l'utilisation suspecte d'OffscreenCanvas.
