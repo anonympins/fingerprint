@@ -2,6 +2,7 @@
 
 - 🛡️ **Security & Rate Limiting**:
   - **Domain-Aware Challenge Rate Limiter**: Implemented a new rate-limiting mechanism that operates on a per-domain basis. This enhances stability in multi-tenant architectures and mitigates challenge-based DoS attacks by isolating traffic per host.
+  - **Transparent Service Worker Interception (`fingerprint.worker.js`)**: Introduced a dedicated Service Worker and client integration (`initServiceWorker`, `syncServiceWorkerCredentials`) for transparent network request decoration (`X-Device-Fingerprint`, `X-Behavior-Metrics`). This avoids monkey-patching `window.fetch` directly, keeping native prototypes intact to prevent prototype tampering triggers while supporting domain-scoped protection.
 - ⚖️ **Scoring Parity & Enhancements**:
   - **`behaviorScore` Overhaul**: Reworked the behavioral scoring logic across all supported languages (Node.js, PHP, Java, Python) for more accurate detection of human-like interactions versus automated patterns.
   - **`x-behavior-metrics` Direct Score & Binary Flag Support**: Added support for direct evaluation of client-side binary flags (`1` for verified human yielding a score of `0`, `0` for detected bot yielding a score of `100`) as well as raw numeric suspicion scores passed in the `x-behavior-metrics` header. (Contributed by @anonympins)
