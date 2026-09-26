@@ -789,39 +789,38 @@ class ChallengeUtils
     /**
      * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
      */
-    public static function checkChallengeRateLimit(string $clientIp): bool
+    public static function checkChallengeRateLimit(string $clientIp, float $capacity = 5.0, float $refillRate = 0.1): bool
     {
-        $subnet = RequestUtils::getIpSubnet($clientIp);
-        if ($subnet === null) {
-            return false;
-        }
+        $subnet = RequestUtils::getIpSubnet($clientIp) ?? $clientIp;
 
         $store = StoreManager::getStore();
         $key = "rate-limit:{$subnet}";
-        $rateLimitData = $store->get($key) ?? [
-            'tokens' => 5.0,
-            'lastRefill' => microtime(true)
-        ];
-
-        $capacity = 5.0;
-        $refillRate = 0.1; // 1 token toutes les 10 secondes
         $now = microtime(true);
 
-        $elapsed = $now - $rateLimitData['lastRefill'];
-        $tokens = min($capacity, $rateLimitData['tokens'] + $elapsed * $refillRate);
+        $rateLimitData = $store->get($key);
+        if (!is_array($rateLimitData) || !isset($rateLimitData['tokens'], $rateLimitData['lastRefill'])) {
+            $rateLimitData = [
+                'tokens' => $capacity,
+                'lastRefill' => $now
+            ];
+        }
+
+        $elapsed = max(0.0, $now - (float)$rateLimitData['lastRefill']);
+        $tokens = min($capacity, (float)$rateLimitData['tokens'] + $elapsed * $refillRate);
+        $ttl = (int)max(60, ceil($capacity / max(0.1, $refillRate)));
 
         if ($tokens < 1.0) {
             $store->set($key, [
                 'tokens' => $tokens,
                 'lastRefill' => $now
-            ], 60);
+            ], $ttl);
             return false;
         }
 
         $store->set($key, [
             'tokens' => $tokens - 1.0,
             'lastRefill' => $now
-        ], 60);
+        ], $ttl);
 
         return true;
     }

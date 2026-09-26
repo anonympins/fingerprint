@@ -22,9 +22,6 @@ import javax.crypto.spec.SecretKeySpec;
 public class ChallengeUtils {
 
     private static final String DEFAULT_FALLBACK_SECRET = "fallback-dev-secret-32-chars-minimum";
-    private static final Map<String, List<Long>> IP_REQUEST_LOGS = new java.util.concurrent.ConcurrentHashMap<>();
-    private static final int MAX_REQUESTS_PER_WINDOW = 10;
-    private static final long WINDOW_MS = 60000; // 1 minute
     private static IStore store = new InMemoryStore();
 
     public static void setStore(IStore externalStore) {
@@ -1121,27 +1118,65 @@ public class ChallengeUtils {
     }
 
     /**
-     * Vérifie la limite de taux (rate limit) pour les demandes de challenge d'un client.
+     * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
      *
      * @param clientIp L'adresse IP du client.
-     * @return true si la requête est autorisée.
+     * @param capacity Capacité maximale du réservoir de jetons.
+     * @param refillRate Vitesse de recharge en jetons par seconde.
+     * @return true si la requête est autorisée, false sinon.
      */
-    public static boolean checkChallengeRateLimit(String clientIp) {
+    @SuppressWarnings("unchecked")
+    public static boolean checkChallengeRateLimit(String clientIp, double capacity, double refillRate) {
         if (clientIp == null || clientIp.isEmpty()) {
             return false;
         }
-        long now = System.currentTimeMillis();
-        List<Long> timestamps = IP_REQUEST_LOGS.computeIfAbsent(clientIp, k -> Collections.synchronizedList(new ArrayList<>()));
+        String subnet = RequestUtils.getIpSubnet(clientIp, 24, 48);
+        String key = "rate-limit:" + (subnet != null ? subnet : clientIp);
+        double now = System.currentTimeMillis() / 1000.0;
 
-        synchronized (timestamps) {
-            timestamps.removeIf(t -> now - t > WINDOW_MS);
-
-            if (timestamps.size() >= MAX_REQUESTS_PER_WINDOW) {
-                return false;
-            }
-            timestamps.add(now);
-            return true;
+        Map<String, Object> rateLimitData = null;
+        Object stored = store != null ? store.get(key) : null;
+        if (stored instanceof Map) {
+            rateLimitData = (Map<String, Object>) stored;
         }
+
+        double currentTokens = capacity;
+        double lastRefill = now;
+
+        if (rateLimitData != null) {
+            if (rateLimitData.get("tokens") instanceof Number) {
+                currentTokens = ((Number) rateLimitData.get("tokens")).doubleValue();
+            }
+            if (rateLimitData.get("lastRefill") instanceof Number) {
+                lastRefill = ((Number) rateLimitData.get("lastRefill")).doubleValue();
+            }
+        }
+
+        double elapsed = Math.max(0.0, now - lastRefill);
+        double tokens = Math.min(capacity, currentTokens + elapsed * refillRate);
+        int ttl = (int) Math.max(60, Math.ceil(capacity / Math.max(0.1, refillRate)));
+
+        if (tokens < 1.0) {
+            if (store != null) {
+                Map<String, Object> data = new HashMap<>();
+                data.put("tokens", tokens);
+                data.put("lastRefill", now);
+                store.set(key, data, ttl);
+            }
+            return false;
+        }
+
+        if (store != null) {
+            Map<String, Object> data = new HashMap<>();
+            data.put("tokens", tokens - 1.0);
+            data.put("lastRefill", now);
+            store.set(key, data, ttl);
+        }
+        return true;
+    }
+
+    public static boolean checkChallengeRateLimit(String clientIp) {
+        return checkChallengeRateLimit(clientIp, 5.0, 0.1);
     }
 
     private static Object decodeCBOR(byte[] buffer, int[] offset) {

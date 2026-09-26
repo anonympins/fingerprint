@@ -156,6 +156,32 @@ def default_whitelist() -> list:
      {"userAgent": "Yeti", "hostnameSuffix": ".naver.com"},
  ]
 
+DEFAULT_WEIGHTS = {
+    "historyScore": 0.3,
+    "rotationScore": 0.5,
+    "headerAnomalyScore": 0.2,
+    "requestPatternScore": 0.6,
+    "inconsistencyScore": 0.8,
+    "behaviorScore": 0.7,
+    "honeypotScore": 1.0,
+    "botScore": 1.0,
+    "cookieDroppingScore": 0.9,
+    "crossLayerInconsistencyScore": 0.4,
+    "timeInconsistencyScore": 0.9,
+    "tlsSpoofingScore": 0.8,
+    "clientHintsInconsistencyScore": 0.7,
+    "clickVarianceScore": 0.6,
+    "subnetScore": 0.4,
+    "ipReputationScore": 0.5,
+    "botnetClusterScore": 0.7,
+    "tcpAnomalyScore": 0.8,
+    "protocolAnomalyScore": 0.8,
+    "quicAnomalyScore": 0.8,
+    "renderingAnomalyScore": 0.8,
+    "threatIntelScore": 1.0,
+    "virtualizationScore": 0.8
+}
+
 def imul(a: int, b: int) -> int:
     """
     Emulates JavaScript Math.imul (signed 32-bit integer multiplication).
@@ -347,6 +373,15 @@ def get_ip_common_prefix_length(ip1: str, ip2: str) -> int:
             return 128 - xor.bit_length()
         except Exception:
             return 0
+
+def is_loopback_ip(ip: str) -> bool:
+    """Checks if an IP address is a loopback/local address."""
+    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
 
 GREASE_VALUES = {
     2570, 6682, 10794, 14906, 19018, 23130, 27242, 31354,
@@ -1404,34 +1439,46 @@ class ChallengeUtils:
         return expected_solution == int(sol)
 
     @staticmethod
-    async def check_challenge_rate_limit(store, client_ip: str) -> bool:
+    async def check_challenge_rate_limit(
+        store,
+        client_ip: str,
+        domain: str = "default",
+        rate_limit_config: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """
-        Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+        Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau par domaine.
         """
-        subnet = get_ip_subnet(client_ip)
+        rate_limit_config = rate_limit_config or {}
+        if rate_limit_config.get("enabled") is False:
+            return True
+
+        if not client_ip or is_loopback_ip(client_ip):
+            return True
+
+        subnet = get_ip_subnet(client_ip) or client_ip
         if not subnet:
             return False
 
-        key = f"rate-limit:{subnet}"
-        rate_limit_data = await store.get(key)
-        if not rate_limit_data:
-            rate_limit_data = {
-                "tokens": 5.0,
-                "lastRefill": time.time()
-            }
+        host = (domain or "default").lower().split(":")[0]
+        key = f"rate-limit:{host}:{subnet}"
 
-        capacity = 5.0
-        refill_rate = 0.1  # 1 token toutes les 10 secondes
+        capacity = float(rate_limit_config.get("capacity", 30.0))
+        refill_rate = float(rate_limit_config.get("refillRate", 1.0))
         now = time.time()
 
-        elapsed = now - rate_limit_data["lastRefill"]
-        tokens = min(capacity, rate_limit_data["tokens"] + elapsed * refill_rate)
+        rate_limit_data = await store.get(key)
+        if not rate_limit_data:
+            rate_limit_data = {"tokens": capacity, "lastRefill": now}
+
+        elapsed = max(0.0, now - rate_limit_data.get("lastRefill", now))
+        tokens = min(capacity, float(rate_limit_data.get("tokens", capacity)) + elapsed * refill_rate)
+        ttl = max(60, int(math.ceil(capacity / max(0.1, refill_rate))))
 
         if tokens < 1.0:
-            await store.set(key, {"tokens": tokens, "lastRefill": now}, 60)
+            await store.set(key, {"tokens": tokens, "lastRefill": now}, ttl)
             return False
 
-        await store.set(key, {"tokens": tokens - 1.0, "lastRefill": now}, 60)
+        await store.set(key, {"tokens": tokens - 1.0, "lastRefill": now}, ttl)
         return True
 
 
@@ -1680,12 +1727,13 @@ class RequestUtils:
         h2_fp = context.headers.get("x-http2-fingerprint") or getattr(context, "http2_fingerprint", None)
         if browser and h2_fp and isinstance(h2_fp, str):
             parts = h2_fp.split("|")
-            if len(parts) >= 4:
+            if len(parts) >= 3:
                 try:
                     conn_window = int(parts[1])
                 except ValueError:
                     conn_window = 0
-                header_order = parts[3].strip().lower()
+                stream_priority = parts[2] if len(parts) > 2 else ''
+                header_order = parts[3].strip().lower() if len(parts) > 3 else ''
                 is_chromium = browser.startswith("Chrome") or browser.startswith("Edge")
                 is_firefox = browser.startswith("Firefox")
                 is_safari = browser.startswith("Safari")
@@ -1695,12 +1743,42 @@ class RequestUtils:
                         http2_anomaly += 60.0
                     if conn_window in (65535, 65536):
                         http2_anomaly += 40.0
+                    if stream_priority == '0' or stream_priority == '':
+                        http2_anomaly += 50.0
                 elif is_firefox:
                     if header_order and header_order != "m,s,p,a":
                         http2_anomaly += 60.0
                 elif is_safari:
                     if header_order and header_order != "m,s,p,a":
                         http2_anomaly += 60.0
+
+                # Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
+                if len(parts) >= 5:
+                    frame_counts_str = parts[4]
+                    frame_counts = {}
+                    for item in frame_counts_str.split(','):
+                        kv = item.split(':')
+                        if len(kv) == 2:
+                            try:
+                                frame_counts[kv[0]] = int(kv[1])
+                            except ValueError:
+                                pass
+
+                    priority_count = frame_counts.get('p', 0)
+                    window_update_count = frame_counts.get('w', 0)
+                    continuation_count = frame_counts.get('c', 0)
+
+                    if is_chromium:
+                        if priority_count == 0:
+                            http2_anomaly += 25.0
+                        if window_update_count < 2:
+                            http2_anomaly += 20.0
+                    elif is_firefox:
+                        if priority_count > 1:
+                            http2_anomaly += 20.0
+
+                    if continuation_count == 0 and header_order.count(',') > 3:
+                        http2_anomaly += 30.0
 
         quic_res = RequestUtils.get_quic_anomaly_score(context)
         quic_anomaly = quic_res.get("quicAnomalyScore", 0.0)
@@ -2027,10 +2105,35 @@ class RequestUtils:
         header = context.headers.get("x-behavior-metrics")
         if not header:
             return 0.0
+
+        if isinstance(header, (int, float)):
+            return max(0.0, min(100.0, float(header)))
+
+        if isinstance(header, str):
+            try:
+                num = float(header.strip())
+                return max(0.0, min(100.0, num))
+            except ValueError:
+                pass
+
         try:
             metrics = json.loads(header)
         except Exception:
             return 10.0
+
+        if isinstance(metrics, (int, float)):
+            return max(0.0, min(100.0, float(metrics)))
+
+        if not isinstance(metrics, dict):
+            return 0.0
+
+        if not isinstance(metrics, dict):
+            return 0.0
+        if not isinstance(metrics, dict):
+            return {"renderingAnomalyScore": 0.0}
+        if not isinstance(metrics, dict):
+            return 0.0
+
         if metrics.get("honeypotInteraction"):
             return 100.0
         score = 0.0
@@ -2045,8 +2148,13 @@ class RequestUtils:
             elif hl >= 5: score -= 20.0
             elif hl >= 2: score -= 10.0
         else:
+            # Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
+            # On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
+            # signaux passifs de bot (ex: rendu offscreen) sont présents.
             if mouse_analysis["avgSpeed"] == 0.0 and touch_analysis["avgSpeed"] == 0.0 and metrics.get("keystrokeLatency", 0.0) == 0.0:
-                score += 40.0
+                no_interaction_penalty = 5.0
+                if metrics.get("rendering", {}).get("offscreenAnom"): no_interaction_penalty += 40.0
+                score += no_interaction_penalty
         if mouse_analysis["avgSpeed"] > 0.0:
             if mouse_analysis["avgSpeed"] > 3.0: score += 25.0
             if mouse_analysis["avgAcceleration"] > 0.5: score += 20.0
@@ -2105,9 +2213,8 @@ class RequestUtils:
         ua = context.headers.get("user-agent", "")
         is_mobile_device = "Mobile" in ua
         motion_variance = metrics.get("motionVariance")
-        if is_mobile_device and len(touch_history) >= 5 and isinstance(motion_variance, (int, float)):
-            if motion_variance == 0:
-                score += 50.0
+        if is_mobile_device and isinstance(motion_variance, (int, float)) and motion_variance == 0.0:
+            score += 50.0 # Terminal fixé sur un châssis mécanique (rack ADB)
         return min(100.0, score)
 
     @staticmethod
@@ -3208,7 +3315,9 @@ class FingerprintEngine:
 
         self.store = store
         self.thresholds = config.get("thresholds", {"low": 20, "medium": 45, "high": 75, "block": 95})
-        self.weights = config.get("weights", {})
+        self.weights = copy.deepcopy(DEFAULT_WEIGHTS)
+        if "weights" in config and isinstance(config["weights"], dict):
+            self.weights.update(config["weights"])
         self.dry_run = config.get("dryRun", False)
         self._allowlist = self._build_allowlist()
 
@@ -3947,6 +4056,8 @@ class FingerprintEngine:
         if behavior_header:
             try:
                 metrics = json.loads(behavior_header)
+                if not isinstance(metrics, dict):
+                    return 0.0
                 client_timestamp = metrics.get("clientTimestamp")
                 if client_timestamp is not None:
                     app_latency = context.request_timestamp - int(client_timestamp)
@@ -4301,8 +4412,10 @@ class FingerprintEngine:
         low_threshold = self.thresholds.get("low", 20)
 
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
-            # --- AJOUT: Limiteur de débit (Token Bucket) ---
-            rate_limit_passed = await ChallengeUtils.check_challenge_rate_limit(self.store, client_ip)
+            # --- Limiteur de débit par domaine et sous-réseau (Token Bucket) ---
+            domain = context.headers.get("host", "default")
+            rate_limit_config = self.config.get("challengeRateLimit", {})
+            rate_limit_passed = await ChallengeUtils.check_challenge_rate_limit(self.store, client_ip, domain, rate_limit_config)
             if not rate_limit_passed:
                 decision = {
                     "action": "block",
@@ -4741,6 +4854,16 @@ class OptimizationOperators:
                     "botScore": random.random(),
                     "cookieDroppingScore": random.random(),
                     "threatIntelScore": random.random(),
+                    "clientHintsInconsistencyScore": random.random(),
+                    "clickVarianceScore": random.random(),
+                    "subnetScore": random.random(),
+                    "ipReputationScore": random.random(),
+                    "botnetClusterScore": random.random(),
+                    "tcpAnomalyScore": random.random(),
+                    "protocolAnomalyScore": random.random(),
+                    "quicAnomalyScore": random.random(),
+                    "renderingAnomalyScore": random.random(),
+                    "virtualizationScore": random.random(),
                 },
                 "patterns": {
                     "velocityThreshold": 100 + random.random() * 400,
@@ -5927,11 +6050,25 @@ if __name__ == "__main__":
         config = {
             "thresholds": {"low": 20, "high": 75, "block": 95},
             "weights": {
+                "historyScore": 0.3,
+                "rotationScore": 0.5,
                 "inconsistencyScore": 0.8,
-                "headerAnomalyScore": 0.1,
+                "headerAnomalyScore": 0.2,
+                "requestPatternScore": 0.6,
+                "behaviorScore": 0.7,
                 "clientHintsInconsistencyScore": 0.7,
+                "clickVarianceScore": 0.6,
+                "crossLayerInconsistencyScore": 0.4,
+                "timeInconsistencyScore": 0.9,
                 "tlsSpoofingScore": 0.8,
                 "botScore": 1.0,
+                "cookieDroppingScore": 0.9,
+                "subnetScore": 0.4,
+                "ipReputationScore": 0.5,
+                "botnetClusterScore": 0.7,
+                "tcpAnomalyScore": 0.8,
+                "protocolAnomalyScore": 0.8,
+                "threatIntelScore": 1.0,
                 "honeypotScore": 1.0,
                 "quicAnomalyScore": 0.8,
                 "renderingAnomalyScore": 0.8,

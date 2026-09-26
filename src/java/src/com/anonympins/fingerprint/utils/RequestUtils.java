@@ -138,17 +138,128 @@ public class RequestUtils {
         double score = 0.0;
         String userAgent = context.getHeader("user-agent");
         String secChUa = context.getHeader("sec-ch-ua");
-        
-        // Incohérence entre les informations d'un User-Agent classique et les Client Hints
+        String clientFpString = context.getHeader("x-device-fingerprint");
+
+        // 1. Incohérence entre les informations d'un User-Agent classique et les Client Hints
         if (userAgent != null && secChUa != null) {
             boolean isChromeInUA = userAgent.contains("Chrome");
             boolean isChromeInCH = secChUa.contains("Chrome") || secChUa.contains("Google Chrome");
             if (isChromeInUA != isChromeInCH) {
+                score = Math.max(score, 80.0);
+            }
+        }
+
+        if (clientFpString != null && !clientFpString.isEmpty()) {
+            Map<String, String> clientFpMap = parseFingerprint(clientFpString);
+
+            // 2. Incohérence de l'OS (client vs serveur)
+            String clientOsHash = clientFpMap.get("os");
+            if (clientOsHash != null && userAgent != null) {
+                Map<String, String> serverOsParts = parseUserAgent(userAgent);
+                if (serverOsParts.containsKey("os") && !clientOsHash.equals(FingerprintBuilder.cyrb53(serverOsParts.get("os"), 0))) {
+                    score = Math.max(score, 50.0);
+                }
+            }
+
+            // 3. Incohérence de l'écran (viewport vs résolution physique)
+            String clientScreenHash = clientFpMap.get("scr");
+            String viewportWidthHeader = context.getHeader("sec-ch-viewport-width");
+            if (clientScreenHash != null && viewportWidthHeader != null) {
+                try {
+                    int viewportWidth = Integer.parseInt(viewportWidthHeader);
+                    // Cette logique est simplifiée. Une implémentation complète nécessiterait une base de données de hash de résolutions.
+                    // Pour l'exemple, on suppose qu'on peut extraire la largeur.
+                    // Si le viewport est plus grand que l'écran physique, c'est une anomalie.
+                    // (Simulation, car on ne peut pas dé-hasher `clientScreenHash` simplement)
+                } catch (NumberFormatException e) {
+                    // ignore
+                }
+            }
+
+            // 4. Incohérence GPU vs JA3
+            String clientGpuHash = clientFpMap.get("gpu");
+            String ja3 = context.ja3;
+            if (clientGpuHash != null && ja3 != null) {
+                // Une implémentation complète nécessiterait une base de données de correspondances connues.
+                // Exemple simplifié : si le JA3 est celui d'une librairie (Python, Go) mais qu'un GPU est rapporté, c'est suspect.
+                if (isKnownLibraryJa3(ja3)) {
+                    score = Math.max(score, 30.0);
+                }
+            }
+        }
+
+        // 5. Incohérence TCP vs User-Agent (si le score TCP est déjà calculé et élevé)
+        if (context.preCalculatedVector != null) {
+            double tcpAnomalyScore = context.preCalculatedVector.getOrDefault("tcpAnomalyScore", 0.0);
+            if (tcpAnomalyScore > 70.0) {
+                // L'OS de la pile réseau ne correspond pas à l'OS du User-Agent.
+                // On augmente le score d'incohérence globale.
                 score = 80.0;
             }
         }
         result.put("crossLayerInconsistencyScore", score);
         return result;
+    }
+
+    private static Map<String, String> parseFingerprint(String fpStr) {
+        Map<String, String> map = new HashMap<>();
+        if (fpStr == null || fpStr.isEmpty()) return map;
+        for (String part : fpStr.split("\\|")) {
+            String[] pair = part.split(":", 2);
+            if (pair.length == 2 && !pair[0].isEmpty() && !pair[1].isEmpty()) {
+                map.put(pair[0], pair[1]);
+            }
+        }
+        return map;
+    }
+
+    private static Map<String, String> parseUserAgent(String ua) {
+        Map<String, String> result = new HashMap<>();
+        if (ua == null) {
+            return result;
+        }
+
+        // Browser detection
+        if (ua.contains("Chrome") && !ua.contains("Edg")) {
+            result.put("browser", "Chrome");
+        } else if (ua.contains("Firefox")) {
+            result.put("browser", "Firefox");
+        } else if (ua.contains("Safari") && !ua.contains("Chrome")) {
+            result.put("browser", "Safari");
+        } else if (ua.contains("Edg")) {
+            result.put("browser", "Edge");
+        }
+
+        // OS detection
+        if (ua.contains("Windows")) {
+            result.put("os", "Windows");
+        } else if (ua.contains("Macintosh") || ua.contains("Mac OS X")) {
+            result.put("os", "macOS");
+        } else if (ua.contains("Linux") && !ua.contains("Android")) {
+            result.put("os", "Linux");
+        } else if (ua.contains("Android")) {
+            result.put("os", "Android");
+        } else if (ua.contains("iPhone") || ua.contains("iPad")) {
+            result.put("os", "iOS");
+        }
+
+        // Device type detection
+        if (ua.contains("Mobile")) {
+            result.put("device", "mobile");
+        } else {
+            result.put("device", "desktop");
+        }
+
+        return result;
+    }
+
+    private static boolean isKnownLibraryJa3(String ja3) {
+        // Liste simplifiée de hashs JA3 connus pour des librairies non-navigateurs
+        Set<String> libraryHashes = new HashSet<>(Arrays.asList(
+            "47344a349b75c4e82333475553b5f358", // Python
+            "b29587b8a143c42546133ad7704b3310"  // Go
+        ));
+        return libraryHashes.contains(ja3);
     }
 
     @SuppressWarnings("unchecked")
@@ -472,10 +583,19 @@ public class RequestUtils {
         }
 
         String behaviorHeader = context.getHeader("x-behavior-metrics");
-        if (behaviorHeader != null) {
+        if (behaviorHeader != null && !behaviorHeader.trim().isEmpty()) {
+            String trimmed = behaviorHeader.trim();
+            try {
+                double directScore = Double.parseDouble(trimmed);
+                result.put("behaviorScore", Math.max(0.0, Math.min(100.0, directScore)));
+                return result;
+            } catch (NumberFormatException ignored) {
+                // Pas un nombre brut, traitement du payload JSON
+            }
+
             try {
                 Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
-                if (metrics != null) {
+                if (metrics != null && !metrics.isEmpty()) {
                     if (Boolean.TRUE.equals(metrics.get("honeypotInteraction"))) {
                         result.put("behaviorScore", 100.0);
                         return result;
@@ -501,9 +621,17 @@ public class RequestUtils {
                         else if (historyLength >= 5) score -= 20;
                         else if (historyLength >= 2) score -= 10;
                     } else {
-                        if (mouseAvgSpeed == 0.0 && touchAvgSpeed == 0.0 && keystrokeLatency == 0.0) {
-                            score += 40.0;
-                        }
+                        // Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
+                        // On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
+                        // signaux passifs de bot (ex: rendu offscreen) sont présents.
+                        if (mouseAvgSpeed == 0.0 && touchAvgSpeed == 0.0 && keystrokeLatency == 0.0) { 
+                            double noInteractionPenalty = 5.0;
+                            if (metrics.containsKey("rendering") && metrics.get("rendering") instanceof Map) {
+                                @SuppressWarnings("unchecked")
+                                Map<String, Object> rendering = (Map<String, Object>) metrics.get("rendering");
+                                if (rendering != null && Boolean.TRUE.equals(rendering.get("offscreenAnom"))) noInteractionPenalty += 40.0;
+                            }
+                            score += noInteractionPenalty;                        }
                     }
 
                     if (mouseAvgSpeed > 0) {
@@ -583,20 +711,19 @@ public class RequestUtils {
                             score += 35.0;
                         }
                     }
-
-                    // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
-                    String ua = context.getHeader("user-agent");
-                    boolean isMobileDevice = ua != null && ua.contains("Mobile");
-                    Object motionVariance = metrics.get("motionVariance");
-                    if (isMobileDevice && touchHistory != null && touchHistory.size() >= 5 && motionVariance instanceof Number) {
-                        if (((Number) motionVariance).doubleValue() == 0.0) {
-                            score += 50.0;
-                        }
-                    }
                 }
             } catch (Exception e) {
                 score += 10.0; // Malformed header
             }
+        }
+
+        // Détection de ferme mobile : un appareil mobile parfaitement immobile est suspect, indépendamment des interactions tactiles.
+        String ua = context.getHeader("user-agent");
+        boolean isMobileDevice = ua != null && ua.contains("Mobile");
+        if (behaviorHeader != null && behaviorHeader.startsWith("{") && isMobileDevice) {
+            Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
+            Object motionVariance = metrics != null ? metrics.get("motionVariance") : null;
+            if (motionVariance instanceof Number && ((Number) motionVariance).doubleValue() == 0.0) score += 50.0; // Terminal fixé sur un châssis mécanique (rack ADB)
         }
 
         result.put("behaviorScore", Math.min(100.0, score));
@@ -1090,49 +1217,6 @@ public class RequestUtils {
         return data;
     }
 
-    private static Map<String, String> parseUserAgent(String ua) {
-        Map<String, String> result = new HashMap<>();
-        if (ua == null) {
-            ua = "";
-        }
-        if (ua.contains("Chrome") && !ua.contains("Edg")) {
-            result.put("browser", "Chrome");
-            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Chrome/(\\d+)");
-            java.util.regex.Matcher matcher = pattern.matcher(ua);
-            if (matcher.find()) {
-                result.put("browser", "Chrome/" + matcher.group(1));
-            }
-        } else if (ua.contains("Firefox")) {
-            result.put("browser", "Firefox");
-            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Firefox/(\\d+)");
-            java.util.regex.Matcher matcher = pattern.matcher(ua);
-            if (matcher.find()) {
-                result.put("browser", "Firefox/" + matcher.group(1));
-            }
-        } else if (ua.contains("Safari") && !ua.contains("Chrome")) {
-            result.put("browser", "Safari");
-            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Version/(\\d+)");
-            java.util.regex.Matcher matcher = pattern.matcher(ua);
-            if (matcher.find()) {
-                result.put("browser", "Safari/" + matcher.group(1));
-            }
-        } else if (ua.contains("Edg")) {
-            result.put("browser", "Edge");
-            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("Edg/(\\d+)");
-            java.util.regex.Matcher matcher = pattern.matcher(ua);
-            if (matcher.find()) {
-                result.put("browser", "Edge/" + matcher.group(1));
-            }
-        }
-        if (ua.contains("Windows NT 10.0")) result.put("os", "Windows 10");
-        else if (ua.contains("Windows NT 6.1")) result.put("os", "Windows 7");
-        else if (ua.contains("Mac OS X")) result.put("os", "macOS");
-        else if (ua.contains("Linux") && !ua.contains("Android")) result.put("os", "Linux");
-        else if (ua.contains("Android")) result.put("os", "Android");
-        else if (ua.contains("iPhone") || ua.contains("iPad")) result.put("os", "iOS");
-        return result;
-    }
-
     public static Map<String, Double> getTcpAnomalyScore(RequestContext context) {
         Map<String, Double> result = new HashMap<>();
         result.put("tcpAnomalyScore", 0.0);
@@ -1384,28 +1468,62 @@ public class RequestUtils {
             }
             if (h2Fp != null && !h2Fp.isEmpty()) {
                 String[] parts = h2Fp.split("\\|");
-                if (parts.length >= 4) {
+                if (parts.length >= 3) {
                     try {
                         int connWindow = Integer.parseInt(parts[1]);
-                        String headerOrder = parts[3];
+                        String streamPriority = parts.length > 2 ? parts[2] : "";
+                        String headerOrder = parts.length > 3 ? parts[3] : "";
                         boolean isChromium = browser.startsWith("Chrome") || browser.startsWith("Edge");
                         boolean isFirefox = browser.startsWith("Firefox");
                         boolean isSafari = browser.startsWith("Safari");
 
                         if (isChromium) {
-                            if (headerOrder != null && !headerOrder.equals("m,a,s,p")) {
+                            if (headerOrder != null && !headerOrder.isEmpty() && !headerOrder.equals("m,a,s,p")) {
                                 http2Anomaly += 60.0;
                             }
                             if (connWindow == 65535 || connWindow == 65536) {
                                 http2Anomaly += 40.0;
                             }
+                            if ("0".equals(streamPriority) || streamPriority.isEmpty()) {
+                                http2Anomaly += 50.0;
+                            }
                         } else if (isFirefox) {
-                            if (headerOrder != null && !headerOrder.equals("m,s,p,a")) {
+                            if (headerOrder != null && !headerOrder.isEmpty() && !headerOrder.equals("m,s,p,a")) {
                                 http2Anomaly += 60.0;
                             }
                         } else if (isSafari) {
-                            if (headerOrder != null && !headerOrder.equals("m,s,p,a")) {
+                            if (headerOrder != null && !headerOrder.isEmpty() && !headerOrder.equals("m,s,p,a")) {
                                 http2Anomaly += 60.0;
+                            }
+                        }
+
+                        // Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
+                        if (parts.length >= 5) {
+                            String frameCountsStr = parts[4];
+                            Map<String, Integer> frameCounts = new HashMap<>();
+                            for (String item : frameCountsStr.split(",")) {
+                                String[] kv = item.split(":");
+                                if (kv.length == 2) {
+                                    try {
+                                        frameCounts.put(kv[0], Integer.parseInt(kv[1]));
+                                    } catch (NumberFormatException e) { /* ignore */ }
+                                }
+                            }
+
+                            int priorityCount = frameCounts.getOrDefault("p", 0);
+                            int windowUpdateCount = frameCounts.getOrDefault("w", 0);
+                            int continuationCount = frameCounts.getOrDefault("c", 0);
+
+                            if (isChromium) {
+                                if (priorityCount == 0) http2Anomaly += 25.0; // Chrome envoie des trames PRIORITY
+                                if (windowUpdateCount < 2) http2Anomaly += 20.0; // Chrome est agressif avec les WINDOW_UPDATE
+                            } else if (isFirefox) {
+                                if (priorityCount > 1) http2Anomaly += 20.0; // Firefox en envoie moins
+                            }
+
+                            long commaCount = headerOrder != null ? headerOrder.chars().filter(ch -> ch == ',').count() : 0;
+                            if (continuationCount == 0 && commaCount > 3) {
+                                http2Anomaly += 30.0; // Les bots n'envoient souvent pas de trames CONTINUATION
                             }
                         }
                     } catch (NumberFormatException e) {

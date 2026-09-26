@@ -392,131 +392,152 @@ class RequestUtils
 
     /**
      * Calcule un score basé sur les métriques comportementales envoyées par le client.
-     * @return array{'behaviorScore': float}
+     * @param RequestContext $context Le contexte de la requête.
+     * @return array{behaviorScore: float}
      */
     public static function getBehaviorScore(RequestContext $context): array
     {
-        $behaviorHeader = $context->getHeader('x-behavior-metrics');
-        if (!$behaviorHeader) {
+        $header = $context->getHeader('x-behavior-metrics');
+        if (empty($header)) {
             return ['behaviorScore' => 0.0];
         }
 
-        $metrics = json_decode($behaviorHeader, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            return ['behaviorScore' => 10.0]; // En-tête malformé
+        if ($header === '1' || $header === 1) {
+            return ['behaviorScore' => 0.0];
+        }
+        if ($header === '0' || $header === 0) {
+            return ['behaviorScore' => 100.0];
         }
 
-        if (!empty($metrics['honeypotInteraction'])) {
+        if (is_numeric($header)) {
+            $score = max(0.0, min(100.0, (float)$header));
+            return ['behaviorScore' => $score];
+        }
+
+        if (is_string($header)) {
+            $trimmed = trim($header);
+            if (is_numeric($trimmed)) {
+                if ($trimmed === '1') {
+                    return ['behaviorScore' => 0.0];
+                }
+                if ($trimmed === '0') {
+                    return ['behaviorScore' => 100.0];
+                }
+                $score = max(0.0, min(100.0, (float)$trimmed));
+                return ['behaviorScore' => $score];
+            }
+        }
+
+        $metrics = json_decode($header, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            return ['behaviorScore' => 10.0];
+        }
+
+        if ($metrics === 1) {
+            return ['behaviorScore' => 0.0];
+        }
+        if ($metrics === 0) {
+            return ['behaviorScore' => 100.0];
+        }
+
+        if (is_numeric($metrics)) {
+            $score = max(0.0, min(100.0, (float)$metrics));
+            return ['behaviorScore' => $score];
+        }
+
+        if (!is_array($metrics)) {
+            return ['behaviorScore' => 0.0];
+        }
+
+        if ($metrics['honeypotInteraction'] ?? false) {
             return ['behaviorScore' => 100.0];
         }
 
         $score = 0.0;
-        if (!empty($metrics['prototypeTampered'])) {
+        if ($metrics['prototypeTampered'] ?? false) {
             $score += 80.0;
         }
 
-        $mouseAnalysis = self::analyzeMouseMovements($metrics['mouseMovementsHistory'] ?? null);
-        $touch = self::analyzeTouchMovements($metrics['touchMovementsHistory'] ?? null);
+        $mouseHistory = $metrics['mouseMovementsHistory'] ?? [];
+        $touchHistory = $metrics['touchMovementsHistory'] ?? [];
+
+        $mouseAnalysis = RequestUtils::analyzeMouseMovements($mouseHistory);
+        $touchAnalysis = RequestUtils::analyzeTouchMovements($touchHistory);
+
+        $mouseAvgSpeed = (float)($mouseAnalysis['avgSpeed'] ?? 0.0);
+        $touchAvgSpeed = (float)($touchAnalysis['avgSpeed'] ?? 0.0);
+        $keystrokeLatency = (float)($metrics['keystrokeLatency'] ?? 0.0);
 
         if (isset($metrics['historyLength'])) {
-            if ($metrics['historyLength'] === 1) $score += 15;
-            elseif ($metrics['historyLength'] >= 5) $score -= 20;
-            elseif ($metrics['historyLength'] >= 2) $score -= 10;
+            $historyLength = (int)$metrics['historyLength'];
+            if ($historyLength === 1) $score += 15;
+            elseif ($historyLength >= 5) $score -= 20;
+            elseif ($historyLength >= 2) $score -= 10;
         } else {
-            // Pénalité pour absence totale d'interaction si l'historique n'est pas dispo
-            if ($mouseAnalysis['avgSpeed'] == 0 && $touch['avgSpeed'] == 0 && ($metrics['keystrokeLatency'] ?? 0) == 0) {
-                $score += 40;
+            if ($mouseAvgSpeed === 0.0 && $touchAvgSpeed === 0.0 && $keystrokeLatency === 0.0) {
+                $noInteractionPenalty = 5.0;
+                if ($metrics['rendering']['offscreenAnom'] ?? false) {
+                    $noInteractionPenalty += 40.0;
+                }
+                $score += $noInteractionPenalty;
             }
         }
 
-        if ($mouseAnalysis['avgSpeed'] > 0) {
-            if ($mouseAnalysis['avgSpeed'] > 3) $score += 25;
-            if ($mouseAnalysis['avgAcceleration'] > 0.5) $score += 20;
-            if ($mouseAnalysis['straightness'] > 0.95) $score += 30;
-            if ($mouseAnalysis['pauses'] === 0 && count($mouseAnalysis['segments']) > 20) $score += 15;
+        if ($mouseAvgSpeed > 0) {
+            if ($mouseAvgSpeed > 3.0) $score += 25;
+            if (($mouseAnalysis['avgAcceleration'] ?? 0.0) > 0.5) $score += 20;
+            if (($mouseAnalysis['straightness'] ?? 1.0) > 0.95) $score += 30;
+            if (($mouseAnalysis['pauses'] ?? 0) === 0 && count($mouseAnalysis['segments'] ?? []) > 20) $score += 15;
         }
 
-        if (($metrics['keystrokeLatency'] ?? 0) > 0 && $metrics['keystrokeLatency'] < 40) $score += 25;
-        if (($metrics['keystrokeLatency'] ?? 0) > 1000) $score += 15;
+        if ($touchAvgSpeed > 0 || !empty($touchHistory)) {
+            if (count($touchHistory) >= 3) {
+                if (($touchAnalysis['pressureVariance'] ?? 1.0) < 0.0001) {
+                    $score += 35.0;
+                }
+                if (($touchAnalysis['radiusVariance'] ?? 1.0) < 0.0001) {
+                    $score += 25.0;
+                }
+                if (($touchAnalysis['straightness'] ?? 0.0) > 0.98) {
+                    $score += 20.0;
+                }
+            }
+        }
 
-        // NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
         $dwellTimes = $metrics['keystrokeDwellTimes'] ?? [];
+        if (is_array($dwellTimes) && count($dwellTimes) >= 3) {
+            $dwellNumeric = array_filter($dwellTimes, 'is_numeric');
+            if (count($dwellNumeric) >= 3) {
+                $meanDwell = array_sum($dwellNumeric) / count($dwellNumeric);
+                $dwellVar = array_reduce($dwellNumeric, fn($carry, $val) => $carry + pow((float)$val - $meanDwell, 2), 0.0) / count($dwellNumeric);
+                if ($dwellVar < 2.0) {
+                    $score += 40.0;
+                }
+            }
+        }
+
         $flightTimes = $metrics['keystrokeFlightTimes'] ?? [];
-
-        if (count($dwellTimes) >= 5) {
-            $meanDwell = array_sum($dwellTimes) / count($dwellTimes);
-            $varDwell = array_reduce($dwellTimes, fn($carry, $item) => $carry + pow($item - $meanDwell, 2), 0) / count($dwellTimes);
-            $stdDevDwell = sqrt($varDwell);
-
-            if ($stdDevDwell < 2.0) {
-                $score += 35.0;
-            }
-            if ($meanDwell < 15.0) {
-                $score += 25.0;
-            }
-        }
-
-        if (count($flightTimes) >= 5) {
-            $times = array_column($flightTimes, 'time');
-            $meanFlight = array_sum($times) / count($times);
-            $varFlight = array_reduce($times, fn($carry, $item) => $carry + pow($item - $meanFlight, 2), 0) / count($times);
-            $stdDevFlight = sqrt($varFlight);
-
-            if ($stdDevFlight < 3.0) {
-                $score += 35.0;
-            }
-            if ($meanFlight < 25.0) {
-                $score += 25.0;
-            }
-            $benfordDev = Optimization::benfordTest($times);
-            if ($benfordDev > 0.18) {
-                $score += 30.0;
-            }
-        }
-
-        // Analyse de Benford sur les segments de mouvement de la souris
-        if (count($mouseAnalysis['segments']) > 10) {
-            $benfordDeviation = Optimization::benfordTest($mouseAnalysis['segments']);
-            if ($benfordDeviation > 0.18) {
-                $score += 35;
-            }
-        }
-        // Analyse comportementale des événements tactiles (Touch Move)
-        $touchHistory = $metrics['touchMovementsHistory'] ?? null;
-        if (!empty($touchHistory)) {
-            if ($touch['avgSpeed'] > 0) {
-                if ($touch['avgSpeed'] > 5) $score += 30;
-                if ($touch['avgAcceleration'] > 0.8) $score += 20;
-                if ($touch['straightness'] > 0.98) $score += 35;
-                if ($touch['pauses'] === 0 && count($touch['segments']) > 25) $score += 15;
-
-                // Détection de l'émulation (pression et rayon de contact constants)
-                if ($touch['avgPressure'] > 0 && $touch['pressureVariance'] == 0) {
-                    $score += 30;
-                }
-                if ($touch['avgRadius'] > 0 && $touch['radiusVariance'] == 0) {
-                    $score += 30;
+        if (is_array($flightTimes) && count($flightTimes) >= 3) {
+            $extractedFlightTimes = [];
+            foreach ($flightTimes as $ft) {
+                if (is_array($ft) && isset($ft['time']) && is_numeric($ft['time'])) {
+                    $extractedFlightTimes[] = (float)$ft['time'];
+                } elseif (is_numeric($ft)) {
+                    $extractedFlightTimes[] = (float)$ft;
                 }
             }
-            if (count($touch['segments']) > 10) {
-                $benfordDev = Optimization::benfordTest($touch['segments']);
-                if ($benfordDev > 0.18) {
-                    $score += 35;
-                }
-            }
-
-            // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
-            $ua = $context->getHeader('user-agent') ?? '';
-            $isMobileDevice = str_contains($ua, 'Mobile');
-            if ($isMobileDevice && count($touchHistory) >= 5 && isset($metrics['motionVariance']) && is_numeric($metrics['motionVariance'])) {
-                if ((float)$metrics['motionVariance'] === 0.0) {
-                    $score += 50.0;
+            if (count($extractedFlightTimes) >= 3) {
+                $meanFlight = array_sum($extractedFlightTimes) / count($extractedFlightTimes);
+                $flightVar = array_reduce($extractedFlightTimes, fn($carry, $val) => $carry + pow($val - $meanFlight, 2), 0.0) / count($extractedFlightTimes);
+                if ($flightVar < 2.0) {
+                    $score += 40.0;
                 }
             }
         }
 
         return ['behaviorScore' => min(100.0, $score)];
     }
+
 
     /**
      * Calcule un score basé sur la régularité d'affichage (V-Sync) et l'utilisation suspecte d'OffscreenCanvas.
@@ -2009,6 +2030,21 @@ class RequestUtils
     }
 
     /**
+     * Helper to find the first key of a value from a list of needles in an array.
+     * @param array<int, string> $haystack
+     * @param array<int, string> $needles
+     * @return int|null
+     */
+    private static function array_find_key(array $haystack, array $needles): ?int
+    {
+        foreach ($needles as $needle) {
+            $key = array_search($needle, $haystack, true);
+            if ($key !== false) return (int)$key;
+        }
+        return null;
+    }
+
+    /**
      * Détecte les anomalies de protocole (HTTP/2 et QUIC/HTTP3) par rapport au User-Agent.
      * @param RequestContext $context
      * @return array{'protocolAnomalyScore': float}
@@ -2022,51 +2058,95 @@ class RequestUtils
         $uaParts = self::parseUserAgent($ua);
         $browser = $uaParts['browser'] ?? null;
 
-        // HTTP/2 Anomaly logic
-        $h2Fp = $context->getHeader('x-http2-fingerprint') ?? $context->http2Fingerprint ?? null;
-        if ($h2Fp && is_string($h2Fp) && $browser) {
-            $parts = explode('|', $h2Fp);
-            if (count($parts) >= 4) {
-                $connWindow = (int)$parts[1];
-                $headerOrder = $parts[3];
-                $isChromium = str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge');
-                $isFirefox = str_starts_with($browser, 'Firefox');
-                $isSafari = str_starts_with($browser, 'Safari');
+        if ($browser) {
+            // HTTP/2 Anomaly logic
+            $h2Fp = $context->getHeader('x-http2-fingerprint') ?? $context->http2Fingerprint ?? null;
+            if ($h2Fp && is_string($h2Fp)) {
+                $parts = explode('|', $h2Fp);
+                if (count($parts) >= 3) {
+                    $connWindow = (int)$parts[1];
+                    $streamPriority = $parts[2] ?? '';
+                    $headerOrder = $parts[3] ?? '';
+                    $isChromium = str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge');
+                    $isFirefox = str_starts_with($browser, 'Firefox');
+                    $isSafari = str_starts_with($browser, 'Safari');
 
-                if ($isChromium) {
-                    if ($headerOrder && $headerOrder !== 'm,a,s,p') $http2Anomaly += 60.0;
-                    if ($connWindow === 65535 || $connWindow === 65536) $http2Anomaly += 40.0;
-                } elseif ($isFirefox) {
-                    if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
-                } elseif ($isSafari) {
-                    if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
-                }
-            }
-        }
-
-        // QUIC Anomaly logic
-        $quicFp = $context->getHeader('x-quic-fp') ?? $context->quicFingerprint ?? null;
-        if ($quicFp && is_string($quicFp) && $browser) {
-            $parts = explode(';', $quicFp);
-            if (count($parts) >= 2) {
-                $params = [];
-                foreach (explode(',', $parts[1]) as $p) {
-                    $kv = explode('=', $p, 2);
-                    if (count($kv) === 2) {
-                        $params[$kv[0]] = $kv[1];
+                    if ($isChromium) {
+                        if ($headerOrder && $headerOrder !== 'm,a,s,p') $http2Anomaly += 60.0;
+                        if ($connWindow === 65535 || $connWindow === 65536) $http2Anomaly += 40.0;
+                        if ($streamPriority === '0' || $streamPriority === '') $http2Anomaly += 50.0;
+                    } elseif ($isFirefox) {
+                        if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
+                    } elseif ($isSafari) {
+                        if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
                     }
                 }
-                $priorityOrder = $parts[2] ?? '';
+            }
 
-                if (str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge')) {
-                    $maxData = isset($params['1']) ? (int)$params['1'] : 0;
-                    $maxStreams = isset($params['4']) ? (int)$params['4'] : 0;
-                    if ($maxData > 0 && $maxData < 1048576) $quicAnomaly += 40.0;
-                    if ($maxStreams > 0 && $maxStreams !== 100) $quicAnomaly += 30.0;
-                    if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $quicAnomaly += 30.0;
-                } elseif (str_starts_with($browser, 'Firefox')) {
-                    $maxData = isset($params['1']) ? (int)$params['1'] : 0;
-                    if ($maxData > 0 && $maxData > 5000000) $quicAnomaly += 40.0;
+            // QUIC Anomaly logic
+            $quicFp = $context->getHeader('x-quic-fp') ?? $context->quicFingerprint ?? null;
+            if ($quicFp && is_string($quicFp)) {
+                $parts = explode(';', $quicFp);
+                if (count($parts) >= 2) {
+                    $params = [];
+                    foreach (explode(',', $parts[1]) as $p) {
+                        $kv = explode('=', $p, 2);
+                        if (count($kv) === 2) {
+                            $params[$kv[0]] = $kv[1];
+                        }
+                    }
+                    $priorityOrder = $parts[2] ?? '';
+                    $frameOrderRaw = $parts[3] ?? $context->getHeader('x-quic-frame-order') ?? '';
+                    $frameOrder = array_values(array_filter(array_map('trim', explode(',', strtolower($frameOrderRaw)))));
+
+                    $isChromium = str_starts_with($browser, 'Chrome') || str_starts_with($browser, 'Edge');
+                    $isFirefox = str_starts_with($browser, 'Firefox');
+                    $isSafari = str_starts_with($browser, 'Safari');
+
+                    $maxData = (int)($params['1'] ?? $params['0x01'] ?? 0);
+                    $maxStreams = (int)($params['4'] ?? $params['8'] ?? $params['0x08'] ?? 0);
+                    $bidiLocal = (int)($params['5'] ?? $params['0x05'] ?? 0);
+                    $bidiRemote = (int)($params['6'] ?? $params['0x06'] ?? 0);
+
+                    if ($isChromium) {
+                        if ($maxData > 0 && $maxData < 1048576) $quicAnomaly += 40.0;
+                        if ($maxStreams > 0 && $maxStreams !== 100) $quicAnomaly += 30.0;
+                        if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $quicAnomaly += 30.0;
+                        if ($bidiLocal > 0 && ($bidiLocal < 524288 || $bidiLocal === 262144)) $quicAnomaly += 40.0;
+                        if ($bidiRemote > 0 && ($bidiRemote < 524288 || $bidiRemote === 262144)) $quicAnomaly += 30.0;
+
+                        if (count($frameOrder) >= 2) {
+                            $sIdx = self::array_find_key($frameOrder, ['s', 'settings', '4']);
+                            $mIdx = self::array_find_key($frameOrder, ['m', 'max_streams', '18']);
+                            $pIdx = self::array_find_key($frameOrder, ['p', 'priority', 'priority_update', '15']);
+
+                            if ($sIdx !== null && $sIdx !== 0) $quicAnomaly += 50.0;
+                            if ($mIdx !== null && $sIdx !== null && $mIdx < $sIdx) $quicAnomaly += 60.0;
+                            if ($pIdx !== null && $sIdx !== null && $pIdx < $sIdx) $quicAnomaly += 60.0;
+                        }
+                    } elseif ($isFirefox) {
+                        if ($maxData > 0 && $maxData > 5000000) $quicAnomaly += 40.0;
+                        if ($maxStreams === 100) $quicAnomaly += 50.0;
+                        if ($bidiLocal === 6291456) $quicAnomaly += 50.0;
+
+                        if (count($frameOrder) >= 2) {
+                            $sIdx = self::array_find_key($frameOrder, ['s', 'settings', '4']);
+                            if ($sIdx !== null && $sIdx !== 0) $quicAnomaly += 50.0;
+                        }
+                    } elseif ($isSafari) {
+                        if ($maxStreams === 100 && $maxData === 1572864 && str_contains($priorityOrder, 'u=2,i')) {
+                            $quicAnomaly += 60.0;
+                        }
+                        if ($bidiLocal === 6291456) $quicAnomaly += 50.0;
+
+                        if (count($frameOrder) >= 2) {
+                            $sIdx = self::array_find_key($frameOrder, ['s', 'settings', '4']);
+                            $mIdx = self::array_find_key($frameOrder, ['m', 'max_streams']);
+                            if ($mIdx !== null && ($mIdx === 0 || ($sIdx !== null && $mIdx < $sIdx))) {
+                                $quicAnomaly += 50.0;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2076,7 +2156,9 @@ class RequestUtils
                 0.0,
                 min(100.0, $http2Anomaly),
                 min(100.0, $quicAnomaly)
-            )
+            ),
+            'http2AnomalyScore' => min(100.0, $http2Anomaly),
+            'quicAnomalyScore' => min(100.0, $quicAnomaly)
         ];
     }
 

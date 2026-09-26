@@ -158,25 +158,12 @@ const loadBotWhitelist = (filename, fallbackEntries) => {
 };
 
 const googlebotEntries = loadBotWhitelist('googlebot.json', [
-  "2001:4860:4801:10::/64",
-  "2001:4860:4801:11::/64",
-  "2001:4860:4801:12::/64",
-  // ... [Keep fallback inline values for safety]
-  "66.249.79.64"
 ]);
 
 const bingbotEntries = loadBotWhitelist('bingbot.json', [
-  "157.55.39.0/24",
-  "207.46.13.0/24",
-  // ... [Keep fallback inline values for safety]
-  "40.77.178.0/23"
 ]);
 
 const yandexEntries = loadBotWhitelist('yandex.json', [
-  "2a02:6b8::/29",
-  "5.45.192.0/18",
-  // ... [Keep fallback inline values for safety]
-  "213.180.192.0/19"
 ]);
 
 function generateSessionMapping() {
@@ -361,7 +348,7 @@ export function generateStatelessTicket(payload) {
  * @param {object} context - Le contexte de la requête.
  * @returns {{protocolAnomalyScore: number}}
  */
-function getProtocolAnomalyScore(context) {
+export function getProtocolAnomalyScore(context) {
     let http2Anomaly = 0.0;
     let quicAnomaly = 0.0;
 
@@ -374,9 +361,10 @@ function getProtocolAnomalyScore(context) {
         const h2Fp = context.headers?.['x-http2-fingerprint'] || context.http2Fingerprint || null;
         if (h2Fp && typeof h2Fp === 'string') {
             const parts = h2Fp.split('|');
-            if (parts.length >= 4) {
+            if (parts.length >= 3) {
                 const connWindow = parseInt(parts[1], 10);
-                const headerOrder = parts[3];
+                const streamPriority = parts[2] || '';
+                const headerOrder = parts.length > 3 ? parts[3] : '';
                 const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
                 const isFirefox = browser.startsWith('Firefox');
                 const isSafari = browser.startsWith('Safari');
@@ -384,10 +372,42 @@ function getProtocolAnomalyScore(context) {
                 if (isChromium) {
                     if (headerOrder && headerOrder !== 'm,a,s,p') http2Anomaly += 60.0;
                     if (connWindow === 65535 || connWindow === 65536) http2Anomaly += 40.0;
+                    if (streamPriority === '0' || streamPriority === '') http2Anomaly += 50.0;
                 } else if (isFirefox) {
                     if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
                 } else if (isSafari) {
                     if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
+                }
+
+                // Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
+                if (parts.length >= 5) {
+                    const frameCountsStr = parts[4];
+                    const frameCounts = {};
+                    frameCountsStr.split(',').forEach(item => {
+                        const kv = item.split(':');
+                        if (kv.length === 2) {
+                            frameCounts[kv[0]] = parseInt(kv[1], 10);
+                        }
+                    });
+
+                    const priorityCount = frameCounts.p || 0;
+                    const windowUpdateCount = frameCounts.w || 0;
+                    const continuationCount = frameCounts.c || 0;
+
+                    if (isChromium) {
+                        // Chrome envoie des trames PRIORITY pour l'arbre de dépendances
+                        if (priorityCount === 0) http2Anomaly += 25.0;
+                        // Chrome est agressif avec les WINDOW_UPDATE
+                        if (windowUpdateCount < 2) http2Anomaly += 20.0;
+                    } else if (isFirefox) {
+                        // Firefox utilise un schéma de priorité différent, souvent avec moins de trames PRIORITY
+                        if (priorityCount > 1) http2Anomaly += 20.0;
+                    }
+
+                    // Les bots génériques n'envoient souvent pas de trames CONTINUATION pour les en-têtes longs
+                    if (continuationCount === 0 && (headerOrder.match(/,/g) || []).length > 3) {
+                        http2Anomaly += 30.0;
+                    }
                 }
             }
         }
@@ -490,7 +510,7 @@ function getProtocolAnomalyScore(context) {
  */
 function getRenderingAnomalyScore(context) {
   const behaviorHeader = context.headers?.['x-behavior-metrics'];
-  if (!behaviorHeader) {
+  if (!behaviorHeader || !isNaN(Number(behaviorHeader))) {
     return { renderingAnomalyScore: 0.0 };
   }
   try {
@@ -580,33 +600,45 @@ export function parseStatelessTicket(ticket) {
 }
 
 /**
- * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+ * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau par domaine.
  * @param {string} clientIp - L'adresse IP du client.
+ * @param {string} [domain='default'] - Le domaine/hôte ciblé (en-tête Host).
+ * @param {object} [rateLimitConfig] - Configuration optionnelle du limiteur.
  * @returns {Promise<boolean>} True si la requête est autorisée, false si elle est limitée.
  */
-async function checkChallengeRateLimit(clientIp) {
-  const subnet = getIpSubnet(clientIp);
+async function checkChallengeRateLimit(clientIp, domain = 'default', rateLimitConfig = {}) {
+  if (rateLimitConfig && rateLimitConfig.enabled === false) {
+    return true;
+  }
+  if (!clientIp || isLoopbackIp(clientIp)) {
+    return true; // Bypass local/dev
+  }
+
+  const subnet = getIpSubnet(clientIp) || clientIp;
   if (!subnet) return false;
 
-  const key = `rate-limit:${subnet}`;
-  const rateLimitData = (await store.get(key)) || {
-    tokens: 5.0,
-    lastRefill: Date.now() / 1000
-  };
+  const host = (domain || 'default').toLowerCase().split(':')[0];
+  const key = `rate-limit:${host}:${subnet}`;
 
-  const capacity = 5.0;
-  const refillRate = 0.1; // 1 token toutes les 10 secondes
+  const capacity = Number(rateLimitConfig?.capacity ?? 30.0);
+  const refillRate = Number(rateLimitConfig?.refillRate ?? 1.0); // 1 token par seconde (au lieu de 0.1)
   const now = Date.now() / 1000;
 
-  const elapsed = now - rateLimitData.lastRefill;
+  const rateLimitData = (await store.get(key)) || {
+    tokens: capacity,
+    lastRefill: now
+  };
+
+  const elapsed = Math.max(0, now - rateLimitData.lastRefill);
   const tokens = Math.min(capacity, rateLimitData.tokens + elapsed * refillRate);
+  const ttl = Math.max(60, Math.ceil(capacity / Math.max(0.1, refillRate)));
 
   if (tokens < 1.0) {
-    await store.set(key, { tokens, lastRefill: now }, 60);
+    await store.set(key, { tokens, lastRefill: now }, ttl);
     return false;
   }
 
-  await store.set(key, { tokens: tokens - 1.0, lastRefill: now }, 60);
+  await store.set(key, { tokens: tokens - 1.0, lastRefill: now }, ttl);
   return true;
 }
 
@@ -656,18 +688,22 @@ const securityProfiles = {
             headerAnomalyScore: 0.1,
             requestPatternScore: 0.6,
             inconsistencyScore: 0.8,
-            behaviorScore: 0.7, // Poids pour les métriques comportementales (souris, clavier)
+            behaviorScore: 0.7,
             honeypotScore: 1.0,
+            botScore: 1.0,
+            cookieDroppingScore: 0.9,
             crossLayerInconsistencyScore: 0.4,
             timeInconsistencyScore: 0.9,
-            tlsSpoofingScore: 0.8, // NOUVEAU: Poids pour la détection de spoofing TLS
-            subnetScore: 0.4, // NOUVEAU: Poids pour la réputation du sous-réseau
-            ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.6, // NOUVEAU: Poids pour le clustering botnet
-            tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
+            tlsSpoofingScore: 0.8,
+            clientHintsInconsistencyScore: 0.7,
+            clickVarianceScore: 0.6,
+            subnetScore: 0.4,
+            ipReputationScore: 0.5,
+            botnetClusterScore: 0.6,
+            tcpAnomalyScore: 0.8,
             quicAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie QUIC
-            protocolAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
+            http2AnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
             virtualizationScore: 0.8,
         },
@@ -703,15 +739,22 @@ const securityProfiles = {
             inconsistencyScore: 1.0,
             behaviorScore: 0.8,
             honeypotScore: 1.0,
+            botScore: 1.0,
+            cookieDroppingScore: 1.0,
             crossLayerInconsistencyScore: 0.6,
             timeInconsistencyScore: 1.0,
-            tlsSpoofingScore: 1.0, // Plus agressif pour le spoofing TLS
+            tlsSpoofingScore: 1.0,
+            clientHintsInconsistencyScore: 0.9,
+            clickVarianceScore: 0.7,
             subnetScore: 0.5,
-            ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.8, // NOUVEAU: Poids pour le clustering botnet
-            renderingAnomalyScore: 1.0, // NOUVEAU: Poids pour l'anomalie de rendu
-            protocolAnomalyScore: 1.0, // NOUVEAU
-            threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
+            ipReputationScore: 0.6,
+            botnetClusterScore: 0.8,
+            tcpAnomalyScore: 1.0,
+            quicAnomalyScore: 1.0,
+            renderingAnomalyScore: 1.0,
+            http2AnomalyScore: 1.0,
+            threatIntelScore: 1.0,
+            virtualizationScore: 1.0,
         },
         thresholds: { low: 10, medium: 35, high: 65, block: 90 },
         patterns: {
@@ -746,15 +789,22 @@ const securityProfiles = {
             inconsistencyScore: 0.7,
             behaviorScore: 0.2, // Lower weight, as browser behavior is not applicable
             honeypotScore: 1.0,
+            botScore: 0.8,
+            cookieDroppingScore: 0.8,
             crossLayerInconsistencyScore: 0.5,
             timeInconsistencyScore: 0.8,
-            tlsSpoofingScore: 0.7, // Important pour les API
+            tlsSpoofingScore: 0.7,
+            clientHintsInconsistencyScore: 0.6,
+            clickVarianceScore: 0.3,
             subnetScore: 0.4,
-            ipReputationScore: 0.5, // NOUVEAU: Poids pour la réputation IP
-            botnetClusterScore: 0.7, // NOUVEAU: Poids pour le clustering botnet
-            tcpAnomalyScore: 0.8, // NEW: Anomalie de pile TCP/IP
-            protocolAnomalyScore: 0.8,
-            quicAnomalyScore: 0.8 // NOUVEAU: Poids pour l'anomalie QUIC
+            ipReputationScore: 0.5,
+            botnetClusterScore: 0.7,
+            tcpAnomalyScore: 0.8,
+            quicAnomalyScore: 0.8,
+            http2AnomalyScore: 0.8,
+            renderingAnomalyScore: 0.2,
+            threatIntelScore: 0.6,
+            virtualizationScore: 0.8,
         },
         thresholds: { low: 25, medium: 50, high: 80, block: 95 },
         patterns: {
@@ -801,9 +851,10 @@ const securityProfiles = {
             ipReputationScore: 0.3, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.5, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.5, // NEW: Anomalie de pile TCP/IP
-            protocolAnomalyScore: 0.5,
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
+            http2AnomalyScore: 0.5,
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
+            virtualizationScore: 0.8,
         },
         thresholds: { low: 25, medium: 55, high: 80, block: 95 },
         patterns: {
@@ -832,7 +883,6 @@ const securityProfiles = {
             historyScore: 0.4,
             rotationScore: 0.6,
             headerAnomalyScore: 0.2,
-            // Utilisation d'un score de pattern unifié avec un poids très élevé
             requestPatternScore: 0.9,
             inconsistencyScore: 1.0, // Crucial for preventing account takeover
             behaviorScore: 0.8, // Important for checkout/login forms
@@ -849,9 +899,10 @@ const securityProfiles = {
             ipReputationScore: 0.6, // NOUVEAU: Poids pour la réputation IP
             botnetClusterScore: 0.9, // NOUVEAU: Poids pour le clustering botnet
             tcpAnomalyScore: 0.9, // NEW: Anomalie de pile TCP/IP
-            protocolAnomalyScore: 0.9,
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
-            renderingAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie de rendu,threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
+            http2AnomalyScore: 0.9,
+            renderingAnomalyScore: 0.9,
+            virtualizationScore: 0.8,
         },
         thresholds: { low: 15, medium: 40, high: 70, block: 90 },
         patterns: {
@@ -1465,88 +1516,6 @@ export const verifyTspChallenge = (
     return false;
   }
 };
-
-/**
- * Generates the HTML content for a memory-intensive PoW challenge.
- */
-const generateMemoryPoWChallenge = (
-  clientIp,
-  nonce,
-  difficulty = 16,
-  path = "",
-) => {
-    const safePath = sanitizeRedirectPath(path);
-  // difficulty here is the buffer size in MB.
-  return `
-      <html>
-        <head><title>Advanced Security Check</title></head>
-        <body style="font-family:sans-serif; text-align:center; padding-top:50px;">
-          <h1>Enhanced Verification... (Level 2)</h1>
-          <p>Your activity requires an additional security check.</p>
-          <div id="loader" style="margin:20px;">⚙️ Performing memory allocation and calculation... (${difficulty} MB)</div>
-          <script>
-            async function solve() {
-              const nonce = ${safeJsonStringify(nonce)};
-                   const size = ${difficulty} * 1024 * 1024; // en octets
-              const iterations = size / 16;
-              
-              try {
-                const buffer = new Uint32Array(size / 4);
-                let h = new TextEncoder().encode(nonce).reduce((acc, v) => acc + v, 0);
-                for (let i = 0; i < buffer.length; i++) {
-                    buffer[i] = (h = Math.imul(h ^ i, 1597334677));
-                }
-                
-                let finalHash = 0;
-                for(let i = 0; i < iterations; i++) {
-                    const addr = buffer[i % buffer.length] % buffer.length;
-                    finalHash ^= buffer[addr];
-                }
-                window.location.href = "${path}" + "?pow_type=mem&pow_nonce=" + nonce + "&pow_solution=" + finalHash;
-              } catch(e) {
-                window.location.href = ${safeJsonStringify(safePath)} + "?pow_type=mem&pow_nonce=" + nonce + "&pow_solution=" + finalHash;
-                 }
-            }
-            solve();
-          </script>
-        </body>
-      </html>`;
-};
-
-/**
- * Verifies if a PoW solution is valid and generates a clearance ticket.
- */
-export const verifyPoWAndGenerateTicket = async (
-  ip,
-  nonce,
-  solution,
-  difficulty = 4,
-  deviceId = '',
-  deviceHash = ''
-) => {
-  // 1. Verify the solution: hash(ip + nonce + solution) must start with N zeros
-  const hash = crypto
-    .createHash("sha256")
-    .update(`${ip}:${nonce}:${solution}`)
-    .digest("hex");
-
-  if (!hash.startsWith("0".repeat(difficulty))) {
-    return null;
-  }
-
-  // 2. Generate a signed and encrypted stateless ticket
-  const expiry = Date.now() + 3600000; // 1 hour
-  const payload = {
-    expiry,
-    originalIp: ip,
-    deviceId,
-    deviceHash
-  };
-
-  return generateStatelessTicket(payload);
-};
-
-
 
 /**
  * Verifies a memory PoW solution.
@@ -2335,13 +2304,37 @@ function analyzeTouchMovements(history) {
  * @returns {{behaviorScore: number}}
  */
 function getBehaviorScore(context) {
-  const behaviorHeader = context.headers["x-behavior-metrics"];
-  if (!behaviorHeader) {
+  const behaviorHeader = context.headers ? (context.headers["x-behavior-metrics"] ?? context.headers["X-Behavior-Metrics"]) : undefined;
+  if (behaviorHeader === undefined || behaviorHeader === null || behaviorHeader === '') {
     return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
+  }
+
+  // Traitement direct si un flag binaire client-side (1 = humain, 0 = bot) est envoyé
+  if (behaviorHeader === 1 || behaviorHeader === '1') {
+    return { behaviorScore: 0 };
+  }
+  if (behaviorHeader === 0 || behaviorHeader === '0') {
+    return { behaviorScore: 100 };
+  }
+
+  // Traitement direct si un score numérique est envoyé côté client
+  if (typeof behaviorHeader === 'number') {
+    return { behaviorScore: Math.max(0, Math.min(100, behaviorHeader)) };
+  }
+  if (typeof behaviorHeader === 'string' && !isNaN(Number(behaviorHeader)) && behaviorHeader.trim() !== '') {
+    const trimmed = behaviorHeader.trim();
+    if (trimmed === '1') return { behaviorScore: 0 };
+    if (trimmed === '0') return { behaviorScore: 100 };
+    return { behaviorScore: Math.max(0, Math.min(100, parseFloat(trimmed))) };
   }
 
   try {
     const metrics = JSON.parse(behaviorHeader);
+    if (metrics === 1) return { behaviorScore: 0 };
+    if (metrics === 0) return { behaviorScore: 100 };
+    if (typeof metrics === 'number') {
+      return { behaviorScore: Math.max(0, Math.min(100, metrics)) };
+    }
     let score = 0;
 
     // 1. Pénalité maximale si un honeypot client a été déclenché.
@@ -2355,9 +2348,18 @@ function getBehaviorScore(context) {
     const { avgSpeed, avgAcceleration, straightness, pauses, segments } = analyzeMouseMovements(metrics.mouseMovementsHistory);
     const touchAnalysis = analyzeTouchMovements(metrics.touchMovementsHistory);
 
-    // Pénalité pour absence totale d'interaction (pas de mouvements, pas de frappes).
+    // Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
+    // On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
+    // signaux passifs de bot (ex: rendu offscreen) sont présents.
     if (avgSpeed === 0 && touchAnalysis.avgSpeed === 0 && metrics.keystrokeLatency === 0) {
-      score += 40;
+      let noInteractionPenalty = 5; // Pénalité de base très faible.
+
+      // Amplification si d'autres signaux passifs de bot sont présents.
+      if (metrics.rendering?.offscreenAnom) {
+        noInteractionPenalty += 40;
+      }
+      
+      score += noInteractionPenalty;
     }
 
     // 3. (NOUVEAU) Analyse de la longueur de l'historique de navigation.
@@ -2397,19 +2399,17 @@ function getBehaviorScore(context) {
             if (touch.avgRadius > 0 && touch.radiusVariance === 0) {
                 score += 30; // Spoofed pointer area size
             }
-        }
-        if (touch.segments.length > 10) {
-            const benfordDev = Optimization.Operators.benfordTest(touch.segments);
-            if (benfordDev > 0.18) score += 35;
-        }
-
-        // Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
-        const isMobileDevice = (context.headers['user-agent'] || '').includes('Mobile');
-        if (isMobileDevice && touchHistory.length >= 5 && typeof metrics.motionVariance === 'number') {
-            if (metrics.motionVariance === 0) {
-                score += 50; // Terminal fixé sur un châssis mécanique (rack ADB)
+            if (touch.segments.length > 10) {
+                const benfordDev = Optimization.Operators.benfordTest(touch.segments);
+                if (benfordDev > 0.18) score += 35;
             }
         }
+    }
+
+    // Détection de ferme mobile : un appareil mobile parfaitement immobile est suspect, indépendamment des interactions tactiles.
+    const isMobileDevice = (context.headers['user-agent'] || '').includes('Mobile');
+    if (isMobileDevice && typeof metrics.motionVariance === 'number' && metrics.motionVariance === 0) {
+        score += 50; // Terminal fixé sur un châssis mécanique (rack ADB)
     }
 
     // Plausibilité de la latence de frappe
@@ -2981,6 +2981,10 @@ function analyzeClickPositions(history) {
  * @returns {{clickVarianceScore: number}}
  */
 function getClickVarianceScore(context) {
+    const rawMetrics = context.headers?.['x-behavior-metrics'];
+    if (!rawMetrics || !isNaN(Number(rawMetrics))) {
+        return { clickVarianceScore: 0 };
+    }
     const metrics = JSON.parse(context.headers['x-behavior-metrics'] || '{}');
     const score = analyzeClickPositions(metrics.clicksHistory);
     return { clickVarianceScore: score };
@@ -3832,7 +3836,7 @@ async function getBehavioralIndicators(context, deviceData) {
   // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
   const behaviorHeader = context.headers?.['x-behavior-metrics'];
   let webauthnVerified = false;
-  if (behaviorHeader) {
+  if (behaviorHeader && typeof behaviorHeader === 'string' && behaviorHeader.startsWith('{')) {
       try {
           const metrics = JSON.parse(behaviorHeader);
           if (metrics && metrics.webauthnAnchor) {
@@ -3976,7 +3980,12 @@ export const getSuspicionVector = async (context, securityConfig) => {
       const { botScore } = getBotScore(context);
 
       // NOUVEAU: On calcule le score d'incohérence temporelle.
-      const { timeInconsistencyScore } = getTimeInconsistencyScore(context, JSON.parse(context.headers['x-behavior-metrics'] || '{}'), deviceData);
+      let parsedBehaviorMetrics = {};
+      const rawBehaviorHeader = context.headers?.['x-behavior-metrics'];
+      if (rawBehaviorHeader && typeof rawBehaviorHeader === 'string' && rawBehaviorHeader.startsWith('{')) {
+          try { parsedBehaviorMetrics = JSON.parse(rawBehaviorHeader); } catch (e) {}
+      }
+      const { timeInconsistencyScore } = getTimeInconsistencyScore(context, parsedBehaviorMetrics, deviceData);
 
       // NOUVEAU: On calcule le score d'incohérence entre les couches.
       const { crossLayerInconsistencyScore } = getCrossLayerInconsistency(context);
@@ -3990,7 +3999,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
   const { tcpAnomalyScore } = getTcpAnomalyScore(context);
-    const { protocolAnomalyScore } = getProtocolAnomalyScore(context);
+    const { protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore } = getProtocolAnomalyScore(context);
     const { renderingAnomalyScore } = getRenderingAnomalyScore(context);
     const virtualizationScore = getVirtualizationAnomalyScore(context);
 
@@ -4003,8 +4012,8 @@ export const getSuspicionVector = async (context, securityConfig) => {
   if (Array.isArray(deviceData.ips)) {
       deviceData.ips = new Set(deviceData.ips);
   }
-  // Le vecteur de suspicion est maintenant complet.
-  return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore };
+    // Le vecteur de suspicion est maintenant complet.
+    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -4027,7 +4036,31 @@ export const identifyRequest = (securityConfig) => async (req, res) => {
   // This function now acts as a lightweight wrapper around the engine's identifyRequest method.
   // It requires a default configuration to work.
   const config = securityConfig || {
-    weights: { historyScore: 0.3, rotationScore: 0.5, headerAnomalyScore: 0.1, inconsistencyScore: 0.8, honeypotScore: 1.0 },
+    weights: {
+      historyScore: 0.3,
+      rotationScore: 0.5,
+      headerAnomalyScore: 0.2,
+      requestPatternScore: 0.6,
+      inconsistencyScore: 0.8,
+      behaviorScore: 0.7,
+      honeypotScore: 1.0,
+      botScore: 1.0,
+      cookieDroppingScore: 0.9,
+      crossLayerInconsistencyScore: 0.4,
+      timeInconsistencyScore: 0.9,
+      tlsSpoofingScore: 0.8,
+      clientHintsInconsistencyScore: 0.7,
+      clickVarianceScore: 0.6,
+      subnetScore: 0.4,
+      ipReputationScore: 0.5,
+      botnetClusterScore: 0.7,
+      tcpAnomalyScore: 0.8,
+      quicAnomalyScore: 0.8,
+      renderingAnomalyScore: 0.8,
+      http2AnomalyScore: 0.8,
+      threatIntelScore: 1.0,
+      virtualizationScore: 0.8
+    },
     thresholds: { low: 20, medium: 40, high: 75 },
     honeypot: { fields: [] } // Ensure honeypot config exists to prevent errors
   };
@@ -4415,7 +4448,7 @@ async function getThreatIntelScore(context, zkpY, threatIntelConfig = {}) {
     const tcpRtt = tcpRttHeader ? parseInt(tcpRttHeader, 10) : null;
 
     const behaviorHeader = context.headers?.['x-behavior-metrics'];
-    if (behaviorHeader) {
+    if (behaviorHeader && typeof behaviorHeader === 'string' && behaviorHeader.startsWith('{')) {
         try {
             const metrics = JSON.parse(behaviorHeader);
             if (metrics && typeof metrics.clientTimestamp === 'number' && typeof context.requestTimestamp === 'number') {
@@ -4577,7 +4610,8 @@ export class FingerprintEngine {
       'wasm',
       'similarityThreshold', 'reset',
       'ed25519_private_key', 'ed25519_public_key', 'upowModel',
-      'federatedPeers', 'federationSecret', 'filterWhitelist'
+      'federatedPeers', 'federationSecret', 'filterWhitelist',
+      'challengeRateLimit'
     ]);
 
     // 1. Check for essential keys
@@ -4637,8 +4671,7 @@ export class FingerprintEngine {
             (suspicionVector.ipReputationScore || 0) * (weights.ipReputationScore || 0) +
             (suspicionVector.tcpAnomalyScore || 0) * (weights.tcpAnomalyScore || 0) +
             (suspicionVector.quicAnomalyScore || 0) * (weights.quicAnomalyScore || 0) + // NOUVEAU: QUIC Anomaly
-            (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) + // NOUVEAU: HTTP/2 Anomaly
-            (suspicionVector.protocolAnomalyScore || 0) * (weights.protocolAnomalyScore || 0) +
+            (suspicionVector.http2AnomalyScore || 0) * (weights.http2AnomalyScore || 0) +
             (suspicionVector.cookieDroppingScore || 0) * (weights.cookieDroppingScore || 0) +
             (suspicionVector.virtualizationScore || 0) * (weights.virtualizationScore || 0) +
             (suspicionVector.threatIntelScore || 0) * (weights.threatIntelScore || 0) + // NOUVEAU: QUIC Anomaly
@@ -5589,10 +5622,11 @@ export class FingerprintEngine {
             this._log('High suspicion score detected - overriding valid ticket to re-issue challenge', { finalScore, deviceId });
         }
 
-        // --- AJOUT : Limiteur de débit (Token Bucket) ---
-        const rateLimitPassed = await checkChallengeRateLimit(clientIp);
+        // --- Limiteur de débit par domaine et sous-réseau (Token Bucket) ---
+        const domain = requestContext.headers?.host || 'default';
+        const rateLimitPassed = await checkChallengeRateLimit(clientIp, domain, this.securityConfig?.challengeRateLimit);
         if (!rateLimitPassed) {
-            this._log('Challenge rate limit exceeded - blocking with 429', { clientIp });
+            this._log('Challenge rate limit exceeded - blocking with 429', { clientIp, domain });
             const decision = {
                 action: 'block',
                 status: 429,
@@ -6962,6 +6996,7 @@ export const powMiddleware = (securityConfig) => {
  */
 export const __internal = {
     get store() { return store; }, // Export the store for testing
+    checkChallengeRateLimit,
     getDeviceHash,
     getCompositeDeviceHash,
     getSuspicionVector,

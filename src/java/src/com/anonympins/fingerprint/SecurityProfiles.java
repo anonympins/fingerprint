@@ -41,6 +41,8 @@ public class SecurityProfiles {
         balancedWeights.put("protocolAnomalyScore", 0.8);
         balancedWeights.put("ipReputationScore", 0.5);
         balancedWeights.put("virtualizationScore", 0.8);
+        balancedWeights.put("quicAnomalyScore", 0.8);
+        balancedWeights.put("renderingAnomalyScore", 0.8);
         balanced.put("weights", balancedWeights);
 
         Map<String, Integer> balancedThresholds = new HashMap<>();
@@ -94,6 +96,10 @@ public class SecurityProfiles {
         strictWeights.put("botnetClusterScore", 0.8);
         strictWeights.put("tcpAnomalyScore", 1.0);
         strictWeights.put("protocolAnomalyScore", 1.0);
+        strictWeights.put("ipReputationScore", 0.7);
+        strictWeights.put("virtualizationScore", 1.0);
+        strictWeights.put("quicAnomalyScore", 1.0);
+        strictWeights.put("renderingAnomalyScore", 1.0);
         strict.put("weights", strictWeights);
 
         Map<String, Integer> strictThresholds = new HashMap<>();
@@ -148,6 +154,10 @@ public class SecurityProfiles {
         apiWeights.put("botnetClusterScore", 0.7);
         apiWeights.put("tcpAnomalyScore", 0.8);
         apiWeights.put("protocolAnomalyScore", 0.8);
+        apiWeights.put("ipReputationScore", 0.6);
+        apiWeights.put("virtualizationScore", 0.8);
+        apiWeights.put("quicAnomalyScore", 0.8);
+        apiWeights.put("renderingAnomalyScore", 0.2);
         api.put("weights", apiWeights);
 
         Map<String, Integer> apiThresholds = new HashMap<>();
@@ -184,6 +194,8 @@ public class SecurityProfiles {
         
         Map<String, Double> blogWeights = new HashMap<>();
         blogWeights.put("historyScore", 0.2);
+        blogWeights.put("rotationScore", 0.4);
+        blogWeights.put("headerAnomalyScore", 0.2);
         blogWeights.put("protocolAnomalyScore", 0.5);
         blogWeights.put("requestPatternScore", 0.8); // High weight to detect content scraping
         blogWeights.put("inconsistencyScore", 0.7);
@@ -203,6 +215,7 @@ public class SecurityProfiles {
         blogWeights.put("tcpAnomalyScore", 0.5); // NEW: Anomalie de pile TCP/IP
         blogWeights.put("quicAnomalyScore", 0.5); // NOUVEAU: Poids pour l'anomalie QUIC
         blogWeights.put("renderingAnomalyScore", 0.5); // NOUVEAU: Poids pour l'anomalie de rendu
+        blogWeights.put("virtualizationScore", 0.6);
         blog.put("weights", blogWeights);
 
         Map<String, Integer> blogThresholds = new HashMap<>();

@@ -684,6 +684,71 @@ def test_wsgi_middleware_flow():
     assert b"Forbidden" in body_malicious[0]
 
 @pytest.mark.asyncio
+async def test_protocol_anomaly_score_frame_analysis():
+    """Vérifie la détection d'anomalies de trames HTTP/2 (PRIORITY, WINDOW_UPDATE, CONTINUATION)."""
+    # Test Case 1: Spoofed Chromium (No PRIORITY frames)
+    headers1 = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "x-http2-fingerprint": "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:0,w:4,c:1"
+    }
+    context1 = RequestContext("127.0.0.1", "/", headers1, {}, {})
+    context1.http_version = "2.0"
+    score1 = RequestUtils.get_protocol_anomaly_score(context1)
+    assert score1["protocolAnomalyScore"] == pytest.approx(25.0)
+
+    # Test Case 2: Spoofed Chromium (Few WINDOW_UPDATE frames)
+    headers2 = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "x-http2-fingerprint": "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:3,w:1,c:1"
+    }
+    context2 = RequestContext("127.0.0.1", "/", headers2, {}, {})
+    context2.http_version = "2.0"
+    score2 = RequestUtils.get_protocol_anomaly_score(context2)
+    assert score2["protocolAnomalyScore"] == pytest.approx(20.0)
+
+    # Test Case 3: Spoofed Chromium (Both anomalies)
+    headers3 = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "x-http2-fingerprint": "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:0,w:1,c:1"
+    }
+    context3 = RequestContext("127.0.0.1", "/", headers3, {}, {})
+    context3.http_version = "2.0"
+    score3 = RequestUtils.get_protocol_anomaly_score(context3)
+    assert score3["protocolAnomalyScore"] == pytest.approx(45.0)
+
+    # Test Case 4: Spoofed Firefox (Too many PRIORITY frames)
+    headers4 = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
+        "x-http2-fingerprint": "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,s,p,a|p:3,w:2,c:0"
+    }
+    context4 = RequestContext("127.0.0.1", "/", headers4, {}, {})
+    context4.http_version = "2.0"
+    score4 = RequestUtils.get_protocol_anomaly_score(context4)
+    assert score4["protocolAnomalyScore"] == pytest.approx(20.0)
+
+    # Test Case 5: Generic Bot (No CONTINUATION frames with many headers)
+    headers5 = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        # headerOrder has 7 parts, and invalid pseudo-headers (x,y,z)
+        "x-http2-fingerprint": "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p,x,y,z|p:3,w:4,c:0"
+    }
+    context5 = RequestContext("127.0.0.1", "/", headers5, {}, {})
+    context5.http_version = "2.0"
+    score5 = RequestUtils.get_protocol_anomaly_score(context5)
+    # 30.0 for no continuation frames with many headers + 60.0 for invalid pseudo-headers
+    assert score5["protocolAnomalyScore"] == pytest.approx(90.0)
+
+    # Test Case 6: Legitimate Chromium (should have low/zero score from this logic)
+    headers6 = {
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "x-http2-fingerprint": "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:3,w:4,c:1"
+    }
+    context6 = RequestContext("127.0.0.1", "/", headers6, {}, {})
+    context6.http_version = "2.0"
+    score6 = RequestUtils.get_protocol_anomaly_score(context6)
+    assert score6["protocolAnomalyScore"] == pytest.approx(0.0)
+
+@pytest.mark.asyncio
 async def test_problem_manager_dispatch_and_integrate():
     import os
     import json
@@ -1114,16 +1179,18 @@ async def test_challenge_rate_limiting():
     """Vérifie le fonctionnement du limiteur de débit pour les challenges (Token Bucket)."""
     store = InMemoryStore()
     client_ip = "1.2.3.4"
-    
+    # On utilise une configuration stricte pour ce test, avec une capacité de 5 jetons.
+    rate_limit_config = {"capacity": 5.0, "refillRate": 0.1}
+
     # Premier appel : doit passer
-    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is True
-    
+    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip, rate_limit_config=rate_limit_config) is True
+
     # On vide le seau artificiellement (on consomme les jetons restants)
     for _ in range(4):
-        assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is True
-        
+        assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip, rate_limit_config=rate_limit_config) is True
+
     # Le 6ème appel doit être rejeté (False)
-    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip) is False
+    assert await ChallengeUtils.check_challenge_rate_limit(store, client_ip, rate_limit_config=rate_limit_config) is False
 
 def test_get_behavior_score_with_bot_like_touch_movements():
     """Vérifie la détection de l'émulation tactile (mouvements robotiques / variance de pression nulle)."""

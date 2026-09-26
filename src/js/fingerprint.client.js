@@ -159,9 +159,14 @@ const ClientLibrary = {
      * @param {object} [detail={}] - The data to include in the event's detail property.
      */
     _dispatchEvent(eventName, detail = {}) {
-        if (typeof window === 'undefined' || typeof CustomEvent === 'undefined') return;
-        const event = new CustomEvent(`fingerprint:${eventName}`, { detail });
-        window.dispatchEvent(event);
+        if (typeof window === 'undefined') return;
+        const CustomEventCtor = window.CustomEvent || (typeof CustomEvent !== 'undefined' ? CustomEvent : null);
+        if (!CustomEventCtor) return;
+        try {
+            const event = new CustomEventCtor(`fingerprint:${eventName}`, { detail });
+            window.dispatchEvent(event);
+        } catch (e) {
+        }
     },
 
     /**
@@ -190,10 +195,20 @@ const ClientLibrary = {
         const canvas2d = typeof CanvasRenderingContext2D !== 'undefined' ? CanvasRenderingContext2D : win.CanvasRenderingContext2D;
         const webgl = typeof WebGLRenderingContext !== 'undefined' ? WebGLRenderingContext : win.WebGLRenderingContext;
 
+        const isFetchTampered = () => {
+            if (ClientLibrary._isFetchPatched) {
+                if (ClientLibrary._originalFetch) {
+                    return !Function.prototype.toString.call(ClientLibrary._originalFetch).includes('[native code]');
+                }
+                return false;
+            }
+            return checkNative(win, 'fetch');
+        };
+
         return checkNative(htmlCanvas?.prototype, 'toDataURL') ||
                checkNative(canvas2d?.prototype, 'getImageData') ||
                checkNative(webgl?.prototype, 'getParameter') ||
-               checkNative(win, 'fetch');
+               isFetchTampered();
     },
 
     /**
@@ -949,38 +964,118 @@ const ClientLibrary = {
     },
 
     /**
-     * Retrieves collected client behavioral metrics.
-     * Call before submitting sensitive requests.
-     * @returns {ClientBehaviorMetrics}
+     * Évalue le comportement côté client en local sans transmettre de données brutes.
+     * Retourne 1 si le comportement est humain/légitime, 0 en cas de suspicion/bot.
+     * @returns {number} 1 ou 0
+     */
+    evaluateBehavior() {
+        let score = 0;
+        if (metrics.honeypotInteraction) return 100;
+        if (ClientLibrary.detectTamperedPrototypes()) score += 80;
+
+        // Vérification du rendu graphique
+        if (metrics.rendering) {
+            if (metrics.rendering.offscreenAnom) return 0;
+            const fps = parseFloat(metrics.rendering.fps || 0);
+            const jitter = parseFloat(metrics.rendering.jitter || 0);
+            if (fps > 250 || (fps > 0 && fps < 15)) score += 50;
+            if (jitter > 6.0) score += Math.min(80, (jitter - 6.0) * 10);
+        }
+
+        // Mouvements de souris robotiques
+        if (mouseMovementsHistory.length >= 3) {
+            let totalDist = 0;
+            let pauses = 0;
+            const segments = [];
+            for (let i = 1; i < mouseMovementsHistory.length; i++) {
+                const p1 = mouseMovementsHistory[i - 1];
+                const p2 = mouseMovementsHistory[i];
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                const dt = p2.t - p1.t;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dt > 0) segments.push(dist / dt);
+                totalDist += dist;
+                if (dt > 100 && dist < 5) pauses++;
+            }
+            if (segments.length >= 2) {
+                const totalTime = mouseMovementsHistory[mouseMovementsHistory.length - 1].t - mouseMovementsHistory[0].t;
+                const avgSpeed = totalTime > 0 ? totalDist / totalTime : 0;
+                const pStart = mouseMovementsHistory[0];
+                const pEnd = mouseMovementsHistory[mouseMovementsHistory.length - 1];
+                const straightDist = Math.sqrt(Math.pow(pEnd.x - pStart.x, 2) + Math.pow(pEnd.y - pStart.y, 2));
+                const straightness = totalDist > 0 ? straightDist / totalDist : 1;
+                if (avgSpeed > 3.0) score += 25;
+                if (straightness > 0.95) score += 30;
+                if (pauses === 0 && segments.length > 20) score += 15;
+            }
+        }
+
+        // Analyse des événements tactiles
+        if (touchMovementsHistory.length >= 3) {
+            let totalDist = 0;
+            let totalPressure = 0;
+            let totalRadius = 0;
+            for (const pt of touchMovementsHistory) {
+                totalPressure += pt.p || 0;
+                totalRadius += pt.r || 0;
+            }
+            const avgPressure = totalPressure / touchMovementsHistory.length;
+            const avgRadius = totalRadius / touchMovementsHistory.length;
+            let sqDiffPressure = 0;
+            let sqDiffRadius = 0;
+            for (const pt of touchMovementsHistory) {
+                sqDiffPressure += Math.pow((pt.p || 0) - avgPressure, 2);
+                sqDiffRadius += Math.pow((pt.r || 0) - avgRadius, 2);
+            }
+            if (avgPressure > 0 && (sqDiffPressure / touchMovementsHistory.length) === 0) {
+                score += 30;
+            }
+            if (avgRadius > 0 && (sqDiffRadius / touchMovementsHistory.length) === 0) {
+                score += 30;
+            }
+        }
+
+        // Détection de rack / ferme de téléphones mobiles immobiles
+        if (typeof window !== 'undefined' && (window.navigator?.userAgent || '').includes('Mobile')) {
+            if (metrics.motionVariance === 0) return 0;
+        }
+
+        // Variance des clics ultra-précise (bot de clic)
+        if (clicksHistory.length >= 3) {
+            const targets = {};
+            for (const c of clicksHistory) {
+                if (!c.targetId) continue;
+                if (!targets[c.targetId]) targets[c.targetId] = [];
+                targets[c.targetId].push(c);
+            }
+            for (const id in targets) {
+                const clks = targets[id];
+                if (clks.length >= 3) {
+                    const mx = clks.reduce((s, c) => s + c.x, 0) / clks.length;
+                    const my = clks.reduce((s, c) => s + c.y, 0) / clks.length;
+                    const v = clks.reduce((s, c) => s + Math.pow(c.x - mx, 2) + Math.pow(c.y - my, 2), 0) / clks.length;
+                    if (v < 1.0) return 0;
+                }
+            }
+        }
+
+        // Dynamique des touches de clavier robotique
+        if (keystrokeDwellTimes.length >= 5) {
+            const mean = keystrokeDwellTimes.reduce((a, b) => a + b, 0) / keystrokeDwellTimes.length;
+            const variance = keystrokeDwellTimes.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / keystrokeDwellTimes.length;
+            if (Math.sqrt(variance) < 2.0 || mean < 15.0) return 0;
+        }
+
+        return 1;
+    },
+
+    /**
+     * Récupère le résultat comportemental sous forme binaire (1 = valide/humain, 0 = suspect).
+     * @returns {number} 1 ou 0
      */
     getClientBehaviorMetrics() {
-        // Add history length as a behavioral signal.
-        metrics.historyLength = window.history.length;
-
-        // Attach collection timestamp for replay detection
-        metrics.clicksHistory = clicksHistory;
-        metrics.clientTimestamp = Date.now();
-
-        metrics.touchMovementsHistory = touchMovementsHistory;
-        if (ClientLibrary.detectTamperedPrototypes()) {
-            metrics.prototypeTampered = true;
-        }
-        metrics.motionVariance = metrics.motionVariance ?? -1;
-        // Include mouse trajectory history for server-side evaluation
-        metrics.mouseMovementsHistory = mouseMovementsHistory;
-
-        // NOUVEAU: Keystroke dynamics metrics (dwell and flight times)
-        metrics.keystrokeDwellTimes = keystrokeDwellTimes;
-        metrics.keystrokeFlightTimes = keystrokeFlightTimes;
-
-        // Calculate mean keystroke latency
-        if (keystrokeLatencies.length > 0) {
-            const sum = keystrokeLatencies.reduce((a, b) => a + b, 0);
-            metrics.keystrokeLatency = sum / keystrokeLatencies.length;
-        } else {
-            metrics.keystrokeLatency = 0;
-        }
-        return metrics;
+        return this.evaluateBehavior();
     },
 
     /**
@@ -991,14 +1086,13 @@ const ClientLibrary = {
      */
     async protectedFetch(resource, options = {}) {
         const fp = this.getDeviceFingerprint();
-        const rawBehavior = this.getClientBehaviorMetrics();
         const zkpProof = await this.generateZkpProof(fp); // Generate ZKP proof
-        const behavior = await signMetrics(rawBehavior);
+        const behavior = this.getClientBehaviorMetrics();
 
         const headers = new Headers(options.headers || {});
         headers.set('X-ZKP-Proof', zkpProof); // Add ZKP proof to headers
         headers.set('X-Device-Fingerprint', fp);
-        headers.set('X-Behavior-Metrics', JSON.stringify(behavior));
+        headers.set('X-Behavior-Metrics', String(behavior));
 
         options.headers = headers;
         return fetch(resource, options);
@@ -1008,6 +1102,8 @@ const ClientLibrary = {
     _isFetchPatched: false,
     _interceptorChain: [],
     // Store original fetch bound to window to prevent illegal invocation errors
+    _targetDomains: [],
+    _swRegistration: null,
     _originalFetch: (typeof window !== 'undefined') ? window.fetch.bind(window) : null,
 
 /**
@@ -1045,8 +1141,76 @@ const ClientLibrary = {
      */
     onHoneypotTrigger() {
         metrics.honeypotInteraction = true;
+        if (this.workerPath) {
+            this.syncServiceWorkerCredentials();
+        }
         // Dispatch event allowing host applications to react
         this._dispatchEvent('honeypotTriggered');
+    },
+
+    /**
+     * Registers and manages the Service Worker for transparent HTTPS request decoration.
+     * @param {string} workerPath - Path to the worker script.
+     * @param {string[]} [targetDomains=[]] - Domains to intercept.
+     * @param {string} [scope] - Service Worker registration scope.
+     * @returns {Promise<ServiceWorkerRegistration|null>}
+     */
+    async initServiceWorker(workerPath, targetDomains = [], scope = undefined) {
+        if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+            console.warn('[Fingerprint] Service Worker is not supported in this browser.');
+            return null;
+        }
+
+        try {
+            const registerOptions = scope ? { scope } : {};
+            const registration = await navigator.serviceWorker.register(workerPath, registerOptions);
+            this._swRegistration = registration;
+
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                this.syncServiceWorkerCredentials(targetDomains);
+            });
+
+            await navigator.serviceWorker.ready;
+            this.syncServiceWorkerCredentials(targetDomains);
+
+            if (typeof window !== 'undefined') {
+                window.addEventListener('focus', () => this.syncServiceWorkerCredentials(targetDomains), { passive: true });
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') {
+                        this.syncServiceWorkerCredentials(targetDomains);
+                    }
+                }, { passive: true });
+            }
+
+            console.log('[Fingerprint] Network Service Worker active and synchronized.');
+            return registration;
+        } catch (error) {
+            console.warn('[Fingerprint] Failed to register Service Worker:', error);
+            return null;
+        }
+    },
+
+    /**
+     * Synchronizes device fingerprint and behavior metrics with the active Service Worker.
+     * @param {string[]} [targetDomains=[]]
+     */
+    syncServiceWorkerCredentials(targetDomains = []) {
+        if (typeof navigator === 'undefined' || !navigator.serviceWorker) return;
+        const domains = (Array.isArray(targetDomains) && targetDomains.length > 0)
+            ? targetDomains
+            : (this._targetDomains || []);
+        const payload = {
+            type: 'UPDATE_CREDENTIALS',
+            fp: this.getDeviceFingerprint(),
+            behavior: this.getClientBehaviorMetrics(),
+            targetDomains: domains
+        };
+
+        if (navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage(payload);
+        } else if (this._swRegistration && this._swRegistration.active) {
+            this._swRegistration.active.postMessage(payload);
+        }
     },
 
   /**
@@ -1071,11 +1235,10 @@ const ClientLibrary = {
 
         if (shouldProtect) {
             const fp = this.getDeviceFingerprint();
-            const rawBehavior = this.getClientBehaviorMetrics();
-            const behavior = await signMetrics(rawBehavior);
+            const behavior = this.getClientBehaviorMetrics();
             const headers = new Headers(options.headers || {});
             headers.set('X-Device-Fingerprint', fp);
-            headers.set('X-Behavior-Metrics', JSON.stringify(behavior));
+            headers.set('X-Behavior-Metrics', String(behavior));
             options.headers = headers;
         }
 
@@ -1193,10 +1356,20 @@ const ClientLibrary = {
    * @param {Response} response - Initial response (status 404/challenge).
    * @param {RequestInfo} resource - Original request resource.
    * @param {RequestInit} options - Original request options.
+   * @param {number} [maxRetries=3] - Maximum allowed challenge retry attempts.
    * @returns {Promise<Response>} - Retried response.
    * @private
    */
-  async solveChallengeAndRetry(response, resource, options) {
+  async solveChallengeAndRetry(response, resource, options = {}, maxRetries = 3) {
+    const effectiveMaxRetries = (options && typeof options._powMaxRetries === 'number')
+      ? options._powMaxRetries
+      : (typeof maxRetries === 'number' ? maxRetries : 3);
+    const currentRetries = (options && options._powRetryCount) || (resource && resource._powRetryCount) || 0;
+    if (currentRetries >= effectiveMaxRetries) {
+      console.warn(`[Fingerprint] Challenge retry limit reached (${effectiveMaxRetries}). Aborting challenge retry loop.`);
+      return response;
+    }
+
     if (!response || response.status !== 404 || !response.headers?.get?.('content-type')?.includes('application/json') || response.bodyUsed) {
       return response;
     }
@@ -1223,8 +1396,16 @@ const ClientLibrary = {
       // Attach solver fingerprint to retry request
       url.searchParams.set('pow_fp', solverFp);
 
-      // Use fetch to retry with appropriate execution context
-      return window.fetch(url.toString(), options);
+      // Use fetch to retry with incremented retry count to prevent infinite challenge loops
+      const retryOptions = {
+        ...options,
+        _powRetryCount: currentRetries + 1,
+        _powMaxRetries: effectiveMaxRetries
+      };
+      const fetchFn = (typeof window !== 'undefined' && typeof window.fetch === 'function')
+        ? window.fetch
+        : fetch;
+      return fetchFn(url.toString(), retryOptions);
     } catch (e) {
       console.error('[Fingerprint] Failed to solve or retry challenge:', e);
       return response; // Retourne la réponse 429 originale en cas d'échec
@@ -1249,6 +1430,7 @@ const ClientLibrary = {
         honeypots = [],
         trapUrls = [], // Trap URLs
         wasmPath,
+        worker = false,
         workerPath, // NOUVEAU
         fetch: fetchConfig = {}
     } = config;
@@ -1262,8 +1444,30 @@ const ClientLibrary = {
     if (mouse) {
         this.startMouseEntropyTracker();
     }
-    if (workerPath) {
-        this.workerPath = workerPath;
+
+    // Instantiation du Service Worker via initializeClient
+    let resolvedWorkerPath = null;
+    let workerScope = undefined;
+    let workerTargetDomains = fetchConfig.targetDomains || [];
+
+    if (typeof worker === 'string') {
+        resolvedWorkerPath = worker;
+    } else if (typeof worker === 'object' && worker !== null) {
+        resolvedWorkerPath = worker.path || '/fingerprint.worker.js';
+        workerScope = worker.scope;
+        if (Array.isArray(worker.targetDomains)) {
+            workerTargetDomains = worker.targetDomains;
+        }
+    } else if (worker === true) {
+        resolvedWorkerPath = '/fingerprint.worker.js';
+    } else if (workerPath) {
+        resolvedWorkerPath = workerPath;
+    }
+
+    if (resolvedWorkerPath) {
+        this.workerPath = resolvedWorkerPath;
+        this._targetDomains = workerTargetDomains;
+        this.initServiceWorker(resolvedWorkerPath, workerTargetDomains, workerScope);
     }
     if (keystrokes) {
         this.startKeystrokeDynamicsTracker();
@@ -1294,16 +1498,17 @@ const ClientLibrary = {
     if (trapUrls.length > 0) {
         this.injectTrapLinks(trapUrls);
     }
-    // Enable fetch interception if configured
-    if (config.fetch) {
+    // Enable fetch monkey-patching only if explicitly configured and no Service Worker is used
+    if (config.fetch && !resolvedWorkerPath) {
         this.initializeFetch(fetchConfig.targetDomains);
 
         // Add challenge resolution interceptor
         if (fetchConfig.handleChallenges !== false) {
+            const maxRetries = typeof fetchConfig.maxRetries === 'number' ? fetchConfig.maxRetries : 3;
             this.addFetchInterceptor(async (resource, options, next) => {
                 const originalResponse = await next(resource, options);
                 // Clone response to prevent draining the body stream for original caller
-                return this.solveChallengeAndRetry(originalResponse.clone(), resource, options);
+                return this.solveChallengeAndRetry(originalResponse.clone(), resource, options, maxRetries);
             });
         }
     }
@@ -1521,6 +1726,8 @@ export const generateZkpProof = ClientLibrary.generateZkpProof.bind(ClientLibrar
 export const initializeSpace = ClientLibrary.initializeSpace.bind(ClientLibrary);
 export const readSpaceBlock = ClientLibrary.readSpaceBlock.bind(ClientLibrary);
 export const solveSpaceChallenge = ClientLibrary.solveSpaceChallenge.bind(ClientLibrary);
+export const initServiceWorker = ClientLibrary.initServiceWorker.bind(ClientLibrary);
+export const syncServiceWorkerCredentials = ClientLibrary.syncServiceWorkerCredentials.bind(ClientLibrary);
 
 // Export the internal object for testing purposes
 export default ClientLibrary;

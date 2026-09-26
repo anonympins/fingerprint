@@ -17,8 +17,13 @@ Object.defineProperty(global, 'document', { value: dom.window.document, writable
 Object.defineProperty(global, 'navigator', { value: dom.window.navigator, writable: true });
 Object.defineProperty(global, 'screen', { value: dom.window.screen, writable: true });
 Object.defineProperty(global, 'performance', { value: dom.window.performance, writable: true });
+if (typeof globalThis.crypto !== 'undefined') {
+    Object.defineProperty(dom.window, 'crypto', { value: globalThis.crypto, writable: true, configurable: true });
+}
+Object.defineProperty(global, 'CustomEvent', { value: dom.window.CustomEvent, writable: true, configurable: true });
 
 global.fetch = vi.fn(); // Mock global fetch
+window.fetch = (...args) => global.fetch(...args);
 global.Headers = dom.window.Headers;
 global.Request = dom.window.Request;
 global.URL = dom.window.URL;
@@ -45,6 +50,7 @@ describe('ClientLibrary.initializeClient', () => {
         initHoneypotsSpy = vi.spyOn(ClientLibrary, 'initializeHoneypots');
         injectTrapsSpy = vi.spyOn(ClientLibrary, 'injectTrapLinks');
         initFetchSpy = vi.spyOn(ClientLibrary, 'initializeFetch');
+        window.fetch = (...args) => global.fetch(...args);
         injectPhantomTrapsSpy = vi.spyOn(ClientLibrary, 'injectPhantomTraps');
     });
 
@@ -142,6 +148,30 @@ describe('ClientLibrary.initializeClient', () => {
         expect(initHoneypotsSpy).toHaveBeenCalledWith(config.honeypots);
         expect(injectTrapsSpy).toHaveBeenCalledWith(config.trapUrls);
         expect(initFetchSpy).toHaveBeenCalledWith(config.fetch.targetDomains);
+    });
+
+    it('should abort challenge retry loop when maxRetries is reached', async () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const mockResponse = {
+            status: 404,
+            headers: new Headers({ 'content-type': 'application/json' }),
+            bodyUsed: false,
+            json: vi.fn().mockResolvedValue({
+                challenge: { type: 'cpu_target', nonce: 'nonce-1', cpuTarget: '0000ffff' }
+            }),
+            clone() { return this; }
+        };
+
+        const result = await ClientLibrary.solveChallengeAndRetry(
+            mockResponse,
+            'http://localhost/api/data',
+            { _powRetryCount: 3 },
+            3
+        );
+
+        expect(result).toBe(mockResponse);
+        expect(mockResponse.json).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Challenge retry limit reached (3)'));
     });
 
 });

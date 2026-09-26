@@ -233,7 +233,7 @@ class RequestUtilsTest extends TestCase
             'headers' => ['x-behavior-metrics' => json_encode($metricsNoActivity)]
         ]);
         $scoreNoActivity = RequestUtils::getBehaviorScore($contextNoActivity);
-        $this->assertEquals(40.0, $scoreNoActivity['behaviorScore']);
+        $this->assertEquals(5.0, $scoreNoActivity['behaviorScore']);
     }
 
     public function testGetBehaviorScoreWithBotLikeKeystrokeDynamics(): void

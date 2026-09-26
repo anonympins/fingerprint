@@ -73,7 +73,14 @@ public class BlockList {
                     return false;
                 }
             }
-            return true;
+            int bitsToCompare = prefix % 8;
+            if (bitsToCompare > 0) {
+                int mask = (0xFF << (8 - bitsToCompare)) & 0xFF;
+                if ((addr[bytesToCompare] & mask) != (network[bytesToCompare] & mask)) {
+                    return false;
+                }
+            }
+            return true; // L'adresse est dans le sous-réseau
         }
     }
 }

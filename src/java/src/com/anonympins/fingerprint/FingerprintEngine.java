@@ -14,6 +14,7 @@ public class FingerprintEngine {
     private final boolean dryRun;
     private final Map<String, Object> thresholds;
     private final Map<String, Object> weights;
+    private final Map<String, Object> patterns;
 
     private ProblemManager problemManager;
     @SuppressWarnings("unchecked")
@@ -31,6 +32,7 @@ public class FingerprintEngine {
         this.store = store;
         this.thresholds = (Map<String, Object>) this.config.getOrDefault("thresholds", createDefaultThresholds());
         this.weights = (Map<String, Object>) this.config.getOrDefault("weights", createDefaultWeights());
+        this.patterns = (Map<String, Object>) this.config.getOrDefault("patterns", new FingerprintProperties.Patterns().toMap());
         this.verbose = Boolean.TRUE.equals(this.config.get("verbose"));
         this.dryRun = Boolean.TRUE.equals(this.config.get("dryRun"));
 
@@ -155,6 +157,10 @@ public class FingerprintEngine {
         return weights;
     }
 
+    public Map<String, Object> getPatterns() {
+        return patterns;
+    }
+
     @SuppressWarnings("unchecked")
     public synchronized void updateConfig(Map<String, Object> newConfig) {
         if (newConfig == null) return;
@@ -171,6 +177,11 @@ public class FingerprintEngine {
         if (newWeights instanceof Map) {
             this.weights.clear();
             this.weights.putAll((Map<String, Object>) newWeights);
+        }
+        Object newPatterns = this.config.get("patterns");
+        if (newPatterns instanceof Map) {
+            this.patterns.clear();
+            this.patterns.putAll((Map<String, Object>) newPatterns);
         }
     }
 
@@ -779,6 +790,18 @@ public class FingerprintEngine {
                 }
             }
         } else if ("challenge".equals(action)) {
+            if (!ChallengeUtils.checkChallengeRateLimit(context.clientIp)) {
+                response.put("action", "block");
+                response.put("status", 429);
+                response.put("body", "Too Many Requests");
+                if (dryRun) {
+                    response.put("intendedAction", "block");
+                    response.put("action", "next");
+                    response.remove("status");
+                    response.remove("body");
+                }
+                return response;
+            }
             response.put("status", 403);
             String nonce = UUID.randomUUID().toString().replace("-", "");
             String clientSecret = UUID.randomUUID().toString().replace("-", "");
@@ -939,7 +962,7 @@ public class FingerprintEngine {
 
         // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
         String behaviorHeader = context.getHeader("x-behavior-metrics");
-        if (behaviorHeader != null && deviceData != null) {
+        if (behaviorHeader != null && behaviorHeader.startsWith("{") && deviceData != null) {
             try {
                 Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
                 if (metrics != null && metrics.containsKey("webauthnAnchor")) {
@@ -981,8 +1004,7 @@ public class FingerprintEngine {
         double timeInconsistencyScore = RequestUtils.getTimeInconsistencyScore(context).getOrDefault("timeInconsistencyScore", 0.0);
         double crossLayerInconsistencyScore = RequestUtils.getCrossLayerInconsistency(context).getOrDefault("crossLayerInconsistencyScore", 0.0);
         
-        Map<String, Object> patternsConfig = (Map<String, Object>) config.getOrDefault("patterns", new HashMap<String, Object>());
-        double requestPatternScore = RequestUtils.getRequestPatternScore(context, deviceData, patternsConfig).getOrDefault("requestPatternScore", 0.0);
+        double requestPatternScore = RequestUtils.getRequestPatternScore(context, deviceData, this.patterns).getOrDefault("requestPatternScore", 0.0);
         
         Map<String, Object> honeypotConfig = (Map<String, Object>) config.getOrDefault("honeypot", new HashMap<String, Object>());
         double honeypotScore = RequestUtils.getHoneypotScore(context, honeypotConfig).getOrDefault("honeypotScore", 0.0);
@@ -1059,7 +1081,7 @@ public class FingerprintEngine {
         }
 
         String behaviorHeader = context.getHeader("x-behavior-metrics");
-        if (behaviorHeader != null) {
+        if (behaviorHeader != null && behaviorHeader.startsWith("{")) {
             try {
                 Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
                 if (metrics != null && metrics.containsKey("clientTimestamp")) {

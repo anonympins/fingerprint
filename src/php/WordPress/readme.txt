@@ -4,7 +4,7 @@ Tags: bot protection, security, proof of work, firewall, anti scraping
 Requires at least: 5.9
 Tested up to: 7.1
 Requires PHP: 8.0
-Stable tag: 0.7.3
+Stable tag: 0.7.4
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 

@@ -1,12 +1,35 @@
 fingerprint:
   enabled: true
   verbose: true
+  weights:
+    history-score: 0.3
+    rotation-score: 0.5
+    header-anomaly-score: 0.2
+    request-pattern-score: 0.6
+    inconsistency-score: 0.8
+    behavior-score: 0.7
+    honeypot-score: 1.0
+    bot-score: 1.0
+    cookie-dropping-score: 0.9
+    cross-layer-inconsistency-score: 0.4
+    time-inconsistency-score: 0.9
+    tls-spoofing-score: 0.8
+    client-hints-inconsistency-score: 0.7
+    click-variance-score: 0.6
+    subnet-score: 0.4
+    ip-reputation-score: 0.5
+    botnet-cluster-score: 0.7
+    tcp-anomaly-score: 0.8
+    protocol-anomaly-score: 0.8
+    quic-anomaly-score: 0.8
+    rendering-anomaly-score: 0.8
+    threat-intel-score: 1.0
+    virtualization-score: 0.8
   thresholds:
     low: 20
     medium: 45
     high: 75
     block: 95
-
   # Configuration typée de la Whitelist pour exclure des hosts/urls de l'analyse
   whitelist:
     # Option 1: Exclure un host complet pour un chemin particulier (ex: api publique d'un domaine précis)

@@ -552,6 +552,77 @@ public class FingerprintEngineTest {
         assertEquals(100.0, score.getOrDefault("protocolAnomalyScore", 0.0));
     }
 
+    @Test
+    @DisplayName("Should detect HTTP/2 frame anomalies (PRIORITY, WINDOW_UPDATE, CONTINUATION)")
+    void testProtocolAnomalyScoreFrameAnalysis() {
+        // Test Case 1: Spoofed Chromium (No PRIORITY frames)
+        Map<String, String> headers1 = new HashMap<>();
+        headers1.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers1.put("x-http2-fingerprint", "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:0,w:4,c:1");
+        RequestContext context1 = new RequestContext("127.0.0.1", "/", headers1, null, null, null, "2.0");
+        Map<String, Double> score1 = RequestUtils.getProtocolAnomalyScore(context1);
+        // 25.0 for no priority frames
+        assertEquals(25.0, score1.getOrDefault("protocolAnomalyScore", 0.0), 0.1);
+
+        // Test Case 2: Spoofed Chromium (Few WINDOW_UPDATE frames)
+        Map<String, String> headers2 = new HashMap<>();
+        headers2.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers2.put("x-http2-fingerprint", "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:3,w:1,c:1");
+        RequestContext context2 = new RequestContext("127.0.0.1", "/", headers2, null, null, null, "2.0");
+        Map<String, Double> score2 = RequestUtils.getProtocolAnomalyScore(context2);
+        // 20.0 for few window_update frames
+        assertEquals(20.0, score2.getOrDefault("protocolAnomalyScore", 0.0), 0.1);
+
+        // Test Case 3: Spoofed Chromium (Both anomalies)
+        Map<String, String> headers3 = new HashMap<>();
+        headers3.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers3.put("x-http2-fingerprint", "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:0,w:1,c:1");
+        RequestContext context3 = new RequestContext("127.0.0.1", "/", headers3, null, null, null, "2.0");
+        Map<String, Double> score3 = RequestUtils.getProtocolAnomalyScore(context3);
+        // 25.0 + 20.0 = 45.0
+        assertEquals(45.0, score3.getOrDefault("protocolAnomalyScore", 0.0), 0.1);
+
+        // Test Case 4: Spoofed Firefox (Too many PRIORITY frames)
+        Map<String, String> headers4 = new HashMap<>();
+        headers4.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0");
+        headers4.put("x-http2-fingerprint", "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,s,p,a|p:3,w:2,c:0");
+        RequestContext context4 = new RequestContext("127.0.0.1", "/", headers4, null, null, null, "2.0");
+        Map<String, Double> score4 = RequestUtils.getProtocolAnomalyScore(context4);
+        // 20.0 for too many priority frames for Firefox
+        assertEquals(20.0, score4.getOrDefault("protocolAnomalyScore", 0.0), 0.1);
+
+        // Test Case 5: Generic Bot (No CONTINUATION frames with many headers)
+        Map<String, String> headers5 = new HashMap<>();
+        headers5.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        // headerOrder has 6 parts -> 5 commas > 3
+        headers5.put("x-http2-fingerprint", "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p,x,y,z|p:3,w:4,c:0");
+        RequestContext context5 = new RequestContext("127.0.0.1", "/", headers5, null, null, null, "2.0");
+        Map<String, Double> score5 = RequestUtils.getProtocolAnomalyScore(context5);
+        // 90.0 = 30.0 for no continuation frames with many headers + 60.0 for invalid pseudo-headers (x,y,z)
+        assertEquals(90.0, score5.getOrDefault("protocolAnomalyScore", 0.0), 0.1);
+
+        // Test Case 6: Legitimate Chromium (should have low/zero score from this logic)
+        Map<String, String> headers6 = new HashMap<>();
+        headers6.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers6.put("x-http2-fingerprint", "s:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:256|m,a,s,p|p:3,w:4,c:1");
+        RequestContext context6 = new RequestContext("127.0.0.1", "/", headers6, null, null, null, "2.0");
+        Map<String, Double> score6 = RequestUtils.getProtocolAnomalyScore(context6);
+        assertEquals(0.0, score6.getOrDefault("protocolAnomalyScore", 0.0), 0.1);
+    }
+
+    @Test
+    @DisplayName("Should parse x-behavior-metrics direct score")
+    void testDirectBehaviorScore() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        headers.put("accept", "text/html");
+        headers.put("accept-encoding", "gzip");
+        headers.put("x-behavior-metrics", "65.5");
+
+        RequestContext context = new RequestContext("127.0.0.1", "/", headers, null, null, null, "1.1");
+        Map<String, Double> result = RequestUtils.getBehaviorScore(context);
+        assertEquals(65.5, result.get("behaviorScore"), 0.01);
+    }
 
     @Test
     void testCombinedChallengePageMemSeedPrefix() {
