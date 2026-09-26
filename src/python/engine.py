@@ -4022,10 +4022,6 @@ class FingerprintEngine:
         if not peers:
             return
 
-        timestamp = int(time.time() * 1000)
-        msg = f"{timestamp}:{zkp_y}"
-        signature = hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
-
         import urllib.parse
         import asyncio
         import json
@@ -4033,10 +4029,25 @@ class FingerprintEngine:
         # Semaphore to cap maximum concurrent sockets and scale gracefully
         semaphore = asyncio.Semaphore(10)
 
-        async def send_one(peer_url):
-            try:
-                async with semaphore:
-                    try:
+        async def send_report(target_zkp_y: str, ts: int):
+            msg = f"{ts}:{target_zkp_y}"
+            sig_hmac = hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+            sig_ed25519 = ""
+            ed25519_key_pem = os.environ.get("ED25519_PRIVATE_KEY")
+            if ed25519_key_pem:
+                try:
+                    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+                    priv_key = load_pem_private_key(ed25519_key_pem.encode("utf-8"), password=None, backend=default_backend())
+                    sig_ed25519 = priv_key.sign(msg.encode("utf-8")).hex()
+                except Exception:
+                    pass
+
+            is_asymmetric = bool(sig_ed25519)
+            signature = sig_ed25519 if is_asymmetric else sig_hmac
+
+            async def send_one(peer_url):
+                try:
+                    async with semaphore:
                         parsed = urllib.parse.urlparse(peer_url)
                         host = parsed.hostname
                         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -4049,14 +4060,15 @@ class FingerprintEngine:
                             timeout=0.5
                         )
 
-                        post_data = json.dumps({"zkpY": zkp_y})
+                        post_data = json.dumps({"zkpY": target_zkp_y})
                         request = (
                             f"POST {path} HTTP/1.1\r\n"
                             f"Host: {host}\r\n"
                             f"Content-Type: application/json\r\n"
                             f"Content-Length: {len(post_data)}\r\n"
-                            f"X-Federation-Signature: {signature}\r\n"
-                            f"X-Federation-Timestamp: {timestamp}\r\n"
+                            f"X-Federation-Signature: {'' if is_asymmetric else signature}\r\n"
+                            f"X-Federation-Signature-Ed25519: {signature if is_asymmetric else ''}\r\n"
+                            f"X-Federation-Timestamp: {ts}\r\n"
                             f"Connection: close\r\n\r\n"
                             f"{post_data}"
                         )
@@ -4064,10 +4076,75 @@ class FingerprintEngine:
                         await writer.drain()
                         writer.close()
                         await writer.wait_closed()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                except Exception:
+                    pass
+
+            await asyncio.gather(*(send_one(peer) for peer in peers), return_exceptions=True)
+
+        dp_config = self.config.get("differentialPrivacy") or {}
+        dp_enabled = dp_config.get("enabled", True) is not False
+        epsilon = float(dp_config.get("epsilon") or self.config.get("dpEpsilon") or 1.0)
+
+        now_ms = int(time.time() * 1000)
+        report_ts = now_ms
+        if dp_enabled:
+            delta_t = 5000.0  # Sensibilité de 5s
+            b = delta_t / max(0.1, epsilon)
+            u = random.random() - 0.5
+            safe_u = (1e-7 if u >= 0 else -1e-7) if abs(u) < 1e-7 else u
+            sign_u = 1.0 if safe_u > 0 else (-1.0 if safe_u < 0 else 0.0)
+            laplace_noise = -b * sign_u * math.log(1.0 - 2.0 * abs(safe_u))
+            clamped_noise = int(max(-60000, min(60000, round(laplace_noise))))
+            report_ts = now_ms + clamped_noise
+
+        await send_report(zkp_y, report_ts)
+
+        if dp_enabled:
+            dummy_rate = dp_config.get("dummyRate")
+            decoy_prob = float(dummy_rate) if dummy_rate is not None else (1.0 / (1.0 + math.exp(epsilon)))
+            if random.random() < decoy_prob:
+                zkp_p = 115792089237316195423570985008687907853269984665640564039457584007908834671663
+                decoy_int = (int.from_bytes(os.urandom(32), byteorder="big") % (zkp_p - 2)) + 1
+                decoy_zkp_y = hex(decoy_int)[2:]
+
+                u_decoy = random.random() - 0.5
+                safe_u_decoy = (1e-7 if u_decoy >= 0 else -1e-7) if abs(u_decoy) < 1e-7 else u_decoy
+                sign_u_decoy = 1.0 if safe_u_decoy > 0 else (-1.0 if safe_u_decoy < 0 else 0.0)
+                b = 5000.0 / max(0.1, epsilon)
+                decoy_noise = int(max(-60000, min(60000, round(-b * sign_u_decoy * math.log(1.0 - 2.0 * abs(safe_u_decoy))))))
+                decoy_ts = now_ms + decoy_noise
+
+                await send_report(decoy_zkp_y, decoy_ts)
+                try:
+                    parsed = urllib.parse.urlparse(peer_url)
+                    host = parsed.hostname
+                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                    path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+                    connector = "?" if "?" not in path else "&"
+                    path = f"{path}{connector}coop_op=share_threat_intel"
+
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(host, port, ssl=(parsed.scheme == "https")),
+                        timeout=0.5
+                    )
+
+                    post_data = json.dumps({"zkpY": zkp_y})
+                    request = (
+                        f"POST {path} HTTP/1.1\r\n"
+                        f"Host: {host}\r\n"
+                        f"Content-Type: application/json\r\n"
+                        f"Content-Length: {len(post_data)}\r\n"
+                        f"X-Federation-Signature: {signature}\r\n"
+                        f"X-Federation-Timestamp: {timestamp}\r\n"
+                        f"Connection: close\r\n\r\n"
+                        f"{post_data}"
+                    )
+                    writer.write(request.encode("utf-8"))
+                    await writer.drain()
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
 
         await asyncio.gather(*(send_one(peer) for peer in peers), return_exceptions=True)
 

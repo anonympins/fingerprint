@@ -3,6 +3,8 @@ package com.anonympins.fingerprint;
 import com.anonympins.fingerprint.utils.ChallengeUtils;
 import com.anonympins.fingerprint.utils.RequestUtils;
 
+import java.math.BigInteger;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.*;
 
 public class FingerprintEngine {
@@ -937,13 +939,65 @@ public class FingerprintEngine {
 
 
     @SuppressWarnings("unchecked")
-    private void broadcastBannedZkp(String zkpY) {
+    protected void broadcastBannedZkp(String zkpY) {
         List<String> peers = (List<String>) config.get("federatedPeers");
         if (peers == null || peers.isEmpty()) return;
 
-        long timestamp = System.currentTimeMillis();
-        String msg = timestamp + ":" + zkpY;
-        
+        Map<String, Object> dpConfig = config.get("differentialPrivacy") instanceof Map
+                ? (Map<String, Object>) config.get("differentialPrivacy")
+                : new HashMap<>();
+        boolean dpEnabled = !Boolean.FALSE.equals(dpConfig.get("enabled"));
+        double epsilon = 1.0;
+        if (dpConfig.get("epsilon") instanceof Number) {
+            epsilon = ((Number) dpConfig.get("epsilon")).doubleValue();
+        } else if (config.get("dpEpsilon") instanceof Number) {
+            epsilon = ((Number) config.get("dpEpsilon")).doubleValue();
+        }
+
+        long now = System.currentTimeMillis();
+        long reportTimestamp = now;
+
+        if (dpEnabled) {
+            // 1. Differential Privacy : Bruit laplacien sur l'horodatage
+            double deltaT = 5000.0;
+            double b = deltaT / Math.max(0.1, epsilon);
+            double u = ThreadLocalRandom.current().nextDouble() - 0.5;
+            double safeU = Math.abs(u) < 1e-7 ? (u >= 0 ? 1e-7 : -1e-7) : u;
+            double signU = safeU > 0 ? 1.0 : (safeU < 0 ? -1.0 : 0.0);
+            double laplaceNoise = -b * signU * Math.log(1.0 - 2.0 * Math.abs(safeU));
+            long clampedNoise = Math.max(-60000L, Math.min(60000L, Math.round(laplaceNoise)));
+            reportTimestamp = now + clampedNoise;
+        }
+
+        sendThreatReport(zkpY, reportTimestamp, peers);
+
+        if (dpEnabled) {
+            // 2. Differential Privacy : Injection de clés leurres (Decoy ZKP)
+            double decoyProb = dpConfig.get("dummyRate") instanceof Number
+                    ? ((Number) dpConfig.get("dummyRate")).doubleValue()
+                    : (1.0 / (1.0 + Math.exp(epsilon)));
+
+            if (ThreadLocalRandom.current().nextDouble() < decoyProb) {
+                BigInteger zkpP = new BigInteger("115792089237316195423570985008687907853269984665640564039457584007908834671663");
+                byte[] decoyBytes = new byte[32];
+                new java.security.SecureRandom().nextBytes(decoyBytes);
+                BigInteger decoyInt = new BigInteger(1, decoyBytes).mod(zkpP.subtract(BigInteger.TWO)).add(BigInteger.ONE);
+                String decoyZkpY = decoyInt.toString(16);
+
+                double uDecoy = ThreadLocalRandom.current().nextDouble() - 0.5;
+                double safeUDecoy = Math.abs(uDecoy) < 1e-7 ? (uDecoy >= 0 ? 1e-7 : -1e-7) : uDecoy;
+                double signUDecoy = safeUDecoy > 0 ? 1.0 : (safeUDecoy < 0 ? -1.0 : 0.0);
+                double b = 5000.0 / Math.max(0.1, epsilon);
+                long decoyNoise = Math.max(-60000L, Math.min(60000L, Math.round(-b * signUDecoy * Math.log(1.0 - 2.0 * Math.abs(safeUDecoy)))));
+                long decoyTimestamp = now + decoyNoise;
+
+                sendThreatReport(decoyZkpY, decoyTimestamp, peers);
+            }
+        }
+    }
+
+    private void sendThreatReport(String targetZkpY, long ts, List<String> peers) {
+        String msg = ts + ":" + targetZkpY;
         String signature = "";
         boolean isAsymmetric = false;
         
@@ -983,11 +1037,11 @@ public class FingerprintEngine {
         }
 
         for (String peerUrl : peers) {
-            asyncPost(peerUrl + "?coop_op=share_threat_intel", zkpY, isAsymmetric ? "" : signature, isAsymmetric ? signature : "", timestamp);
+            asyncPost(peerUrl + "?coop_op=share_threat_intel", targetZkpY, isAsymmetric ? "" : signature, isAsymmetric ? signature : "", ts);
         }
     }
 
-    private void asyncPost(String urlStr, String zkpY, String signature, String signatureEd25519, long timestamp) {
+    protected void asyncPost(String urlStr, String zkpY, String signature, String signatureEd25519, long timestamp) {
         new Thread(() -> {
             try {
                 java.net.URL url = new java.net.URL(urlStr);

@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
@@ -109,5 +112,38 @@ public class FederatedPeersAndAsymmetricTest {
         assertNotNull(res);
         assertEquals("synchronized", res.get("status"), "La menace doit être vérifiée asymétriquement et synchronisée");
         assertTrue(store.has("banned-zkp-y:" + zkpY), "La clé publique ZKP du terminal banni doit être stockée");
+    }
+
+    @Test
+    public void testDifferentialPrivacyDecoyInjectionAndTimestampNoise() {
+        Map<String, Object> config = new HashMap<>();
+        config.put("federatedPeers", Arrays.asList("https://peer1.example.com"));
+        config.put("federationSecret", "test-secret-key-32-chars-long!!");
+
+        Map<String, Object> dp = new HashMap<>();
+        dp.put("enabled", true);
+        dp.put("epsilon", 1.0);
+        dp.put("dummyRate", 1.0); // Forcer l'injection d'un leurre pour le test
+        config.put("differentialPrivacy", dp);
+
+        List<Map<String, Object>> postedCalls = new ArrayList<>();
+        FingerprintEngine testEngine = new FingerprintEngine(config, store) {
+            @Override
+            protected void asyncPost(String urlStr, String zkpY, String signature, String signatureEd25519, long timestamp) {
+                Map<String, Object> call = new HashMap<>();
+                call.put("url", urlStr);
+                call.put("zkpY", zkpY);
+                call.put("timestamp", timestamp);
+                postedCalls.add(call);
+            }
+        };
+
+        testEngine.broadcastBannedZkp("realzkpykey12345");
+
+        assertEquals(2, postedCalls.size(), "Doit diffuser à la fois la clé réelle et la clé leurre");
+        String firstKey = (String) postedCalls.get(0).get("zkpY");
+        String secondKey = (String) postedCalls.get(1).get("zkpY");
+        assertEquals("realzkpykey12345", firstKey);
+        assertNotEquals("realzkpykey12345", secondKey);
     }
 }

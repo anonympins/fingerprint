@@ -37,6 +37,10 @@ public class FingerprintProperties {
     private boolean useAsymmetricTickets = true;
     private String ed25519PrivateKey;
     private String ed25519PublicKey;
+    private List<String> federatedPeers = new ArrayList<>();
+    private String federationSecret;
+    private DifferentialPrivacy differentialPrivacy = new DifferentialPrivacy();
+    private Double dpEpsilon;
     private boolean reset = false;
 
     public boolean isEnabled() {
@@ -239,6 +243,38 @@ public class FingerprintProperties {
         this.ed25519PublicKey = ed25519PublicKey;
     }
 
+    public List<String> getFederatedPeers() {
+        return federatedPeers;
+    }
+
+    public void setFederatedPeers(List<String> federatedPeers) {
+        this.federatedPeers = federatedPeers;
+    }
+
+    public String getFederationSecret() {
+        return federationSecret;
+    }
+
+    public void setFederationSecret(String federationSecret) {
+        this.federationSecret = federationSecret;
+    }
+
+    public DifferentialPrivacy getDifferentialPrivacy() {
+        return differentialPrivacy;
+    }
+
+    public void setDifferentialPrivacy(DifferentialPrivacy differentialPrivacy) {
+        this.differentialPrivacy = differentialPrivacy;
+    }
+
+    public Double getDpEpsilon() {
+        return dpEpsilon;
+    }
+
+    public void setDpEpsilon(Double dpEpsilon) {
+        this.dpEpsilon = dpEpsilon;
+    }
+
     public boolean isReset() {
         return reset;
     }
@@ -294,10 +330,12 @@ public class FingerprintProperties {
         private double subnetScore = 0.5;
         private double botnetClusterScore = 0.6;
         private double tcpAnomalyScore = 0.8;
-            private double protocolAnomalyScore = 0.8;
+        private double protocolAnomalyScore = 0.8;
+        private double quicAnomalyScore = 0.8;
         private double renderingAnomalyScore = 0.8;
-        private double mtuAnomalyScore = 0.9;
         private double ipReputationScore = 0.5;
+        private double virtualizationScore = 0.8;
+        private double mtuAnomalyScore = 0.9;
 
         public double getHistoryScore() { return historyScore; }
         public void setHistoryScore(double historyScore) { this.historyScore = historyScore; }
@@ -333,7 +371,12 @@ public class FingerprintProperties {
         public void setBotnetClusterScore(double botnetClusterScore) { this.botnetClusterScore = botnetClusterScore; }
         public double getTcpAnomalyScore() { return tcpAnomalyScore; }
         public void setTcpAnomalyScore(double tcpAnomalyScore) { this.tcpAnomalyScore = tcpAnomalyScore; }
-            public double getProtocolAnomalyScore() { return protocolAnomalyScore; }
+        public double getProtocolAnomalyScore() { return protocolAnomalyScore; }
+        public void setProtocolAnomalyScore(double protocolAnomalyScore) { this.protocolAnomalyScore = protocolAnomalyScore; }
+        public double getQuicAnomalyScore() { return quicAnomalyScore; }
+        public void setQuicAnomalyScore(double quicAnomalyScore) { this.quicAnomalyScore = quicAnomalyScore; }
+        public double getVirtualizationScore() { return virtualizationScore; }
+        public void setVirtualizationScore(double virtualizationScore) { this.virtualizationScore = virtualizationScore; }
         public double getRenderingAnomalyScore() { return renderingAnomalyScore; }
         public void setRenderingAnomalyScore(double renderingAnomalyScore) { this.renderingAnomalyScore = renderingAnomalyScore; }
         public double getIpReputationScore() { return ipReputationScore; }
@@ -364,11 +407,12 @@ public class FingerprintProperties {
             map.put("subnetScore", subnetScore);
             map.put("botnetClusterScore", botnetClusterScore);
             map.put("tcpAnomalyScore", tcpAnomalyScore);
-                map.put("protocolAnomalyScore", protocolAnomalyScore);
-            map.put("threatIntelScore", threatIntelScore);
-            map.put("mtuAnomalyScore", mtuAnomalyScore);
+            map.put("protocolAnomalyScore", protocolAnomalyScore);
+            map.put("quicAnomalyScore", quicAnomalyScore);
             map.put("renderingAnomalyScore", renderingAnomalyScore);
             map.put("ipReputationScore", ipReputationScore);
+            map.put("virtualizationScore", virtualizationScore);
+            map.put("mtuAnomalyScore", mtuAnomalyScore);
             return map;
         }
     }
@@ -561,6 +605,29 @@ public class FingerprintProperties {
             if (entries != null) map.put("entries", entries);
             if (userAgent != null) map.put("userAgent", userAgent);
             if (hostnameSuffix != null) map.put("hostnameSuffix", hostnameSuffix);
+            return map;
+        }
+    }
+
+    public static class DifferentialPrivacy {
+        private boolean enabled = true;
+        private double epsilon = 1.0;
+        private Double dummyRate;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public double getEpsilon() { return epsilon; }
+        public void setEpsilon(double epsilon) { this.epsilon = epsilon; }
+        public Double getDummyRate() { return dummyRate; }
+        public void setDummyRate(Double dummyRate) { this.dummyRate = dummyRate; }
+
+        public Map<String, Object> toMap() {
+            Map<String, Object> map = new HashMap<>();
+            map.put("enabled", enabled);
+            map.put("epsilon", epsilon);
+            if (dummyRate != null) {
+                map.put("dummyRate", dummyRate);
+            }
             return map;
         }
     }

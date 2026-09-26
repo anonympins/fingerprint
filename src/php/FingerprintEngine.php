@@ -266,7 +266,8 @@
              'similarityThreshold', 'summary', 'description',
              'ed25519_private_key', 'ed25519_public_key',
              'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret', 'reset',
-             'filterWhitelist'
+             'filterWhitelist',
+             'differentialPrivacy', 'dpEpsilon'
          ];
 
          if (empty($config['weights'])) {
@@ -655,6 +656,21 @@
              }
          }
 
+         // Validation de l'ancre matérielle WebAuthn (Secure Enclave / TPM)
+         $behaviorHeader = $context->getHeader('x-behavior-metrics');
+         if (!empty($behaviorHeader) && is_string($behaviorHeader) && str_starts_with($behaviorHeader, '{')) {
+             try {
+                 $parsedMetrics = json_decode($behaviorHeader, true);
+                 if (is_array($parsedMetrics) && !empty($parsedMetrics['webauthnAnchor']) && is_array($deviceData)) {
+                     if ($this->verifyWebAuthnHardwareAnchor($parsedMetrics['webauthnAnchor'], $deviceData)) {
+                         $deviceData['webauthnVerified'] = true;
+                         $store->set("device:{$deviceId}", $deviceData);
+                     }
+                 }
+             } catch (\Throwable $e) {
+             }
+         }
+
          // Bind the current TLS session ID to the device ID
          if ($deviceId && $tlsSessionId) {
              $store->set("tls-session:{$tlsSessionId}", $deviceId, 3600); // 1h cache duration
@@ -981,6 +997,7 @@
       */
      public function processRequest(RequestContext $context): array
      {
+        $store = StoreManager::getStore();
         $this->translatePolymorphicHeaders($context);
 
          // Initialiser le vecteur de suspicion pour éviter les erreurs de type.
@@ -1005,6 +1022,64 @@
                 $context->graphqlOperation = $gqlInfo;
             }
         }
+
+         // 0. Résoudre l'identité de l'appareil et vérifier l'attestation matérielle WebAuthn
+         $identity = $this->resolveRequestIdentity($context, $suspicionVector);
+         $deviceId = $identity['deviceId'];
+         $deviceData = $identity['deviceData'];
+
+         // Règle Anti-Ferme : Un appareil condamné ou menant une attaque certaine ne bénéficie d'aucun bypass
+         if (($deviceData['condemned'] ?? false) || $this->hasCertainAttack($context)) {
+             if (is_array($deviceData)) {
+                 $deviceData['condemned'] = true;
+                 $deviceData['webauthnVerified'] = false;
+                 $store->set("device:{$deviceId}", $deviceData);
+             }
+             $this->log('Condemned device or attack detected - revoking hardware trust and blocking', ['deviceId' => $deviceId]);
+             $decision = ['action' => 'block', 'status' => 403, 'body' => 'Forbidden', 'score' => 100.0, 'vector' => ['honeypotScore' => 100.0]];
+             if ($this->dryRun) {
+                 $this->log("[Dry Run] Intended action: {$decision['action']}", ['score' => $decision['score']]);
+                 $decision['intendedAction'] = $decision['action'];
+                 $decision['action'] = 'next';
+                 unset($decision['status'], $decision['body']);
+             }
+             return $decision;
+         }
+
+         // Bypass instantané si l'appareil a prouvé cryptographiquement son identité matérielle (Secure Enclave / TPM)
+         if ($deviceData && !empty($deviceData['webauthnVerified'])) {
+             $this->log('Hardware-anchored device verified (WebAuthn) - full bypass granted', ['deviceId' => $deviceId]);
+             $greenlistTtl = 365 * 86400 * 1000; // 1 an (permanent)
+             $greenlistTicket = ChallengeUtils::generateStatelessTicket([
+                 'expiry' => (int)floor(microtime(true) * 1000) + $greenlistTtl,
+                 'originalIp' => $context->clientIp,
+                 'deviceId' => $deviceId,
+                 'deviceHash' => 'webauthn:greenlist:' . ($deviceData['webauthnCredentialId'] ?? $deviceId),
+                 'greenlist' => true
+             ]);
+
+             $isHttps = !empty($context->isHttps);
+             $decision = [
+                 'action' => 'next',
+                 'score' => 0.0,
+                 'vector' => ['webauthn_verified' => 100.0],
+                 'cookie' => [
+                     'name' => 'pow_clearance',
+                     'value' => $greenlistTicket,
+                     'options' => [
+                         'httponly' => true,
+                         'secure' => $isHttps,
+                         'samesite' => 'Strict',
+                         'expires' => time() + ($greenlistTtl / 1000),
+                         'path' => '/',
+                     ]
+                 ]
+             ];
+             if (isset($context->newCookieForResponse)) {
+                 $decision['newCookieForResponse'] = $context->newCookieForResponse;
+             }
+             return $decision;
+         }
  
          // 1. Vérifier les listes blanches
          if ($this->checkAllowlists($context)) {
@@ -1598,42 +1673,85 @@
          $peers = $this->securityConfig['federatedPeers'] ?? [];
          if (empty($peers)) return;
 
-         $timestamp = (int)(microtime(true) * 1000);
-         $msg = "{$timestamp}:{$zkpY}";
-         
-         $signature = '';
-         $isAsymmetric = false;
-         
-         $privateKey = Env::get('ED25519_PRIVATE_KEY');
-         if ($privateKey) {
-             try {
-                 $cleanKey = str_replace('\n', "\n", $privateKey);
-                 $pkeyObj = openssl_pkey_get_private($cleanKey);
-                 if ($pkeyObj && openssl_sign($msg, $sigBytes, $pkeyObj, null)) {
-                     $signature = bin2hex($sigBytes);
-                     $isAsymmetric = true;
+         $dpConfig = $this->securityConfig['differentialPrivacy'] ?? [];
+         $dpEnabled = ($dpConfig['enabled'] ?? true) !== false;
+         $epsilon = isset($dpConfig['epsilon']) && is_numeric($dpConfig['epsilon'])
+             ? (float)$dpConfig['epsilon']
+             : (float)($this->securityConfig['dpEpsilon'] ?? 1.0);
+
+         $sendThreatReport = function (string $targetZkpY, int $ts) use ($peers) {
+             $msg = "{$ts}:{$targetZkpY}";
+             $signature = '';
+             $isAsymmetric = false;
+
+             $privateKey = Env::get('ED25519_PRIVATE_KEY');
+             if ($privateKey) {
+                 try {
+                     $cleanKey = str_replace('\n', "\n", $privateKey);
+                     $pkeyObj = openssl_pkey_get_private($cleanKey);
+                     if ($pkeyObj && openssl_sign($msg, $sigBytes, $pkeyObj, null)) {
+                         $signature = bin2hex($sigBytes);
+                         $isAsymmetric = true;
+                     }
+                 } catch (\Throwable $e) {
+                     self::logError('[Fingerprint] Asymmetric broadcast signing failed: ' . $e->getMessage());
                  }
-             } catch (\Throwable $e) {
-                 self::logError('[Fingerprint] Asymmetric broadcast signing failed: ' . $e->getMessage());
              }
+
+             if (!$isAsymmetric) {
+                 $secret = $this->securityConfig['federationSecret'] ?? ChallengeUtils::getPowSecret();
+                 $signature = hash_hmac('sha256', $msg, $secret);
+             }
+
+             foreach ($peers as $peerUrl) {
+                 $this->asyncPost($peerUrl . '?coop_op=share_threat_intel', [
+                     'zkpY' => $targetZkpY,
+                     'signature' => $isAsymmetric ? '' : $signature,
+                     'signature_ed25519' => $isAsymmetric ? $signature : '',
+                     'timestamp' => $ts
+                 ]);
+             }
+         };
+
+         $now = (int)(microtime(true) * 1000);
+         $reportTimestamp = $now;
+
+         if ($dpEnabled) {
+             // 1. Differential Privacy : Bruit laplacien sur l'horodatage
+             $deltaT = 5000;
+             $b = $deltaT / max(0.1, $epsilon);
+             $u = (random_int(1, 999999) / 1000000.0) - 0.5;
+             $safeU = abs($u) < 1e-7 ? ($u >= 0 ? 1e-7 : -1e-7) : $u;
+             $laplaceNoise = -$b * ($safeU <=> 0) * log(1.0 - 2.0 * abs($safeU));
+             $clampedNoise = (int)max(-60000, min(60000, round($laplaceNoise)));
+             $reportTimestamp = $now + $clampedNoise;
          }
 
-         if (!$isAsymmetric) {
-             $secret = $this->securityConfig['federationSecret'] ?? ChallengeUtils::getPowSecret();
-             $signature = hash_hmac('sha256', $msg, $secret);
-         }
+         $sendThreatReport($zkpY, $reportTimestamp);
 
-         foreach ($peers as $peerUrl) {
-             $this->asyncPost($peerUrl . '?coop_op=share_threat_intel', [
-                 'zkpY' => $zkpY,
-                 'signature' => $isAsymmetric ? '' : $signature,
-                 'signature_ed25519' => $isAsymmetric ? $signature : '',
-                 'timestamp' => $timestamp
-             ]);
+         if ($dpEnabled) {
+             // 2. Differential Privacy : Injection de clés leurres (Decoy ZKP)
+             $decoyProb = isset($dpConfig['dummyRate']) && is_numeric($dpConfig['dummyRate'])
+                 ? (float)$dpConfig['dummyRate']
+                 : (1.0 / (1.0 + exp($epsilon)));
+
+             $randFloat = random_int(0, 999999) / 1000000.0;
+             if ($randFloat < $decoyProb) {
+                 $decoyBytes = random_bytes(32);
+                 $decoyZkpY = ltrim(bin2hex($decoyBytes), '0') ?: '1';
+
+                 $uDecoy = (random_int(1, 999999) / 1000000.0) - 0.5;
+                 $safeUDecoy = abs($uDecoy) < 1e-7 ? ($uDecoy >= 0 ? 1e-7 : -1e-7) : $uDecoy;
+                 $b = 5000 / max(0.1, $epsilon);
+                 $decoyNoise = (int)max(-60000, min(60000, round(-$b * ($safeUDecoy <=> 0) * log(1.0 - 2.0 * abs($safeUDecoy)))));
+                 $decoyTimestamp = $now + $decoyNoise;
+
+                 $sendThreatReport($decoyZkpY, $decoyTimestamp);
+             }
          }
      }
 
-     private function asyncPost(string $url, array $params): void
+     protected function asyncPost(string $url, array $params): void
      {
          // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- wp_parse_url used if available
          $parts = function_exists('wp_parse_url') ? wp_parse_url($url) : parse_url($url);

@@ -68,7 +68,8 @@ function canAttemptDns() {
 }
 
 /**
- * Diffuse un ZKP banni aux pairs fédérés de manière asynchrone (non-bloquante).
+ * Diffuse un ZKP banni aux pairs fédérés de manière asynchrone (non-bloquante)
+ * avec protection par Anonymat Différentiel (Differential Privacy / Bruit de Laplace & Leurres).
  * @private
  * @param {string} zkpY - La clé publique ZKP du terminal banni.
  * @param {object} config - La configuration de sécurité.
@@ -77,46 +78,87 @@ async function broadcastBannedZkp(zkpY, config) {
     const peers = config.federatedPeers || [];
     if (peers.length === 0) return;
 
-    const timestamp = Date.now();
-    const msg = `${timestamp}:${zkpY}`;
-    
-    let signature = '';
-    let isAsymmetric = false;
+    const dpConfig = config.differentialPrivacy || {};
+    const dpEnabled = dpConfig.enabled !== false;
+    const epsilon = typeof dpConfig.epsilon === 'number' ? dpConfig.epsilon : (config.dpEpsilon || 1.0);
 
-    if (process.env.ED25519_PRIVATE_KEY) {
-        try {
-            const cleanKey = process.env.ED25519_PRIVATE_KEY.replace(/\\n/g, '\n');
-            const signBuffer = crypto.sign(null, Buffer.from(msg), {
-                key: cleanKey,
-                format: 'pem',
-                type: 'pkcs8'
+    const sendReport = (targetZkpY, ts) => {
+        const msg = `${ts}:${targetZkpY}`;
+        let signature = '';
+        let isAsymmetric = false;
+
+        if (process.env.ED25519_PRIVATE_KEY) {
+            try {
+                const cleanKey = process.env.ED25519_PRIVATE_KEY.replace(/\\n/g, '\n');
+                const signBuffer = crypto.sign(null, Buffer.from(msg), {
+                    key: cleanKey,
+                    format: 'pem',
+                    type: 'pkcs8'
+                });
+                signature = signBuffer.toString('hex');
+                isAsymmetric = true;
+            } catch (e) {
+                console.error('[Fingerprint] Asymmetric broadcast signing failed, falling back to HMAC:', e.message);
+            }
+        }
+
+        if (!isAsymmetric) {
+            const secret = config.federationSecret || getPowSecret();
+            signature = crypto.createHmac('sha256', secret).update(msg).digest('hex');
+        }
+
+        peers.forEach(peerUrl => {
+            fetch(peerUrl + '?coop_op=share_threat_intel', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Federation-Signature': isAsymmetric ? '' : signature,
+                    'X-Federation-Signature-Ed25519': isAsymmetric ? signature : '',
+                    'X-Federation-Timestamp': String(ts)
+                },
+                body: JSON.stringify({ zkpY: targetZkpY })
+            }).catch(() => {
+                // Échec de propagation silencieux pour ne pas perturber le thread principal
             });
-            signature = signBuffer.toString('hex');
-            isAsymmetric = true;
-        } catch (e) {
-            console.error('[Fingerprint] Asymmetric broadcast signing failed, falling back to HMAC:', e.message);
+        });
+    };
+
+    let reportTimestamp = Date.now();
+
+    // 1. Differential Privacy : Perturbation laplacienne de l'horodatage
+    if (dpEnabled) {
+        const deltaT = 5000; // Sensibilité de 5s
+        const b = deltaT / Math.max(0.1, epsilon);
+        const u = secureRandomFloat() - 0.5;
+        const safeU = Math.abs(u) < 1e-7 ? (u >= 0 ? 1e-7 : -1e-7) : u;
+        const laplaceNoise = -b * Math.sign(safeU) * Math.log(1 - 2 * Math.abs(safeU));
+        const clampedNoise = Math.max(-60000, Math.min(60000, Math.round(laplaceNoise)));
+        reportTimestamp = Date.now() + clampedNoise;
+    }
+
+    sendReport(zkpY, reportTimestamp);
+
+    // 2. Differential Privacy : Réponse randomisée par injection de leurres (Decoy ZKP)
+    if (dpEnabled) {
+        const decoyProbability = dpConfig.dummyRate !== undefined
+            ? dpConfig.dummyRate
+            : (1 / (1 + Math.exp(epsilon)));
+
+        if (secureRandomFloat() < decoyProbability) {
+            const ZKP_P = 115792089237316195423570985008687907853269984665640564039457584007908834671663n;
+            const decoyBytes = crypto.randomBytes(32);
+            const decoyInt = (BigInt('0x' + decoyBytes.toString('hex')) % (ZKP_P - 2n)) + 1n;
+            const decoyZkpY = decoyInt.toString(16);
+
+            const uDecoy = secureRandomFloat() - 0.5;
+            const safeUDecoy = Math.abs(uDecoy) < 1e-7 ? (uDecoy >= 0 ? 1e-7 : -1e-7) : uDecoy;
+            const b = 5000 / Math.max(0.1, epsilon);
+            const decoyNoise = Math.max(-60000, Math.min(60000, Math.round(-b * Math.sign(safeUDecoy) * Math.log(1 - 2 * Math.abs(safeUDecoy)))));
+            const decoyTimestamp = Date.now() + decoyNoise;
+
+            sendReport(decoyZkpY, decoyTimestamp);
         }
     }
-
-    if (!isAsymmetric) {
-        const secret = config.federationSecret || getPowSecret();
-        signature = crypto.createHmac('sha256', secret).update(msg).digest('hex');
-    }
-
-    peers.forEach(peerUrl => {
-        fetch(peerUrl + '?coop_op=share_threat_intel', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Federation-Signature': isAsymmetric ? '' : signature,
-                'X-Federation-Signature-Ed25519': isAsymmetric ? signature : '',
-                'X-Federation-Timestamp': String(timestamp)
-            },
-            body: JSON.stringify({ zkpY })
-        }).catch(() => {
-            // Échec de propagation silencieux pour ne pas perturber le thread principal
-        });
-    });
 }
 
 const withTimeout = (promise, ms) => {
@@ -1702,6 +1744,11 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     if (!expiry || Date.now() > expiry) {
       return false;
     }
+    if (statelessData.greenlist || (storedDeviceHash && storedDeviceHash.startsWith('webauthn:greenlist:'))) {
+        if (!deviceId || deviceId === storedDeviceId) {
+            return true;
+        }
+    }
     if (storedDeviceHash && storedDeviceHash.startsWith('zkp:')) {
         const expectedY = storedDeviceHash.split(':')[1];
         if (zkpProof) {
@@ -1728,6 +1775,11 @@ export const isTicketValid = async (ip, ticket, deviceId = '', deviceHash = '', 
     if (!expiry || Date.now() > expiry) {
       await store.delete(`ticket:${ticket}`);
       return false;
+    }
+    if (ticketData.greenlist || (storedDeviceHash && storedDeviceHash.startsWith('webauthn:greenlist:'))) {
+        if (!deviceId || deviceId === storedDeviceId) {
+            return true;
+        }
     }
     if (storedDeviceHash && storedDeviceHash.startsWith('zkp:')) {
         const expectedY = storedDeviceHash.split(':')[1];
@@ -4697,7 +4749,8 @@ export class FingerprintEngine {
       'similarityThreshold', 'reset',
       'ed25519_private_key', 'ed25519_public_key', 'upowModel',
       'federatedPeers', 'federationSecret', 'filterWhitelist',
-      'challengeRateLimit'
+      'challengeRateLimit',
+      'differentialPrivacy', 'dpEpsilon'
     ]);
 
     // 1. Check for essential keys
@@ -5080,9 +5133,84 @@ export class FingerprintEngine {
     
     // Bypass instantané si l'appareil a prouvé cryptographiquement son identité matérielle (Secure Enclave / TPM)
     const { deviceId, deviceData, newCookie } = await resolveRequestIdentity(requestContext, this.securityConfig);
+
+    // Règle Anti-Ferme : Même avec du matériel sécurisé, un appareil condamné ou menant une attaque certaine est révoqué et bloqué
+    if (deviceData?.condemned || this._hasCertainAttack(requestContext)) {
+        if (deviceData) {
+            deviceData.condemned = true;
+            deviceData.webauthnVerified = false;
+            await store.set(`device:${deviceId}`, deviceData);
+        }
+        this._log('Condemned device or attack detected - revoking hardware trust and blocking', { deviceId });
+        const decision = { action: 'block', status: 404, body: 'Forbidden', score: 100, vector: { honeypotScore: 100 } };
+        if (this.dryRun) {
+            this._log(`[Dry Run] Intended action: ${decision.action}`, { score: decision.score });
+            decision.intendedAction = decision.action;
+            decision.action = 'next';
+            delete decision.status;
+            delete decision.body;
+            if (requestContext._newCookies) {
+                const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+                if (deviceCookie) decision.newCookieForResponse = deviceCookie;
+            }
+        }
+        return decision;
+    }
+
+    // Validation immédiate de l'attestation matérielle WebAuthn si présente dans la requête
+    const behaviorHeader = requestContext.headers?.['x-behavior-metrics'];
+    if (behaviorHeader && typeof behaviorHeader === 'string' && behaviorHeader.startsWith('{')) {
+        try {
+            const parsedMetrics = JSON.parse(behaviorHeader);
+            if (parsedMetrics && parsedMetrics.webauthnAnchor && deviceData) {
+                if (verifyWebAuthnHardwareAnchor(parsedMetrics.webauthnAnchor, deviceData)) {
+                    deviceData.webauthnVerified = true;
+                    await store.set(`device:${deviceId}`, deviceData);
+                }
+            }
+        } catch (e) {}
+    }
+
     if (deviceData && deviceData.webauthnVerified) {
         this._log('Hardware-anchored device verified (WebAuthn) - full bypass granted', { deviceId });
-        return { action: 'next', score: 0, vector: { webauthn_verified: 100 } };
+        const greenlistTtl = 365 * 86400 * 1000; // 1 an (permanent)
+        const greenlistTicket = generateStatelessTicket({
+            expiry: Date.now() + greenlistTtl,
+            originalIp: clientIp,
+            deviceId,
+            deviceHash: 'webauthn:greenlist:' + (deviceData.webauthnCredentialId || deviceId),
+            greenlist: true
+        });
+        const isHttps = requestContext.headers?.['x-forwarded-proto'] === 'https' || 
+                        requestContext.rawReq?.secure || 
+                        requestContext.rawReq?.protocol === 'https' ||
+                        requestContext.rawReq?.connection?.encrypted;
+        const secureOption = isHttps || this.isProduction;
+
+        const decision = {
+            action: 'next',
+            score: 0,
+            vector: { webauthn_verified: 100 },
+            cookie: {
+                name: 'pow_clearance',
+                value: greenlistTicket,
+                options: {
+                    httpOnly: true,
+                    secure: secureOption,
+                    sameSite: 'strict',
+                    ...(secureOption && { partitioned: true }),
+                    maxAge: greenlistTtl,
+                    path: '/'
+                }
+            }
+        };
+        if (requestContext._newCookies) {
+            const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
+            if (deviceCookie) {
+                decision.newCookieForResponse = deviceCookie;
+            }
+        }
+        return decision;
     }
 
     if (isStatic) {
@@ -7071,6 +7199,9 @@ export const powMiddleware = (securityConfig) => {
 
       case 'next':
       default:
+        if (decision.cookie && res && typeof res.cookie === 'function') {
+          res.cookie(decision.cookie.name, decision.cookie.value, decision.cookie.options);
+        }
         return next();
     }
   };
