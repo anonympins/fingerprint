@@ -76,7 +76,8 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
             queryParams,
             null, // Le parsing du body est délégué à la couche applicative
             cookies,
-            request.getProtocol()
+            request.getProtocol(),
+            request.getScheme()
         );
 
         Map<String, Object> decision = engine.processRequest(context);

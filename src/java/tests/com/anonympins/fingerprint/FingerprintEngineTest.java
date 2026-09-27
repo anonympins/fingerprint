@@ -625,40 +625,134 @@ public class FingerprintEngineTest {
     }
 
     @Test
-    @DisplayName("MTU anomaly alone should amplify weights but never trigger suspicion alone")
-    void testMtuAnomalyAmplifierOnly() {
+    @DisplayName("RequestContext should detect isHttps via direct scheme or proxy headers")
+    void testRequestContextIsHttps() {
+        // Direct HTTPS scheme
+        RequestContext ctx1 = new RequestContext("1.2.3.4", "/", new HashMap<>(), null, null, null, "1.1", "https");
+        assertTrue(ctx1.isHttps);
+
+        // Direct HTTP scheme
+        RequestContext ctx2 = new RequestContext("1.2.3.4", "/", new HashMap<>(), null, null, null, "1.1", "http");
+        assertFalse(ctx2.isHttps);
+
+        // X-Forwarded-Proto header
+        Map<String, String> headers3 = new HashMap<>();
+        headers3.put("x-forwarded-proto", "https");
+        RequestContext ctx3 = new RequestContext("1.2.3.4", "/", headers3, null, null, null, "1.1", "http");
+        assertTrue(ctx3.isHttps);
+
+        // X-Forwarded-Ssl header
+        Map<String, String> headers4 = new HashMap<>();
+        headers4.put("x-forwarded-ssl", "on");
+        RequestContext ctx4 = new RequestContext("1.2.3.4", "/", headers4, null, null, null, "1.1", "http");
+        assertTrue(ctx4.isHttps);
+    }
+
+    @Test
+    @DisplayName("Should detect MTU anomaly and VPN tunnels (WireGuard / OpenVPN)")
+    void testMtuAnomalyVpnDetection() {
+        // WireGuard IPv4: MSS 1380 + 40 = 1420 (<= 1420 -> +65.0)
+        Map<String, String> headersWg = new HashMap<>();
+        headersWg.put("x-tcp-mss", "1380");
+        RequestContext ctxWg = new RequestContext("192.168.1.1", "/", headersWg, null, null, null, "1.1");
+        double scoreWg = RequestUtils.getMtuAnomalyScore(ctxWg).get("mtuAnomalyScore");
+        assertTrue(scoreWg >= 65.0, "WireGuard MTU <= 1420 must yield score >= 65.0");
+
+        // OpenVPN IPv6: MSS 1380 + 60 = 1440 (<= 1450 -> +55.0)
+        Map<String, String> headersV6 = new HashMap<>();
+        headersV6.put("x-tcp-mss", "1380");
+        RequestContext ctxV6 = new RequestContext("2001:db8::1", "/", headersV6, null, null, null, "1.1");
+        double scoreV6 = RequestUtils.getMtuAnomalyScore(ctxV6).get("mtuAnomalyScore");
+        assertTrue(scoreV6 >= 55.0, "OpenVPN IPv6 MTU <= 1450 must yield score >= 55.0");
+
+        // Windows with DF=0
+        Map<String, String> headersWinNoDf = new HashMap<>();
+        headersWinNoDf.put("x-tcp-mtu-info", "mss:1460,mtu:1500,df:0");
+        headersWinNoDf.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        RequestContext ctxWin = new RequestContext("192.168.1.5", "/", headersWinNoDf, null, null, null, "1.1");
+        double scoreWin = RequestUtils.getMtuAnomalyScore(ctxWin).get("mtuAnomalyScore");
+        assertTrue(scoreWin >= 40.0, "Missing DF on Windows must yield score >= 40.0");
+    }
+
+    @Test
+    @DisplayName("Should detect forbidden hop-by-hop headers in HTTP/2+")
+    void testProtocolAnomalyForbiddenHopByHop() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("connection", "keep-alive");
+        RequestContext ctx = new RequestContext("1.2.3.4", "/", headers, null, null, null, "2.0");
+        double score = RequestUtils.getProtocolAnomalyScore(ctx).get("protocolAnomalyScore");
+        assertTrue(score >= 70.0, "Forbidden hop-by-hop headers in HTTP/2+ must yield score >= 70.0");
+    }
+
+    @Test
+    @DisplayName("Should detect cross-layer timing mismatch (nextHopProtocol)")
+    void testProtocolAnomalyTimingMismatch() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("x-behavior-metrics", "{\"network\":{\"nextHopProtocol\":\"h3\"}}");
+        RequestContext ctx = new RequestContext("1.2.3.4", "/", headers, null, null, null, "1.1");
+        double score = RequestUtils.getProtocolAnomalyScore(ctx).get("protocolAnomalyScore");
+        assertTrue(score >= 85.0, "nextHopProtocol mismatch h3 vs 1.1 must yield score >= 85.0");
+    }
+
+    @Test
+    @DisplayName("Should detect protocol downgrade and HTTP/3 scrapers")
+    void testProtocolDowngradeAndH3Scrapers() {
+        // 1. Protocol Downgrade (Modern browser on HTTPS without proxy)
+        Map<String, String> headersDowngrade = new HashMap<>();
+        headersDowngrade.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0");
+        RequestContext ctxDowngrade = new RequestContext("1.2.3.4", "/", headersDowngrade, null, null, null, "1.1", "https");
+        double scoreDowngrade = RequestUtils.getProtocolAnomalyScore(ctxDowngrade).get("protocolAnomalyScore");
+        assertTrue(scoreDowngrade >= 45.0, "Modern browser downgraded on HTTPS must yield score >= 45.0");
+
+        // 2. HTTP/3 Scraper (python)
+        Map<String, String> headersH3 = new HashMap<>();
+        headersH3.put("user-agent", "python-requests/2.31.0");
+        RequestContext ctxH3 = new RequestContext("1.2.3.4", "/", headersH3, null, null, null, "3");
+        double scoreH3 = RequestUtils.getProtocolAnomalyScore(ctxH3).get("protocolAnomalyScore");
+        assertTrue(scoreH3 >= 90.0, "Python scraper in HTTP/3 must yield score >= 90.0");
+    }
+
+    @Test
+    @DisplayName("Should dynamically amplify weights when MTU anomaly score > 50.0")
+    void testDynamicMtuAmplification() {
         Map<String, Object> config = new HashMap<>();
         Map<String, Object> weights = new HashMap<>();
-        weights.put("behaviorScore", 0.7);
-        weights.put("mtuAnomalyScore", 0.9);
+        weights.put("tlsSpoofingScore", 1.0);
+        weights.put("crossLayerInconsistencyScore", 1.0);
+        weights.put("behaviorScore", 1.0);
+        weights.put("mtuAnomalyScore", 1.0);
         config.put("weights", weights);
 
         FingerprintEngine engine = new FingerprintEngine(config, new InMemoryStore());
 
-        // 1. Requête avec seulement MTU anormal (VPN) et aucun autre indicateur de suspicion
-        Map<String, Double> vectorWithoutOtherAnomalies = new HashMap<>();
-        vectorWithoutOtherAnomalies.put("mtuAnomalyScore", 75.0);
-        vectorWithoutOtherAnomalies.put("behaviorScore", 0.0);
-
-        double scoreAlone = engine.calculateFinalScore(vectorWithoutOtherAnomalies);
-        assertEquals(0.0, scoreAlone, "Le MTU seul ne doit jamais déclencher de suspicion directe");
-
-        // 2. Requête avec anomalie comportementale sans détection de tunnel
+        // Vecteur sans anomalie MTU
         Map<String, Double> vectorNormal = new HashMap<>();
+        vectorNormal.put("tlsSpoofingScore", 40.0);
+        vectorNormal.put("crossLayerInconsistencyScore", 30.0);
+        vectorNormal.put("behaviorScore", 20.0);
         vectorNormal.put("mtuAnomalyScore", 0.0);
-        vectorNormal.put("behaviorScore", 40.0);
 
-        double baseScore = engine.calculateFinalScore(vectorNormal);
-        assertEquals(28.0, baseScore, 0.01); // 40.0 * 0.7 = 28.0
+        double scoreNormal = engine.calculateFinalScore(vectorNormal);
+        assertEquals(90.0, scoreNormal, 0.01);
 
-        // 3. Même requête sous tunnel VPN (MTU > 50) : amplification du poids behaviorScore (0.7 * 1.15 = 0.805)
-        Map<String, Double> vectorWithTunnel = new HashMap<>();
-        vectorWithTunnel.put("mtuAnomalyScore", 75.0);
-        vectorWithTunnel.put("behaviorScore", 40.0);
+        // Vecteur avec anomalie MTU > 50 (amplification x1.25)
+        Map<String, Double> vectorAnomalous = new HashMap<>();
+        vectorAnomalous.put("tlsSpoofingScore", 40.0);
+        vectorAnomalous.put("crossLayerInconsistencyScore", 30.0);
+        vectorAnomalous.put("behaviorScore", 20.0);
+        vectorAnomalous.put("mtuAnomalyScore", 65.0);
 
-        double amplifiedScore = engine.calculateFinalScore(vectorWithTunnel);
-        assertEquals(40.0 * (0.7 * 1.15), amplifiedScore, 0.01);
-        assertTrue(amplifiedScore > baseScore, "Le score final doit être amplifié lors de la détection d'un tunnel");
+        double scoreAnomalous = engine.calculateFinalScore(vectorAnomalous);
+        assertEquals(100.0, scoreAnomalous, 0.01);
+
+        // Vecteur faible
+        Map<String, Double> vectorLow = new HashMap<>();
+        vectorLow.put("tlsSpoofingScore", 10.0);
+        vectorLow.put("mtuAnomalyScore", 55.0);
+
+        double scoreLow = engine.calculateFinalScore(vectorLow);
+        // 10.0 * (1.0 * 1.25) + 55.0 * 1.0 = 12.5 + 55.0 = 67.5
+        assertEquals(67.5, scoreLow, 0.01);
     }
 
     @Test

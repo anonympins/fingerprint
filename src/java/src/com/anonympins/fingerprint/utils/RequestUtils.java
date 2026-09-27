@@ -217,46 +217,122 @@ public class RequestUtils {
      * Analyse les métadonnées MTU et le flag DF (Don't Fragment) de la pile TCP pour détecter
      * les tunnels VPN / Proxy résidentiels.
      */
+    @SuppressWarnings("unchecked")
     public static Map<String, Double> getMtuAnomalyScore(RequestContext context) {
         Map<String, Double> result = new HashMap<>();
-        result.put("mtuAnomalyScore", 0.0);
+        double score = 0.0;
+        Integer mss = null;
+        Integer mtu = null;
+        boolean dfBit = true;
 
+        // 1. Décodage x-tcp-mtu-info
         String mtuHeader = context.getHeader("x-tcp-mtu-info");
         if (mtuHeader == null || mtuHeader.trim().isEmpty()) {
+            mtuHeader = context.getHeader("x-mtu-info");
+        }
+        if (mtuHeader != null && !mtuHeader.trim().isEmpty()) {
+            try {
+                if (mtuHeader.contains(",")) {
+                    String[] parts = mtuHeader.split(",");
+                    for (String part : parts) {
+                        String[] kv = part.split(":");
+                        if (kv.length == 2) {
+                            String k = kv[0].trim().toLowerCase();
+                            String v = kv[1].trim();
+                            if ("mss".equals(k)) mss = Integer.parseInt(v);
+                            else if ("mtu".equals(k)) mtu = Integer.parseInt(v);
+                            else if ("df".equals(k)) dfBit = "1".equals(v) || "true".equalsIgnoreCase(v);
+                        }
+                    }
+                } else if (mtuHeader.contains(":")) {
+                    String[] kv = mtuHeader.split(":");
+                    if (kv.length == 2) {
+                        String first = kv[0].trim().toLowerCase();
+                        if ("mss".equals(first) || "mtu".equals(first) || "df".equals(first)) {
+                            if ("mss".equals(first)) mss = Integer.parseInt(kv[1].trim());
+                            else if ("mtu".equals(first)) mtu = Integer.parseInt(kv[1].trim());
+                            else if ("df".equals(first)) dfBit = "1".equals(kv[1].trim()) || "true".equalsIgnoreCase(kv[1].trim());
+                        } else {
+                            mtu = Integer.parseInt(kv[0].trim());
+                            dfBit = !"0".equals(kv[1].trim());
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 2. Recherche MSS dans les en-têtes alternatifs
+        if (mss == null) {
+            String[] mssHeaders = {"x-tcp-mss", "x-mss", "x-forwarded-mss"};
+            for (String h : mssHeaders) {
+                String val = context.getHeader(h);
+                if (val != null && !val.trim().isEmpty()) {
+                    try {
+                        mss = Integer.parseInt(val.trim());
+                        break;
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+        }
+
+        // 3. Extraction depuis la télémétrie client (x-behavior-metrics)
+        if (mss == null || mtu == null) {
+            String behaviorHeader = context.getHeader("x-behavior-metrics");
+            if (behaviorHeader != null && behaviorHeader.startsWith("{")) {
+                try {
+                    Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
+                    if (metrics != null && metrics.get("network") instanceof Map) {
+                        Map<String, Object> net = (Map<String, Object>) metrics.get("network");
+                        if (mss == null && net.get("netMss") != null) {
+                            mss = ((Number) net.get("netMss")).intValue();
+                        }
+                        if (mtu == null && net.get("netMtu") != null) {
+                            mtu = ((Number) net.get("netMtu")).intValue();
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        // 4. Reconstitution MTU selon IPv4 (+40) ou IPv6 (+60)
+        if (mtu == null && mss != null) {
+            boolean isIpv6 = context.clientIp != null && context.clientIp.contains(":");
+            int headerSize = isIpv6 ? 60 : 40;
+            mtu = mss + headerSize;
+        }
+
+        if (mtu == null) {
+            result.put("mtuAnomalyScore", 0.0);
             return result;
         }
 
-        String[] parts = mtuHeader.split(":");
-        if (parts.length < 2) {
-            return result;
+        // 5. Détection des tunnels VPN
+        if (mtu <= 1420) {
+            score += 65.0; // WireGuard
+        } else if (mtu <= 1450) {
+            score += 55.0; // OpenVPN
+        } else if (mtu < 1492) {
+            score += 30.0; // PPPoE / GRE
         }
 
-        int mtu;
-        int df;
-        try {
-            mtu = Integer.parseInt(parts[0].trim());
-            df = Integer.parseInt(parts[1].trim());
-        } catch (NumberFormatException e) {
-            return result;
-        }
-
-        double score = 0.0;
-
-        // Pénalité modérée pour les MTU typiques des VPNs/tunnels
-        if (mtu > 1200 && mtu <= 1420) {
-            score += 35.0;
-        } else if (mtu > 1420 && mtu < 1492) {
-            score += 20.0;
-        }
-
+        // 6. Incohérences de pile OS vs User-Agent
         String ua = context.getHeader("user-agent");
         Map<String, String> uaParts = parseUserAgent(ua != null ? ua : "");
         String os = uaParts.get("os");
-
         if (os != null) {
-            if (os.startsWith("Windows") && mtu < 1492) score += 20.0;
-            if ((os.startsWith("Android") || os.startsWith("iOS")) && mtu < 1480) score += 15.0;
-            if (df == 0 && (os.startsWith("Windows") || os.startsWith("Mac") || os.startsWith("Linux"))) score += 40.0;
+            if (os.contains("Windows")) {
+                if (mtu < 1492 && mtu > 0) {
+                    if (mtu < 1472) {
+                        score += 25.0;
+                    }
+                }
+                if (!dfBit) {
+                    score += 40.0;
+                }
+            }
+            if (os.contains("Linux") && mtu > 1500) {
+                score += 35.0;
+            }
         }
 
         result.put("mtuAnomalyScore", Math.min(100.0, score));
@@ -1498,10 +1574,55 @@ public class RequestUtils {
         return result;
     }
 
+    @SuppressWarnings("unchecked")
     public static Map<String, Double> getProtocolAnomalyScore(RequestContext context) {
         Map<String, Double> result = new HashMap<>();
         double http2Anomaly = 0.0;
         double quicAnomaly = 0.0;
+        double protocolAnomaly = 0.0;
+
+        String httpVersion = context.httpVersion != null ? context.httpVersion : "";
+        boolean isH2orH3 = httpVersion.contains("2") || httpVersion.contains("3");
+
+        // 1. Violation RFC 7540 / RFC 9114 : En-têtes hop-by-hop interdits
+        if (isH2orH3) {
+            String[] forbiddenHeaders = {"connection", "keep-alive", "proxy-connection", "transfer-encoding"};
+            for (String h : forbiddenHeaders) {
+                if (context.getHeader(h) != null) {
+                    protocolAnomaly += 70.0;
+                    break;
+                }
+            }
+        }
+
+        // 2. Corrélation Cross-Layer W3C Navigation Timing
+        String behaviorHeader = context.getHeader("x-behavior-metrics");
+        if (behaviorHeader != null && behaviorHeader.startsWith("{")) {
+            try {
+                Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
+                if (metrics != null && metrics.get("network") instanceof Map) {
+                    Map<String, Object> network = (Map<String, Object>) metrics.get("network");
+                    String clientProto = (String) network.get("nextHopProtocol");
+                    if (clientProto != null && !clientProto.isEmpty()) {
+                        String serverProto = httpVersion.contains("2") ? "h2" : (httpVersion.contains("3") ? "h3" : "http/1.1");
+                        String clientProtoNorm = clientProto;
+                        if (clientProto.contains("h2")) clientProtoNorm = "h2";
+                        else if (clientProto.contains("h3")) clientProtoNorm = "h3";
+                        else if (clientProto.contains("1.1")) clientProtoNorm = "http/1.1";
+
+                        if (!serverProto.equals(clientProtoNorm)) {
+                            if ("h3".equals(clientProtoNorm) && "http/1.1".equals(serverProto)) {
+                                protocolAnomaly += 85.0;
+                            } else if ("h2".equals(clientProtoNorm) && "http/1.1".equals(serverProto)) {
+                                protocolAnomaly += 65.0;
+                            } else {
+                                protocolAnomaly += 50.0;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
 
         String ua = context.getHeader("user-agent");
         if (ua == null) {
@@ -1509,6 +1630,31 @@ public class RequestUtils {
         }
         Map<String, String> uaParts = parseUserAgent(ua);
         String browser = uaParts.get("browser");
+
+        // 3. Rétrogradation protocolaire (Protocol Downgrade)
+        boolean isModernBrowser = browser != null && (
+                browser.startsWith("Chrome") || browser.startsWith("Firefox") ||
+                browser.startsWith("Edge") || browser.startsWith("Safari")
+        );
+        boolean hasProxyHeader = context.getHeader("via") != null
+                || context.getHeader("forwarded") != null
+                || context.getHeader("x-forwarded-for") != null;
+
+        if (isModernBrowser && context.isHttps && httpVersion.contains("1.1") && !hasProxyHeader) {
+            protocolAnomaly += 45.0;
+        }
+
+        // 4. Scrapers HTTP/3
+        if (httpVersion.contains("3")) {
+            String[] nonBrowserUas = {"python", "go-http-client", "curl", "java", "okhttp"};
+            String uaLower = ua.toLowerCase();
+            for (String lib : nonBrowserUas) {
+                if (uaLower.contains(lib)) {
+                    protocolAnomaly += 90.0;
+                    break;
+                }
+            }
+        }
 
         if (browser != null && !browser.isEmpty()) {
             // HTTP/2 Anomaly Logic
@@ -1587,7 +1733,7 @@ public class RequestUtils {
         }
 
         double score = Math.max(
-            0.0,
+            Math.min(100.0, protocolAnomaly),
             Math.max(
                 Math.min(100.0, http2Anomaly),
                 Math.min(100.0, quicAnomaly)

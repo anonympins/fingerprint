@@ -1003,12 +1003,12 @@ const ClientLibrary = {
      */
     evaluateBehavior() {
         let score = 0;
-        if (metrics.honeypotInteraction) return 100;
+        if (metrics.honeypotInteraction) return 100; // Score maximal immédiat pour interaction avec un pot de miel
         if (ClientLibrary.detectTamperedPrototypes()) score += 80;
 
         // Vérification du rendu graphique
         if (metrics.rendering) {
-            if (metrics.rendering.offscreenAnom) return 0;
+            if (metrics.rendering.offscreenAnom) return 100; // Score maximal pour anomalie de rendu
             const fps = parseFloat(metrics.rendering.fps || 0);
             const jitter = parseFloat(metrics.rendering.jitter || 0);
             if (fps > 250 || (fps > 0 && fps < 15)) score += 50;
@@ -1071,7 +1071,9 @@ const ClientLibrary = {
 
         // Détection de rack / ferme de téléphones mobiles immobiles
         if (typeof window !== 'undefined' && (window.navigator?.userAgent || '').includes('Mobile')) {
-            if (metrics.motionVariance === 0) return 0;
+            // Un appareil mobile parfaitement immobile est très suspect (probable ferme de téléphones).
+            // On ne déclenche que s'il n'y a pas d'événements tactiles, car un utilisateur peut le tenir immobile en lisant.
+            if (metrics.motionVariance === 0 && touchMovementsHistory.length === 0) return 90;
         }
 
         // Variance des clics ultra-précise (bot de clic)
@@ -1088,7 +1090,8 @@ const ClientLibrary = {
                     const mx = clks.reduce((s, c) => s + c.x, 0) / clks.length;
                     const my = clks.reduce((s, c) => s + c.y, 0) / clks.length;
                     const v = clks.reduce((s, c) => s + Math.pow(c.x - mx, 2) + Math.pow(c.y - my, 2), 0) / clks.length;
-                    if (v < 1.0) return 0;
+                    // Une variance extrêmement faible indique un script qui clique sur les mêmes coordonnées.
+                    if (v < 1.0) return 100;
                 }
             }
         }
@@ -1097,10 +1100,11 @@ const ClientLibrary = {
         if (keystrokeDwellTimes.length >= 5) {
             const mean = keystrokeDwellTimes.reduce((a, b) => a + b, 0) / keystrokeDwellTimes.length;
             const variance = keystrokeDwellTimes.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / keystrokeDwellTimes.length;
-            if (Math.sqrt(variance) < 2.0 || mean < 15.0) return 0;
+            // Une frappe robotique a une variance très faible ou des pressions de touche extrêmement courtes.
+            if (Math.sqrt(variance) < 2.0 || mean < 15.0) return 95;
         }
 
-        return 1;
+        return Math.min(100, Math.round(score));
     },
 
     /**
