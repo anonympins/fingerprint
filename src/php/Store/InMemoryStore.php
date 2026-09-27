@@ -22,7 +22,7 @@ class InMemoryStore implements IStore
         }
 
         $item = $this->data[$key];
-        if ($item['expiresAt'] !== null && $item['expiresAt'] < time()) {
+        if ($item['expiresAt'] !== null && $item['expiresAt'] < time()) { // Active expiration check
             $this->delete($key); // Delete expired item
             return null;
         }
@@ -58,7 +58,7 @@ class InMemoryStore implements IStore
     }
 
     /**
-     * Clears all data from the store. Useful for testing.
+     * Clears all data from the store. Useful for test isolation.
      */
     public function clear(): void
     {

@@ -17,23 +17,21 @@ class PowTest extends TestCase
 
     protected function setUp(): void
     {
-        // 1. Configurer un store en mémoire pour l'isolation des tests.
+        // 1. Configure an in-memory store for test isolation.
         $store = new InMemoryStore();
         StoreManager::configureStore($store);
 
-        // 2. Initialiser le ProblemManager avec une configuration et un store valides.
-        // C'est l'étape cruciale qui manquait.
+        // 2. Initialize ProblemManager with a valid configuration and store.
         $configPath = dirname(__FILE__) . '/config/problems.config.json';
         ProblemManager::getInstance($configPath, $store);
 
-        // 3. Créer l'instance du moteur.
+        // 3. Create engine instance.
         $this->engine = new FingerprintEngine(SecurityProfiles::createSecurityProfile('balanced'));
     }
 
     public function testGetProblemsIsExposedForTesting(): void
     {
-        // Cette méthode appelle ProblemManager::getInstance() en interne.
-        // Grâce au setUp(), l'instance est déjà initialisée et le test passe.
+        // Calls ProblemManager::getInstance() internally; setUp() ensures valid initialization.
         $problems = $this->engine->getProblems();
         $this->assertIsArray($problems);
     }

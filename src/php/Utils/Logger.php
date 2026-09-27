@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Utils;
 
 /**
- * Un simple wrapper de logger pour passer les données à une fonction de rappel.
+ * A simple logger wrapper to forward data to a callback function.
  */
 class Logger
 {

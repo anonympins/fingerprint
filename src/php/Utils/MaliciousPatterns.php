@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Utils;
 
 /**
- * Fournit des fonctions pour détecter les patterns d'injection malveillants.
+ * Provides utilities to detect malicious injection patterns.
  */
 class MaliciousPatterns
 {
     /**
-     * @var array<string, string> Map des patterns malveillants regroupés par type.
+     * @var array<string, string> Map of malicious patterns grouped by threat category.
      */
     private const INJECTION_PATTERNS = [
         // SQL/NoSQL injections, including time-based attacks
@@ -44,10 +44,10 @@ class MaliciousPatterns
     ];
 
     /**
-     * Vérifie si une chaîne de caractères contient des patterns d'injection connus.
-     * @param string $str La chaîne à vérifier.
-     * @param array<string> $typesToDetect Les types d'injections à détecter (par défaut, tous).
-     * @return bool True si un pattern malveillant est détecté, false sinon.
+     * Checks whether a string matches known injection patterns.
+     * @param string $str The input string to inspect.
+     * @param array<string> $typesToDetect Specific injection categories to detect (defaults to all).
+     * @return bool True if a malicious pattern is detected, false otherwise.
      */
     public static function isMalicious(string $str, array $typesToDetect = []): bool
     {

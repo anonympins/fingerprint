@@ -3,8 +3,8 @@ import {FingerprintBuilder} from '../fingerprint.builder.js';
 
 describe('FingerprintBuilder.compare', () => {
 
-    // Empreinte réaliste d'un utilisateur légitime (ex: Chrome sur Windows)
-    // C'est l'empreinte qui serait stockée lors de la première visite.
+    // Realistic fingerprint for a legitimate user (e.g. Chrome on Windows)
+    // Recorded during baseline initial visit.
     const realisticOriginalFp = new FingerprintBuilder()
         .add('cvs', 'mock-canvas-data-v1')
         .add('gpu', 'ANGLE (NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0)')
@@ -12,16 +12,15 @@ describe('FingerprintBuilder.compare', () => {
         .add('os', 'Win32')
         .add('ua', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
         .add('ja3', '771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0')
-        // En-têtes qui peuvent changer lors de la requête de résolution du challenge
+        // Volatile headers that may legitimately change during challenge solving
         .add('cookie_keys', '_ga,session,device_id')
         .add('upgrade', '1')
         .toString();
 
     it('should return a similarity score of 1.0 for the same device with minor volatile changes', () => {
-        // Scénario de succès : L'utilisateur résout un challenge.
-        // L'empreinte du solveur est presque identique, mais certains en-têtes "volatils"
-        // (comme la présence de cookies ou 'upgrade-insecure-requests') ont changé ou disparu.
-        // La fonction `compare` est conçue pour ignorer ces clés volatiles.
+        // Success scenario: user solves a challenge.
+        // Solver fingerprint is identical except for volatile headers
+        // (such as cookie presence or upgrade-insecure-requests) which compare ignores.
         const realisticSolverFp = new FingerprintBuilder()
             .add('cvs', 'mock-canvas-data-v1') // Identique
             .add('gpu', 'ANGLE (NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0)') // Identique
@@ -29,20 +28,19 @@ describe('FingerprintBuilder.compare', () => {
             .add('os', 'Win32') // Identique
             .add('ua', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36') // Identique
             .add('ja3', '771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0') // Identique
-            // La clé 'cookie_keys' est absente, simulant une requête sans cookies.
-            // La clé 'upgrade' est également absente.
+            // 'cookie_keys' is omitted, simulating a request without cookies
+            // 'upgrade' header is also omitted
             .toString();
 
         const similarity = FingerprintBuilder.compare(realisticOriginalFp, realisticSolverFp);
 
-        // La similarité doit être de 1.0 car toutes les différences concernent des clés volatiles
-        // qui sont ignorées par la comparaison.
+        // Similarity remains 1.0 because all differences reside in ignored volatile keys
         expect(similarity).toBe(1.0);
     });
 
     it('should return a low similarity score for two completely different devices', () => {
-        // Scénario d'échec : Un attaquant a volé le cookie `device_id` et tente de
-        // résoudre un challenge depuis une machine différente (ex: un serveur Linux avec Firefox).
+        // Failure scenario: attacker steals device_id cookie and attempts
+        // challenge resolution from a different machine (e.g. Linux VM with Firefox).
         const differentSolverFp = new FingerprintBuilder()
             .add('cvs', 'different-canvas-data') // Différent
             .add('gpu', 'llvmpipe (LLVM 15.0.7, 256 bits)') // Différent (GPU de VM)
@@ -54,7 +52,7 @@ describe('FingerprintBuilder.compare', () => {
 
         const similarity = FingerprintBuilder.compare(realisticOriginalFp, differentSolverFp);
 
-        // La similarité doit être très faible (proche de 0) car tous les signaux forts sont différents.
+        // Similarity should be very low (close to 0) since invariant signals differ
         expect(similarity).toBeLessThan(0.1);
     });
 
@@ -70,7 +68,7 @@ describe('FingerprintBuilder.compare', () => {
         const partialFp = new FingerprintBuilder()
             .add('ua', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
             .add('os', 'Win32')
-            .toString(); // Manque GPU, canvas, etc.
+            .toString(); // Missing GPU, canvas, etc.
 
         const similarity = FingerprintBuilder.compare(realisticOriginalFp, partialFp);
         expect(similarity).toBeGreaterThan(0);

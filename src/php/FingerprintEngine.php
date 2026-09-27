@@ -13,11 +13,9 @@
  use Anonympins\Fingerprint\Utils\RequestUtils;
  use Anonympins\Fingerprint\Utils\Env;
 
- // Correction de l'import
-
  /**
-  * Le moteur principal de la bibliothèque de fingerprinting.
-  * Orchestre l'identification, le calcul de suspicion et la gestion des challenges.
+  * The main engine of the fingerprinting library.
+  * Orchestrates identification, suspicion calculation, and challenge management.
   */
  class FingerprintEngine
  {
@@ -124,7 +122,7 @@
              Env::set('ED25519_PUBLIC_KEY', $securityConfig['ed25519_public_key']);
          }
 
-         // Génération et persistance automatique de la paire de clés Ed25519
+         // Automatic generation and persistence of the Ed25519 key pair
          $useAsymmetric = ($securityConfig['useAsymmetricTickets'] ?? false) === true || ($securityConfig['ed25519'] ?? '') === 'auto';
          $envPrivate = Env::get('ED25519_PRIVATE_KEY');
          if ($useAsymmetric && ($envPrivate === null || $envPrivate === '')) {
@@ -167,7 +165,7 @@
              }
          }
 
-         // Si aucune liste blanche n'est explicitement fournie, appliquer la liste par défaut.
+         // If no allowlist is explicitly provided, apply the default list.
          if (!isset($securityConfig['whitelist'])) {
              $securityConfig['whitelist'] = self::default_whitelist();
          }
@@ -184,7 +182,7 @@
      }
 
      /**
-      * Initialise et persiste les cles Ed25519 pour les environnements PHP hors WordPress.
+      * Initializes and persists Ed25519 keys for standalone PHP environments outside WordPress.
       */
      private static function initStandaloneEd25519Keys(): void
      {
@@ -211,7 +209,12 @@
                          Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
                          Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
                          if (!is_dir($configDir)) {
-                             mkdir($configDir, 0777, true);
+                             if (function_exists('wp_mkdir_p')) {
+                                 wp_mkdir_p($configDir);
+                             } else {
+                                 // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Non-WordPress standalone environment fallback
+                                 mkdir($configDir, 0777, true);
+                             }
                          }
                          // phpcs:ignore PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- Non-WordPress standalone environment fallback
                          file_put_contents($persistentKeyPath, json_encode([
@@ -227,10 +230,10 @@
      }
 
     /**
-     * Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
-     * sans nécessiter de redémarrage.
+     * Hot-reloads a new security configuration (weights, thresholds, etc.)
+     * without requiring a restart.
      *
-     * @param array $newConfig La nouvelle configuration (partielle ou complète).
+     * @param array $newConfig The new configuration (partial or complete).
      */
     public function updateConfig(array $newConfig): void
     {
@@ -240,7 +243,7 @@
     }
 
     /**
-     * Réinitialise le store de persistance actif.
+     * Resets the active persistence store.
      */
     public function resetStore(): void
     {
@@ -524,7 +527,7 @@
      }
 
      /**
-      * Vérifie si une requête doit être exemptée en raison d'une règle de liste blanche.
+      * Checks if a request should be exempted due to an allowlist rule.
       */
      private function checkAllowlists(RequestContext $context): bool
      {

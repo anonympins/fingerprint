@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint;
 
 /**
- * TLS (JA3) fingerprint anomaly and spoofing detector in PHP.
+ * TLS (JA3) fingerprint anomaly and spoofing detector.
  */
 class Ja3AnomalyDetector
 {
@@ -38,7 +38,7 @@ class Ja3AnomalyDetector
 
     /**
      * Parses a raw JA3 string.
-     * Expected format: "TLSVersion,Ciphers,Extensions,EllipticCurves,EllipticCurveFormats"
+     * Format: "TLSVersion,Ciphers,Extensions,EllipticCurves,EllipticCurveFormats"
      */
     public static function parseJa3(string $ja3String): ?array
     {
@@ -74,7 +74,7 @@ class Ja3AnomalyDetector
     }
 
     /**
-     * Extracts browser family from User-Agent string.
+     * Extracts the browser family from a User-Agent string.
      */
     public static function getBrowserFamily(string $userAgent): ?string
     {
@@ -95,13 +95,13 @@ class Ja3AnomalyDetector
     }
 
     /**
-     * Evaluates comprehensive JA3 spoofing and anomaly suspicion score.
+     * Evaluates the comprehensive JA3 spoofing and anomaly suspicion score.
      * 
      * @param string|null $ja3Hash MD5 hash of JA3 fingerprint (32 hex characters).
      * @param string|null $ja3Raw Raw unhashed JA3 string if available.
      * @param string $userAgent Request User-Agent header.
      * @param string $httpVersion HTTP protocol version string.
-     * @param object|null $cacheInstance Cache store for multi-UA stagnation detection.
+     * @param object|null $cacheInstance A cache store for multi-UA stagnation detection.
      * @return int Suspicion score between 0 and 100.
      */
     public static function getJa3AnomalyScore(
@@ -120,13 +120,13 @@ class Ja3AnomalyDetector
             if (isset(self::TLS_FINGERPRINT_DB[$ja3Hash])) {
                 $expectedBrowsers = self::TLS_FINGERPRINT_DB[$ja3Hash];
 
-                // Case A: TLS matches known automated library but UA claims standard browser
+                // Case A: TLS matches a known automated library, but the UA claims to be a standard browser.
                 $isLibrary = array_intersect($expectedBrowsers, ['Python', 'Go', 'Java', 'curl']);
                 if (!empty($isLibrary) && $isHumanBrowser) {
                     $score = max($score, 90); // High confidence spoofing
                 }
                 
-                // Case B: Direct discrepancy between claimed browser and expected TLS stack
+                // Case B: Direct discrepancy between the claimed browser and the expected TLS stack.
                 if ($claimedBrowser !== null) {
                     $matched = false;
                     foreach ($expectedBrowsers as $expected) {
@@ -141,7 +141,7 @@ class Ja3AnomalyDetector
                 }
             }
 
-            // Case C: Stateful multi-UA stagnation detection
+            // Case C: Stateful multi-UA stagnation detection.
             if ($cacheInstance && $claimedBrowser !== null && method_exists($cacheInstance, 'get') && method_exists($cacheInstance, 'set')) {
                 $cacheKey = "ja3-browsers:" . $ja3Hash;
                 
@@ -162,7 +162,7 @@ class Ja3AnomalyDetector
                         }
                     }
 
-                    // Multiple rotating browser UAs emitted from identical TLS stack
+                    // Multiple rotating browser UAs are being emitted from an identical TLS stack.
                     if (count($seenBrowsers) > 1) {
                         $score = max($score, 85);
                     }
@@ -172,22 +172,22 @@ class Ja3AnomalyDetector
             }
         }
 
-        // --- ANALYSIS 2: DEEP INSPECTION ON RAW JA3 STRING ---
+        // --- ANALYSIS 2: DEEP INSPECTION OF THE RAW JA3 STRING ---
         if ($ja3Raw) {
             $parsed = self::parseJa3($ja3Raw);
             if ($parsed) {
-                // Check A: GREASE presence for Chrome / Edge
+                // Check A: GREASE presence for Chrome/Edge.
                 if ($claimedBrowser === 'Chrome' || $claimedBrowser === 'Edge') {
                     $hasCiphersGrease = self::hasGrease($parsed['ciphers']);
                     $hasExtensionsGrease = self::hasGrease($parsed['extensions']);
                     
                     if (!$hasCiphersGrease && !$hasExtensionsGrease) {
-                        // Modern Chromium missing GREASE indicates spoofing
+                        // Modern Chromium missing GREASE indicates spoofing.
                         $score = max($score, 75);
                     }
                 }
 
-                // Check B: HTTP/2 or HTTP/3 without ALPN extension (Extension 16)
+                // Check B: HTTP/2 or HTTP/3 without ALPN extension (Extension 16).
                 $isH2OrHigher = (
                     strpos($httpVersion, '2.0') !== false || 
                     strpos($httpVersion, 'HTTP/2') !== false || 
@@ -196,11 +196,11 @@ class Ja3AnomalyDetector
                 $hasAlpnExtension = in_array(16, $parsed['extensions'], true);
                 
                 if ($isH2OrHigher && !$hasAlpnExtension) {
-                    // HTTP/2 active at server level but missing from client ALPN extension
+                    // HTTP/2 is active at the server level but missing from the client's ALPN extension.
                     $score = max($score, 70);
                 }
 
-                // Check C: Deprecated TLS version negotiated by claimed modern browser
+                // Check C: A deprecated TLS version was negotiated by a claimed modern browser.
                 if ($isHumanBrowser && $parsed['tlsVersion'] < 771) {
                     $score = max($score, 80);
                 }
@@ -212,7 +212,7 @@ class Ja3AnomalyDetector
 
     /**
      * Correlates low-level TCP RTT with application layer latency to detect residential proxy hops.
-     * Evaluates continuous physical transit discrepancies rather than arbitrary step numbers.
+     * Evaluates continuous physical transit discrepancies rather than arbitrary step numbers. 
      * 
      * @param RequestContext $context
      * @return float Suspicion score between 0.0 and 95.0
@@ -229,14 +229,14 @@ class Ja3AnomalyDetector
                 $clientTimestamp = (int)$metrics['clientTimestamp'];
                 $appLatency = $context->requestTimestamp - $clientTimestamp;
 
-                if ($tcpRtt !== null && $tcpRtt > 0 && $appLatency > 0) {
-                    // Marge de tolérance défensive contre le jitter réseau et le scheduling JS / Garbage Collection
+                if ($tcpRtt !== null && $tcpRtt > 0 && $appLatency > 0) { // @phpstan-ignore-line
+                    // Defensive tolerance margin against network jitter and JS scheduling/Garbage Collection.
                     $jitterAllowance = 60.0;
                     $effectiveRtt = max((float)$tcpRtt, 5.0);
                     $tunnelDelta = $appLatency - ($tcpRtt + $jitterAllowance);
                     $divergenceRatio = $appLatency / $effectiveRtt;
 
-                    // Condition de disjonction : liaison edge ultra-proche (< 40ms) + transit applicatif au moins 3x supérieur
+                    // Disjunction condition: ultra-close edge link (< 40ms) + application transit at least 3x higher.
                     if ($tcpRtt <= 40 && $divergenceRatio >= 3.0 && $tunnelDelta > 0) {
                         $scaling = 120.0;
                         $ratioWeight = min(1.0, ($divergenceRatio - 3.0) / 5.0);
@@ -250,16 +250,16 @@ class Ja3AnomalyDetector
     }
 }
 
-// --- EXEMPLE D'UTILISATION PRATIQUE ---
+// --- PRACTICAL USAGE EXAMPLE ---
 /*
 $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
 $httpVersion = $_SERVER['SERVER_PROTOCOL'] ?? '';
 
-// Récupération des en-têtes injectés par votre Reverse-Proxy (Nginx, HAProxy, etc.)
+// Retrieve headers injected by your Reverse-Proxy (Nginx, HAProxy, etc.)
 $ja3Hash = $_SERVER['HTTP_X_JA3_HASH'] ?? null;
 $ja3Raw  = $_SERVER['HTTP_X_JA3_RAW'] ?? null; 
 
-// Redis facultatif pour la détection stateful de rotation UA
+// Optional Redis for stateful UA rotation detection
 $redis = new \Redis();
 $redis->connect('127.0.0.1', 6379);
 

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Optimization;
 
 /**
- * Optimization algorithms library.
+ * A library of optimization algorithms.
  */
 class Optimization
 {
@@ -17,7 +17,7 @@ class Optimization
         try {
             return random_int(0, PHP_INT_MAX - 1) / PHP_INT_MAX;
         } catch (\Exception $e) {
-            if (function_exists('wp_rand')) {
+            if (function_exists('wp_rand')) { // WordPress fallback
                 return (float)wp_rand(0, 1000000) / 1000000.0;
             }
             // phpcs:ignore WordPress.WP.AlternativeFunctions.rand_mt_rand -- Standalone fallback
@@ -133,7 +133,7 @@ class Optimization
     }
 
     /**
-     * Sorts population into non-dominated Pareto fronts (NSGA-II).
+     * Sorts a population into non-dominated Pareto fronts (NSGA-II).
      * @param array<int, array> &$populationWithObjectives
      * @return array<int, array>
      */
@@ -186,7 +186,7 @@ class Optimization
     }
 
     /**
-     * Computes crowding distance for a front to preserve diversity.
+     * Computes the crowding distance for a front to preserve diversity.
      * @param array<int, array> &$front
      */
     private static function calculateCrowdingDistance(array &$front): void
@@ -207,7 +207,7 @@ class Optimization
             $minObj = $front[0]['objectives'][$i];
             $maxObj = $front[$l - 1]['objectives'][$i];
 
-            // Boundary solutions receive infinite distance to encourage spread
+            // Boundary solutions receive infinite distance to encourage population spread.
             $front[0]['crowdingDistance'] = INF;
             $front[$l - 1]['crowdingDistance'] = INF;
 
@@ -222,7 +222,7 @@ class Optimization
     }
 
     /**
-     * Calculates deviation from Benford's Law distribution.
+     * Calculates the deviation from Benford's Law distribution.
      * Elevated values indicate synthetic or automated intervals.
      * @param array<int|float> $numbers
      */

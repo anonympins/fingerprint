@@ -70,7 +70,7 @@ class ThreatIntelTest extends TestCase
             'differentialPrivacy' => [
                 'enabled' => true,
                 'epsilon' => 1.0,
-                'dummyRate' => 1.0 // Forcer l'injection d'un leurre pour le test
+                'dummyRate' => 1.0 // Force decoy injection for test
             ]
         ];
 
@@ -93,6 +93,6 @@ class ThreatIntelTest extends TestCase
         $realZkpY = 'realzkpykey12345';
         $broadcastMethod->invoke($engineSub, $realZkpY);
 
-        $this->assertCount(2, $postedCalls, 'Doit diffuser à la fois la clé réelle et la clé leurre');
+        $this->assertCount(2, $postedCalls, 'Should broadcast both real and decoy keys');
     }
 }

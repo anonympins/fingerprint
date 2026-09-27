@@ -6,8 +6,8 @@ namespace Anonympins\Fingerprint;
 use Anonympins\Fingerprint\Config\SecurityProfiles;
 
 /**
- * FingerprintClient - PHP wrapper for the client-side fingerprinting library.
- *
+ * PHP wrapper for the client-side fingerprinting library.
+ * 
  * Handles script injection and generation of polymorphic honeypot fields
  * inside HTML forms.
  */
@@ -64,7 +64,7 @@ class FingerprintClient
 
     /**
      * Generates a hidden honeypot form field.
-     * Traps automated bots while remaining invisible to human users.
+     * Traps automated bots while remaining invisible to human users and screen readers.
      *
      * @param string $fieldName Field name (must match client honeypot registration).
      * @return string Generated HTML markup.
@@ -76,7 +76,7 @@ class FingerprintClient
             $this->clientConfig['honeypots'][] = $fieldName;
         }
 
-        // Polymorphic CSS styling to robustly obscure honeypots
+        // Polymorphic CSS styling to robustly obscure honeypot fields
         $styleOptions = [
             'position:absolute; left:-9999px; top:-9999px; transform:scale(0); opacity:0; pointer-events:none;',
             'position:fixed; left:-8888px; top:-8888px; width:0; height:0; overflow:hidden; opacity:0; pointer-events:none;',
@@ -112,7 +112,7 @@ class FingerprintClient
         $configJson = json_encode($this->clientConfig);
         $nonceAttr = $this->nonce ? ' nonce="' . $this->nonce . '"' : '';
 
-        // Inline initialization script embedded in HTML
+        // Inline initialization script to be embedded in HTML
         $initScript = "document.addEventListener('DOMContentLoaded', function() {\n"
             . "    const config = " . $configJson . ";\n"
             . "    if (window.ClientLibrary) {\n"
@@ -129,7 +129,7 @@ class FingerprintClient
             . "    }\n"
             . "});";
 
-        // Combine library loader script and inline initialization
+        // Combine the main library loader script and the inline initialization script
         // phpcs:ignore WordPress.WP.EnqueuedResources.NonEnqueuedScript -- Polymorphic dynamic client script tag generation
         return '<script src="' . htmlspecialchars($this->clientScriptPath) . '"' . $nonceAttr . '></script>'
             . '<script' . $nonceAttr . '>' . $initScript . '</script>';

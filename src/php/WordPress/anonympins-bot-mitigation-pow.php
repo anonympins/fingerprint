@@ -24,8 +24,12 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+if (!defined('ANONYMPINS_BOT_MITIGATION_VERSION')) {
+    define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.7.5');
+}
+
 // =============================================================================
-// PIÈGES HONEYPOT POUR ENVIRONNEMENTS TIERS (NON-WORDPRESS)
+// HONEYPOT TRAPS FOR THIRD-PARTY ENVIRONMENTS (NON-WORDPRESS)
 // =============================================================================
 $fingerprint_foreign_env_trap_urls = [
     '/phpmyadmin', '/pma', '/adminer', '/mysql', '/dbadmin', '/phpinfo',
@@ -50,7 +54,7 @@ $fingerprint_foreign_env_honeypot_fields = [
 ];
 
 // =============================================================================
-// CONFIGURATION PAR DÉFAUT DES PROFILS DE SÉCURITÉ PAR CONTEXTE
+// DEFAULT SECURITY PROFILES CONFIGURATION BY CONTEXT
 // =============================================================================
 $fingerprint_security_profiles = [
     'api' => [
@@ -92,7 +96,7 @@ $fingerprint_security_profiles = [
 ];
 
 /**
- * Récupère les configurations fusionnées avec les réglages persistés dans WordPress.
+ * Retrieves configurations merged with settings persisted in WordPress.
  */
 function fingerprint_get_effective_profiles(array $defaultProfiles): array {
     $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
@@ -107,7 +111,7 @@ function fingerprint_get_effective_profiles(array $defaultProfiles): array {
 }
 
 /**
- * Récupère les paramètres configurés pour le mode Sandbox / Simulation.
+ * Retrieves the configured settings for Sandbox / Simulation mode.
  */
 function fingerprint_get_sandbox_config(): array {
     $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
@@ -122,7 +126,7 @@ function fingerprint_get_sandbox_config(): array {
     ];
 }
 
-// 1. Autoloader PSR-4 pour le moteur Fingerprint
+// 1. PSR-4 autoloader for the Fingerprint engine.
 if (!class_exists(DirectFingerprint::class)) {
     $fingerprint_composer_paths = [
         __DIR__ . '/vendor/autoload.php',
@@ -173,16 +177,7 @@ if (!class_exists(DirectFingerprint::class)) {
     });
 }
 
-// 1.b Chargement des traductions i18n du plugin
-add_action('init', function (): void {
-    load_plugin_textdomain(
-        'anonympins-bot-mitigation-pow',
-        false,
-        dirname(plugin_basename(__FILE__)) . '/languages'
-    );
-});
-
-// 2. Activation du plugin : Création de la table de cache SQL
+// 2. Plugin activation: Create the SQL cache table.
 register_activation_hook(__FILE__, function () {
     $store = new WpDbStore();
     $store->ensureTable();
@@ -192,18 +187,18 @@ register_activation_hook(__FILE__, function () {
     }
 });
 
-// 3. Désactivation : Nettoyage du WP-Cron
+// 3. Deactivation: Clean up the WP-Cron.
 register_deactivation_hook(__FILE__, function () {
     wp_clear_scheduled_hook('fingerprint_prune_expired_entries');
 });
 
-// 4. Tâche de fond WP-Cron : Purge des clés expirées dans la BDD
+// 4. WP-Cron background task: Purge expired keys from the database.
 add_action('fingerprint_prune_expired_entries', function () {
     $store = new WpDbStore();
     $store->pruneExpired();
 });
 
-// 5. Avertissements Admin
+// 5. Admin Notices
 add_action('admin_notices', function () {
     if (!is_ssl()) {
         echo '<div class="notice notice-warning is-dismissible">';
@@ -223,14 +218,14 @@ add_action('admin_notices', function () {
 
         echo '<div class="notice notice-warning is-dismissible">';
         echo '<p><strong>' . esc_html__('[Anonympins Bot Mitigation Sandbox Active]', 'anonympins-bot-mitigation-pow') . '</strong> : ' .
-            esc_html__('Sandbox Mode is currently ENABLED.', 'anonympins-bot-mitigation-pow') . ' ' . $modeDesc .
+            esc_html__('Sandbox Mode is currently ENABLED.', 'anonympins-bot-mitigation-pow') . ' ' . esc_html($modeDesc) .
             ' <a href="' . esc_url(admin_url('options-general.php?page=anonympins-bot-mitigation#tab-sandbox')) . '">' . esc_html__('Configure Sandbox', 'anonympins-bot-mitigation-pow') . '</a></p>';
         echo '</div>';
     }
 });
 
 /**
- * Enregistre un événement de challenge dans le tampon tournant du store.
+ * Records a challenge event in the store's circular buffer.
  */
 function fingerprint_record_challenge_event(array $event): void {
     $store = new WpDbStore();
@@ -248,7 +243,7 @@ function fingerprint_record_challenge_event(array $event): void {
 
 $GLOBALS['fingerprint_current_evaluation'] = null;
 
-// 6. Interception de sécurité au plus tôt du cycle de vie WordPress
+// 6. Security interception at the earliest point in the WordPress lifecycle.
 add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
     if ((defined('WP_CLI') && WP_CLI) || (defined('DOING_CRON') && DOING_CRON)) {
         return;
@@ -259,7 +254,7 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
     $requestUri = !empty($rawUri) ? $rawUri : '/';
     $isRestApi = defined('REST_REQUEST') && REST_REQUEST;
 
-    if (preg_match('/\.(ico|png|jpg|jpeg|gif|webp|svg|css|js|woff|woff2|ttf)$/i', (string)parse_url($requestUri, PHP_URL_PATH))) {
+    if (preg_match('/\.(ico|png|jpg|jpeg|gif|webp|svg|css|js|woff|woff2|ttf)$/i', (string)wp_parse_url($requestUri, PHP_URL_PATH))) {
         return;
     }
     // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
@@ -370,7 +365,7 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
 }, 0);
 
 // =============================================================================
-// CHARGEMENT & INITIALISATION DE LA TÉLÉMÉTRIE CLIENT
+// CLIENT TELEMETRY LOADING & INITIALIZATION
 // =============================================================================
 add_action('wp_enqueue_scripts', 'fingerprint_enqueue_client_telemetry');
 add_action('login_enqueue_scripts', 'fingerprint_enqueue_client_telemetry');
@@ -385,7 +380,7 @@ function fingerprint_enqueue_client_telemetry(): void {
         return;
     }
 
-    $version = filemtime($scriptPath) ?: '0.7.5';
+    $version = filemtime($scriptPath) ?: ANONYMPINS_BOT_MITIGATION_VERSION;
     wp_enqueue_script('fingerprint-client-telemetry', $scriptUrl, [], (string)$version, false);
 
     $clientConfig = [
@@ -411,7 +406,7 @@ function fingerprint_enqueue_client_telemetry(): void {
 }
 
 // =============================================================================
-// INJECTION DU VECTEUR DE SUSPICION (VIA WP_ENQUEUE_SCRIPT & WP_ADD_INLINE_SCRIPT)
+// SUSPICION VECTOR INJECTION (VIA WP_ENQUEUE_SCRIPT & WP_ADD_INLINE_SCRIPT)
 // =============================================================================
 add_action('wp_enqueue_scripts', 'fingerprint_inject_client_suspicion_event', 20);
 add_action('admin_enqueue_scripts', 'fingerprint_inject_client_suspicion_event', 20);
@@ -427,13 +422,13 @@ function fingerprint_inject_client_suspicion_event(): void {
     $jsonPayload = wp_json_encode($eval);
     $script = 'window.__FINGERPRINT_VECTOR__ = ' . $jsonPayload . '; try { document.dispatchEvent(new CustomEvent("fingerprint:suspicion", { detail: window.__FINGERPRINT_VECTOR__ })); } catch(e) {}';
 
-    wp_register_script('anonympins-suspicion-event', false, [], false, true);
+    wp_register_script('anonympins-suspicion-event', false, [], ANONYMPINS_BOT_MITIGATION_VERSION, true);
     wp_enqueue_script('anonympins-suspicion-event');
     wp_add_inline_script('anonympins-suspicion-event', $script);
 }
 
 // =============================================================================
-// ROUTES SPÉCIALES SANDBOX : REST & SERVER-SENT EVENTS (SSE)
+// SPECIAL SANDBOX ROUTES: REST & SERVER-SENT EVENTS (SSE)
 // =============================================================================
 add_action('rest_api_init', function () {
     register_rest_route('fingerprint/v1', '/sandbox/telemetry', [
@@ -540,7 +535,7 @@ function fingerprint_rest_sandbox_sse(): void {
 }
 
 // =============================================================================
-// INTERFACE D'ADMINISTRATION, RÉGLAGES & INSPECTION DES MÉTRIQUES
+// ADMINISTRATION INTERFACE, SETTINGS & METRICS INSPECTION
 // =============================================================================
 add_action('admin_menu', function () {
     add_options_page(
@@ -553,14 +548,14 @@ add_action('admin_menu', function () {
 });
 
 /**
- * Enregistre le script JS de la page d'administration via admin_enqueue_scripts (requis par WP)
+ * Registers the admin page JS script via admin_enqueue_scripts (required by WP).
  */
 add_action('admin_enqueue_scripts', function (string $hook) {
     if (strpos($hook, 'anonympins-bot-mitigation') === false) {
         return;
     }
 
-    wp_register_script('anonympins-admin-settings', false, [], false, true);
+    wp_register_script('anonympins-admin-settings', false, [], ANONYMPINS_BOT_MITIGATION_VERSION, true);
     wp_enqueue_script('anonympins-admin-settings');
 
     $adminScript = '
@@ -843,7 +838,7 @@ function fingerprint_render_admin_page(): void {
             </p>
         </div>
 
-        <!-- TABLEAU DE BORD STATISTIQUES & ÉTAT -->
+        <!-- STATISTICS & STATUS DASHBOARD -->
         <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:16px;margin-bottom:24px;">
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
                 <h3 style="margin-top:0;"><?php esc_html_e('HTTPS Status', 'anonympins-bot-mitigation-pow'); ?></h3>
@@ -889,7 +884,7 @@ function fingerprint_render_admin_page(): void {
             </div>
         </div>
 
-        <!-- ONGLETS DE NAVIGATION -->
+        <!-- NAVIGATION TABS -->
         <h2 class="nav-tab-wrapper">
             <a href="#tab-settings" class="nav-tab nav-tab-active" onclick="fingerprintSwitchTab(event, 'tab-settings')"><?php esc_html_e('Settings & Profiles', 'anonympins-bot-mitigation-pow'); ?></a>
             <a href="#tab-sandbox" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-sandbox')"><?php esc_html_e('Sandbox / Test Mode', 'anonympins-bot-mitigation-pow'); ?></a>

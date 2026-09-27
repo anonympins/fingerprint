@@ -6,17 +6,17 @@ namespace Anonympins\Fingerprint\Utils;
 
 class MetricsManager
 {
-    /** @var array Stockage temporaire des compteurs Prometheus */
+    /** @var array In-memory storage for Prometheus counters */
     private static array $counters = [];
 
-    /** @var array Stockage temporaire des observations Prometheus */
+    /** @var array In-memory storage for Prometheus gauge observations */
     private static array $observations = [];
 
     /**
-     * Incrémente un compteur Prometheus.
+     * Increments a Prometheus counter.
      *
-     * @param string $name Nom du compteur.
-     * @param array $labels Libellés/Labels associés.
+     * @param string $name Counter name.
+     * @param array $labels Associated key-value labels.
      */
     public static function incrementCounter(string $name, array $labels = []): void
     {
@@ -42,11 +42,11 @@ class MetricsManager
     }
 
     /**
-     * Enregistre une observation de valeur (ex: temps d'exécution, score).
+     * Observes a gauge value (e.g. execution time, score).
      *
-     * @param string $name Nom de la métrique.
-     * @param float $value Valeur observée.
-     * @param array $labels Libellés/Labels associés.
+     * @param string $name Metric name.
+     * @param float $value Observed value.
+     * @param array $labels Associated key-value labels.
      */
     public static function observeValue(string $name, float $value, array $labels = []): void
     {
@@ -112,7 +112,7 @@ class MetricsManager
     }
 
     /**
-     * Réinitialise les compteurs enregistrés (utile pour l'isolation des tests).
+     * Resets recorded metrics (useful for test isolation).
      */
     public static function clearMetrics(): void
     {
@@ -121,10 +121,10 @@ class MetricsManager
     }
 
     /**
-     * Génère les métriques au format Prometheus text/plain.
+     * Exports metrics in Prometheus text/plain format.
      *
-     * @param array $securityConfig La configuration de sécurité active.
-     * @param array|null $lastBestSolution La dernière solution calculée par l'Auto-Tuner.
+     * @param array $securityConfig Active security configuration.
+     * @param array|null $lastBestSolution Latest solution computed by the Auto-Tuner.
      * @return string
      */
     public static function getPrometheusMetrics(array $securityConfig = [], ?array $lastBestSolution = null): string
@@ -149,7 +149,7 @@ class MetricsManager
             }
         }
 
-        // Export des observations (Gauges)
+        // Export observations (Gauges)
         if (!empty(self::$observations)) {
             $groupedObs = [];
             foreach (self::$observations as $obs) {
@@ -164,7 +164,7 @@ class MetricsManager
             }
         }
 
-        // 1. Export des poids actifs (Weights)
+        // 1. Export active weights
         if (isset($securityConfig['weights']) && is_array($securityConfig['weights'])) {
             $metrics .= "\n# HELP fingerprint_security_weight Active weight for each suspicion indicator.\n";
             $metrics .= "# TYPE fingerprint_security_weight gauge\n";
@@ -175,7 +175,7 @@ class MetricsManager
             }
         }
 
-        // 2. Export des seuils actifs (Thresholds)
+        // 2. Export active thresholds
         if (isset($securityConfig['thresholds']) && is_array($securityConfig['thresholds'])) {
             $metrics .= "\n# HELP fingerprint_security_threshold Active score threshold for each enforcement action level.\n";
             $metrics .= "# TYPE fingerprint_security_threshold gauge\n";
@@ -186,7 +186,7 @@ class MetricsManager
             }
         }
 
-        // 3. Récupération auto de la dernière solution d'auto-tuning depuis le cache (savePath) si non fournie
+        // 3. Auto-load latest auto-tuning solution from cache/file if not provided
         if ($lastBestSolution === null && isset($securityConfig['autotuning']['savePath'])) {
             $savePath = $securityConfig['autotuning']['savePath'];
             if (file_exists($savePath)) {
@@ -197,7 +197,7 @@ class MetricsManager
             }
         }
 
-        // 4. Export des objectifs d'Auto-Tuning (Faux positifs & Faux négatifs calculés)
+        // 4. Export auto-tuning objectives (calculated FPR and FNR)
         if ($lastBestSolution !== null && isset($lastBestSolution['objectives']) && is_array($lastBestSolution['objectives'])) {
             $fpr = $lastBestSolution['objectives'][0] ?? 0.0;
             $fnr = $lastBestSolution['objectives'][1] ?? 0.0;

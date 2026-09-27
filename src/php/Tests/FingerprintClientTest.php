@@ -14,10 +14,10 @@ class FingerprintClientTest extends TestCase
         $client = new FingerprintClient('/js/fingerprint.client.js');
         $scriptTag = $client->getScriptTag();
 
-        // Vérifie que le script principal est présent
+        // Verify main script tag is present
         $this->assertStringContainsString('src="/js/fingerprint.client.js"', $scriptTag);
 
-        // Vérifie les configurations WASM par défaut dans l'objet sérialisé pour le JS
+        // Verify default WASM configuration serialized for JS runtime
         $this->assertStringContainsString('"wasm":true', $scriptTag);
         $this->assertStringContainsString('"wasmPath":"\/fp.js"', $scriptTag);
         $this->assertStringContainsString('wasmScript.src = config.wasmPath;', $scriptTag);
@@ -31,7 +31,7 @@ class FingerprintClientTest extends TestCase
         ]);
         $scriptTag = $client->getScriptTag();
 
-        // Vérifie que les surcharges sont correctement prises en compte
+        // Verify configuration overrides are properly applied
         $this->assertStringContainsString('"wasm":false', $scriptTag);
         $this->assertStringContainsString('"wasmPath":"\/custom\/path\/to\/wasm.js"', $scriptTag);
     }
@@ -42,11 +42,11 @@ class FingerprintClientTest extends TestCase
         
         $honeypotFieldHtml = $client->generateHoneypotField('confirm_email_trap');
         
-        // Vérifie le code HTML du champ Honeypot
+        // Verify HTML markup of the honeypot field
         $this->assertStringContainsString('name="confirm_email_trap"', $honeypotFieldHtml);
         $this->assertStringContainsString('tabindex="-1"', $honeypotFieldHtml);
         
-        // Vérifie que le champ s'enregistre dynamiquement dans la configuration JS finale
+        // Verify field dynamically registers with client-side configuration
         $scriptTag = $client->getScriptTag();
         $this->assertStringContainsString('"honeypots":["confirm_email_trap"]', $scriptTag);
     }
@@ -56,16 +56,16 @@ class FingerprintClientTest extends TestCase
         $client = new FingerprintClient('/js/fingerprint.client.js');
         $nonce = $client->getNonce();
         
-        // Vérifie que le nonce est généré correctement (32 caractères hexa)
+        // Verify nonce generation format (32 hex characters)
         $this->assertNotNull($nonce);
         $this->assertEquals(32, strlen($nonce));
         
         $scriptTag = $client->getScriptTag();
         
-        // Le nonce doit être présent sur la balise script HTML
+        // Nonce must be attached to HTML script tag
         $this->assertStringContainsString('nonce="' . $nonce . '"', $scriptTag);
         
-        // Et configuré dynamiquement lors de l'injection du script de chargement WASM
+        // And dynamically set during WASM loader script injection
         $this->assertStringContainsString('wasmScript.nonce = \'' . $nonce . '\'', $scriptTag);
     }
 }

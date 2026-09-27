@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 /**
- * Script d'empaquetage automatique du plugin WordPress.
- * Copie les classes du moteur PHP, les assets JS et génère un ZIP prêt à être installé.
+ * Automated packaging script for the WordPress plugin.
+ * Copies PHP engine classes, JS assets, and creates an installation-ready ZIP archive.
  *
  * Usage:
  *   php src/php/WordPress/package.php
@@ -24,9 +24,9 @@ $pluginSlug = 'anonympins-bot-mitigation-pow';
 $buildDir = $distDir . '/' . $pluginSlug;
 $zipFile = $distDir . '/' . $pluginSlug . '.zip';
 
-echo "==> Début du packaging du plugin WordPress...\n";
+echo "==> Packaging WordPress plugin...\n";
 
-// 1. Nettoyage du répertoire de build précédent
+// 1. Clean previous build directory
 if (is_dir($buildDir)) {
     $iterator = new RecursiveIteratorIterator(
         new RecursiveDirectoryIterator($buildDir, FilesystemIterator::SKIP_DOTS),
@@ -45,14 +45,14 @@ if (file_exists($zipFile)) {
 @mkdir($buildDir . '/assets', 0777, true);
 @mkdir($buildDir . '/languages', 0777, true);
 
-// 2. Copie des fichiers principaux du plugin WordPress
+// 2. Copy main WordPress plugin files
 copy($wpDir . '/anonympins-bot-mitigation-pow.php', $buildDir . '/anonympins-bot-mitigation-pow.php');
 copy($wpDir . '/WpDbStore.php', $buildDir . '/WpDbStore.php');
 if (file_exists($wpDir . '/readme.txt')) {
     copy($wpDir . '/readme.txt', $buildDir . '/readme.txt');
 }
 
-// 2.b Compilation et copie des fichiers de langues (PO -> MO)
+// 2.b Compile and copy language files (PO -> MO)
 $languagesDir = $wpDir . '/languages';
 if (is_dir($languagesDir)) {
     $poFiles = glob($languagesDir . '/*.po') ?: [];
@@ -61,7 +61,7 @@ if (is_dir($languagesDir)) {
         copy($poFile, $buildDir . '/languages/' . $filename);
 
         $moFile = preg_replace('/\.po$/', '.mo', $poFile);
-        // Compilation PO vers binaire MO si absent ou obsolète
+        // Compile PO to binary MO if missing or outdated
         if (!file_exists($moFile) || filemtime($poFile) > filemtime($moFile)) {
             compilePoToMo($poFile, $moFile);
         }
@@ -72,7 +72,7 @@ if (is_dir($languagesDir)) {
 }
 
 /**
- * Compilateur minimal PO -> binaire gettext MO natif PHP
+ * Minimal native PHP PO -> binary gettext MO compiler
  */
 function compilePoToMo(string $poPath, string $moPath): void {
     $content = (string)file_get_contents($poPath);
@@ -112,11 +112,11 @@ function compilePoToMo(string $poPath, string $moPath): void {
     file_put_contents($moPath, $binary);
 }
 
-// 3. Copie des assets clients nécessaires (solveur PoW et bibliothèque client sans CDN externe)
+// 3. Copy required client assets (PoW solver and client bundle without external CDN)
 $solverSource = $jsSrcDir . '/pow.solver.inline.js';
 if (file_exists($solverSource)) {
     $solverContent = (string)file_get_contents($solverSource);
-    // Neutralise les chargements distants CDN interdits par les règles WordPress.org
+    // Neutralize remote CDN scripts prohibited by WordPress.org guidelines
     $solverContent = str_replace(
         ["'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js'", "'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js'"],
         ["''", "''"],
@@ -131,7 +131,7 @@ if (file_exists($clientSource)) {
     copy($clientSource, $buildDir . '/assets/fingerprint.client.js');
 }
 
-// 4. Copie récursive de la bibliothèque PHP (src/php -> build/src), en excluant les dossiers de dev
+// 4. Recursively copy PHP library (src/php -> build/src), excluding dev folders
 $excludeDirs = ['WordPress', 'Tests', 'bin'];
 $phpIterator = new RecursiveIteratorIterator(
     new RecursiveDirectoryIterator($phpSrcDir, FilesystemIterator::SKIP_DOTS),
@@ -156,9 +156,9 @@ foreach ($phpIterator as $item) {
     }
 }
 
-echo "==> Fichiers copiés dans {$buildDir}\n";
+echo "==> Files copied to {$buildDir}\n";
 
-// 5. Création de l'archive ZIP
+// 5. Create ZIP archive
 $zip = new ZipArchive();
 if ($zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
     fwrite(STDERR, "Erreur : Impossible de créer le fichier {$zipFile}\n");
@@ -173,7 +173,7 @@ $distIterator = new RecursiveIteratorIterator(
 foreach ($distIterator as $file) {
     if (!$file->isDir()) {
         $filePath = $file->getPathname();
-        // Préserve le préfixe du dossier racine dans le ZIP : fingerprint-anti-bot/...
+        // Preserve plugin root directory prefix in archive: anonympins-bot-mitigation-pow/...
         $relativePath = $pluginSlug . '/' . substr($filePath, strlen($buildDir) + 1);
         $zip->addFile($filePath, str_replace('\\', '/', $relativePath));
     }
@@ -195,6 +195,6 @@ function removeDirectory(string $dir): void
 $zip->close();
 removeDirectory($buildDir);
 $sizeKb = round(filesize($zipFile) / 1024, 2);
-echo "==> Archive ZIP générée avec succès :\n";
-echo "    Fichier : {$zipFile} ({$sizeKb} Ko)\n";
-echo "    Prêt à être installé via wp-admin ou déployé en production !\n";
+echo "==> ZIP archive generated successfully:\n";
+echo "    File: {$zipFile} ({$sizeKb} KB)\n";
+echo "    Ready to be installed via wp-admin or deployed to production.\n";

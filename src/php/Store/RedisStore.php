@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Store;
 
 /**
- * Redis storage adapter for the Fingerprint engine.
+ * A Redis storage adapter for the Fingerprint engine.
  * Compatible with phpredis and predis clients.
  */
 class RedisStore implements IStore
