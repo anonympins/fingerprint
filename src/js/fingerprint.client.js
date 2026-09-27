@@ -806,6 +806,10 @@ const ClientLibrary = {
      * @param {string[]} honeypotFieldNames - Hidden form field names.
      */
     initializeHoneypots(honeypotFieldNames) {
+        const fieldNames = Array.isArray(honeypotFieldNames)
+            ? honeypotFieldNames
+            : (honeypotFieldNames ? [honeypotFieldNames] : []);
+
         // 1. Clean up existing listeners
         activeHoneypotListeners.forEach((listener, field) => {
             field.removeEventListener('input', listener);
@@ -813,7 +817,7 @@ const ClientLibrary = {
         activeHoneypotListeners.clear();
 
         // 2. Attach new listeners to existing DOM elements
-        honeypotFieldNames.forEach(fieldName => {
+        fieldNames.forEach(fieldName => {
             const field = document.querySelector(`[name="${fieldName}"]`);
             if (field) {
                 const listener = () => {
@@ -826,7 +830,7 @@ const ClientLibrary = {
         });
 
         // 3. Generate trap inputs inside a closed Shadow DOM
-        if (typeof document !== 'undefined' && honeypotFieldNames.length > 0 && document.body) {
+        if (typeof document !== 'undefined' && fieldNames.length > 0 && document.body) {
             const host = document.createElement('div');
             host.setAttribute('aria-hidden', 'true');
             host.style.position = 'absolute';
@@ -868,7 +872,7 @@ const ClientLibrary = {
             const wrapper = document.createElement(selectedWrapperTag);
             wrapper.className = wrapperClass;
 
-            honeypotFieldNames.forEach(fieldName => {
+            fieldNames.forEach(fieldName => {
                 const label = document.createElement('label');
                 label.textContent = fieldName;
                 const input = document.createElement('input');
@@ -1453,6 +1457,10 @@ const ClientLibrary = {
  * @param {ClientConfig} [config={}] - Client configuration options.
  */
   initializeClient(config = {}) {
+    const rawHoneypots = config.honeypots ?? config.honeypotFields ?? [];
+    const honeypots = Array.isArray(rawHoneypots)
+        ? rawHoneypots
+        : (rawHoneypots ? [rawHoneypots] : []);
     const {
         mouse = true,
         keystrokes = true,
@@ -1461,9 +1469,9 @@ const ClientLibrary = {
         motion = true,
             rendering = true,
         phantomTraps = true,
-        honeypots = [],
         trapUrls = [], // Trap URLs
-        wasmPath,
+        wasm = true,
+        wasmPath = (config.wasmPath || (config.wasm ? '/fp.wasm' : undefined)),
         worker = false,
         workerPath, // NOUVEAU
         fetch: fetchConfig = {}
@@ -1471,7 +1479,7 @@ const ClientLibrary = {
 
         negotiateSessionKey();
     // Load WASM module if path provided
-    if (wasmPath) {
+    if (wasm && wasmPath) {
         this.initializeWasm(wasmPath);
     }
 
