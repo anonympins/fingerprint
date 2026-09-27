@@ -66,6 +66,87 @@ msgstr "%d clés expirées en attente de purge cron"
 msgid "Active Profiles"
 msgstr "Profils Actifs"
 
+msgid "Sandbox Mode"
+msgstr "Mode Sandbox"
+
+msgid "Active (Simulation)"
+msgstr "Actif (Simulation)"
+
+msgid "Production (Enforced)"
+msgstr "Production (Actif)"
+
+msgid "Non-blocking observation mode enabled."
+msgstr "Mode observation non-bloquant activé."
+
+msgid "Bot challenges and blocks are actively enforced."
+msgstr "Les challenges de bots et les blocages sont appliqués."
+
+msgid "Sandbox / Test Mode"
+msgstr "Sandbox / Mode Test"
+
+msgid "Sandbox Mode & Dry-Run Configuration"
+msgstr "Configuration du Mode Sandbox & Simulation"
+
+msgid "Enable Sandbox Mode"
+msgstr "Activer le Mode Sandbox"
+
+msgid "Audit Only / Dry-Run (Never block or challenge visitors)"
+msgstr "Audit seul / Simulation (Ne jamais bloquer ni challenger les visiteurs)"
+
+msgid "Add diagnostic HTTP headers (X-Fingerprint-Sandbox: active)"
+msgstr "Ajouter des en-têtes HTTP de diagnostic (X-Fingerprint-Sandbox: active)"
+
+msgid "Log evaluated scores and suspicious attempts to PHP error_log"
+msgstr "Enregistrer les scores et tentatives suspectes dans le error_log PHP"
+
+msgid "Save Sandbox Settings"
+msgstr "Enregistrer les paramètres Sandbox"
+
+msgid "Live Suspicion Vector Monitor"
+msgstr "Moniteur du Vecteur de Suspicion en Direct"
+
+msgid "Start Real-Time SSE Stream"
+msgstr "Démarrer le flux SSE en temps réel"
+
+msgid "Poll Now (REST)"
+msgstr "Interroger maintenant (REST)"
+
+msgid "Current Suspicion Score"
+msgstr "Score de Suspicion Actuel"
+
+msgid "Suspicion Vector Breakdown"
+msgstr "Détail du Vecteur de Suspicion"
+
+msgid "Documentation: API Endpoints & Live Suspicion Vector Stream"
+msgstr "Documentation : Points d'accès API & Flux du Vecteur de Suspicion en Direct"
+
+msgid "During testing and sandbox analysis, you can inspect incoming requests, timestamps, evaluated scores, and behavioral indicator vectors using either HTTP REST, Server-Sent Events (SSE), or in-browser JavaScript events."
+msgstr "Lors des tests et de l'analyse en bac à sable, vous pouvez inspecter les requêtes entrantes, leurs horodatages, les scores calculés et le détail des indicateurs comportementaux via HTTP REST, Server-Sent Events (SSE) ou via les événements JavaScript du navigateur."
+
+msgid "1. Server-Sent Events (SSE) Stream — Continuous Real-Time Logs"
+msgstr "1. Flux Server-Sent Events (SSE) — Logs continus en temps réel"
+
+msgid "Endpoint:"
+msgstr "Point d'accès :"
+
+msgid "Emits a timestamped \"suspicion\" event each time a request is evaluated for the current IP."
+msgstr "Émet un événement \"suspicion\" horodaté à chaque requête évaluée pour l'adresse IP courante."
+
+msgid "2. REST Polling Endpoint — Last Evaluated Request"
+msgstr "2. Point d'accès REST (Polling) — Dernière requête évaluée"
+
+msgid "3. Client-Side JavaScript DOM Event & Global Object"
+msgstr "3. Événement JavaScript DOM Côté Client & Objet Global"
+
+msgid "When Sandbox Mode is active (or when logged-in as an administrator), the evaluation data is injected directly into each rendered page."
+msgstr "Lorsque le Mode Sandbox est activé (ou pour les administrateurs connectés), les données d'évaluation sont injectées directement dans chaque page chargée."
+
+msgid "Authorization note:"
+msgstr "Note d'autorisation :"
+
+msgid "These diagnostic routes require administrator permissions (manage_options) OR an active Sandbox Mode. They are automatically rate-limited and protected against external abuse."
+msgstr "Ces routes de diagnostic nécessitent les droits d'administration (manage_options) OU un Mode Sandbox actif. Elles sont protégées contre les abus externes."
+
 msgid "Frontend:"
 msgstr "Frontend :"
 

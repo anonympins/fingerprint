@@ -134,10 +134,16 @@ if (file_exists($wpDir . '/readme.txt')) {
     copy($wpDir . '/readme.txt', $buildDir . '/readme.txt');
 }
 
-// 3. Copie des assets clients nécessaires (solveur PoW)
+// 3. Copie des assets clients nécessaires (solveur PoW et bibliothèque client)
 $solverSource = $jsSrcDir . '/pow.solver.inline.js';
 if (file_exists($solverSource)) {
     copy($solverSource, $buildDir . '/assets/pow.solver.inline.js');
+}
+$clientSource = file_exists($jsSrcDir . '/fingerprint.client.obfuscated.js')
+    ? $jsSrcDir . '/fingerprint.client.obfuscated.js'
+    : $jsSrcDir . '/fingerprint.client.js';
+if (file_exists($clientSource)) {
+    copy($clientSource, $buildDir . '/assets/fingerprint.client.js');
 }
 
 // 4. Copie et compilation des fichiers de traduction i18n (FR / DE / EN)

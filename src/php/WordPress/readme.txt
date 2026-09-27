@@ -19,7 +19,9 @@ Fingerprint Anti-Bot is a high-performance, privacy-friendly bot mitigation engi
 * Multi-layered behavioral analysis (mouse, keystrokes, touch dynamics).
 * Cryptographic Proof-of-Work challenges (CPU and Memory bound) without third-party CAPTCHA cookies or trackers.
 * Prometheus-compatible metrics endpoint for monitoring and observability.
+* Dedicated Sandbox / Dry-Run mode with IP targeting for testing without blocking legitimate traffic.
 * Tailored security profiles for Frontend, Admin Area (wp-login), and REST API endpoints.
+* Real-time suspicion vector inspection via Server-Sent Events (SSE), REST telemetry, and DOM CustomEvents.
 
 == Installation ==
 
@@ -34,3 +36,17 @@ No. All evaluations, challenges, and validations occur directly on your WordPres
 
 = Is HTTPS required? =
 HTTPS is strongly recommended. Under unencrypted HTTP, modern browsers disable the Web Cryptography API (`crypto.subtle`), which reduces challenge verification performance.
+
+= How can I monitor incoming request suspicion scores in real time? =
+Under **Settings -> Fingerprint Anti-Bot -> Sandbox / Test Mode**, the plugin provides real-time observability interfaces for all challenged visitors across the website:
+
+1. **Server-Sent Events (SSE)**:
+`GET /wp-json/fingerprint/v1/sandbox/sse`
+Streams timestamped telemetry objects containing `id`, `timestamp`, `ip`, `uri`, `action`, `suspicionScore`, and `suspicionVector` for every challenged visitor.
+
+2. **REST Telemetry Polling**:
+`GET /wp-json/fingerprint/v1/sandbox/telemetry`
+Returns the latest list and evaluated challenge payloads across all visitors in JSON format.
+
+3. **Client-side JavaScript event**:
+Every page emits a DOM `CustomEvent('fingerprint:suspicion')` and sets `window.__FINGERPRINT_VECTOR__` when Sandbox mode is active or when an administrator is authenticated.

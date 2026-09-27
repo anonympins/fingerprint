@@ -25,15 +25,10 @@ class DirectFingerprint
     }
 
     /**
-     * Protects the current entry point.
-     * Analyzes the incoming request and issues challenges or block responses, exiting the script if necessary.
-     * If the request is allowed, returns the fingerprint data.
-     *
-     * @return array{score: float, vector: array}|null Fingerprint data if allowed, null otherwise.
+     * Builds request context from PHP superglobals.
      */
-    public function protect(): ?array
+    public function buildRequestContext(): RequestContext
     {
-        // 1. Build request context from PHP superglobals
         // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.NonceVerification.Recommended -- Direct WAF inspection firewall before WP core logic
         $body = $_POST ?: json_decode(file_get_contents('php://input'), true);
         $headers = function_exists('getallheaders') ? getallheaders() : [];
@@ -44,7 +39,7 @@ class DirectFingerprint
         $path = function_exists('wp_parse_url') ? (string)wp_parse_url($rawUri, PHP_URL_PATH) : (string)parse_url($rawUri, PHP_URL_PATH);
         $serverProtocol = isset($_SERVER['SERVER_PROTOCOL']) ? sanitize_text_field(wp_unslash($_SERVER['SERVER_PROTOCOL'])) : '1.1';
 
-        $context = new RequestContext(
+        return new RequestContext(
             $remoteAddr,
             !empty($path) ? $path : '/',
             $headers,
@@ -54,9 +49,61 @@ class DirectFingerprint
             $_COOKIE,
             $serverProtocol
         );
+    }
+
+    /**
+     * Inspects the incoming request without terminating execution or issuing redirects/exits.
+     *
+     * @param RequestContext|null $context
+     * @return array
+     */
+    public function inspect(?RequestContext $context = null): array
+    {
+        $context = $context ?? $this->buildRequestContext();
+        $decision = $this->engine->processRequest($context);
+
+        return [
+            'action'         => $decision['action'] ?? 'next',
+            'intendedAction' => $decision['intendedAction'] ?? null,
+            'score'          => (float)($decision['score'] ?? 0.0),
+            'suspicionScore' => (float)($decision['score'] ?? 0.0),
+            'vector'         => $decision['vector'] ?? [],
+            'status'         => $decision['status'] ?? 200,
+            'body'           => $decision['body'] ?? null,
+            'context'        => $context,
+        ];
+    }
+
+    /**
+     * Alias for inspect().
+     *
+     * @param RequestContext|null $context
+     * @return array
+     */
+    public function evaluate(?RequestContext $context = null): array
+    {
+        return $this->inspect($context);
+    }
+
+    /**
+     * Protects the current entry point.
+     * Analyzes the incoming request and issues challenges or block responses, exiting the script if necessary.
+     * If the request is allowed, returns the fingerprint data.
+     *
+     * @return array{score: float, vector: array}|null Fingerprint data if allowed, null otherwise.
+     */
+    public function protect(): ?array
+    {
+        // 1. Build request context from PHP superglobals
+        $context = $this->buildRequestContext();
 
         // 2. Process request with engine
         $decision = $this->engine->processRequest($context);
+
+        // 3. Callback hook before acting on decision (allows logging, telemetry, SSE recording)
+        if (isset($this->securityConfig['onDecision']) && is_callable($this->securityConfig['onDecision'])) {
+            call_user_func($this->securityConfig['onDecision'], $decision, $context);
+        }
 
         // 3. Act on decision
         if (isset($context->newCookieForResponse)) {

@@ -34,7 +34,7 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 0.9,
                 'tlsSpoofingScore' => 0.8,
                 'botScore' => 1.0,
-                'cookieDroppingScore' => 0.9,
+                'cookieDroppingScore' => 0.4,
                 'threatIntelScore' => 0.4,
                 'clientHintsInconsistencyScore' => 0.7,
                 'clickVarianceScore' => 0.6,
@@ -91,7 +91,7 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 1.0,
                 'tlsSpoofingScore' => 1.0,
                 'botScore' => 1.0,
-                'cookieDroppingScore' => 1.0,
+                'cookieDroppingScore' => 0.6,
                 'threatIntelScore' => 0.7,
                 'clientHintsInconsistencyScore' => 0.9,
                 'clickVarianceScore' => 0.7,
@@ -148,7 +148,7 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 0.8,
                 'tlsSpoofingScore' => 0.7,
                 'botScore' => 0.5,
-                'cookieDroppingScore' => 0.8, // Important pour les clients API qui doivent maintenir un état
+                'cookieDroppingScore' => 0.5, // Important pour les clients API qui doivent maintenir un état
                 'threatIntelScore' => 0.5, // APIs are often targeted by malicious IPs
                 'clientHintsInconsistencyScore' => 0.6, // Relevant signal for APIs
                 'clickVarianceScore' => 0.3, // Low weight as not applicable to APIs
@@ -207,7 +207,7 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 0.8,
                 'tlsSpoofingScore' => 0.6,
                 'botScore' => 0.8,
-                'cookieDroppingScore' => 0.7,
+                'cookieDroppingScore' => 0.3,
                 'threatIntelScore' => 0.3,
                 'clientHintsInconsistencyScore' => 0.5,
                 'clickVarianceScore' => 0.5,
@@ -264,7 +264,7 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 0.9,
                 'tlsSpoofingScore' => 0.9,
                 'botScore' => 1.0,
-                'cookieDroppingScore' => 1.0, // Crucial pour la détection de bots e-commerce
+                'cookieDroppingScore' => 0.6, // Crucial pour la détection de bots e-commerce
                 'threatIntelScore' => 0.8, // Very important for e-commerce (scalping proxies)
                 'clientHintsInconsistencyScore' => 0.9, // Very important for e-commerce
                 'clickVarianceScore' => 0.8, // Very high weight for click variance

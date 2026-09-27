@@ -607,9 +607,12 @@
              $deviceData = $store->get("device:{$deviceId}");
          }
 
+         $ua = $context->getHeader('user-agent') ?? '';
+         $pendingKey = "pending_cookie:" . md5($context->clientIp . '|' . $ua);
+
          if ($deviceData === null) {
              // Nouvel utilisateur ou cookie perdu/invalide
-             $pendingDeviceId = $store->get("pending_cookie:{$context->clientIp}");
+             $pendingDeviceId = $store->get($pendingKey);
              if ($pendingDeviceId && !$existingDeviceId) {
                  // La pénalité est maintenant ajoutée directement au vecteur de suspicion.
                  $this->log('Cookie dropping detected', ['clientIp' => $context->clientIp, 'pendingDeviceId' => $pendingDeviceId]);
@@ -628,7 +631,7 @@
                  'options' => [
                      'httponly' => true,
                      'secure' => $secureOption,
-                     'samesite' => 'Strict',
+                     'samesite' => 'Lax',
                      'path' => '/',
                  ]
              ];
@@ -636,7 +639,7 @@
                  $newCookie['options']['expires'] = time() + ($this->securityConfig['deviceIdCookieMaxAge'] / 1000);
              }
 
-             $store->set("pending_cookie:{$context->clientIp}", $deviceId, $pendingCookieTtl);
+             $store->set($pendingKey, $deviceId, $pendingCookieTtl);
 
              $deviceData = [
                  'initialDeviceHash' => $currentDeviceHash,
@@ -654,6 +657,8 @@
              if (!isset($deviceData['ips']) || !is_array($deviceData['ips'])) { // @phpstan-ignore-line
                  $deviceData['ips'] = [];
              }
+             // Le client a renvoyé un cookie valide : purger immédiatement l'attente
+             $store->delete($pendingKey);
          }
 
          // Validation de l'ancre matérielle WebAuthn (Secure Enclave / TPM)

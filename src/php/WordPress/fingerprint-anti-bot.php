@@ -116,6 +116,22 @@ function fingerprint_get_effective_profiles(array $defaultProfiles): array {
     ];
 }
 
+/**
+ * Récupère les paramètres configurés pour le mode Sandbox / Simulation.
+ */
+function fingerprint_get_sandbox_config(): array {
+    $saved = get_option('fingerprint_security_options', []);
+    $sandbox = is_array($saved) && isset($saved['sandbox']) && is_array($saved['sandbox']) ? $saved['sandbox'] : [];
+
+    return [
+        'enabled'      => !empty($sandbox['enabled']),
+        'audit_only'   => !empty($sandbox['audit_only']),
+        'log_requests' => !empty($sandbox['log_requests']),
+        'add_headers'  => !isset($sandbox['add_headers']) || !empty($sandbox['add_headers']),
+        'ip_filter'    => isset($sandbox['ip_filter']) ? trim((string)$sandbox['ip_filter']) : '',
+    ];
+}
+
 // 1. Autoloader PSR-4 pour le moteur Fingerprint
 if (!class_exists(DirectFingerprint::class)) {
     $fingerprint_composer_paths = [
@@ -201,6 +217,42 @@ add_action('admin_notices', function () {
     }
 });
 
+// Avertissement Admin si le Mode Sandbox est activé
+add_action('admin_notices', function () {
+    $sandbox = fingerprint_get_sandbox_config();
+    if ($sandbox['enabled'] && current_user_can('manage_options')) {
+        $modeDesc = !empty($sandbox['audit_only'])
+            ? esc_html__('Audit-Only dry-run is active: visitors will not be blocked or challenged.', 'fingerprint-anti-bot')
+            : esc_html__('Enforced test mode: suspicion analysis and PoW challenges are actively triggered.', 'fingerprint-anti-bot');
+
+        echo '<div class="notice notice-warning is-dismissible">';
+        echo '<p><strong>' . esc_html__('[Fingerprint Anti-Bot Sandbox Active]', 'fingerprint-anti-bot') . '</strong> : ' .
+            esc_html__('Sandbox Mode is currently ENABLED.', 'fingerprint-anti-bot') . ' ' . $modeDesc .
+            ' <a href="' . esc_url(admin_url('options-general.php?page=fingerprint-settings#tab-sandbox')) . '">' . esc_html__('Configure Sandbox', 'fingerprint-anti-bot') . '</a></p>';
+        echo '</div>';
+    }
+});
+
+/**
+ * Enregistre un événement de challenge dans le tampon tournant du store.
+ */
+function fingerprint_record_challenge_event(array $event): void {
+    $store = new WpDbStore();
+    $history = $store->get('fingerprint_challenges_log');
+    if (!is_array($history)) {
+        $history = [];
+    }
+    array_unshift($history, $event);
+    if (count($history) > 50) {
+        $history = array_slice($history, 0, 50);
+    }
+    $store->set('fingerprint_challenges_log', $history, 3600);
+    $store->set('fingerprint_latest_challenge', $event, 3600);
+}
+
+// Variable globale pour stocker l'évaluation de la requête courante (utilisée par JS et REST)
+$GLOBALS['fingerprint_current_evaluation'] = null;
+
 // 6. Interception de sécurité au plus tôt du cycle de vie WordPress
 add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
     // Ignore WP-CLI et les exécutions internes de cron
@@ -208,16 +260,27 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
         return;
     }
 
-    // Initialiser le Store persistant basé sur $wpdb
-    $store = new WpDbStore();
-    StoreManager::configureStore($store);
-
     // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized with sanitize_text_field
     $rawUri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
     $requestUri = !empty($rawUri) ? $rawUri : '/';
     $isRestApi = defined('REST_REQUEST') && REST_REQUEST;
+
+    // Ignore les requêtes de favicons et d'assets statiques pour ne pas polluer l'inspection
+    if (preg_match('/\.(ico|png|jpg|jpeg|gif|webp|svg|css|js|woff|woff2|ttf)$/i', (string)parse_url($requestUri, PHP_URL_PATH))) {
+        return;
+    }
     // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
     $isAdmin = is_admin() || (isset($_SERVER['PHP_SELF']) && str_contains(sanitize_text_field(wp_unslash($_SERVER['PHP_SELF'])), 'wp-login.php')) || str_contains($requestUri, 'wp-login.php');
+
+    // Whitelist inconditionnelle de la page des réglages du plugin et des endpoints REST de diagnostic
+    if (str_contains($requestUri, 'page=fingerprint-settings') || str_contains($requestUri, '/wp-json/fingerprint/v1/')) {
+        return;
+    }
+
+    // Initialiser le Store persistant basé sur $wpdb
+    $store = new WpDbStore();
+    $store->ensureTable();
+    StoreManager::configureStore($store);
 
     // Fusion avec les options enregistrées via l'admin WP
     $effectiveProfiles = fingerprint_get_effective_profiles($fingerprint_security_profiles);
@@ -234,12 +297,280 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
         $contextConfig = $configs['frontend'] ?? $fingerprint_security_profiles['frontend'];
     }
 
+    // Évaluation du Mode Sandbox
+    $sandboxConfig = fingerprint_get_sandbox_config();
+
+    $isSandboxActive = false;
+
+    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+    $clientIp = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
+
+    if ($sandboxConfig['enabled']) {
+        if (!empty($sandboxConfig['ip_filter'])) {
+            $targetIps = array_filter(array_map('trim', explode(',', $sandboxConfig['ip_filter'])));
+            if (in_array($clientIp, $targetIps, true)) {
+                $isSandboxActive = true;
+            }
+        } else {
+            $isSandboxActive = true;
+        }
+    }
+
+    if ($isSandboxActive) {
+        $contextConfig['overrides']['sandboxMode'] = true;
+        if (!empty($sandboxConfig['audit_only'])) {
+            $contextConfig['overrides']['dryRun'] = true;
+        }
+        if ($sandboxConfig['log_requests']) {
+            $contextConfig['overrides']['verbose'] = true;
+        }
+    }
+
+    // Configuration du callback onDecision pour capturer les événements en temps réel (challenges, blocks, audits)
+    $contextConfig['overrides']['onDecision'] = function (array $decision, \Anonympins\Fingerprint\RequestContext $context) use ($isSandboxActive, $sandboxConfig, $requestUri, $clientIp, $contextConfig) {
+        $score = (float)($decision['score'] ?? 0.0);
+        $thresholdLow = (float)($contextConfig['overrides']['thresholds']['low'] ?? 20.0);
+        $thresholdBlock = (float)($contextConfig['overrides']['thresholds']['block'] ?? 95.0);
+
+        $action = $decision['intendedAction'] ?? ($decision['action'] ?? 'next');
+        $actionTaken = 'allow';
+        if ($action === 'block' || $score >= $thresholdBlock) {
+            $actionTaken = 'block';
+        } elseif ($action === 'challenge' || ($decision['action'] ?? '') === 'challenge' || $score >= $thresholdLow) {
+            $actionTaken = 'challenge';
+        } elseif ($action === 'redirect') {
+            $actionTaken = 'challenge_solved';
+        } elseif (!empty($decision['intendedAction']) && $decision['intendedAction'] !== 'next') {
+            $actionTaken = (string)$decision['intendedAction'];
+        }
+
+        if ($isSandboxActive && !empty($sandboxConfig['audit_only'])) {
+            if ($actionTaken !== 'allow') {
+                $actionTaken = 'audit_sim (' . $actionTaken . ')';
+            }
+        }
+
+        $isChallengedOrSuspect = ($actionTaken === 'challenge' || $actionTaken === 'block' || $actionTaken === 'challenge_solved' || str_starts_with($actionTaken, 'audit_sim'));
+
+        $payload = [
+            'id'              => uniqid('ch_', true),
+            'timestamp'       => time(),
+            'uri'             => $requestUri,
+            'ip'              => !empty($clientIp) ? $clientIp : ($context->clientIp ?? 'unknown'),
+            'suspicionScore'  => round($score, 1),
+            'action'          => $actionTaken,
+            'suspicionVector' => $decision['vector'] ?? [],
+            'sandbox'         => $isSandboxActive,
+        ];
+        $GLOBALS['fingerprint_current_evaluation'] = $payload;
+
+        // Diagnostic HTTP headers if active
+        if ($isSandboxActive && $sandboxConfig['add_headers'] && !headers_sent()) {
+            header('X-Fingerprint-Sandbox: active');
+            header('X-Fingerprint-Mode: ' . (!empty($sandboxConfig['audit_only']) ? 'audit-only' : 'enforce'));
+            header('X-Fingerprint-Score: ' . (string)round($score, 1));
+        }
+
+        if ($sandboxConfig['log_requests']) {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+            error_log(sprintf('[Fingerprint Challenge Log] Target: %s | IP: %s | Action: %s | Score: %s', $requestUri, $payload['ip'], $actionTaken, $payload['suspicionScore']));
+        }
+
+        // Journalise tout challenge, blocage ou action suspecte dans la file partagée
+        if ($isChallengedOrSuspect) {
+            fingerprint_record_challenge_event($payload);
+        }
+    };
+
     $securityConfig = SecurityProfiles::createSecurityProfile($contextConfig['profile'], $contextConfig['overrides'] ?? []);
     $guard = new DirectFingerprint($securityConfig);
 
     // Inspecte la requête : bloque ou envoie le challenge si nécessaire et stoppe le script
     $guard->protect();
 }, 0);
+
+// =============================================================================
+// CHARGEMENT & INITIALISATION DE LA TÉLÉMÉTRIE CLIENT (BIOMÉTRIE & HONEYPOTS)
+// =============================================================================
+add_action('wp_enqueue_scripts', 'fingerprint_enqueue_client_telemetry');
+add_action('login_enqueue_scripts', 'fingerprint_enqueue_client_telemetry');
+
+function fingerprint_enqueue_client_telemetry(): void {
+
+    global $fingerprint_foreign_env_honeypot_fields, $fingerprint_foreign_env_trap_urls;
+
+    $scriptUrl = plugin_dir_url(__FILE__) . 'assets/fingerprint.client.js';
+    $scriptPath = plugin_dir_path(__FILE__) . 'assets/fingerprint.client.js';
+
+    if (!file_exists($scriptPath)) {
+        return;
+    }
+
+    $version = filemtime($scriptPath) ?: '0.7.5';
+    wp_enqueue_script('fingerprint-client-telemetry', $scriptUrl, [], (string)$version, false);
+
+    // Options d'initialisation transmises au client
+    $clientConfig = [
+        'mouse'        => true,
+        'keystrokes'   => true,
+        'clicks'       => true,
+        'touches'      => true,
+        'motion'       => true,
+        'rendering'    => true,
+        'phantomTraps' => true,
+        'honeypots'    => array_values($fingerprint_foreign_env_honeypot_fields),
+        'trapUrls'     => array_values($fingerprint_foreign_env_trap_urls),
+        'fetch'        => [
+            'handleChallenges' => true,
+        ],
+    ];
+
+    $inlineInit = 'if (window.ClientLibrary && typeof window.ClientLibrary.initializeClient === "function") {'
+        . ' window.ClientLibrary.initializeClient(' . wp_json_encode($clientConfig) . ');'
+        . '};';
+
+    wp_add_inline_script('fingerprint-client-telemetry', $inlineInit);
+}
+
+// =============================================================================
+// INJECTION DU VECTEUR DE SUSPICION CÔTÉ CLIENT (ÉVÉNEMENT JS)
+// =============================================================================
+add_action('wp_head', 'fingerprint_inject_client_suspicion_event');
+add_action('admin_head', 'fingerprint_inject_client_suspicion_event');
+function fingerprint_inject_client_suspicion_event(): void {
+    $eval = $GLOBALS['fingerprint_current_evaluation'] ?? null;
+    if (!$eval || (!current_user_can('manage_options') && empty(fingerprint_get_sandbox_config()['enabled']))) {
+        return;
+    }
+    $jsonPayload = wp_json_encode($eval);
+    ?>
+    <script>
+    (function() {
+        window.__FINGERPRINT_VECTOR__ = <?php echo $jsonPayload; ?>;
+        try {
+            const evt = new CustomEvent('fingerprint:suspicion', { detail: window.__FINGERPRINT_VECTOR__ });
+            document.dispatchEvent(evt);
+        } catch(e) {}
+    })();
+    </script>
+    <?php
+}
+
+// =============================================================================
+// ROUTES SPÉCIALES SANDBOX : REST & SERVER-SENT EVENTS (SSE)
+// =============================================================================
+add_action('rest_api_init', function () {
+    register_rest_route('fingerprint/v1', '/sandbox/telemetry', [
+        'methods'             => 'GET',
+        'callback'            => 'fingerprint_rest_sandbox_telemetry',
+        'permission_callback' => function () {
+            return current_user_can('manage_options') || !empty(fingerprint_get_sandbox_config()['enabled']);
+        },
+    ]);
+
+    register_rest_route('fingerprint/v1', '/sandbox/sse', [
+        'methods'             => 'GET',
+        'callback'            => 'fingerprint_rest_sandbox_sse',
+        'permission_callback' => function () {
+            return current_user_can('manage_options') || !empty(fingerprint_get_sandbox_config()['enabled']);
+        },
+    ]);
+
+    register_rest_route('fingerprint/v1', '/sandbox/clear-challenges', [
+        'methods'             => 'POST',
+        'callback'            => 'fingerprint_rest_sandbox_clear_challenges',
+        'permission_callback' => function () {
+            return current_user_can('manage_options');
+        },
+    ]);
+});
+
+/**
+ * Retourne la liste des derniers visiteurs challengés sur le site.
+ */
+function fingerprint_rest_sandbox_telemetry(\WP_REST_Request $request): \WP_REST_Response {
+    $store = new WpDbStore();
+    $history = $store->get('fingerprint_challenges_log');
+    if (!is_array($history)) {
+        $history = [];
+    }
+    $latest = !empty($history) ? $history[0] : null;
+
+    return new \WP_REST_Response([
+        'latest'  => $latest ?: null,
+        'history' => $history,
+        'total'   => count($history),
+    ], 200);
+}
+
+/**
+ * Réinitialise le journal des visiteurs challengés.
+ */
+function fingerprint_rest_sandbox_clear_challenges(): \WP_REST_Response {
+    $store = new WpDbStore();
+    $store->delete('fingerprint_challenges_log');
+    $store->delete('fingerprint_latest_challenge');
+    return new \WP_REST_Response(['cleared' => true], 200);
+}
+
+/**
+ * Stream Server-Sent Events (SSE) émettant en direct chaque visiteur challengé sur le site.
+ */
+function fingerprint_rest_sandbox_sse(): void {
+    if (function_exists('apache_setenv')) {
+        apache_setenv('no-gzip', '1');
+    }
+    // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.ob_end_clean_ob_end_clean
+    if (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+
+    header('Content-Type: text/event-stream; charset=utf-8');
+    header('Cache-Control: no-cache, no-transform');
+    header('Connection: keep-alive');
+    header('X-Accel-Buffering: no');
+
+    $store = new WpDbStore();
+    $lastSeenId = '';
+
+    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+    if (!empty($_SERVER['HTTP_LAST_EVENT_ID'])) {
+        $lastSeenId = sanitize_text_field(wp_unslash($_SERVER['HTTP_LAST_EVENT_ID']));
+    }
+
+    $endTime = time() + 25;
+    while (time() < $endTime) {
+        $history = $store->get('fingerprint_challenges_log');
+        if (is_array($history) && !empty($history)) {
+            $newEvents = [];
+            foreach ($history as $ev) {
+                if (!empty($ev['id']) && (string)$ev['id'] === $lastSeenId) {
+                    break;
+                }
+                $newEvents[] = $ev;
+            }
+            if (!empty($newEvents)) {
+                $newEvents = array_reverse($newEvents);
+                foreach ($newEvents as $ev) {
+                    $lastSeenId = (string)$ev['id'];
+                    echo "id: " . esc_attr($lastSeenId) . "\n";
+                    echo "event: challenge\n";
+                    echo 'data: ' . wp_json_encode($ev) . "\n\n";
+                }
+                if (flush() && ob_get_level() > 0) {
+                    ob_flush();
+                }
+            }
+        } else {
+            echo ": ping\n\n";
+            if (flush() && ob_get_level() > 0) {
+                ob_flush();
+            }
+        }
+        usleep(400000); // 400ms
+    }
+    exit;
+}
 
 // =============================================================================
 // INTERFACE D'ADMINISTRATION, RÉGLAGES & INSPECTION DES MÉTRIQUES
@@ -303,6 +634,25 @@ function fingerprint_render_admin_page(): void {
         echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Fingerprint settings updated successfully.', 'fingerprint-anti-bot') . '</strong></p></div>';
     }
 
+    // Sauvegarde des réglages Sandbox
+    if (isset($_POST['fingerprint_save_sandbox']) && check_admin_referer('fingerprint_sandbox_nonce', 'fingerprint_nonce_sandbox')) {
+        $saved = get_option('fingerprint_security_options', []);
+        if (!is_array($saved)) {
+            $saved = [];
+        }
+
+        $saved['sandbox'] = [
+            'enabled'      => !empty($_POST['sandbox_enabled']),
+            'audit_only'   => !empty($_POST['sandbox_audit_only']),
+            'log_requests' => !empty($_POST['sandbox_log_requests']),
+            'add_headers'  => !empty($_POST['sandbox_add_headers']),
+            'ip_filter'    => isset($_POST['sandbox_ip_filter']) ? sanitize_text_field(wp_unslash($_POST['sandbox_ip_filter'])) : '',
+        ];
+
+        update_option('fingerprint_security_options', $saved);
+        echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Sandbox settings updated successfully.', 'fingerprint-anti-bot') . '</strong></p></div>';
+    }
+
     // Action pour vider le cache SQL manuellement
     if (isset($_POST['fingerprint_clear_store']) && check_admin_referer('fingerprint_clear_nonce', 'fingerprint_nonce_clear')) {
         $store = new WpDbStore();
@@ -311,6 +661,7 @@ function fingerprint_render_admin_page(): void {
     }
 
     // Récupération des profils effectifs
+    $sandboxConfig = fingerprint_get_sandbox_config();
     $effective = fingerprint_get_effective_profiles($fingerprint_security_profiles);
     $frontendConfig = SecurityProfiles::createSecurityProfile($effective['frontend']['profile'], $effective['frontend']['overrides'] ?? []);
 
@@ -371,11 +722,26 @@ function fingerprint_render_admin_page(): void {
                     <?php esc_html_e('REST API:', 'fingerprint-anti-bot'); ?> <strong><?php echo esc_html($effective['api']['profile']); ?></strong>
                 </p>
             </div>
+            <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
+                <h3 style="margin-top:0;"><?php esc_html_e('Sandbox Mode', 'fingerprint-anti-bot'); ?></h3>
+                <?php if ($sandboxConfig['enabled']): ?>
+                    <p style="color:#dba617;font-weight:bold;font-size:16px;margin:0;">
+                        <span class="dashicons dashicons-warning"></span> <?php esc_html_e('Active (Simulation)', 'fingerprint-anti-bot'); ?>
+                    </p>
+                    <small style="color:#646970;"><?php echo !empty($sandboxConfig['audit_only']) ? esc_html__('Audit-Only: non-blocking observation.', 'fingerprint-anti-bot') : esc_html__('Testing: challenges & mitigations active.', 'fingerprint-anti-bot'); ?></small>
+                <?php else: ?>
+                    <p style="color:#007017;font-weight:bold;font-size:16px;margin:0;">
+                        <span class="dashicons dashicons-yes-alt"></span> <?php esc_html_e('Production (Enforced)', 'fingerprint-anti-bot'); ?>
+                    </p>
+                    <small style="color:#646970;"><?php esc_html_e('Bot protection active across all visitors.', 'fingerprint-anti-bot'); ?></small>
+                <?php endif; ?>
+            </div>
         </div>
 
         <!-- ONGLETS DE NAVIGATION -->
         <h2 class="nav-tab-wrapper">
             <a href="#tab-settings" class="nav-tab nav-tab-active" onclick="fingerprintSwitchTab(event, 'tab-settings')"><?php esc_html_e('Settings & Profiles', 'fingerprint-anti-bot'); ?></a>
+            <a href="#tab-sandbox" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-sandbox')"><?php esc_html_e('Sandbox / Test Mode', 'fingerprint-anti-bot'); ?></a>
             <a href="#tab-metrics" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-metrics')"><?php esc_html_e('Metrics & Weights View', 'fingerprint-anti-bot'); ?></a>
             <a href="#tab-prometheus" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-prometheus')"><?php esc_html_e('Prometheus Stream', 'fingerprint-anti-bot'); ?></a>
         </h2>
@@ -474,6 +840,195 @@ function fingerprint_render_admin_page(): void {
             </form>
         </div>
 
+        <!-- TAB SANDBOX : BAC À SABLE / SIMULATION -->
+        <div id="tab-sandbox" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
+            <h3><?php esc_html_e('Sandbox Mode & Dry-Run Configuration', 'fingerprint-anti-bot'); ?></h3>
+            <p class="description"><?php esc_html_e('Sandbox mode enables telemetry observation, diagnostic headers, and targeted IP testing. You can test actual challenges or opt into passive observation with Audit-Only mode.', 'fingerprint-anti-bot'); ?></p>
+
+            <form method="post" action="">
+                <?php wp_nonce_field('fingerprint_sandbox_nonce', 'fingerprint_nonce_sandbox'); ?>
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><?php esc_html_e('Sandbox Activation', 'fingerprint-anti-bot'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="sandbox_enabled" value="1" <?php checked($sandboxConfig['enabled']); ?>>
+                                <strong><?php esc_html_e('Enable Sandbox Mode', 'fingerprint-anti-bot'); ?></strong>
+                            </label>
+                            <p class="description"><?php esc_html_e('Enables the sandbox testing environment with diagnostic headers and real-time telemetry streaming.', 'fingerprint-anti-bot'); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><?php esc_html_e('Behavior & Enforcement', 'fingerprint-anti-bot'); ?></th>
+                        <td>
+                            <label>
+                                <input type="checkbox" name="sandbox_audit_only" value="1" <?php checked($sandboxConfig['audit_only']); ?>>
+                                <strong><?php esc_html_e('Audit Only / Dry-Run (Never block or challenge visitors)', 'fingerprint-anti-bot'); ?></strong>
+                            </label>
+                            <p class="description"><?php esc_html_e('Optional: Check this to bypass PoW challenges and blocking (pure observation). When unchecked, challenges and mitigations are actively enforced so you can test them live.', 'fingerprint-anti-bot'); ?></p>
+                            <label>
+                                <input type="checkbox" name="sandbox_add_headers" value="1" <?php checked($sandboxConfig['add_headers']); ?>>
+                                <?php esc_html_e('Add diagnostic HTTP headers (X-Fingerprint-Sandbox: active)', 'fingerprint-anti-bot'); ?>
+                            </label><br><br>
+                            <label>
+                                <input type="checkbox" name="sandbox_log_requests" value="1" <?php checked($sandboxConfig['log_requests']); ?>>
+                                <?php esc_html_e('Log evaluated scores and suspicious attempts to PHP error_log', 'fingerprint-anti-bot'); ?>
+                            </label>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="sandbox_ip_filter"><?php esc_html_e('Test IP Whitelist Filter', 'fingerprint-anti-bot'); ?></label></th>
+                        <td>
+                            <?php
+                            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+                            $currentAdminIp = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
+                            ?>
+                            <input type="text" name="sandbox_ip_filter" id="sandbox_ip_filter" value="<?php echo esc_attr($sandboxConfig['ip_filter']); ?>" class="regular-text" placeholder="e.g. 192.168.1.100, 203.0.113.42">
+                            <?php if (!empty($currentAdminIp)): ?>
+                                <button type="button" class="button button-secondary button-small" onclick="document.getElementById('sandbox_ip_filter').value = '<?php echo esc_js($currentAdminIp); ?>';">
+                                    <?php esc_html_e('Use my IP', 'fingerprint-anti-bot'); ?> (<?php echo esc_html($currentAdminIp); ?>)
+                                </button>
+                            <?php endif; ?>
+                            <p class="description"><?php esc_html_e('Optional comma-separated list of IP addresses. If filled, Sandbox simulation applies ONLY to these IPs, while all other visitors remain under normal production protection.', 'fingerprint-anti-bot'); ?></p>
+                        </td>
+                    </tr>
+                </table>
+
+                <?php submit_button(esc_html__('Save Sandbox Settings', 'fingerprint-anti-bot'), 'primary', 'fingerprint_save_sandbox'); ?>
+            </form>
+
+            <hr>
+            <!-- MONITEUR DES VISITEURS CHALLENGÉS EN DIRECT (SSE & REST) -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <h3 style="margin:0;"><span class="dashicons dashicons-shield" style="vertical-align:text-bottom;"></span> <?php esc_html_e('Live Challenged Visitors & Suspicion Monitor', 'fingerprint-anti-bot'); ?></h3>
+                <div>
+                    <span style="font-weight:600;color:#646970;"><?php esc_html_e('Recent Challenges:', 'fingerprint-anti-bot'); ?></span>
+                    <span id="live-challenges-count" style="display:inline-block;padding:2px 8px;background:#2271b1;color:#fff;border-radius:10px;font-weight:bold;font-size:12px;">0</span>
+                </div>
+            </div>
+            <p class="description"><?php esc_html_e('Real-time feed of all visitors across the site who triggered a Proof-of-Work challenge, bot heuristic, or security mitigation.', 'fingerprint-anti-bot'); ?></p>
+
+            <div style="background:#f6f7f7;padding:16px;border:1px solid #c3c4c7;border-radius:4px;margin-bottom:15px;">
+                <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+                    <button type="button" class="button button-primary" id="btn-toggle-sse" onclick="fingerprintToggleSSE();">
+                        <span class="dashicons dashicons-controls-play" style="vertical-align:middle;"></span> <span id="sse-btn-text"><?php esc_html_e('Start Real-Time SSE Stream', 'fingerprint-anti-bot'); ?></span>
+                    </button>
+                    <button type="button" class="button button-secondary" onclick="fingerprintFetchTelemetry();">
+                        <span class="dashicons dashicons-update" style="vertical-align:middle;"></span> <?php esc_html_e('Poll Now (REST)', 'fingerprint-anti-bot'); ?>
+                    </button>
+                    <button type="button" class="button button-secondary" onclick="fingerprintClearFeed();">
+                        <span class="dashicons dashicons-trash" style="vertical-align:middle;"></span> <?php esc_html_e('Clear Feed', 'fingerprint-anti-bot'); ?>
+                    </button>
+                    <span id="sse-connection-status" style="font-weight:bold;color:#646970;"></span>
+                </div>
+
+                <div style="display:grid;grid-template-columns: 1.4fr 1fr;gap:16px;">
+                    <!-- TABLEAU DES CHALLENGES EN DIRECT -->
+                    <div style="background:#fff;padding:12px;border:1px solid #dcdcde;border-radius:4px;overflow-x:auto;">
+                        <h4 style="margin:0 0 8px 0;"><?php esc_html_e('Challenged Visitors Stream (All Users)', 'fingerprint-anti-bot'); ?></h4>
+                        <table class="wp-list-table widefat fixed striped" style="font-size:12px;">
+                            <thead>
+                                <tr>
+                                    <th style="width:75px;"><?php esc_html_e('Time', 'fingerprint-anti-bot'); ?></th>
+                                    <th style="width:110px;"><?php esc_html_e('IP', 'fingerprint-anti-bot'); ?></th>
+                                    <th><?php esc_html_e('URI', 'fingerprint-anti-bot'); ?></th>
+                                    <th style="width:50px;"><?php esc_html_e('Score', 'fingerprint-anti-bot'); ?></th>
+                                    <th style="width:90px;"><?php esc_html_e('Action', 'fingerprint-anti-bot'); ?></th>
+                                    <th style="width:70px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="live-challenges-tbody">
+                                <tr><td colspan="6" style="text-align:center;color:#646970;padding:16px;"><em><?php esc_html_e('Awaiting incoming challenges...', 'fingerprint-anti-bot'); ?></em></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- DÉTAILS DU VECTEUR DE SUSPICION DU VISITEUR SÉLECTIONNÉ -->
+                    <div style="background:#fff;padding:14px;border:1px solid #dcdcde;border-radius:4px;">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+                            <h4 style="margin:0;"><?php esc_html_e('Inspection & Suspicion Vector', 'fingerprint-anti-bot'); ?></h4>
+                            <div id="live-score-val" style="font-size:28px;font-weight:bold;color:#2271b1;line-height:1;">--</div>
+                        </div>
+                        <div id="live-score-sub" style="font-size:12px;color:#646970;background:#f6f7f7;padding:8px;border-radius:3px;margin-bottom:10px;">
+                            <?php esc_html_e('Select an entry from the list to inspect its vector.', 'fingerprint-anti-bot'); ?>
+                        </div>
+                        <div id="live-vector-breakdown" style="font-family:monospace;font-size:12px;max-height:220px;overflow-y:auto;color:#2c3338;">
+                            <em><?php esc_html_e('No entry selected.', 'fingerprint-anti-bot'); ?></em>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top:12px;">
+                    <details style="border:1px solid #c3c4c7;border-radius:4px;padding:10px 14px;background:#fff;">
+                        <summary style="cursor:pointer;color:#2271b1;font-weight:600;font-size:14px;">
+                            <span class="dashicons dashicons-book" style="vertical-align:text-bottom;"></span>
+                            <?php esc_html_e('Documentation: API Endpoints & Live Suspicion Vector Stream', 'fingerprint-anti-bot'); ?>
+                        </summary>
+                        <div style="margin-top:12px;font-size:13px;line-height:1.6;color:#2c3338;">
+                            <p><?php esc_html_e('During testing and sandbox analysis, you can inspect incoming requests, timestamps, evaluated scores, and behavioral indicator vectors using either HTTP REST, Server-Sent Events (SSE), or in-browser JavaScript events.', 'fingerprint-anti-bot'); ?></p>
+
+                            <h4 style="margin:12px 0 6px 0;"><?php esc_html_e('1. Server-Sent Events (SSE) Stream — Continuous Real-Time Logs', 'fingerprint-anti-bot'); ?></h4>
+                            <p><?php esc_html_e('Endpoint:', 'fingerprint-anti-bot'); ?> <code>GET <?php echo esc_url(rest_url('fingerprint/v1/sandbox/sse')); ?></code><br>
+                            <small style="color:#646970;"><?php esc_html_e('Emits a timestamped "suspicion" event each time a request is evaluated for the current IP.', 'fingerprint-anti-bot'); ?></small></p>
+                            <pre style="background:#f6f7f7;padding:10px;border:1px solid #dcdcde;border-radius:4px;font-size:12px;overflow-x:auto;">
+<span style="color:#007017;">// JavaScript SSE subscriber example:</span>
+const sse = new EventSource('<?php echo esc_url(rest_url('fingerprint/v1/sandbox/sse')); ?>');
+sse.addEventListener('suspicion', (e) => {
+    const entry = JSON.parse(e.data);
+    console.log(`[${new Date(entry.timestamp * 1000).toISOString()}] IP: ${entry.ip} | Score: ${entry.suspicionScore}`, entry.suspicionVector);
+});
+sse.onerror = () => sse.close();
+</pre>
+
+                            <h4 style="margin:14px 0 6px 0;"><?php esc_html_e('2. REST Polling Endpoint — Last Evaluated Request', 'fingerprint-anti-bot'); ?></h4>
+                            <p><?php esc_html_e('Endpoint:', 'fingerprint-anti-bot'); ?> <code>GET <?php echo esc_url(rest_url('fingerprint/v1/sandbox/telemetry')); ?></code></p>
+                            <pre style="background:#f6f7f7;padding:10px;border:1px solid #dcdcde;border-radius:4px;font-size:12px;overflow-x:auto;">
+<span style="color:#007017;"># CLI / Terminal cURL:</span>
+curl -s -X GET "<?php echo esc_url(rest_url('fingerprint/v1/sandbox/telemetry')); ?>"
+
+<span style="color:#007017;">// JSON Response Payload Structure:</span>
+{
+  "timestamp": 1740000000,
+  "uri": "/checkout",
+  "ip": "203.0.113.42",
+  "suspicionScore": 38.5,
+  "suspicionVector": {
+    "headerAnomalyScore": 12.0,
+    "tlsSpoofingScore": 0.0,
+    "behaviorScore": 26.5
+  },
+  "sandbox": true
+}
+</pre>
+
+                            <h4 style="margin:14px 0 6px 0;"><?php esc_html_e('3. Client-Side JavaScript DOM Event & Global Object', 'fingerprint-anti-bot'); ?></h4>
+                            <p><?php esc_html_e('When Sandbox Mode is active (or when logged-in as an administrator), the evaluation data is injected directly into each rendered page.', 'fingerprint-anti-bot'); ?></p>
+                            <pre style="background:#f6f7f7;padding:10px;border:1px solid #dcdcde;border-radius:4px;font-size:12px;overflow-x:auto;">
+<span style="color:#007017;">// Option A: Listen for the CustomEvent fired on the document:</span>
+document.addEventListener('fingerprint:suspicion', function(event) {
+    console.log('Timestamp:', event.detail.timestamp);
+    console.log('Active IP:', event.detail.ip);
+    console.log('Target URI:', event.detail.uri);
+    console.log('Score:', event.detail.suspicionScore);
+    console.log('Vector breakdown:', event.detail.suspicionVector);
+});
+
+<span style="color:#007017;">// Option B: Read directly from the global window object:</span>
+if (window.__FINGERPRINT_VECTOR__) {
+    console.log('Current Request Vector:', window.__FINGERPRINT_VECTOR__.suspicionVector);
+}
+</pre>
+
+                            <p style="margin-top:10px;font-size:12px;color:#646970;">
+                                <strong><?php esc_html_e('Authorization note:', 'fingerprint-anti-bot'); ?></strong>
+                                <?php esc_html_e('These diagnostic routes require administrator permissions (manage_options) OR an active Sandbox Mode. They are automatically rate-limited and protected against external abuse.', 'fingerprint-anti-bot'); ?>
+                            </p>
+                        </div>
+                    </details>
+                </div>
+            </div>
+        </div>
+
         <!-- TAB 2 : VUE DÉTAILLÉE DES MÉTRIQUES -->
         <div id="tab-metrics" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
             <h3><?php esc_html_e('Behavioral & Transport Indicator Weights (Active Frontend Profile)', 'fingerprint-anti-bot'); ?></h3>
@@ -553,7 +1108,192 @@ function fingerprint_render_admin_page(): void {
         navs.forEach(n => n.classList.remove('nav-tab-active'));
         document.getElementById(tabId).style.display = 'block';
         evt.currentTarget.classList.add('nav-tab-active');
+        if (window.location.hash !== '#' + tabId && history.pushState) {
+            history.pushState(null, null, '#' + tabId);
+        }
     }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const hash = window.location.hash;
+        if (hash) {
+            const targetId = hash.replace('#', '');
+            const targetContent = document.getElementById(targetId);
+            const targetLink = document.querySelector('.nav-tab-wrapper a[href="' + hash + '"]');
+            if (targetContent && targetLink) {
+                document.querySelectorAll('.fingerprint-tab-content').forEach(function(t) {
+                    t.style.display = 'none';
+                });
+                document.querySelectorAll('.nav-tab-wrapper a').forEach(function(n) {
+                    n.classList.remove('nav-tab-active');
+                });
+                targetContent.style.display = 'block';
+                targetLink.classList.add('nav-tab-active');
+            }
+        }
+    });
+
+    // Client SSE & Polling pour le Moniteur de Suspicion Vector
+    let sseSource = null;
+    let challengesHistory = [];
+    let selectedChallengeId = null;
+    const wpRestNonce = '<?php echo esc_js(wp_create_nonce('wp_rest')); ?>';
+
+    function fingerprintToggleSSE() {
+        const statusEl = document.getElementById('sse-connection-status');
+        const btnText = document.getElementById('sse-btn-text');
+        if (sseSource) {
+            sseSource.close();
+            sseSource = null;
+            statusEl.textContent = '<?php echo esc_js(__('SSE Disconnected', 'fingerprint-anti-bot')); ?>';
+            statusEl.style.color = '#646970';
+            btnText.textContent = '<?php echo esc_js(__('Start Real-Time SSE Stream', 'fingerprint-anti-bot')); ?>';
+            return;
+        }
+
+        statusEl.textContent = '<?php echo esc_js(__('Connecting to SSE stream...', 'fingerprint-anti-bot')); ?>';
+        statusEl.style.color = '#2271b1';
+        sseSource = new EventSource('<?php echo esc_url(rest_url('fingerprint/v1/sandbox/sse')); ?>?_wpnonce=' + wpRestNonce);
+
+        sseSource.onopen = function() {
+            statusEl.textContent = '<?php echo esc_js(__('SSE Live Connected', 'fingerprint-anti-bot')); ?>';
+            statusEl.style.color = '#007017';
+            btnText.textContent = '<?php echo esc_js(__('Stop Stream', 'fingerprint-anti-bot')); ?>';
+        };
+
+        sseSource.addEventListener('challenge', function(e) {
+            try {
+                const newChallenge = JSON.parse(e.data);
+                if (!challengesHistory.some(c => c.id === newChallenge.id)) {
+                    challengesHistory.unshift(newChallenge);
+                    if (challengesHistory.length > 50) {
+                        challengesHistory.pop();
+                    }
+                    selectedChallengeId = newChallenge.id;
+                    renderChallengesUI();
+                }
+            } catch(err) {}
+        });
+
+        sseSource.onerror = function() {
+            statusEl.textContent = '<?php echo esc_js(__('SSE Reconnecting...', 'fingerprint-anti-bot')); ?>';
+            statusEl.style.color = '#d63638';
+        };
+    }
+
+    function fingerprintFetchTelemetry() {
+        fetch('<?php echo esc_url(rest_url('fingerprint/v1/sandbox/telemetry')); ?>', {
+            headers: { 'X-WP-Nonce': wpRestNonce }
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (data && Array.isArray(data.history)) {
+                    challengesHistory = data.history;
+                    renderChallengesUI();
+                }
+            })
+            .catch(err => console.error(err));
+    }
+
+    function fingerprintClearFeed() {
+        if (!confirm('<?php echo esc_js(__('Clear the live challenged visitors feed?', 'fingerprint-anti-bot')); ?>')) {
+            return;
+        }
+        fetch('<?php echo esc_url(rest_url('fingerprint/v1/sandbox/clear-challenges')); ?>', {
+            method: 'POST',
+            headers: { 'X-WP-Nonce': wpRestNonce }
+        })
+            .then(() => {
+                challengesHistory = [];
+                selectedChallengeId = null;
+                renderChallengesUI();
+            })
+            .catch(err => console.error(err));
+    }
+
+    function renderChallengesUI() {
+        const tableBody = document.getElementById('live-challenges-tbody');
+        const countEl = document.getElementById('live-challenges-count');
+        countEl.textContent = challengesHistory.length;
+
+        if (!challengesHistory.length) {
+            tableBody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#646970;padding:16px;"><em><?php echo esc_js(__('No challenged visitors recorded yet. When a visitor triggers a challenge or bot threshold, it will appear here in real time.', 'fingerprint-anti-bot')); ?></em></td></tr>';
+            renderDetailView(null);
+            return;
+        }
+
+        let rowsHtml = '';
+        challengesHistory.forEach((item, index) => {
+            const isSelected = item.id === selectedChallengeId || (!selectedChallengeId && index === 0);
+            if (isSelected && !selectedChallengeId) {
+                selectedChallengeId = item.id;
+            }
+
+            const date = item.timestamp ? new Date(item.timestamp * 1000).toLocaleTimeString() : '--:--:--';
+            const score = item.suspicionScore !== undefined ? Math.round(item.suspicionScore) : 0;
+            const scoreColor = score >= 75 ? '#d63638' : (score >= 40 ? '#dba617' : '#2271b1');
+            const actionBadge = (item.action || 'challenge').toUpperCase();
+            const actionBg = actionBadge.includes('BLOCK') ? '#d63638' : (actionBadge.includes('AUDIT') ? '#72aee6' : '#dba617');
+
+            rowsHtml += `<tr style="cursor:pointer;background:${isSelected ? '#f0f6fc' : 'transparent'};" onclick="fingerprintSelectChallenge('${item.id}')">
+                <td><b>${date}</b></td>
+                <td><code>${escapeHtml(item.ip || 'unknown')}</code></td>
+                <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(item.uri || '/')}"><code>${escapeHtml(item.uri || '/')}</code></td>
+                <td><span style="font-weight:bold;color:${scoreColor};">${score}</span></td>
+                <td><span style="display:inline-block;padding:2px 6px;border-radius:3px;font-size:11px;font-weight:bold;color:#fff;background:${actionBg};">${escapeHtml(actionBadge)}</span></td>
+                <td><button type="button" class="button button-small button-secondary">${isSelected ? '&#9654; View' : 'Inspect'}</button></td>
+            </tr>`;
+        });
+
+        tableBody.innerHTML = rowsHtml;
+        const selectedItem = challengesHistory.find(c => c.id === selectedChallengeId) || challengesHistory[0];
+        renderDetailView(selectedItem);
+    }
+
+    function renderDetailView(item) {
+        const detailScore = document.getElementById('live-score-val');
+        const detailSub = document.getElementById('live-score-sub');
+        const breakdownEl = document.getElementById('live-vector-breakdown');
+
+        if (!item) {
+            detailScore.textContent = '--';
+            detailScore.style.color = '#2271b1';
+            detailSub.textContent = '<?php echo esc_js(__('Select an entry from the list to inspect its vector.', 'fingerprint-anti-bot')); ?>';
+            breakdownEl.innerHTML = '<em><?php echo esc_js(__('No entry selected.', 'fingerprint-anti-bot')); ?></em>';
+            return;
+        }
+
+        const score = item.suspicionScore !== undefined ? Math.round(item.suspicionScore) : 0;
+        detailScore.textContent = score;
+        detailScore.style.color = score >= 75 ? '#d63638' : (score >= 40 ? '#dba617' : '#2271b1');
+        detailSub.innerHTML = `<b>IP:</b> ${escapeHtml(item.ip || 'unknown')}<br><b>Target:</b> ${escapeHtml(item.uri || '/')}<br><b>Action:</b> ${escapeHtml(item.action || 'challenge')}`;
+
+        const vector = item.suspicionVector || {};
+        const keys = Object.keys(vector);
+        if (keys.length === 0) {
+            breakdownEl.innerHTML = '<em><?php echo esc_js(__('No indicators recorded for this entry.', 'fingerprint-anti-bot')); ?></em>';
+            return;
+        }
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+        keys.forEach(k => {
+            html += `<tr style="border-bottom:1px solid #f0f0f1;"><td style="padding:3px 6px;"><b>${escapeHtml(k)}</b></td><td style="padding:3px 6px;text-align:right;"><code>${escapeHtml(JSON.stringify(vector[k]))}</code></td></tr>`;
+        });
+        html += '</table>';
+        breakdownEl.innerHTML = html;
+    }
+
+    function fingerprintSelectChallenge(id) {
+        selectedChallengeId = id;
+        renderChallengesUI();
+    }
+
+    function escapeHtml(str) {
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // Chargement automatique des derniers challenges à l'ouverture
+    document.addEventListener('DOMContentLoaded', function() {
+        fingerprintFetchTelemetry();
+    });
     </script>
     <?php
 }
