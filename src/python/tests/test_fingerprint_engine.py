@@ -2,9 +2,10 @@ import unittest
 import time
 import hmac
 import hashlib
+import json
 from unittest.mock import MagicMock
 
-from engine import RequestUtils, InMemoryStore, get_ip_subnet
+from engine import RequestContext, RequestUtils, InMemoryStore, FingerprintEngine, get_ip_subnet
 
 # On importe la bibliothèque standard cryptography pour Ed25519 (Zero-Trust peer validations)
 try:
@@ -218,6 +219,186 @@ class TestFingerprintEngine(unittest.IsolatedAsyncioTestCase):
         decayed_data = await self.store.get(key)
         self.assertEqual(decayed_data["highScoreCount"], 0)
         self.assertEqual(len(decayed_data["deviceIds"]), 0)
+
+    def test_request_context_is_https(self):
+        """
+        Vérifie la détection de HTTPS via le schéma direct ou les en-têtes de terminaison TLS.
+        """
+        # 1. Scheme direct
+        ctx_https = RequestContext(
+            client_ip="1.2.3.4", path="/", headers={}, query_params={}, cookies={}, scheme="https"
+        )
+        self.assertTrue(ctx_https.is_https)
+
+        # 2. Scheme http sans proxy
+        ctx_http = RequestContext(
+            client_ip="1.2.3.4", path="/", headers={}, query_params={}, cookies={}, scheme="http"
+        )
+        self.assertFalse(ctx_http.is_https)
+
+        # 3. En-tête X-Forwarded-Proto
+        ctx_proto = RequestContext(
+            client_ip="1.2.3.4", path="/", headers={"x-forwarded-proto": "https"}, query_params={}, cookies={}
+        )
+        self.assertTrue(ctx_proto.is_https)
+
+        # 4. En-tête X-Forwarded-Ssl
+        ctx_ssl = RequestContext(
+            client_ip="1.2.3.4", path="/", headers={"x-forwarded-ssl": "on"}, query_params={}, cookies={}
+        )
+        self.assertTrue(ctx_ssl.is_https)
+
+    def test_mtu_anomaly_vpn_detection(self):
+        """
+        Vérifie la détection de tunnels VPN (WireGuard/OpenVPN) et la reconstitution IPv4/IPv6.
+        """
+        # 1. WireGuard IPv4 : MSS 1380 + 40 = MTU 1420 (<= 1420 -> +65)
+        ctx_wg = RequestContext(
+            client_ip="192.168.1.1",
+            path="/",
+            headers={"x-tcp-mss": "1380"},
+            query_params={},
+            cookies={}
+        )
+        score_wg = RequestUtils.get_mtu_anomaly_score(ctx_wg)
+        self.assertGreaterEqual(score_wg, 65.0)
+
+        # 2. Reconstitution IPv6 (+60)
+        # MSS 1380 + 60 = MTU 1440 (OpenVPN <= 1450 -> +55)
+        ctx_v6 = RequestContext(
+            client_ip="2001:db8::1",
+            path="/",
+            headers={"x-tcp-mss": "1380"},
+            query_params={},
+            cookies={}
+        )
+        score_v6 = RequestUtils.get_mtu_anomaly_score(ctx_v6)
+        self.assertGreaterEqual(score_v6, 55.0)
+
+        # 3. Télémétrie x-tcp-mtu-info avec flag DF manquant et Windows
+        ctx_win_nodf = RequestContext(
+            client_ip="192.168.1.5",
+            path="/",
+            headers={
+                "x-tcp-mtu-info": "mss:1460,mtu:1500,df:0",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            },
+            query_params={},
+            cookies={}
+        )
+        score_win_nodf = RequestUtils.get_mtu_anomaly_score(ctx_win_nodf)
+        self.assertGreaterEqual(score_win_nodf, 40.0)
+
+    def test_protocol_anomaly_forbidden_hop_by_hop(self):
+        """
+        Vérifie la violation RFC 7540 / RFC 9114 : en-têtes hop-by-hop interdits en HTTP/2 et HTTP/3.
+        """
+        ctx_h2 = RequestContext(
+            client_ip="1.2.3.4",
+            path="/",
+            headers={"connection": "keep-alive"},
+            query_params={},
+            cookies={},
+            http_version="2.0"
+        )
+        res = RequestUtils.get_protocol_anomaly_score(ctx_h2)
+        self.assertGreaterEqual(res["protocolAnomalyScore"], 70.0)
+
+    def test_protocol_anomaly_cross_layer_timing_mismatch(self):
+        """
+        Vérifie la détection de triche WAC Navigation Timing (nextHopProtocol vs serveur).
+        """
+        # Client prétendant être en h3 alors que la connexion reçue est en HTTP/1.1
+        telemetry = json.dumps({"network": {"nextHopProtocol": "h3"}})
+        ctx = RequestContext(
+            client_ip="1.2.3.4",
+            path="/",
+            headers={"x-behavior-metrics": telemetry},
+            query_params={},
+            cookies={},
+            http_version="1.1"
+        )
+        res = RequestUtils.get_protocol_anomaly_score(ctx)
+        self.assertGreaterEqual(res["protocolAnomalyScore"], 85.0)
+
+    def test_protocol_anomaly_downgrade_and_h3_scrapers(self):
+        """
+        Vérifie la rétrogradation protocolaire et la détection d'outils d'automatisation sous HTTP/3.
+        """
+        # 1. Rétrogradation protocolaire d'un navigateur moderne sous HTTPS forcé en HTTP/1.1 sans proxy
+        ctx_downgrade = RequestContext(
+            client_ip="1.2.3.4",
+            path="/",
+            headers={"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"},
+            query_params={},
+            cookies={},
+            http_version="1.1",
+            scheme="https"
+        )
+        res_downgrade = RequestUtils.get_protocol_anomaly_score(ctx_downgrade)
+        self.assertGreaterEqual(res_downgrade["protocolAnomalyScore"], 45.0)
+
+        # 2. Scraper Python en HTTP/3
+        ctx_h3_scraper = RequestContext(
+            client_ip="1.2.3.4",
+            path="/",
+            headers={"user-agent": "python-requests/2.31.0"},
+            query_params={},
+            cookies={},
+            http_version="3"
+        )
+        res_scraper = RequestUtils.get_protocol_anomaly_score(ctx_h3_scraper)
+        self.assertGreaterEqual(res_scraper["protocolAnomalyScore"], 90.0)
+
+    def test_dynamic_mtu_amplification(self):
+        """
+        Vérifie que calculate_final_score amplifie automatiquement le poids des incohérences
+        matérielles et comportementales si mtuAnomalyScore > 50.0.
+        """
+        config = {
+            "weights": {
+                "tlsSpoofingScore": 1.0,
+                "crossLayerInconsistencyScore": 1.0,
+                "behaviorScore": 1.0,
+                "mtuAnomalyScore": 1.0
+            }
+        }
+        engine = FingerprintEngine(config, self.store)
+
+        # Vecteur sans anomalie MTU
+        vector_normal = {
+            "tlsSpoofingScore": 40.0,
+            "crossLayerInconsistencyScore": 30.0,
+            "behaviorScore": 20.0,
+            "mtuAnomalyScore": 0.0
+        }
+        # Score attendu : 40*1.0 + 30*1.0 + 20*1.0 = 90.0
+        score_normal = engine.calculate_final_score(vector_normal)
+        self.assertEqual(score_normal, 90.0)
+
+        # Vecteur avec anomalie MTU > 50 (déclenche l'amplification x1.25 sur les clés cibles)
+        vector_anomalous = {
+            "tlsSpoofingScore": 40.0,
+            "crossLayerInconsistencyScore": 30.0,
+            "behaviorScore": 20.0,
+            "mtuAnomalyScore": 65.0
+        }
+        # Poids effectifs :
+        # tlsSpoofingScore: 1.0 * 1.25 = 1.25 -> 40 * 1.25 = 50.0
+        # crossLayerInconsistencyScore: 1.0 * 1.25 = 1.25 -> 30 * 1.25 = 37.5
+        # behaviorScore: 1.0 * 1.25 = 1.25 -> 20 * 1.25 = 25.0
+        # mtuAnomalyScore: 65.0 * 1.0 = 65.0
+        # Total non plafonné = 50 + 37.5 + 25 + 65 = 177.5 -> plafonné à 100.0
+        score_anomalous = engine.calculate_final_score(vector_anomalous)
+        self.assertEqual(score_anomalous, 100.0)
+
+        # Vérification sur des valeurs plus faibles pour observer l'amplification exacte sans plafonnement
+        vector_low = {
+            "tlsSpoofingScore": 10.0,  # 10 * 1.25 = 12.5
+            "mtuAnomalyScore": 55.0    # 55 * 1.0 = 55.0
+        }
+        score_low = engine.calculate_final_score(vector_low)
+        self.assertEqual(score_low, 67.5)
 
 if __name__ == '__main__':
     unittest.main()

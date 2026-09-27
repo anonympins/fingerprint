@@ -427,26 +427,22 @@ public class FingerprintEngine {
 
         double mtuScore = suspicionVector.getOrDefault("mtuAnomalyScore", 0.0);
         if (mtuScore > 50.0) {
-            if (verbose) {
-                System.out.println("[FingerprintEngine] Tunnel detected, amplifying suspicion weights (mtuScore: " + mtuScore + ")");
+            double amplificationFactor = 1.25;
+            String[] keysToAmplify = {
+                "tlsSpoofingScore", "crossLayerInconsistencyScore",
+                "clientHintsInconsistencyScore", "behaviorScore",
+                "inconsistencyScore", "rotationScore"
+            };
+            for (String key : keysToAmplify) {
+                if (dynamicWeights.containsKey(key)) {
+                    dynamicWeights.put(key, dynamicWeights.get(key) * amplificationFactor);
+                }
             }
-            // Amplifie les incohérences difficiles à falsifier
-            dynamicWeights.put("tlsSpoofingScore", dynamicWeights.getOrDefault("tlsSpoofingScore", 0.8) * 1.25);
-            dynamicWeights.put("crossLayerInconsistencyScore", dynamicWeights.getOrDefault("crossLayerInconsistencyScore", 0.4) * 1.4);
-            dynamicWeights.put("clientHintsInconsistencyScore", dynamicWeights.getOrDefault("clientHintsInconsistencyScore", 0.7) * 1.2);
-
-            // Amplifie les comportements automatisés (un bot sous tunnel VPN est plus suspect)
-            dynamicWeights.put("behaviorScore", dynamicWeights.getOrDefault("behaviorScore", 0.7) * 1.15);
-            dynamicWeights.put("requestPatternScore", dynamicWeights.getOrDefault("requestPatternScore", 0.6) * 1.2);
         }
 
         double score = 0.0;
         for (Map.Entry<String, Double> entry : dynamicWeights.entrySet()) {
             String key = entry.getKey();
-            // Le score MTU et ses poids sont uniquement des amplificateurs, pas des déclencheurs autonomes
-            if ("mtuAnomalyScore".equals(key)) {
-                continue;
-            }
             double weight = ((Number) entry.getValue()).doubleValue();
             score += suspicionVector.getOrDefault(key, 0.0) * weight;
         }
@@ -487,8 +483,7 @@ public class FingerprintEngine {
             }
 
             deviceId = UUID.randomUUID().toString();
-            boolean secureOption = "https".equalsIgnoreCase(context.getHeader("x-forwarded-proto")) 
-                    || "https".equalsIgnoreCase(context.getHeader("x-url-scheme"));
+            boolean secureOption = context.isHttps || "production".equalsIgnoreCase((String) config.get("env"));
 
             newCookie = new HashMap<>();
             newCookie.put("name", "device_id");

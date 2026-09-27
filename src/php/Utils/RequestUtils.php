@@ -124,29 +124,44 @@ class RequestUtils
     public static function getMtuAnomalyScore(RequestContext $context): array
     {
         $mtuHeader = $context->getHeader('x-tcp-mtu-info');
-        if (empty($mtuHeader) || !is_string($mtuHeader)) {
-            return ['mtuAnomalyScore' => 0.0];
+        $mssHeader = $context->getHeader('x-tcp-mss') ?? $context->getHeader('x-mss') ?? $context->getHeader('x-forwarded-mss');
+
+        $mtu = null;
+        $df = null;
+
+        if (!empty($mtuHeader) && is_string($mtuHeader)) {
+            $parts = explode(':', $mtuHeader);
+            if (count($parts) >= 2) {
+                $parsedMtu = filter_var($parts[0], FILTER_VALIDATE_INT);
+                $parsedDf = filter_var($parts[1], FILTER_VALIDATE_INT);
+                $mtu = $parsedMtu !== false ? $parsedMtu : null;
+                $df = $parsedDf !== false ? $parsedDf : null;
+            } elseif (count($parts) === 1 && is_numeric($parts[0])) {
+                $mtu = (int)$parts[0];
+            }
         }
 
-        $parts = explode(':', $mtuHeader);
-        if (count($parts) < 2) {
-            return ['mtuAnomalyScore' => 0.0];
+        // Reconstitution depuis MSS (ex: FastCGI Nginx $tcpinfo_rcv_mss)
+        if ($mtu === null && !empty($mssHeader) && is_numeric($mssHeader)) {
+            $mss = (int)$mssHeader;
+            if ($mss > 0) {
+                $isV6 = filter_var($context->clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+                $mtu = $mss + ($isV6 ? 60 : 40);
+                $df = 1;
+            }
         }
 
-        $mtu = filter_var($parts[0], FILTER_VALIDATE_INT);
-        $df = filter_var($parts[1], FILTER_VALIDATE_INT);
-
-        if ($mtu === false || $df === false) {
+        if ($mtu === null) {
             return ['mtuAnomalyScore' => 0.0];
         }
 
         $score = 0.0;
 
-        // 1. Pénalité modérée pour les MTU typiques des VPNs/tunnels.
-        if ($mtu > 1200 && $mtu <= 1420) {
-            $score += 35.0;
+        // 1. Détection des tunnels (VPN WireGuard/OpenVPN, GRE, proxies résidentiels encapsulés)
+        if ($mtu > 500 && $mtu <= 1420) {
+            $score += 55.0;
         } elseif ($mtu > 1420 && $mtu < 1492) {
-            $score += 20.0;
+            $score += 30.0;
         }
 
         // 2. OS vs. Network Stack Inconsistency
@@ -2105,6 +2120,52 @@ class RequestUtils
         $ua = $context->getHeader('user-agent') ?? '';
         $uaParts = self::parseUserAgent($ua);
         $browser = $uaParts['browser'] ?? null;
+
+        $serverProtocol = strtoupper($context->httpVersion ?? '');
+        $isH2 = str_starts_with($serverProtocol, 'HTTP/2') || str_starts_with($serverProtocol, '2');
+        $isH3 = str_starts_with($serverProtocol, 'HTTP/3') || str_starts_with($serverProtocol, '3');
+        $isH1 = str_starts_with($serverProtocol, 'HTTP/1') || str_starts_with($serverProtocol, '1');
+
+        // 1. Violation RFC 7540 (HTTP/2) & RFC 9114 (HTTP/3) : en-têtes hop-by-hop interdits
+        $hasIllegalHopByHop = $context->getHeader('connection') !== null
+            || $context->getHeader('keep-alive') !== null
+            || $context->getHeader('proxy-connection') !== null;
+
+        if ($isH2 && $hasIllegalHopByHop) {
+            $http2Anomaly += 70.0;
+        }
+        if ($isH3 && $hasIllegalHopByHop) {
+            $quicAnomaly += 75.0;
+        }
+
+        // 2. Corrélation avec la télémétrie client W3C Navigation Timing
+        $clientProtocol = null;
+        $behaviorHeader = $context->getHeader('x-behavior-metrics');
+        if ($behaviorHeader && is_string($behaviorHeader) && str_starts_with($behaviorHeader, '{')) {
+            $metrics = json_decode($behaviorHeader, true);
+            if (is_array($metrics)) {
+                $clientProtocol = $metrics['protocol'] ?? $metrics['nextHopProtocol'] ?? null;
+            }
+        }
+        if ($clientProtocol && is_string($clientProtocol)) {
+            $clientProtocol = strtolower(trim($clientProtocol));
+            $hasProxy = $context->getHeader('via') || $context->getHeader('forwarded') || $context->getHeader('x-forwarded-for');
+            if ($clientProtocol === 'h3' && $isH1 && !$hasProxy) {
+                $quicAnomaly += 80.0;
+            } elseif ($clientProtocol === 'h2' && $isH1 && !$hasProxy) {
+                $http2Anomaly += 75.0;
+            } elseif ($clientProtocol === 'http/1.1' && ($isH2 || $isH3)) {
+                $http2Anomaly += 60.0;
+            }
+        }
+
+        // 3. Rétrogradation protocolaire (Navigateur moderne naviguant en HTTP/1.1 sur HTTPS)
+        if ($context->isHttps && $browser && $isH1) {
+            $hasProxy = $context->getHeader('via') || $context->getHeader('forwarded') || $context->getHeader('x-forwarded-proto') || $context->getHeader('x-forwarded-for');
+            if (!$hasProxy) {
+                $http2Anomaly += 50.0;
+            }
+        }
 
         if ($browser) {
             // HTTP/2 Anomaly logic

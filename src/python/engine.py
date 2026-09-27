@@ -192,7 +192,8 @@ DEFAULT_WEIGHTS = {
     "quicAnomalyScore": 0.8,
     "renderingAnomalyScore": 0.8,
     "threatIntelScore": 1.0,
-    "virtualizationScore": 0.8
+    "virtualizationScore": 0.8,
+    "mtuAnomalyScore": 0.9
 }
 
 def imul(a: int, b: int) -> int:
@@ -728,11 +729,13 @@ class RequestContext:
     cookies: Dict[str, str]
     body: Optional[Any] = None
     http_version: str = "1.1"
+    scheme: str = "http"
     request_timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
     new_cookies: List[Dict[str, Any]] = field(default_factory=list)
     tls_session_id: Optional[str] = None
     quic_fingerprint: Optional[str] = None
     http2_fingerprint: Optional[str] = None
+    is_https: bool = False
 
     def __post_init__(self):
         # Normalize headers to lowercase for consistent lookup
@@ -743,6 +746,12 @@ class RequestContext:
             self.quic_fingerprint = self.headers.get("x-quic-fp")
         if not self.http2_fingerprint:
             self.http2_fingerprint = self.headers.get("x-http2-fingerprint")
+        self.is_https = (
+            self.scheme == "https" or
+            self.headers.get("x-forwarded-proto") == "https" or
+            self.headers.get("x-forwarded-ssl") == "on" or
+            self.headers.get("x-url-scheme") == "https"
+        )
 
     def get_header(self, name: str) -> Optional[str]:
         return self.headers.get(name.lower())
@@ -1733,9 +1742,44 @@ class RequestUtils:
     @staticmethod
     def get_protocol_anomaly_score(context: RequestContext) -> Dict[str, float]:
         http2_anomaly = 0.0
+        protocol_anomaly = 0.0
         ua = context.headers.get("user-agent", "")
         ua_parts = RequestUtils.parse_user_agent(ua)
         browser = ua_parts.get("browser") or ""
+        http_version = getattr(context, "http_version", "") or ""
+        is_h2_or_h3 = "2" in http_version or "3" in http_version
+
+        # 1. Forbidden hop-by-hop headers in HTTP/2+
+        if is_h2_or_h3:
+            forbidden_headers = ["connection", "keep-alive", "proxy-connection", "transfer-encoding"]
+            for h in forbidden_headers:
+                if h in context.headers:
+                    protocol_anomaly += 70.0
+                    break
+
+        # 2. Cross-layer W3C Navigation Timing check
+        behavior_header = context.headers.get("x-behavior-metrics")
+        if behavior_header:
+            try:
+                metrics = json.loads(behavior_header)
+                if isinstance(metrics, dict) and "network" in metrics:
+                    client_proto = metrics["network"].get("nextHopProtocol")
+                    if client_proto:
+                        server_proto = "h2" if "2" in http_version else ("h3" if "3" in http_version else "http/1.1")
+                        if "h2" in client_proto: client_proto_norm = "h2"
+                        elif "h3" in client_proto: client_proto_norm = "h3"
+                        elif "1.1" in client_proto: client_proto_norm = "http/1.1"
+                        else: client_proto_norm = client_proto
+                        
+                        if server_proto != client_proto_norm:
+                            if client_proto_norm == "h3" and server_proto == "http/1.1":
+                                protocol_anomaly += 85.0
+                            elif client_proto_norm == "h2" and server_proto == "http/1.1":
+                                protocol_anomaly += 65.0
+                            else:
+                                protocol_anomaly += 50.0
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
 
         h2_fp = context.headers.get("x-http2-fingerprint") or getattr(context, "http2_fingerprint", None)
         if browser and h2_fp and isinstance(h2_fp, str):
@@ -1793,9 +1837,23 @@ class RequestUtils:
                     if continuation_count == 0 and header_order.count(',') > 3:
                         http2_anomaly += 30.0
 
+        # 3. Protocol Downgrade
+        is_modern_browser = browser.startswith("Chrome") or browser.startswith("Firefox") or browser.startswith("Edge") or browser.startswith("Safari")
+        has_proxy_header = any(h in context.headers for h in ["via", "forwarded", "x-forwarded-for"])
+
+        if is_modern_browser and context.is_https and "1.1" in http_version and not has_proxy_header:
+            protocol_anomaly += 45.0
+
+        # 4. HTTP/3 Scrapers
+        if "3" in http_version:
+            non_browser_uas = ["python", "go-http-client", "curl", "java", "okhttp"]
+            ua_lower = ua.lower()
+            if any(lib in ua_lower for lib in non_browser_uas):
+                protocol_anomaly += 90.0
+
         quic_res = RequestUtils.get_quic_anomaly_score(context)
         quic_anomaly = quic_res.get("quicAnomalyScore", 0.0)
-        proto_score = max(0.0, min(100.0, http2_anomaly), min(100.0, quic_anomaly))
+        proto_score = max(min(100.0, protocol_anomaly), min(100.0, http2_anomaly), min(100.0, quic_anomaly))
         return {
             "protocolAnomalyScore": proto_score,
             "http2AnomalyScore": min(100.0, http2_anomaly),
@@ -2756,6 +2814,82 @@ class RequestUtils:
             botnet_cluster_score = min(100.0, round(base_score * subnet_multiplier * ua_rotation_multiplier * 10.0) / 10.0)
 
         return {"botnetClusterScore": botnet_cluster_score}
+
+    @staticmethod
+    def get_mtu_anomaly_score(context: RequestContext) -> float:
+        """
+        Analyzes TCP MSS and MTU information to detect network anomalies like VPNs or proxy tunnels.
+        """
+        score = 0.0
+        mss = None
+        mtu = None
+        df_bit = True  # Assume DF is set by default on modern stacks
+
+        # 1. Extract MSS/MTU from various headers and telemetry
+        if context.headers.get("x-tcp-mtu-info"):
+            try:
+                parts = context.headers["x-tcp-mtu-info"].split(',')
+                info = {p.split(':')[0].strip(): p.split(':')[1].strip() for p in parts if ':' in p}
+                if 'mss' in info: mss = int(info['mss'])
+                if 'mtu' in info: mtu = int(info['mtu'])
+                if 'df' in info: df_bit = info['df'] in ('1', 'true')
+            except (ValueError, IndexError):
+                pass
+        
+        if mss is None:
+            mss_headers = ["x-tcp-mss", "x-mss", "x-forwarded-mss"]
+            for h in mss_headers:
+                if context.headers.get(h):
+                    try:
+                        mss = int(context.headers[h])
+                        break
+                    except ValueError:
+                        pass
+
+        if mss is None or mtu is None:
+            behavior_header = context.headers.get("x-behavior-metrics")
+            if behavior_header:
+                try:
+                    metrics = json.loads(behavior_header)
+                    if isinstance(metrics, dict) and "network" in metrics:
+                        if mss is None and metrics["network"].get("netMss"):
+                            mss = int(metrics["network"]["netMss"])
+                        if mtu is None and metrics["network"].get("netMtu"):
+                            mtu = int(metrics["network"]["netMtu"])
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
+
+        # 2. Reconstruct MTU from MSS if not directly available
+        if mtu is None and mss is not None:
+            is_ipv6 = ":" in context.client_ip
+            header_size = 60 if is_ipv6 else 40
+            mtu = mss + header_size
+
+        if mtu is None:
+            return 0.0
+
+        # 3. Detect VPNs and tunnels
+        if mtu <= 1420:  # WireGuard
+            score += 65.0
+        elif mtu <= 1450:  # OpenVPN
+            score += 55.0
+        elif mtu < 1492:  # Other PPPoE or tunnel encapsulations
+            score += 30.0
+
+        # 4. OS Stack Inconsistency
+        ua_os = RequestUtils.parse_user_agent(context.headers.get("user-agent", "")).get("os")
+        if ua_os:
+            if "Windows" in ua_os:
+                if mtu < 1492 and mtu > 0:
+                    if mtu < 1472:
+                        score += 25.0
+                if not df_bit:
+                    score += 40.0
+            
+            if "Linux" in ua_os and mtu > 1500:
+                score += 35.0
+
+        return min(100.0, score)
 
 class RedisStore:
     """
@@ -3720,12 +3854,7 @@ class FingerprintEngine:
             if pending_device_id and not existing_device_id:
                 cookie_dropping_score = 100.0
             device_id = str(uuid.uuid4())
-            is_https = (
-                 context.headers.get("x-forwarded-proto") == "https" or 
-                 context.headers.get("x-forwarded-ssl") == "on" or 
-                 context.headers.get("x-url-scheme") == "https"
-            )
-            secure_option = is_https or (self.config.get("env") == "production")
+            secure_option = context.is_https or (self.config.get("env") == "production")
             new_cookie = {
                 "name": "device_id",
                 "value": device_id,
@@ -3976,6 +4105,8 @@ class FingerprintEngine:
         rendering_anomaly = RequestUtils.get_rendering_anomaly_score(context)
         rendering_anomaly_score = rendering_anomaly.get("renderingAnomalyScore", 0.0)
 
+        mtu_anomaly_score = RequestUtils.get_mtu_anomaly_score(context)
+
 
         await self.store.set(f"device:{device_id}", device_data)
 
@@ -4004,6 +4135,7 @@ class FingerprintEngine:
             "tcpAnomalyScore": tcp_anomaly_score,
             "renderingAnomalyScore": rendering_anomaly_score,
             "virtualizationScore": virtualization_score,
+            "mtuAnomalyScore": mtu_anomaly_score,
         })
         return suspicion_vector
 
@@ -4011,8 +4143,23 @@ class FingerprintEngine:
         weights = self.config.get("weights", {})
         if not weights:
             return 0.0
+
+        effective_weights = dict(weights)
+
+        # Dynamic amplification based on MTU anomaly
+        if suspicion_vector.get("mtuAnomalyScore", 0.0) > 50.0:
+            amplification_factor = 1.25
+            keys_to_amplify = [
+                "tlsSpoofingScore", "crossLayerInconsistencyScore", 
+                "clientHintsInconsistencyScore", "behaviorScore",
+                "inconsistencyScore", "rotationScore"
+            ]
+            for key in keys_to_amplify:
+                if key in effective_weights:
+                    effective_weights[key] *= amplification_factor
+
         score = 0.0
-        for key, weight in weights.items():
+        for key, weight in effective_weights.items():
             score += suspicion_vector.get(key, 0.0) * weight
         return min(100.0, score)
 
@@ -4351,13 +4498,8 @@ class FingerprintEngine:
                     await self.store.delete(f"secret:{pow_nonce}")
                     ticket = str(uuid.uuid4())
                     await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
-                    MetricsManager.increment_counter("challenges_solved_total")
-                    is_https = (
-                        context.headers.get("x-forwarded-proto") == "https" or 
-                        context.headers.get("x-forwarded-ssl") == "on" or 
-                        context.headers.get("x-url-scheme") == "https"
-                    )
-                    secure_option = is_https or (self.config.get("env") == "production")
+                    MetricsManager.increment_counter("challenges_solved_total")                    
+                    secure_option = context.is_https or (self.config.get("env") == "production")
                     return {
                         "action": "redirect",
                         "path": context.path,
@@ -4392,15 +4534,9 @@ class FingerprintEngine:
                     await self.store.delete(f"secret:{pow_nonce}")
                     ticket = str(uuid.uuid4())
                     await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
-                    MetricsManager.increment_counter("challenges_solved_total")
-                    
+                    MetricsManager.increment_counter("challenges_solved_total")                    
                     clean_path = RequestUtils.clean_url_from_pow_params(context.path, context.query_params)
-                    is_https = (
-                        context.headers.get("x-forwarded-proto") == "https" or 
-                        context.headers.get("x-forwarded-ssl") == "on" or 
-                        context.headers.get("x-url-scheme") == "https"
-                    )
-                    secure_option = is_https or (self.config.get("env") == "production")
+                    secure_option = context.is_https or (self.config.get("env") == "production")
                     return {
                         "action": "redirect",
                         "path": clean_path,
@@ -4443,13 +4579,8 @@ class FingerprintEngine:
                     await self.store.delete(f"secret:{pow_nonce}")
                     ticket = str(uuid.uuid4())
                     await self.store.set(f"ticket:{ticket}", {"ip": context.client_ip, "device_id": device_id}, 3600)
-                    MetricsManager.increment_counter("challenges_solved_total")
-                    is_https = (
-                        context.headers.get("x-forwarded-proto") == "https" or 
-                        context.headers.get("x-forwarded-ssl") == "on" or 
-                        context.headers.get("x-url-scheme") == "https"
-                    )
-                    secure_option = is_https or (self.config.get("env") == "production")
+                    MetricsManager.increment_counter("challenges_solved_total")                    
+                    secure_option = context.is_https or (self.config.get("env") == "production")
                     return {
                         "action": "redirect",
                         "path": context.path,
@@ -5874,7 +6005,8 @@ class ASGIFingerprintMiddleware:
             headers=headers,
             query_params=query_params,
             cookies=cookies,
-            http_version=scope.get("http_version", "1.1")
+            http_version=scope.get("http_version", "1.1"),
+            scheme=scope.get("scheme", "http")
         )
 
         decision = await self.engine.process_request(context)
@@ -6011,7 +6143,8 @@ class WSGIFingerprintMiddleware:
             headers=headers,
             query_params=query_params,
             cookies=cookies,
-            http_version=environ.get("SERVER_PROTOCOL", "HTTP/1.1")
+            http_version=environ.get("SERVER_PROTOCOL", "HTTP/1.1"),
+            scheme=environ.get("wsgi.url_scheme", "http")
         )
 
         # Safe event loop bridge
@@ -6112,7 +6245,8 @@ try:
                 path=request.url.path,
                 headers=headers_dict,
                 query_params=query_dict,
-                cookies=cookies_dict
+                cookies=cookies_dict,
+                scheme=request.url.scheme
             )
             
             decision = await self.engine.process_request(context)

@@ -9,6 +9,8 @@ public class RequestContext {
     public Map<String, Object> queryParams = new HashMap<>();
     public Map<String, Object> body = null;
     public Map<String, String> cookies = new HashMap<>();
+    public String scheme = "http";
+    public boolean isHttps = false;
     public String httpVersion = "1.1";
     public long requestTimestamp;
     public String tlsSessionId = null;
@@ -26,6 +28,13 @@ public class RequestContext {
     public RequestContext(String clientIp, String path, Map<String, String> headers,
                           Map<String, Object> queryParams, Map<String, Object> body,
                           Map<String, String> cookies, String httpVersion) {
+        this(clientIp, path, headers, queryParams, body, cookies, httpVersion, "http");
+    }
+
+    public RequestContext(String clientIp, String path, Map<String, String> headers,
+                          Map<String, Object> queryParams, Map<String, Object> body,
+                          Map<String, String> cookies, String httpVersion, String scheme) {
+        this.scheme = scheme != null ? scheme : "http";
         this.clientIp = clientIp;
         this.path = path;
         if (headers != null) {
@@ -38,6 +47,11 @@ public class RequestContext {
         this.cookies = cookies != null ? cookies : new HashMap<>();
         this.httpVersion = httpVersion != null ? httpVersion : "1.1";
         this.requestTimestamp = System.currentTimeMillis();
+
+        this.isHttps = "https".equalsIgnoreCase(this.scheme)
+                || "https".equalsIgnoreCase(this.headers.get("x-forwarded-proto"))
+                || "on".equalsIgnoreCase(this.headers.get("x-forwarded-ssl"))
+                || "https".equalsIgnoreCase(this.headers.get("x-url-scheme"));
 
         this.ja3 = this.headers.get("x-ja3-hash");
         this.ja4 = this.headers.get("x-ja4-hash");

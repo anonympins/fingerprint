@@ -2369,29 +2369,17 @@ function getBehaviorScore(context) {
     return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
   }
 
-  // Traitement direct si un flag binaire client-side (1 = humain, 0 = bot) est envoyé
-  if (behaviorHeader === 1 || behaviorHeader === '1') {
-    return { behaviorScore: 0 };
-  }
-  if (behaviorHeader === 0 || behaviorHeader === '0') {
-    return { behaviorScore: 100 };
-  }
-
   // Traitement direct si un score numérique est envoyé côté client
   if (typeof behaviorHeader === 'number') {
     return { behaviorScore: Math.max(0, Math.min(100, behaviorHeader)) };
   }
   if (typeof behaviorHeader === 'string' && !isNaN(Number(behaviorHeader)) && behaviorHeader.trim() !== '') {
     const trimmed = behaviorHeader.trim();
-    if (trimmed === '1') return { behaviorScore: 0 };
-    if (trimmed === '0') return { behaviorScore: 100 };
     return { behaviorScore: Math.max(0, Math.min(100, parseFloat(trimmed))) };
   }
 
   try {
     const metrics = JSON.parse(behaviorHeader);
-    if (metrics === 1) return { behaviorScore: 0 };
-    if (metrics === 0) return { behaviorScore: 100 };
     if (typeof metrics === 'number') {
       return { behaviorScore: Math.max(0, Math.min(100, metrics)) };
     }

@@ -806,6 +806,10 @@ const ClientLibrary = {
      * @param {string[]} honeypotFieldNames - Hidden form field names.
      */
     initializeHoneypots(honeypotFieldNames) {
+        const fieldNames = Array.isArray(honeypotFieldNames)
+            ? honeypotFieldNames
+            : (honeypotFieldNames ? [honeypotFieldNames] : []);
+
         // 1. Clean up existing listeners
         activeHoneypotListeners.forEach((listener, field) => {
             field.removeEventListener('input', listener);
@@ -813,7 +817,7 @@ const ClientLibrary = {
         activeHoneypotListeners.clear();
 
         // 2. Attach new listeners to existing DOM elements
-        honeypotFieldNames.forEach(fieldName => {
+        fieldNames.forEach(fieldName => {
             const field = document.querySelector(`[name="${fieldName}"]`);
             if (field) {
                 const listener = () => {
@@ -826,7 +830,7 @@ const ClientLibrary = {
         });
 
         // 3. Generate trap inputs inside a closed Shadow DOM
-        if (typeof document !== 'undefined' && honeypotFieldNames.length > 0 && document.body) {
+        if (typeof document !== 'undefined' && fieldNames.length > 0 && document.body) {
             const host = document.createElement('div');
             host.setAttribute('aria-hidden', 'true');
             host.style.position = 'absolute';
@@ -868,7 +872,7 @@ const ClientLibrary = {
             const wrapper = document.createElement(selectedWrapperTag);
             wrapper.className = wrapperClass;
 
-            honeypotFieldNames.forEach(fieldName => {
+            fieldNames.forEach(fieldName => {
                 const label = document.createElement('label');
                 label.textContent = fieldName;
                 const input = document.createElement('input');
@@ -999,12 +1003,12 @@ const ClientLibrary = {
      */
     evaluateBehavior() {
         let score = 0;
-        if (metrics.honeypotInteraction) return 100;
+        if (metrics.honeypotInteraction) return 100; // Score maximal immédiat pour interaction avec un pot de miel
         if (ClientLibrary.detectTamperedPrototypes()) score += 80;
 
         // Vérification du rendu graphique
         if (metrics.rendering) {
-            if (metrics.rendering.offscreenAnom) return 0;
+            if (metrics.rendering.offscreenAnom) return 100; // Score maximal pour anomalie de rendu
             const fps = parseFloat(metrics.rendering.fps || 0);
             const jitter = parseFloat(metrics.rendering.jitter || 0);
             if (fps > 250 || (fps > 0 && fps < 15)) score += 50;
@@ -1067,7 +1071,9 @@ const ClientLibrary = {
 
         // Détection de rack / ferme de téléphones mobiles immobiles
         if (typeof window !== 'undefined' && (window.navigator?.userAgent || '').includes('Mobile')) {
-            if (metrics.motionVariance === 0) return 0;
+            // Un appareil mobile parfaitement immobile est très suspect (probable ferme de téléphones).
+            // On ne déclenche que s'il n'y a pas d'événements tactiles, car un utilisateur peut le tenir immobile en lisant.
+            if (metrics.motionVariance === 0 && touchMovementsHistory.length === 0) return 90;
         }
 
         // Variance des clics ultra-précise (bot de clic)
@@ -1084,7 +1090,8 @@ const ClientLibrary = {
                     const mx = clks.reduce((s, c) => s + c.x, 0) / clks.length;
                     const my = clks.reduce((s, c) => s + c.y, 0) / clks.length;
                     const v = clks.reduce((s, c) => s + Math.pow(c.x - mx, 2) + Math.pow(c.y - my, 2), 0) / clks.length;
-                    if (v < 1.0) return 0;
+                    // Une variance extrêmement faible indique un script qui clique sur les mêmes coordonnées.
+                    if (v < 1.0) return 100;
                 }
             }
         }
@@ -1093,10 +1100,11 @@ const ClientLibrary = {
         if (keystrokeDwellTimes.length >= 5) {
             const mean = keystrokeDwellTimes.reduce((a, b) => a + b, 0) / keystrokeDwellTimes.length;
             const variance = keystrokeDwellTimes.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / keystrokeDwellTimes.length;
-            if (Math.sqrt(variance) < 2.0 || mean < 15.0) return 0;
+            // Une frappe robotique a une variance très faible ou des pressions de touche extrêmement courtes.
+            if (Math.sqrt(variance) < 2.0 || mean < 15.0) return 95;
         }
 
-        return 1;
+        return Math.min(100, Math.round(score));
     },
 
     /**
@@ -1453,6 +1461,10 @@ const ClientLibrary = {
  * @param {ClientConfig} [config={}] - Client configuration options.
  */
   initializeClient(config = {}) {
+    const rawHoneypots = config.honeypots ?? config.honeypotFields ?? [];
+    const honeypots = Array.isArray(rawHoneypots)
+        ? rawHoneypots
+        : (rawHoneypots ? [rawHoneypots] : []);
     const {
         mouse = true,
         keystrokes = true,
@@ -1461,9 +1473,9 @@ const ClientLibrary = {
         motion = true,
             rendering = true,
         phantomTraps = true,
-        honeypots = [],
         trapUrls = [], // Trap URLs
-        wasmPath,
+        wasm = true,
+        wasmPath = (config.wasmPath || (config.wasm ? '/fp.wasm' : undefined)),
         worker = false,
         workerPath, // NOUVEAU
         fetch: fetchConfig = {}
@@ -1471,7 +1483,7 @@ const ClientLibrary = {
 
         negotiateSessionKey();
     // Load WASM module if path provided
-    if (wasmPath) {
+    if (wasm && wasmPath) {
         this.initializeWasm(wasmPath);
     }
 
