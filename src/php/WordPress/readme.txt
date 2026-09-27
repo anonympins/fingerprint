@@ -1,4 +1,4 @@
-=== Fingerprint Anti-Bot & Proof-of-Work ===
+=== Anonympins Bot Mitigation with Proof-of-Work ===
 Contributors: anonympins
 Tags: bot protection, security, proof of work, firewall, anti scraping
 Requires at least: 5.9
@@ -12,7 +12,7 @@ High-performance client-side anti-bot protection and Proof-of-Work challenge ver
 
 == Description ==
 
-Fingerprint Anti-Bot is a high-performance, privacy-friendly bot mitigation engine for WordPress. It combines behavioral telemetry, TLS/HTTP2/QUIC transport inspection (JA3, JA4), passive TCP/IP stack analysis, and asynchronous Proof-of-Work (PoW) verification.
+Anonympins Bot Mitigation with Proof-of-Work is a high-performance, privacy-friendly bot mitigation engine for WordPress. It combines behavioral telemetry, TLS/HTTP2/QUIC transport inspection (JA3, JA4), passive TCP/IP stack analysis, and asynchronous Proof-of-Work (PoW) verification.
 
 = Features =
 * Transparent protection against scrapers, credential stuffers, and inventory scalpers.
@@ -25,9 +25,9 @@ Fingerprint Anti-Bot is a high-performance, privacy-friendly bot mitigation engi
 
 == Installation ==
 
-1. Upload the plugin files to the `/wp-content/plugins/fingerprint-anti-bot` directory, or install the plugin through the WordPress plugins screen directly.
+1. Upload the plugin files to the `/wp-content/plugins/anonympins-bot-mitigation-pow` directory, or install the plugin through the WordPress plugins screen directly.
 2. Activate the plugin through the 'Plugins' screen in WordPress.
-3. Navigate to **Settings -> Fingerprint Anti-Bot** to review security profiles, threshold adjustments, and Prometheus metrics.
+3. Navigate to **Settings -> Anonympins Bot Mitigation** to review security profiles, threshold adjustments, and Prometheus metrics.
 
 == Frequently Asked Questions ==
 
@@ -38,7 +38,7 @@ No. All evaluations, challenges, and validations occur directly on your WordPres
 HTTPS is strongly recommended. Under unencrypted HTTP, modern browsers disable the Web Cryptography API (`crypto.subtle`), which reduces challenge verification performance.
 
 = How can I monitor incoming request suspicion scores in real time? =
-Under **Settings -> Fingerprint Anti-Bot -> Sandbox / Test Mode**, the plugin provides real-time observability interfaces for all challenged visitors across the website:
+Under **Settings -> Anonympins Bot Mitigation -> Sandbox / Test Mode**, the plugin provides real-time observability interfaces for all challenged visitors across the website:
 
 1. **Server-Sent Events (SSE)**:
 `GET /wp-json/fingerprint/v1/sandbox/sse`

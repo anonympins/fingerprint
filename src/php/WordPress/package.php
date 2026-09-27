@@ -20,7 +20,7 @@ $phpSrcDir = $rootDir . '/src/php';
 $jsSrcDir = $rootDir . '/src/js';
 $wpDir = $phpSrcDir . '/WordPress';
 $distDir = $rootDir . '/public';
-$pluginSlug = 'fingerprint-anti-bot';
+$pluginSlug = 'anonympins-bot-mitigation-pow';
 $buildDir = $distDir . '/' . $pluginSlug;
 $zipFile = $distDir . '/' . $pluginSlug . '.zip';
 
@@ -45,99 +45,84 @@ if (file_exists($zipFile)) {
 @mkdir($buildDir . '/assets', 0777, true);
 @mkdir($buildDir . '/languages', 0777, true);
 
-/**
- * Compile un fichier .po gettext en binaire .mo compatible WordPress.
- */
-function compilePoToMo(string $poFile, string $moFile): bool {
-    if (!file_exists($poFile)) return false;
-    $content = file_get_contents($poFile);
-    if ($content === false) return false;
-
-    $entries = [];
-    $currentMsgId = null;
-    $currentMsgStr = null;
-    $lines = explode("\n", str_replace(["\r\n", "\r"], "\n", $content));
-    $state = '';
-
-    foreach ($lines as $line) {
-        $line = trim($line);
-        if ($line === '' || str_starts_with($line, '#')) continue;
-        if (preg_match('/^msgid\s+"(.*)"$/', $line, $m)) {
-            if ($currentMsgId !== null && $currentMsgStr !== null) {
-                $entries[$currentMsgId] = $currentMsgStr;
-            }
-            $currentMsgId = stripcslashes($m[1]);
-            $currentMsgStr = null;
-            $state = 'msgid';
-        } elseif (preg_match('/^msgstr\s+"(.*)"$/', $line, $m)) {
-            $currentMsgStr = stripcslashes($m[1]);
-            $state = 'msgstr';
-        } elseif (preg_match('/^"(.*)"$/', $line, $m)) {
-            if ($state === 'msgid') {
-                $currentMsgId .= stripcslashes($m[1]);
-            } elseif ($state === 'msgstr') {
-                $currentMsgStr .= stripcslashes($m[1]);
-            }
-        }
-    }
-    if ($currentMsgId !== null && $currentMsgStr !== null) {
-        $entries[$currentMsgId] = $currentMsgStr;
-    }
-
-    ksort($entries);
-    $count = count($entries);
-    $originals = '';
-    $translations = '';
-    $origTable = [];
-    $transTable = [];
-
-    $headerSize = 28;
-    $tablesSize = $count * 8 * 2;
-    $curOffset = $headerSize + $tablesSize;
-
-    foreach ($entries as $orig => $trans) {
-        $origLen = strlen($orig);
-        $origTable[] = ['len' => $origLen, 'off' => $curOffset + strlen($originals)];
-        $originals .= $orig . "\0";
-    }
-
-    $transOffset = $curOffset + strlen($originals);
-    foreach ($entries as $orig => $trans) {
-        $transLen = strlen($trans);
-        $transTable[] = ['len' => $transLen, 'off' => $transOffset + strlen($translations)];
-        $translations .= $trans . "\0";
-    }
-
-    $mo = pack('V*',
-        0x950412de, // Magic Number
-        0,          // Revision
-        $count,     // Number of strings
-        28,         // Offset of table with original string lengths and offsets
-        28 + ($count * 8), // Offset of table with translation string lengths and offsets
-        0, 0        // Hash table size and offset
-    );
-
-    foreach ($origTable as $t) {
-        $mo .= pack('VV', $t['len'], $t['off']);
-    }
-    foreach ($transTable as $t) {
-        $mo .= pack('VV', $t['len'], $t['off']);
-    }
-    $mo .= $originals . $translations;
-    return file_put_contents($moFile, $mo) !== false;
-}
-
 // 2. Copie des fichiers principaux du plugin WordPress
-copy($wpDir . '/fingerprint-anti-bot.php', $buildDir . '/fingerprint-anti-bot.php');
+copy($wpDir . '/anonympins-bot-mitigation-pow.php', $buildDir . '/anonympins-bot-mitigation-pow.php');
 copy($wpDir . '/WpDbStore.php', $buildDir . '/WpDbStore.php');
 if (file_exists($wpDir . '/readme.txt')) {
     copy($wpDir . '/readme.txt', $buildDir . '/readme.txt');
 }
 
-// 3. Copie des assets clients nécessaires (solveur PoW et bibliothèque client)
+// 2.b Compilation et copie des fichiers de langues (PO -> MO)
+$languagesDir = $wpDir . '/languages';
+if (is_dir($languagesDir)) {
+    $poFiles = glob($languagesDir . '/*.po') ?: [];
+    foreach ($poFiles as $poFile) {
+        $filename = basename($poFile);
+        copy($poFile, $buildDir . '/languages/' . $filename);
+
+        $moFile = preg_replace('/\.po$/', '.mo', $poFile);
+        // Compilation PO vers binaire MO si absent ou obsolète
+        if (!file_exists($moFile) || filemtime($poFile) > filemtime($moFile)) {
+            compilePoToMo($poFile, $moFile);
+        }
+        if (file_exists($moFile)) {
+            copy($moFile, $buildDir . '/languages/' . basename($moFile));
+        }
+    }
+}
+
+/**
+ * Compilateur minimal PO -> binaire gettext MO natif PHP
+ */
+function compilePoToMo(string $poPath, string $moPath): void {
+    $content = (string)file_get_contents($poPath);
+    $pattern = '/msgid\s+("(?:[^"\\\\]|\\\\.)*")\s+msgstr\s+("(?:[^"\\\\]|\\\\.)*")/s';
+    if (!preg_match_all($pattern, $content, $matches, PREG_SET_ORDER)) {
+        return;
+    }
+    $entries = [];
+    foreach ($matches as $m) {
+        $orig = stripcslashes(substr($m[1], 1, -1));
+        $trans = stripcslashes(substr($m[2], 1, -1));
+        if ($orig !== '' && $trans !== '') {
+            $entries[$orig] = $trans;
+        }
+    }
+    ksort($entries);
+    $count = count($entries);
+    $originalsTable = '';
+    $translationsTable = '';
+    $origOffsets = [];
+    $transOffsets = [];
+    $headerLength = 28 + ($count * 8) * 2;
+    $currentOffset = $headerLength;
+    foreach ($entries as $orig => $trans) {
+        $origOffsets[] = ['len' => strlen($orig), 'off' => $currentOffset];
+        $currentOffset += strlen($orig) + 1;
+    }
+    foreach ($entries as $orig => $trans) {
+        $transOffsets[] = ['len' => strlen($trans), 'off' => $currentOffset];
+        $currentOffset += strlen($trans) + 1;
+    }
+    $binary = pack('V7', 0x950412de, 0, $count, 28, 28 + ($count * 8), 0, 0);
+    foreach ($origOffsets as $o) { $binary .= pack('V2', $o['len'], $o['off']); }
+    foreach ($transOffsets as $t) { $binary .= pack('V2', $t['len'], $t['off']); }
+    foreach ($entries as $orig => $trans) { $binary .= $orig . "\0"; }
+    foreach ($entries as $orig => $trans) { $binary .= $trans . "\0"; }
+    file_put_contents($moPath, $binary);
+}
+
+// 3. Copie des assets clients nécessaires (solveur PoW et bibliothèque client sans CDN externe)
 $solverSource = $jsSrcDir . '/pow.solver.inline.js';
 if (file_exists($solverSource)) {
-    copy($solverSource, $buildDir . '/assets/pow.solver.inline.js');
+    $solverContent = (string)file_get_contents($solverSource);
+    // Neutralise les chargements distants CDN interdits par les règles WordPress.org
+    $solverContent = str_replace(
+        ["'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js'", "'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js'"],
+        ["''", "''"],
+        $solverContent
+    );
+    file_put_contents($buildDir . '/assets/pow.solver.inline.js', $solverContent);
 }
 $clientSource = file_exists($jsSrcDir . '/fingerprint.client.obfuscated.js')
     ? $jsSrcDir . '/fingerprint.client.obfuscated.js'
@@ -146,19 +131,7 @@ if (file_exists($clientSource)) {
     copy($clientSource, $buildDir . '/assets/fingerprint.client.js');
 }
 
-// 4. Copie et compilation des fichiers de traduction i18n (FR / DE / EN)
-$langSourceDir = $wpDir . '/languages';
-if (is_dir($langSourceDir)) {
-    foreach (glob($langSourceDir . '/*.po') as $poFile) {
-        $baseName = basename($poFile);
-        copy($poFile, $buildDir . '/languages/' . $baseName);
-        $moTarget = $buildDir . '/languages/' . preg_replace('/\.po$/', '.mo', $baseName);
-        compilePoToMo($poFile, $moTarget);
-        compilePoToMo($poFile, $langSourceDir . '/' . preg_replace('/\.po$/', '.mo', $baseName));
-    }
-}
-
-// 5. Copie récursive de la bibliothèque PHP (src/php -> build/src), en excluant les dossiers de dev
+// 4. Copie récursive de la bibliothèque PHP (src/php -> build/src), en excluant les dossiers de dev
 $excludeDirs = ['WordPress', 'Tests', 'bin'];
 $phpIterator = new RecursiveIteratorIterator(
     new RecursiveDirectoryIterator($phpSrcDir, FilesystemIterator::SKIP_DOTS),
