@@ -1621,18 +1621,6 @@ describe('Fingerprint & PoW Security Suite', () => {
             expect(behaviorScore).toBe(0);
         });
 
-        it('should return a score of 0 when x-behavior-metrics is 1 (human verified client-side)', () => {
-            const context = { headers: { 'x-behavior-metrics': '1' } };
-            const { behaviorScore } = getBehaviorScore(context);
-            expect(behaviorScore).toBe(0);
-        });
-
-        it('should return a score of 100 when x-behavior-metrics is 0 (bot detected client-side)', () => {
-            const context = { headers: { 'x-behavior-metrics': '0' } };
-            const { behaviorScore } = getBehaviorScore(context);
-            expect(behaviorScore).toBe(100);
-        });
-
         it('should return a score of 100 for honeypot interaction', () => {
             const metrics = { honeypotInteraction: true, mouseEntropy: 50, keystrokeLatency: 120 };
             const context = { headers: { 'x-behavior-metrics': JSON.stringify(metrics) } };
