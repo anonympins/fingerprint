@@ -1,5 +1,5 @@
 import ctypes
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
 def imul(a: int, b: int) -> int:
@@ -65,3 +65,31 @@ class FingerprintBuilder:
                 weighted_matches += weight
 
         return weighted_matches / total_weight if total_weight > 0 else 0.0
+
+
+def extract_stable_part(fp_str: str) -> str:
+    """Extracts immutable components (ua, ja3, ja4, h2, tcp) from a composite fingerprint string."""
+    stable_keys = {"ua", "ja3", "ja4", "h2", "tcp"}
+    parts = fp_str.split("|")
+    stable_parts = [part for part in parts if part.split(":", 1)[0] in stable_keys]
+    return "|".join(sorted(stable_parts))
+
+
+def get_composite_device_hash(context: Any) -> str:
+    """Generates a composite device fingerprint hash from request headers."""
+    builder = FingerprintBuilder()
+    headers = getattr(context, "headers", None)
+    if headers and hasattr(headers, "get"):
+        ua = headers.get("user-agent", "")
+        builder.add("ua", ua)
+        ja3 = headers.get("x-ja3-hash")
+        if ja3:
+            builder.add("ja3", ja3)
+        accept_lang = headers.get("accept-language")
+        if accept_lang:
+            builder.add("accept_lang", accept_lang)
+    elif hasattr(context, "get_header"):
+        builder.add("ua", context.get_header("user-agent") or "")
+        builder.add("ja3", context.get_header("x-ja3-hash"))
+        builder.add("accept_lang", context.get_header("accept-language"))
+    return str(builder)

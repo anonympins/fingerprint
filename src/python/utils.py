@@ -1,9 +1,10 @@
 import math
 import time
 import ipaddress
+import socket
 from typing import Optional, Dict, Any, List
 
-from fingerprint import get_composite_device_hash, cyrb53, extract_stable_part
+from builder import get_composite_device_hash, cyrb53, extract_stable_part
 
 def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Optional[str]:
     try:
@@ -17,6 +18,45 @@ def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Opti
             return f"{network.network_address.exploded}/{ipv6_prefix}"
     except Exception:
         return None
+
+def is_loopback_ip(ip: str) -> bool:
+    """Checks if an IP address is a loopback/local address."""
+    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
+
+def get_ip_common_prefix_length(ip1: str, ip2: str) -> int:
+    """Calculates the common prefix length in bits between two IP addresses (IPv4 or IPv6)."""
+    if not ip1 or not ip2:
+        return 0
+    try:
+        socket.inet_pton(socket.AF_INET, ip1)
+        socket.inet_pton(socket.AF_INET, ip2)
+        b1 = [int(x) for x in ip1.split('.')]
+        b2 = [int(x) for x in ip2.split('.')]
+        int1 = (b1[0] << 24) | (b1[1] << 16) | (b1[2] << 8) | b1[3]
+        int2 = (b2[0] << 24) | (b2[1] << 16) | (b2[2] << 8) | b2[3]
+        xor = (int1 ^ int2) & 0xffffffff
+        if xor == 0:
+            return 32
+        return 32 - xor.bit_length()
+    except socket.error:
+        try:
+            socket.inet_pton(socket.AF_INET6, ip1)
+            socket.inet_pton(socket.AF_INET6, ip2)
+            addr1 = ipaddress.IPv6Address(ip1)
+            addr2 = ipaddress.IPv6Address(ip2)
+            int1 = int(addr1)
+            int2 = int(addr2)
+            xor = int1 ^ int2
+            if xor == 0:
+                return 128
+            return 128 - xor.bit_length()
+        except Exception:
+            return 0
 
 async def update_subnet_metrics(store: Any, context: Any, device_id: str, final_score: float) -> None:
     subnet = get_ip_subnet(context.client_ip)
