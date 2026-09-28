@@ -7,6 +7,89 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 
+def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sanitizes traffic data to protect the auto-tuner from poisoning attacks."""
+    if not traffic_data:
+        return []
+    
+    raw_logs = list(traffic_data)
+    suspicious_logs = []
+    passed_logs = []
+    device_counts = {}
+    ip_counts = {}
+    subnet_counts = {}
+    hw_cluster_counts = {}
+    hw_cluster_cache = {}
+
+    total_count = len(traffic_data)
+    max_logs_per_device = max(3, total_count // 50) # 2%
+    max_logs_per_ip = max(3, total_count // 50)      # 2%
+    max_logs_per_subnet = max(5, total_count // 20)  # 5%
+    max_logs_per_hw_cluster = max(3, total_count // 50) # 2%
+
+    def get_vector_distance(v1: Dict[str, float], v2: Dict[str, float]) -> float:
+        if not v1 or not v2:
+            return float('inf')
+        all_keys = set(v1.keys()).union(v2.keys())
+        sum_sq = sum((v1.get(k, 0.0) - v2.get(k, 0.0)) ** 2 for k in all_keys)
+        return math.sqrt(sum_sq)
+
+    # Cohort compression (Anti-Sybil / Anti-Poisoning)
+    clustered_logs = []
+    for log in raw_logs:
+        matched_cluster = None
+        log_vector = log.get("vector") or {}
+        log_type = log.get("type") or ""
+        for cluster in clustered_logs:
+            if log_type == cluster.get("type", "") and get_vector_distance(log_vector, cluster.get("vector", {})) < 5.0:
+                matched_cluster = cluster
+                break
+        if matched_cluster is not None:
+            matched_cluster["instancesCount"] = matched_cluster.get("instancesCount", 1) + 1
+            matched_cluster["weight"] = 1.0 + math.log(matched_cluster["instancesCount"])
+        else:
+            log_copy = dict(log)
+            log_copy["instancesCount"] = 1
+            log_copy["weight"] = 1.0
+            clustered_logs.append(log_copy)
+
+    def get_hardware_cluster(log_entry: Dict[str, Any]) -> str:
+        fp = log_entry.get("deviceHash") or log_entry.get("fingerprint") or log_entry.get("deviceFingerprint") or ""
+        if fp and isinstance(fp, str):
+            if fp in hw_cluster_cache:
+                return hw_cluster_cache[fp]
+            parts = fp.split("|")
+            hw_components = [p for p in parts if len(p.split(":", 1)) == 2 and p.split(":", 1)[0] in ("gpu", "cvs", "hw")]
+            result = "|".join(sorted(hw_components)) if hw_components else (log_entry.get("deviceId") or "anonymous-cluster")
+            hw_cluster_cache[fp] = result
+            return result
+        return log_entry.get("deviceId") or "anonymous-cluster"
+
+    for log in clustered_logs:
+        dev_id = log.get("deviceId") or "anonymous"
+        ip = log.get("clientIp") or log.get("ip") or "unknown"
+        subnet = ip if ip == "unknown" else ".".join(ip.split(".")[:3]) + "/24"
+        hw_cluster = get_hardware_cluster(log)
+
+        current_device_count = device_counts.get(dev_id, 0)
+        current_ip_count = ip_counts.get(ip, 0)
+        current_subnet_count = subnet_counts.get(subnet, 0)
+        current_hw_cluster_count = hw_cluster_counts.get(hw_cluster, 0)
+
+        if (current_device_count < max_logs_per_device and
+            (ip == "unknown" or current_ip_count < max_logs_per_ip) and
+            (subnet == "unknown" or current_subnet_count < max_logs_per_subnet) and
+            current_hw_cluster_count < max_logs_per_hw_cluster):
+            device_counts[dev_id] = current_device_count + 1
+            if ip != "unknown": ip_counts[ip] = current_ip_count + 1
+            subnet_counts[subnet] = current_subnet_count + 1
+            hw_cluster_counts[hw_cluster] = current_hw_cluster_count + 1
+            (passed_logs if log.get("type") == "request_passed" else suspicious_logs).append(log)
+
+    max_passed = max(200, len(suspicious_logs) * 9)
+    return suspicious_logs + passed_logs[:max_passed]
+
+
 class Individual:
     def __init__(self, thresholds: Optional[Dict[str, float]] = None, weights: Optional[Dict[str, float]] = None, patterns: Optional[Dict[str, float]] = None):
         self.thresholds = thresholds or {}
@@ -191,6 +274,23 @@ class Optimization:
 
 class OptimizationOperators:
     @staticmethod
+    def create_tournament_selection(options: Optional[Dict[str, Any]] = None) -> Callable[[List[Dict[str, Any]]], Dict[str, Any]]:
+        options = options or {}
+        tournament_size = options.get("size", 5)
+
+        def tournament_selection(population: List[Dict[str, Any]]) -> Dict[str, Any]:
+            best = None
+            pop_len = len(population)
+            for _ in range(tournament_size):
+                individual = population[random.randint(0, pop_len - 1)]
+                ind_fit = individual.get("fitness", sum(individual.get("objectives", [])) if "objectives" in individual else float("inf"))
+                if best is None or ind_fit < best.get("fitness", sum(best.get("objectives", [])) if "objectives" in best else float("inf")):
+                    best = individual
+            return best if best is not None else population[random.randint(0, pop_len - 1)]
+
+        return tournament_selection
+
+    @staticmethod
     def create_full_security_config_evaluator(traffic_data: List[Dict[str, Any]]) -> Callable[[Dict[str, Any]], List[float]]:
         def evaluator(config: Dict[str, Any]) -> List[float]:
             false_positives, false_negatives = 0.0, 0.0
@@ -231,6 +331,114 @@ class OptimizationOperators:
             return [fpr, fnr]
         return evaluator
 
+    @staticmethod
+    def solve_full_security_tuning(traffic_data: List[Dict[str, Any]], options: Optional[Dict[str, Any]] = None, current_config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        fitness_fn = OptimizationOperators.create_full_security_config_evaluator(traffic_data)
+
+        def create_individual() -> Dict[str, Any]:
+            if current_config:
+                ind = {"thresholds": {}, "weights": {}, "patterns": {}}
+                for section in ("thresholds", "weights", "patterns"):
+                    if section in current_config:
+                        for k, v in current_config[section].items():
+                            if isinstance(v, (int, float)) and k != "honeypotScore":
+                                ind[section][k] = v * (1.0 + random.uniform(-0.25, 0.25))
+                            else:
+                                ind[section][k] = v
+                if "low" in ind["thresholds"] and "medium" in ind["thresholds"] and "high" in ind["thresholds"]:
+                    ind["thresholds"]["low"] = max(10.0, min(35.0, ind["thresholds"]["low"]))
+                    ind["thresholds"]["medium"] = max(ind["thresholds"]["low"] + 5.0, min(70.0, ind["thresholds"]["medium"]))
+                    ind["thresholds"]["high"] = max(ind["thresholds"]["medium"] + 5.0, min(90.0, ind["thresholds"]["high"]))
+                return ind
+            return {
+                "thresholds": {"low": 15 + random.random() * 20, "medium": 40 + random.random() * 25, "high": 70 + random.random() * 20},
+                "weights": {
+                    "historyScore": random.random(), "rotationScore": random.random(), "headerAnomalyScore": random.random(),
+                    "requestPatternScore": 0.5 + random.random(), "inconsistencyScore": random.random(), "honeypotScore": 1.0,
+                    "behaviorScore": random.random(), "crossLayerInconsistencyScore": random.random(), "timeInconsistencyScore": random.random(),
+                    "tlsSpoofingScore": random.random(), "botScore": random.random(), "cookieDroppingScore": random.random(),
+                    "threatIntelScore": random.random(), "clientHintsInconsistencyScore": random.random(), "clickVarianceScore": random.random(),
+                    "subnetScore": random.random(), "ipReputationScore": random.random(), "botnetClusterScore": random.random(),
+                    "tcpAnomalyScore": random.random(), "protocolAnomalyScore": random.random(), "quicAnomalyScore": random.random(),
+                    "renderingAnomalyScore": random.random(), "virtualizationScore": random.random()
+                },
+                "patterns": {
+                    "velocityThreshold": 100 + random.random() * 400, "burstThreshold": 300 + random.random() * 700,
+                    "scrapeThreshold": 500 + random.random() * 1000, "regularityThreshold": 50 + random.random() * 200,
+                    "decayFactor": 0.85 + random.random() * 0.14, "inactivityReset": 15000 + random.random() * 45000
+                }
+            }
+
+        def crossover(c1: Dict[str, Any], c2: Dict[str, Any]) -> Dict[str, Any]:
+            child = copy.deepcopy(c1)
+            for section in ("thresholds", "weights", "patterns"):
+                for k in child[section]:
+                    if k != "honeypotScore":
+                        child[section][k] = (c1[section][k] + c2[section][k]) / 2.0
+            return child
+
+        def mutate(c: Dict[str, Any]) -> Dict[str, Any]:
+            new_config = copy.deepcopy(c)
+            sections = [{"name": "patterns", "weight": 0.5}, {"name": "weights", "weight": 0.35}, {"name": "thresholds", "weight": 0.15}]
+            rand = random.random()
+            cumulative = 0.0
+            section_to_mutate = "patterns"
+            for section in sections:
+                cumulative += section["weight"]
+                if rand < cumulative:
+                    section_to_mutate = section["name"]
+                    break
+            keys = list(new_config[section_to_mutate].keys())
+            key_to_mutate = random.choice(keys)
+            if key_to_mutate == "honeypotScore":
+                return new_config
+            mutation_amount = (random.random() - 0.5) * 0.4
+            new_config[section_to_mutate][key_to_mutate] *= (1.0 + mutation_amount)
+            if section_to_mutate == "weights":
+                new_config[section_to_mutate][key_to_mutate] = max(0.0, min(1.5, new_config[section_to_mutate][key_to_mutate]))
+            return new_config
+
+        return Optimization.genetic_algorithm_multi_objective(create_individual, fitness_fn, crossover, mutate, options)
+
+    @staticmethod
+    def evaluate_facility_location(facilities: List[Dict[str, float]], payload: Dict[str, Any]) -> float:
+        customers = payload.get("customers", [])
+        fixed_cost = payload.get("options", {}).get("fixedCostPerFacility", 0.0)
+        total_connection_cost = sum(
+            math.sqrt(min((c["x"] - f["x"])**2 + (c["y"] - f["y"])**2 for f in facilities))
+            for c in customers
+        ) if facilities else 0.0
+        return total_connection_cost + len(facilities) * fixed_cost
+
+    @staticmethod
+    def solve_facility_location(customers: List[Dict[str, float]], num_facilities: int, bounds: Dict[str, float], options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        options = options or {}
+        cooling_rate = options.get("coolingRate", 0.999)
+        max_iterations = options.get("maxIterations", 5000)
+        temperature = options.get("initialTemperature", 100000.0)
+
+        current_solution = [{
+            "x": bounds["minX"] + random.random() * (bounds["maxX"] - bounds["minX"]),
+            "y": bounds["minY"] + random.random() * (bounds["maxY"] - bounds["minY"])
+        } for _ in range(num_facilities)]
+        current_energy = OptimizationOperators.evaluate_facility_location(current_solution, {"customers": customers, "options": options})
+        best_solution, best_energy = current_solution, current_energy
+
+        for _ in range(max_iterations):
+            new_sol = copy.deepcopy(current_solution)
+            idx = random.randint(0, num_facilities - 1)
+            new_sol[idx]["x"] = max(bounds["minX"], min(bounds["maxX"], new_sol[idx]["x"] + (random.random() - 0.5) * (bounds["maxX"] - bounds["minX"]) * 0.1))
+            new_sol[idx]["y"] = max(bounds["minY"], min(bounds["maxY"], new_sol[idx]["y"] + (random.random() - 0.5) * (bounds["maxY"] - bounds["minY"]) * 0.1))
+            new_energy = OptimizationOperators.evaluate_facility_location(new_sol, {"customers": customers, "options": options})
+            delta = new_energy - current_energy
+            if delta < 0 or (temperature > 0 and random.random() < math.exp(-delta / max(1e-9, temperature))):
+                current_solution, current_energy = new_sol, new_energy
+                if current_energy < best_energy:
+                    best_solution, best_energy = current_solution, current_energy
+            temperature *= cooling_rate
+
+        return {"solution": best_solution, "energy": best_energy}
+
 
 class AutoTuner:
     _last_best_solution: Optional[Dict[str, Any]] = None
@@ -263,67 +471,64 @@ class AutoTuner:
             return self._run_optimization_cycle_sync()
         return self._run_optimization_cycle_async()
 
+    async def _run_optimization_cycle_async(self) -> None:
+        raw_logs = await self.store.get("traffic_logs") or []
+        if not raw_logs:
+            return
+        self._prune_logs(raw_logs)
+        await self.store.set("traffic_logs", raw_logs)
+        self._optimize_on_logs(raw_logs)
+        if self.clear_after_tuning:
+            await self.store.delete("traffic_logs")
+
     def _run_optimization_cycle_sync(self) -> None:
         raw_logs = self.store
         if not raw_logs:
             return
-
         self._prune_logs(raw_logs)
-        from engine import sanitize_traffic_data
-        sanitized_data = sanitize_traffic_data(raw_logs)
+        self._optimize_on_logs(raw_logs)
+        if self.clear_after_tuning and isinstance(self.store, list):
+            self.store.clear()
 
-        high_confidence_logs = sum(
-            log.get("instancesCount", 1) for log in sanitized_data 
-            if log.get("type") in ("challenge_solved", "trap_triggered")
-        )
+    def _optimize_on_logs(self, raw_logs: List[Dict[str, Any]]) -> None:
+        sanitized_data = sanitize_traffic_data(raw_logs)
+        high_confidence_logs = sum(log.get("instancesCount", 1) for log in sanitized_data if log.get("type") in ("challenge_solved", "trap_triggered"))
         total_sanitized_instances = sum(log.get("instancesCount", 1) for log in sanitized_data)
-        high_confidence_ratio = (
-            high_confidence_logs / total_sanitized_instances if total_sanitized_instances else 0.0
-        )
+        high_confidence_ratio = high_confidence_logs / total_sanitized_instances if total_sanitized_instances else 0.0
 
         if total_sanitized_instances < self.min_data_points or (high_confidence_ratio < 0.05 and high_confidence_logs < 10):
             return
 
         pareto_front = self.solve_full_security_tuning(sanitized_data)
-        if not pareto_front:
-            return
-
-        filtered_front = [
-            ind for ind in pareto_front 
-            if self.is_valid_security_config(ind.thresholds, ind.weights)
-        ] or pareto_front
-
+        if not pareto_front: return
+        filtered_front = [ind for ind in pareto_front if self.is_valid_security_config(ind.thresholds, ind.weights)] or pareto_front
         best_solution = min(filtered_front, key=lambda ind: math.sqrt(ind.objectives[0]**2 + ind.objectives[1]**2))
         traffic_confidence = min(1.5, max(0.3, high_confidence_ratio * 4.0))
 
         temp_thresholds = dict(self.security_config.get("thresholds", {}))
         temp_weights = dict(self.security_config.get("weights", {}))
         temp_patterns = dict(self.security_config.get("patterns", {}))
-
         self.apply_inertial_update(temp_thresholds, best_solution.thresholds, "thresholds", traffic_confidence)
         self.apply_inertial_update(temp_weights, best_solution.weights, "weights", traffic_confidence)
         self.apply_inertial_update(temp_patterns, best_solution.patterns, "patterns", traffic_confidence)
 
         current_obj = self.evaluate_fitness(self.security_config.get("thresholds", {}), self.security_config.get("weights", {}), sanitized_data)
         proposed_obj = self.evaluate_fitness(temp_thresholds, temp_weights, sanitized_data)
-
-        if (proposed_obj[0] > current_obj[0] + self.validation_tolerance or 
-            proposed_obj[1] > current_obj[1] + self.validation_tolerance):
+        if proposed_obj[0] > current_obj[0] + self.validation_tolerance or proposed_obj[1] > current_obj[1] + self.validation_tolerance:
             return
 
+        self.security_config.setdefault("thresholds", {})
+        self.security_config.setdefault("weights", {})
+        self.security_config.setdefault("patterns", {})
         self.apply_inertial_update(self.security_config["thresholds"], best_solution.thresholds, "thresholds", traffic_confidence)
         self.apply_inertial_update(self.security_config["weights"], best_solution.weights, "weights", traffic_confidence)
-        self.security_config.setdefault("patterns", {})
         self.apply_inertial_update(self.security_config["patterns"], best_solution.patterns, "patterns", traffic_confidence)
 
         self.last_best_solution = {
-            "thresholds": self.security_config["thresholds"],
-            "weights": self.security_config["weights"],
-            "patterns": self.security_config["patterns"],
-            "objectives": best_solution.objectives
+            "thresholds": self.security_config["thresholds"], "weights": self.security_config["weights"],
+            "patterns": self.security_config["patterns"], "objectives": best_solution.objectives
         }
         AutoTuner._last_best_solution = self.last_best_solution
-
         if self.save_path:
             try:
                 with open(self.save_path, 'w', encoding='utf-8') as f:

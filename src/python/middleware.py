@@ -3,7 +3,8 @@ from http.cookies import SimpleCookie
 from urllib.parse import parse_qs
 from typing import Any, Callable, Dict, List, Optional
 
-from engine import FingerprintEngine, InMemoryStore, RequestContext
+from storage import InMemoryStore
+from engine import FingerprintEngine, RequestContext
 
 
 class ASGIFingerprintMiddleware:
@@ -178,6 +179,37 @@ try:
             self.engine = FingerprintEngine(security_config, self.store)
 
         async def dispatch(self, request: Request, call_next: Callable) -> Response:
-            return await call_next(request)
+            headers_dict = {k.decode("utf-8"): v.decode("utf-8") for k, v in request.headers.raw}
+            cookies_dict = dict(request.cookies)
+            query_dict = dict(request.query_params)
+            
+            context = RequestContext(
+                client_ip=request.client.host if request.client else "unknown",
+                path=request.url.path,
+                headers=headers_dict,
+                query_params=query_dict,
+                cookies=cookies_dict,
+                scheme=request.url.scheme
+            )
+            
+            decision = await self.engine.process_request(context)
+            
+            if decision["action"] == "block":
+                return Response(content=decision.get("body", "Forbidden"), status_code=decision.get("status", 403))
+                
+            if decision["action"] == "challenge":
+                return Response(content=decision.get("body", ""), status_code=decision.get("status", 403), media_type="text/html")
+                
+            if decision["action"] == "redirect":
+                from fastapi.responses import RedirectResponse
+                response = RedirectResponse(url=decision["path"], status_code=302)
+                if "cookie" in decision:
+                    c = decision["cookie"]
+                    response.set_cookie(c["name"], c["value"], **c["options"])
+                return response
+            
+            response: Response = await call_next(request)
+            return response
+
 except ImportError:
     pass
