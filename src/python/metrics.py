@@ -6,13 +6,18 @@ class MetricsManager:
     _counters: Dict[str, Dict[str, Any]] = {}
     _observations: Dict[str, Dict[str, Any]] = {}
 
+    @staticmethod
+    def _format_labels(labels: Optional[Dict[str, str]]) -> str:
+        if not labels:
+            return ""
+        items = [f'{k}="{v}"' for k, v in sorted(labels.items())]
+        return "{" + ",".join(items) + "}"
+
     @classmethod
     def increment_counter(cls, name: str, labels: Optional[Dict[str, str]] = None) -> None:
         if not name.startswith("fingerprint_"):
             name = "fingerprint_" + name
-        labels = labels or {}
-        sorted_labels = sorted(labels.items())
-        labels_str = f"{{{','.join([f'{k}=\"{v}\"' for k, v in sorted_labels])}}}" if labels else ""
+        labels_str = cls._format_labels(labels)
         key = f"{name}{labels_str}"
         if key not in cls._counters:
             cls._counters[key] = {"name": name, "labelsStr": labels_str, "value": 0}
@@ -22,9 +27,7 @@ class MetricsManager:
     def observe_value(cls, name: str, value: float, labels: Optional[Dict[str, str]] = None) -> None:
         if not name.startswith("fingerprint_"):
             name = "fingerprint_" + name
-        labels = labels or {}
-        sorted_labels = sorted(labels.items())
-        labels_str = f"{{{','.join([f'{k}=\"{v}\"' for k, v in sorted_labels])}}}" if labels else ""
+        labels_str = cls._format_labels(labels)
         key = f"{name}{labels_str}"
         cls._observations[key] = {"name": name, "labelsStr": labels_str, "value": value}
 
