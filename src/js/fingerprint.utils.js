@@ -1,4 +1,5 @@
 import {cyrb53} from "./fingerprint.builder.js";
+import crypto from "node:crypto";
 
 /**
  * Verifies a Zero-Knowledge Proof (ZKP) of the Schnorr type.
@@ -105,6 +106,130 @@ export function decodePolymorphicFingerprint(fpString, mapping) {
     return mappedParts.join('|');
 }
 
+/**
+ * Extracts and parses a Private Access Token (PAT / Privacy Pass / RFC 9578).
+ * Supports 'Authorization: PrivateToken token="..."' and 'Sec-Private-State-Token'.
+ *
+ * @param {object} headers - HTTP request headers object.
+ * @returns {Array<Uint8Array>} Array of raw binary tokens.
+ */
+export function extractPrivateAccessTokens(headers) {
+    if (!headers) return [];
+    const tokens = [];
+
+    const authHeader = headers['authorization'] || headers['Authorization'];
+    if (typeof authHeader === 'string' && authHeader.toLowerCase().startsWith('privatetoken ')) {
+        const match = authHeader.match(/token=(?:"([^"]+)"|([a-zA-Z0-9_\-+/=]+))/i);
+        if (match) {
+            const rawB64 = match[1] || match[2];
+            try {
+                tokens.push(Buffer.from(rawB64.replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
+            } catch (e) {}
+        }
+    }
+
+    const pstHeader = headers['sec-private-state-token'] || headers['Sec-Private-State-Token'];
+    if (typeof pstHeader === 'string') {
+        const parts = pstHeader.split(',');
+        for (const part of parts) {
+            const trimmed = part.trim();
+            if (trimmed) {
+                try {
+                    tokens.push(Buffer.from(trimmed.replace(/-/g, '+').replace(/_/g, '/'), 'base64'));
+                } catch (e) {}
+            }
+        }
+    }
+
+    return tokens;
+}
+
+/**
+ * Decodes an RFC 9578 Token structure:
+ * uint16_t token_type (2 bytes)
+ * uint8_t nonce[32] (32 bytes)
+ * uint8_t challenge_digest[32] (32 bytes)
+ * uint8_t token_key_id[32] (32 bytes)
+ * uint8_t authenticator[Nk] (>= 32 bytes)
+ *
+ * @param {Uint8Array|Buffer} buffer
+ * @returns {object|null}
+ */
+export function parsePrivateAccessToken(buffer) {
+    if (!buffer || buffer.length < 98) return null; // 2 + 32 + 32 + 32 = 98 min
+
+    const view = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    const tokenType = view.readUInt16BE(0);
+    const nonce = view.subarray(2, 34);
+    const challengeDigest = view.subarray(34, 66);
+    const tokenKeyId = view.subarray(66, 98);
+    const authenticator = view.subarray(98);
+
+    if (authenticator.length === 0) return null;
+
+    return {
+        tokenType,
+        nonce: nonce.toString('hex'),
+        challengeDigest: challengeDigest.toString('hex'),
+        tokenKeyId: tokenKeyId.toString('hex'),
+        authenticator,
+        signedData: view.subarray(0, 98)
+    };
+}
+
+/**
+ * Validates a decoded Private Access Token signature against configured public keys.
+ *
+ * @param {object} parsedToken - Output from parsePrivateAccessToken.
+ * @param {object} patConfig - Configuration with trustedKeys mapping.
+ * @returns {boolean} True if signature is cryptographically valid.
+ */
+export function verifyPatSignature(parsedToken, patConfig = {}) {
+    if (!parsedToken) return false;
+    const trustedKeys = patConfig.trustedKeys || {};
+    const keyId = parsedToken.tokenKeyId;
+    const publicKey = trustedKeys[keyId] || trustedKeys[keyId.toLowerCase()] || patConfig.defaultPublicKey;
+
+    if (!publicKey) {
+        return false;
+    }
+
+    const { tokenType, signedData, authenticator } = parsedToken;
+
+    try {
+        // Type 0x0001 (Blind RSA 2048) / 0x0002 (Rate-Limited Blind RSA)
+        if (tokenType === 0x0001 || tokenType === 0x0002 || tokenType === 1 || tokenType === 2) {
+            // Try RSA-PSS with SHA-384 (RFC 9577) first, fallback to SHA-256 and PKCS#1 v1.5
+            const algorithms = [
+                { hash: 'sha384', padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: 48 },
+                { hash: 'sha256', padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 },
+                { hash: 'sha384', padding: crypto.constants.RSA_PKCS1_PADDING },
+                { hash: 'sha256', padding: crypto.constants.RSA_PKCS1_PADDING }
+            ];
+
+            for (const alg of algorithms) {
+                try {
+                    const verifier = crypto.createVerify(alg.hash);
+                    verifier.update(signedData);
+                    const isValid = verifier.verify({
+                        key: publicKey,
+                        padding: alg.padding,
+                        saltLength: alg.saltLength
+                    }, authenticator);
+                    if (isValid) return true;
+                } catch (verifyErr) {}
+            }
+        } else if (tokenType === 0x0003 || tokenType === 3) {
+            // VOPRF / Ed25519 authentication verification
+            try {
+                return crypto.verify(null, signedData, publicKey, authenticator);
+            } catch (voprfErr) {}
+        }
+    } catch (e) {
+        return false;
+    }
+    return false;
+}
 
 /**
  * @private

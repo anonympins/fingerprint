@@ -13,6 +13,9 @@ import {GpuPowSolver} from "./gpu_pow.solver.js";
 import {
     verifyZkpProof,
     sanitizeRedirectPath,
+    extractPrivateAccessTokens,
+    parsePrivateAccessToken,
+    verifyPatSignature,
     decodePolymorphicFingerprint,
     deepMerge,
     getHeaderSignature,
@@ -4870,6 +4873,7 @@ export class FingerprintEngine {
       'federatedPeers', 'federationSecret', 'filterWhitelist',
       'challengeRateLimit',
       'differentialPrivacy', 'dpEpsilon'
+      ,'pat'
     ]);
 
     // 1. Check for essential keys
@@ -5335,6 +5339,39 @@ export class FingerprintEngine {
     if (isStatic) {
       this._log('Static resource - skipping checks');
       return { action: 'next', score: 0, vector: {} };
+    }
+
+    // --- PRIVATE ACCESS TOKENS (PAT / RFC 9505 & Privacy Pass) ZERO-FRICTION BYPASS ---
+    const rawPatTokens = extractPrivateAccessTokens(requestContext.headers);
+    if (rawPatTokens.length > 0) {
+        const patConfig = this.securityConfig.pat || {};
+        for (const rawToken of rawPatTokens) {
+            const parsedToken = parsePrivateAccessToken(rawToken);
+            if (parsedToken) {
+                const nonceKey = `pat-nonce:${parsedToken.nonce}`;
+                const isReplayed = await store.has(nonceKey);
+                if (!isReplayed) {
+                    const isValid = verifyPatSignature(parsedToken, patConfig);
+                    if (isValid) {
+                        // Anti-replay: cache nonce with 24-hour TTL
+                        const nonceTtl = patConfig.nonceTtl || 86400;
+                        await store.set(nonceKey, true, nonceTtl);
+                        this._log('Private Access Token (PAT) cryptographically verified - granting zero-friction bypass', {
+                            tokenType: parsedToken.tokenType,
+                            tokenKeyId: parsedToken.tokenKeyId
+                        });
+                        const decision = {
+                            action: 'next',
+                            score: 0.0,
+                            vector: { pat_verified: 100.0, privacy_pass: 100.0 },
+                            intendedAction: 'next'
+                        };
+                        if (newCookie) decision.newCookieForResponse = newCookie;
+                        return decision;
+                    }
+                }
+            }
+        }
     }
 
     // Resolve identity and check for persisted "condemned" status early.

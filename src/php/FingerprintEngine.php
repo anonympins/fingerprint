@@ -320,6 +320,7 @@ class FingerprintEngine
             'wasm', 'enableProofOfSpace', 'pospace', 'federatedPeers', 'federationSecret', 'reset',
             'filterWhitelist',
             'differentialPrivacy', 'dpEpsilon'
+            ,'pat'
         ];
 
         if (empty($config['weights'])) {
@@ -1270,6 +1271,35 @@ class FingerprintEngine
                 $decision['newCookieForResponse'] = $context->newCookieForResponse;
             }
             return $decision;
+        }
+
+        // --- PRIVATE ACCESS TOKENS (PAT / RFC 9505 & Privacy Pass) ZERO-FRICTION BYPASS ---
+        $rawPatTokens = RequestUtils::extractPrivateAccessTokens($context);
+        if (!empty($rawPatTokens)) {
+            $patConfig = $this->securityConfig['pat'] ?? [];
+            foreach ($rawPatTokens as $rawToken) {
+                $parsedToken = RequestUtils::parsePrivateAccessToken($rawToken);
+                if ($parsedToken !== null) {
+                    $nonceKey = "pat-nonce:{$parsedToken['nonce']}";
+                    if (!$store->has($nonceKey)) {
+                        $isValid = RequestUtils::verifyPatSignature($parsedToken, $patConfig);
+                        if ($isValid) {
+                            $nonceTtl = $patConfig['nonceTtl'] ?? 86400;
+                            $store->set($nonceKey, true, $nonceTtl);
+                            $this->log('Private Access Token (PAT) cryptographically verified - granting zero-friction bypass', [
+                                'tokenType' => $parsedToken['tokenType'],
+                                'tokenKeyId' => $parsedToken['tokenKeyId']
+                            ]);
+                            $decision = [
+                                'action' => 'next',
+                                'score' => 0.0,
+                                'vector' => ['pat_verified' => 100.0, 'privacy_pass' => 100.0]
+                            ];
+                            return $decision;
+                        }
+                    }
+                }
+            }
         }
 
         // 1. Check allowlists

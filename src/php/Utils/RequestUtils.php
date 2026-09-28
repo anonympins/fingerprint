@@ -117,6 +117,124 @@ class RequestUtils
     }
 
     /**
+     * Extracts Private Access Tokens (PAT / RFC 9578) from request headers.
+     *
+     * @param RequestContext $context
+     * @return array<int, string> Raw binary tokens.
+     */
+    public static function extractPrivateAccessTokens(RequestContext $context): array
+    {
+        $tokens = [];
+        $authHeader = $context->getHeader('authorization');
+        if ($authHeader && stripos($authHeader, 'privatetoken ') === 0) {
+            if (preg_match('/token=(?:"([^"]+)"|([a-zA-Z0-9_\-+\/=]+))/i', $authHeader, $matches)) {
+                $rawB64 = !empty($matches[1]) ? $matches[1] : $matches[2];
+                $decoded = base64_decode(strtr($rawB64, '-_', '+/'), true);
+                if ($decoded !== false) {
+                    $tokens[] = $decoded;
+                }
+            }
+        }
+
+        $pstHeader = $context->getHeader('sec-private-state-token');
+        if ($pstHeader) {
+            foreach (explode(',', $pstHeader) as $part) {
+                $trimmed = trim($part);
+                if (!empty($trimmed)) {
+                    $decoded = base64_decode(strtr($trimmed, '-_', '+/'), true);
+                    if ($decoded !== false) {
+                        $tokens[] = $decoded;
+                    }
+                }
+            }
+        }
+        return $tokens;
+    }
+
+    /**
+     * Decodes an RFC 9578 Token structure:
+     * uint16_t token_type (2 bytes)
+     * uint8_t nonce[32] (32 bytes)
+     * uint8_t challenge_digest[32] (32 bytes)
+     * uint8_t token_key_id[32] (32 bytes)
+     * uint8_t authenticator[Nk] (>= 32 bytes)
+     *
+     * @param string $binary
+     * @return array<string, mixed>|null
+     */
+    public static function parsePrivateAccessToken(string $binary): ?array
+    {
+        $len = strlen($binary);
+        if ($len < 98) {
+            return null;
+        }
+
+        $tokenType = unpack('n', substr($binary, 0, 2))[1];
+        $nonce = substr($binary, 2, 32);
+        $challengeDigest = substr($binary, 34, 32);
+        $tokenKeyId = substr($binary, 66, 32);
+        $authenticator = substr($binary, 98);
+
+        if ($authenticator === '') {
+            return null;
+        }
+
+        return [
+            'tokenType' => $tokenType,
+            'nonce' => bin2hex($nonce),
+            'challengeDigest' => bin2hex($challengeDigest),
+            'tokenKeyId' => bin2hex($tokenKeyId),
+            'authenticator' => $authenticator,
+            'signedData' => substr($binary, 0, 98),
+        ];
+    }
+
+    /**
+     * Cryptographically validates a Private Access Token signature.
+     *
+     * @param array<string, mixed> $parsedToken
+     * @param array<string, mixed> $patConfig
+     * @return bool
+     */
+    public static function verifyPatSignature(array $parsedToken, array $patConfig = []): bool
+    {
+        $trustedKeys = $patConfig['trustedKeys'] ?? [];
+        $keyId = $parsedToken['tokenKeyId'];
+        $publicKey = $trustedKeys[$keyId] ?? $trustedKeys[strtolower($keyId)] ?? ($patConfig['defaultPublicKey'] ?? null);
+
+        if (!$publicKey) {
+            return false;
+        }
+
+        $tokenType = (int)$parsedToken['tokenType'];
+        $signedData = $parsedToken['signedData'];
+        $authenticator = $parsedToken['authenticator'];
+
+        $pubKeyObj = openssl_pkey_get_public($publicKey);
+        if (!$pubKeyObj) {
+            return false;
+        }
+
+        // Type 0x0001 (Blind RSA 2048) / 0x0002 (Rate-Limited Blind RSA)
+        if ($tokenType === 1 || $tokenType === 2) {
+            // Try RSA-PSS with SHA-384, then SHA-256, then PKCS#1 v1.5
+            if (defined('OPENSSL_PKCS1_PSS_PADDING') && @openssl_verify($signedData, $authenticator, $pubKeyObj, OPENSSL_ALGO_SHA384)) {
+                return true;
+            }
+            if (defined('OPENSSL_PKCS1_PSS_PADDING') && @openssl_verify($signedData, $authenticator, $pubKeyObj, OPENSSL_ALGO_SHA256)) {
+                return true;
+            }
+            if (@openssl_verify($signedData, $authenticator, $pubKeyObj, OPENSSL_ALGO_SHA256) === 1) {
+                return true;
+            }
+        } elseif ($tokenType === 3) {
+            return @openssl_verify($signedData, $authenticator, $pubKeyObj, OPENSSL_ALGO_SHA256) === 1;
+        }
+
+        return false;
+    }
+
+    /**
      * Analyzes TCP MTU and fragmentation flags to detect network tunnels (VPN/Proxy).
      * @param RequestContext $context The request context.
      * @return array{'mtuAnomalyScore': float}
