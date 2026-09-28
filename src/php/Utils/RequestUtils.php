@@ -2219,6 +2219,30 @@ class RequestUtils
                     } elseif ($isSafari) {
                         if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
                     }
+
+                    // Analyse de la structure des dépendances de flux HTTP/2 (RFC 7540)
+                    if (!empty($streamPriority)) {
+                        $priorityEntries = array_filter(array_map('trim', explode(',', $streamPriority)));
+                        foreach ($priorityEntries as $entry) {
+                            $sub = explode(':', $entry);
+                            if (count($sub) >= 4) {
+                                $streamId = (int)$sub[0];
+                                $exclusive = (int)$sub[1];
+                                $depStreamId = (int)$sub[2];
+                                $weight = (int)$sub[3];
+
+                                if ($streamId === $depStreamId && $streamId > 0) {
+                                    $http2Anomaly += 60.0;
+                                }
+                                if ($weight < 1 || $weight > 256) {
+                                    $http2Anomaly += 45.0;
+                                }
+                                if ($isChromium && $depStreamId === 0 && $weight === 16 && $exclusive === 0) {
+                                    $http2Anomaly += 55.0;
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -2250,6 +2274,22 @@ class RequestUtils
                     if ($isChromium) {
                         if ($maxData > 0 && $maxData < 1048576) $quicAnomaly += 40.0;
                         if ($maxStreams > 0 && $maxStreams !== 100) $quicAnomaly += 30.0;
+
+                        if (!empty($priorityOrder)) {
+                            if (preg_match('/\bu=(-?\d+)\b/', $priorityOrder, $uMatch)) {
+                                $urgency = (int)$uMatch[1];
+                                if ($urgency < 0 || $urgency > 7) {
+                                    $quicAnomaly += 50.0;
+                                }
+                            }
+                            if (preg_match('/\bi=\d+\b/', $priorityOrder)) {
+                                $quicAnomaly += 40.0;
+                            }
+                            if (preg_match('/\bw=\d+\b/', $priorityOrder)) {
+                                $quicAnomaly += 45.0;
+                            }
+                        }
+
                         if (!empty($priorityOrder)) {
                             if (str_contains($priorityOrder, 'u=') && !str_contains($priorityOrder, 'i')) {
                                 $quicAnomaly += 40.0;
@@ -2271,6 +2311,11 @@ class RequestUtils
                             if ($sIdx !== null && $sIdx !== 0) $quicAnomaly += 50.0;
                             if ($mIdx !== null && $sIdx !== null && $mIdx < $sIdx) $quicAnomaly += 60.0;
                             if ($pIdx !== null && $sIdx !== null && $pIdx < $sIdx) $quicAnomaly += 60.0;
+
+                            $sCount = count(array_filter($frameOrder, fn($f) => in_array($f, ['s', 'settings', '4'], true)));
+                            if ($sCount > 1) {
+                                $quicAnomaly += 50.0;
+                            }
                         }
                     } elseif ($isFirefox) {
                         if ($maxData > 0 && $maxData > 5000000) $quicAnomaly += 40.0;
@@ -2312,15 +2357,39 @@ class RequestUtils
             $reqCount = $info['req_count'] ?? 0;
             $hpackRatio = $info['hpack_ratio'] ?? null;
             $qpackRatio = $info['qpack_ratio'] ?? null;
+            $dynamicEntries = isset($info['dynamic_table_entries']) ? (int)$info['dynamic_table_entries'] : (isset($info['table_entries']) ? (int)$info['table_entries'] : null);
+            $dynamicHits = isset($info['dynamic_hits']) ? (int)$info['dynamic_hits'] : null;
+            $dynamicTableSize = isset($info['dynamic_table_size']) ? (int)$info['dynamic_table_size'] : null;
+
             $claimedFamily = explode('/', $browser ?? '')[0];
             $isHuman = in_array($claimedFamily, ['Chrome', 'Firefox', 'Safari', 'Edge'], true);
 
             if ($reqCount > 3 && $isHuman) {
-                if ($hpackRatio !== null && $hpackRatio < 0.4) {
-                    $http2Anomaly += (1.0 - $hpackRatio) * 50.0;
+                if ($hpackRatio !== null) {
+                    if ($hpackRatio < 0.4) {
+                        $http2Anomaly += (1.0 - $hpackRatio) * 50.0;
+                    } elseif ($hpackRatio > 0.75) {
+                        $http2Anomaly += min(50.0, ($hpackRatio - 0.5) * 100.0);
+                    }
                 }
-                if ($qpackRatio !== null && $qpackRatio < 0.4) {
-                    $quicAnomaly += (1.0 - $qpackRatio) * 50.0;
+                if ($qpackRatio !== null) {
+                    if ($qpackRatio < 0.4) {
+                        $quicAnomaly += (1.0 - $qpackRatio) * 50.0;
+                    } elseif ($qpackRatio > 0.75) {
+                        $quicAnomaly += min(50.0, ($qpackRatio - 0.5) * 100.0);
+                    }
+                }
+                if ($dynamicEntries !== null && $dynamicEntries === 0) {
+                    $http2Anomaly += 45.0;
+                    $quicAnomaly += 45.0;
+                }
+                if ($dynamicHits !== null && $dynamicHits === 0) {
+                    $http2Anomaly += 35.0;
+                    $quicAnomaly += 35.0;
+                }
+                if ($dynamicTableSize !== null && $dynamicTableSize === 0) {
+                    $http2Anomaly += 40.0;
+                    $quicAnomaly += 40.0;
                 }
             }
         }

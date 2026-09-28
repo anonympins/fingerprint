@@ -90,6 +90,7 @@ class TLSClientHelloParser
         $frames = [];
         $frameOrder = [];
         $settings = [];
+        $priorityUpdates = [];
         $offset = 0;
         $len = strlen($streamData);
 
@@ -133,12 +134,22 @@ class TLSClientHelloParser
                     $settings[$sId] = $sVal;
                 }
             }
+            if ($frameType === 0x0f || $frameType === 0xaf || $frameType === 0xf0700) {
+                $pOffset = 0;
+                $prioritizedId = self::readVarInt($payload, $pOffset);
+                $priorityString = ($pOffset !== null && $pOffset < strlen($payload)) ? substr($payload, $pOffset) : '';
+                $priorityUpdates[] = [
+                    'stream_id' => $prioritizedId,
+                    'priority' => $priorityString
+                ];
+            }
         }
 
         return [
             'frames' => $frames,
             'frame_order' => implode(',', $frameOrder),
-            'settings' => $settings
+            'settings' => $settings,
+            'priority_updates' => $priorityUpdates
         ];
     }
 

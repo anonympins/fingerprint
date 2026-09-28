@@ -427,6 +427,33 @@ export function getProtocolAnomalyScore(context) {
                     if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
                 }
 
+                // Analyse de la structure des dépendances de flux HTTP/2 (RFC 7540)
+                if (streamPriority) {
+                    const priorityEntries = streamPriority.split(',').map(s => s.trim()).filter(Boolean);
+                    for (const entry of priorityEntries) {
+                        const sub = entry.split(':');
+                        if (sub.length >= 4) {
+                            const streamId = parseInt(sub[0], 10);
+                            const exclusive = parseInt(sub[1], 10);
+                            const depStreamId = parseInt(sub[2], 10);
+                            const weight = parseInt(sub[3], 10);
+
+                            // Auto-dépendance interdite (RFC 7540 Section 5.3.1)
+                            if (streamId === depStreamId && streamId > 0) {
+                                http2Anomaly += 60.0;
+                            }
+                            // Poids en dehors de [1, 256] (RFC 7540 Section 5.3.2)
+                            if (weight < 1 || weight > 256) {
+                                http2Anomaly += 45.0;
+                            }
+                            // Signature scraper : Go net/http2 ou Python h2 par défaut (poids 16 sur flux 0 non-exclusif)
+                            if (isChromium && depStreamId === 0 && weight === 16 && exclusive === 0) {
+                                http2Anomaly += 55.0;
+                            }
+                        }
+                    }
+                }
+
                 // Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
                 if (parts.length >= 5) {
                     const frameCountsStr = parts[4];
@@ -490,12 +517,29 @@ export function getProtocolAnomalyScore(context) {
                     // Contrôle de flux global et nombre de flux bidirectionnels
                     if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
                     if (maxStreams > 0 && maxStreams !== 100) quicAnomaly += 30.0;
-                    if (priorityOrder && !priorityOrder.includes('u=')) quicAnomaly += 30.0;
 
                     // NOUVEAU: Analyse des trames PRIORITY_UPDATE (RFC 9218)
                     if (priorityOrder) {
+                        // Contrôle de l'urgence (u: 0 à 7 strict)
+                        const uMatch = priorityOrder.match(/\bu=(-?\d+)\b/);
+                        if (uMatch) {
+                            const urgency = parseInt(uMatch[1], 10);
+                            if (urgency < 0 || urgency > 7) {
+                                quicAnomaly += 50.0;
+                            }
+                        } else if (!priorityOrder.includes('u=')) {
+                            quicAnomaly += 30.0;
+                        }
+
+                        // Paramètre incrémental invalide ou malformé
+                        if (/\bi=\d+\b/.test(priorityOrder)) {
+                            quicAnomaly += 40.0;
+                        }
+                        if (/\bw=\d+\b/.test(priorityOrder)) {
+                            quicAnomaly += 45.0;
+                        }
                         // Un navigateur légitime enverra probablement une mise à jour incrémentale 'i'
-                        if (priorityOrder.includes('u=') && !priorityOrder.includes('i')) {
+                        if (priorityOrder.includes('u=') && !priorityOrder.includes('i') && !/\bu=[0-7],i\b/.test(priorityOrder)) {
                             quicAnomaly += 40.0; // Urgence envoyée sans drapeau incrémental, suspect pour Chrome
                         }
                         if (priorityOrder === 'p' || priorityOrder === 'i') quicAnomaly += 50.0; // Champ malformé
@@ -520,6 +564,12 @@ export function getProtocolAnomalyScore(context) {
                         }
                         if (pIdx !== -1 && sIdx !== -1 && pIdx < sIdx) {
                             quicAnomaly += 60.0;
+                        }
+
+                        // RFC 9114: Le flux de contrôle ne doit pas contenir de doublon SETTINGS
+                        const sCount = frameOrder.filter(f => f === 's' || f === 'settings' || f === '4').length;
+                        if (sCount > 1) {
+                            quicAnomaly += 50.0;
                         }
                     }
                 } else if (isFirefox) {
@@ -563,15 +613,39 @@ export function getProtocolAnomalyScore(context) {
             const reqCount = info.req_count || 0;
             const hpackRatio = info.hpack_ratio;
             const qpackRatio = info.qpack_ratio;
+            const dynamicEntries = info.dynamic_table_entries !== undefined ? info.dynamic_table_entries : info.table_entries;
+            const dynamicHits = info.dynamic_hits;
+            const dynamicTableSize = info.dynamic_table_size;
 
             // Après quelques requêtes, un vrai navigateur doit avoir un bon ratio de compression
             if (reqCount > 3 && isHumanBrowser) {
-                if (hpackRatio !== undefined && hpackRatio < 0.4) {
-                    // Un faible ratio HPACK suggère que le client n'utilise pas la table dynamique.
-                    http2Anomaly += (1 - hpackRatio) * 50; // Pénalité proportionnelle
+                if (hpackRatio !== undefined) {
+                    if (hpackRatio < 0.4) {
+                        http2Anomaly += (1 - hpackRatio) * 50;
+                    } else if (hpackRatio > 0.75) {
+                        http2Anomaly += Math.min(50.0, (hpackRatio - 0.5) * 100);
+                    }
                 }
-                if (qpackRatio !== undefined && qpackRatio < 0.4) {
-                    quicAnomaly += (1 - qpackRatio) * 50;
+                if (qpackRatio !== undefined) {
+                    if (qpackRatio < 0.4) {
+                        quicAnomaly += (1 - qpackRatio) * 50;
+                    } else if (qpackRatio > 0.75) {
+                        quicAnomaly += Math.min(50.0, (qpackRatio - 0.5) * 100);
+                    }
+                }
+
+                // Détection de réinitialisation de table dynamique
+                if (dynamicEntries !== undefined && dynamicEntries === 0) {
+                    http2Anomaly += 45.0;
+                    quicAnomaly += 45.0;
+                }
+                if (dynamicHits !== undefined && dynamicHits === 0) {
+                    http2Anomaly += 35.0;
+                    quicAnomaly += 35.0;
+                }
+                if (dynamicTableSize !== undefined && dynamicTableSize === 0) {
+                    http2Anomaly += 40.0;
+                    quicAnomaly += 40.0;
                 }
             }
         }
