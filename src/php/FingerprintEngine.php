@@ -173,16 +173,15 @@ class FingerprintEngine
                     Env::set('ED25519_PUBLIC_KEY', $storedKeys['publicKey']);
                 } elseif (defined('OPENSSL_KEYTYPE_ED25519')) {
                     $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
-                    if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
-                        $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
-                        $publicKeyPem = $details['key'] ?? ''; // @phpstan-ignore-line
-                        Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
-                        Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
-                        update_option('fingerprint_ed25519_keys', [
-                            'privateKey' => $privateKeyPem,
-                            'publicKey'  => $publicKeyPem,
-                        ], false);
-                    }
+                    $pemResult = ChallengeUtils::generateIssuerPemKeys();
+                    $privateKeyPem = $pemResult['privateKey'];
+                    $publicKeyPem = $pemResult['publicKey'];
+                    Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
+                    Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                    update_option('fingerprint_ed25519_keys', [
+                        'privateKey' => $privateKeyPem,
+                        'publicKey'  => $publicKeyPem,
+                    ], false);
                 }
             } else {
                 self::initStandaloneEd25519Keys();

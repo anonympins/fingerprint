@@ -607,6 +607,65 @@ class ChallengeUtils
     }
 
     /**
+     * Programmatically generates an Ed25519 key pair in PEM format
+     * matching OpenSSL CLI:
+     * `openssl genpkey -algorithm ed25519 -out issuer-private.pem`
+     * `openssl pkey -in issuer-private.pem -pubout -out issuer-public.pem`
+     *
+     * @param string $outDir Target directory to store the PEM files.
+     * @param array $options Options including custom file names.
+     * @return array{privateKeyPath: string, publicKeyPath: string, privateKey: string, publicKey: string}
+     * @throws \RuntimeException If OpenSSL or Ed25519 is not supported or key generation fails.
+     */
+    public static function generateIssuerPemKeys(string $outDir = '', array $options = []): array
+    {
+        if (!defined('OPENSSL_KEYTYPE_ED25519')) {
+            throw new \RuntimeException("Ed25519 is not supported in this OpenSSL environment.");
+        }
+
+        $pkey = @openssl_pkey_new(["private_key_type" => constant('OPENSSL_KEYTYPE_ED25519')]);
+        if (!$pkey || !@openssl_pkey_export($pkey, $privateKeyPem)) {
+            throw new \RuntimeException("Failed to generate Ed25519 private key.");
+        }
+
+        $details = openssl_pkey_get_details($pkey);
+        $publicKeyPem = $details['key'] ?? '';
+        if (empty($publicKeyPem)) {
+            throw new \RuntimeException("Failed to extract Ed25519 public key.");
+        }
+
+        if ($outDir === '') {
+            $outDir = dirname(__DIR__, 2) . '/config';
+        }
+
+        if (!is_dir($outDir)) {
+            if (function_exists('wp_mkdir_p')) {
+                wp_mkdir_p($outDir);
+            } else {
+                mkdir($outDir, 0755, true);
+            }
+        }
+
+        $privName = $options['privateKeyName'] ?? 'issuer-private.pem';
+        $pubName = $options['publicKeyName'] ?? 'issuer-public.pem';
+
+        $privateKeyPath = rtrim($outDir, '/\\') . '/' . $privName;
+        $publicKeyPath = rtrim($outDir, '/\\') . '/' . $pubName;
+
+        file_put_contents($privateKeyPath, $privateKeyPem);
+        @chmod($privateKeyPath, 0600);
+        file_put_contents($publicKeyPath, $publicKeyPem);
+        @chmod($publicKeyPath, 0644);
+
+        return [
+            'privateKeyPath' => $privateKeyPath,
+            'publicKeyPath'  => $publicKeyPath,
+            'privateKey'     => $privateKeyPem,
+            'publicKey'      => $publicKeyPem,
+        ];
+    }
+
+    /**
      * Generates an encrypted and signed stateless ticket containing the
      * authorization context. Uses Ed25519 if a private key is available,
      * otherwise falls back to AES-256-CBC + HMAC-SHA256.

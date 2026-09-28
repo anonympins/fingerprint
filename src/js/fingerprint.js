@@ -26,7 +26,8 @@ import {
     isLoopbackIp,
     isPrivateIp,
     parseUserAgent,
-    safeJsonStringify
+    safeJsonStringify,
+    generateIssuerPemKeys
 } from "./fingerprint.utils.js";
 
 
@@ -4762,6 +4763,8 @@ export class FingerprintEngine {
         // Auto-generate Ed25519 key pair on load if indicated and keys are not set
         if (securityConfig && (securityConfig.useAsymmetricTickets || securityConfig.ed25519 === 'auto') && !process.env.ED25519_PRIVATE_KEY) {
             const persistentKeyPath = join(configDir, 'ed25519_key.json');
+            const privatePemPath = join(configDir, 'issuer-private.pem');
+            const publicPemPath = join(configDir, 'issuer-public.pem');
             if (existsSync(persistentKeyPath)) {
                 try {
                     const keys = JSON.parse(readFileSync(persistentKeyPath, 'utf-8'));
@@ -4770,6 +4773,14 @@ export class FingerprintEngine {
                     this._log('Persistent Ed25519 keys loaded from disk');
                 } catch (e) {
                     console.error('[Fingerprint] Failed to load persistent Ed25519 keys:', e.message);
+                }
+            } else if (existsSync(privatePemPath) && existsSync(publicPemPath)) {
+                try {
+                    process.env.ED25519_PRIVATE_KEY = readFileSync(privatePemPath, 'utf-8');
+                    process.env.ED25519_PUBLIC_KEY = readFileSync(publicPemPath, 'utf-8');
+                    this._log('Persistent Ed25519 PEM keys loaded from disk');
+                } catch (e) {
+                    console.error('[Fingerprint] Failed to load persistent Ed25519 PEM keys:', e.message);
                 }
             } else {
                 try {
@@ -7427,6 +7438,7 @@ export const __internal = {
     findPeerInSubnet,
     handleCooperativeRequest,
     broadcastBannedZkp,
+    generateIssuerPemKeys,
     getMetric,
     incrementCounter,
     observeValue
@@ -8127,3 +8139,4 @@ export async function handleMetricsRequest(req, res, securityConfig) {
     res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
     res.send(MetricsManager.getPrometheusMetrics(securityConfig));
 }
+export { generateIssuerPemKeys };

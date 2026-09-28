@@ -11,7 +11,7 @@ The library does not rely on a single binary signal to block a user. Instead, it
 1. **Transport & TLS Layer** (JA3/JA4 analysis, protocol negotiation).
 2. **Application / Protocol Layer** (HTTP header structure, Client Hints, protocol consistency).
 3. **Network Layer** (Local IP reputation, subnet/CIDR behavior).
-4. **Global Identity Layer** (Session anchoring via device cookie vs. stable software/hardware fingerprint).
+4. **Global Identity Layer** (Session anchoring via device cookie, WebAuthn hardware attestation, and Private Access Tokens).
 5. **Behavioral Layer** (Real interactions via mouse, keyboard, navigation, and frequency/sequence analysis).
 
 Each detected anomaly generates a partial score (from 0 to 100). The final score is a **weighted sum** of these vectors, which is then compared against the enforcement thresholds defined in your security profile (`low`, `medium`, `high`, `block`).
@@ -131,6 +131,15 @@ Each detected anomaly generates a partial score (from 0 to 100). The final score
 * **Role**: Detects residential proxy backconnect chains, VPN tunnels, and packet encapsulation.
 * **Mechanism**: Passively inspects TCP SYN options, specifically advertised Maximum Segment Size (MSS) and Don't Fragment (DF) flags, to reconstruct the effective Path MTU. When client requests advertise abnormal MTU sizes that deviate from standard physical Ethernet MTU (1500 bytes, typically MSS 1460) into values characteristic of GRE/WireGuard/OpenVPN or PPPoE tunnel encapsulations (e.g., 1420, 1380, or 1280 bytes), it flags residential proxy gateway hops and proxy tunnels masquerading as standard residential broadband connections.
 
+---
+
+## Zero-Friction Bypasses (PAT & Hardware Attestation)
+
+### Private Access Tokens (PAT / Privacy Pass — RFC 9505, RFC 9577, RFC 9578)
+Clients supporting Privacy Pass or operating through attestation issuers can present cryptographically signed tokens via `Authorization: PrivateToken` or `Sec-Private-State-Token` headers. The engine verifies RSA-PSS, PKCS#1 v1.5, or VOPRF/Ed25519 token signatures against configured trusted keys (`pat.trustedKeys`) and performs anti-replay checks on the 32-byte token nonce. Verified tokens grant an immediate `action: "next"` zero-friction bypass with score `0.0`.
+
+### WebAuthn Hardware Attestation (TPM / Secure Enclave)
+Clients can register a platform authenticator credential anchored to their physical device (Apple Secure Enclave, Windows Hello TPM, Android Keystore). Verified assertions provide cryptographic greenlist clearance, making session hijacking and cookie spoofing impossible across distinct hardware.
 ---
 ## Mitigation Mechanisms: The Challenge System (PoW)
 

@@ -66,6 +66,8 @@ public class FingerprintEngine {
             // Path to persistent key file
             java.io.File configDir = new java.io.File("config");
             java.io.File keyFile = new java.io.File(configDir, "ed25519_key.json");
+            java.io.File privPemFile = new java.io.File(configDir, "issuer-private.pem");
+            java.io.File pubPemFile = new java.io.File(configDir, "issuer-public.pem");
 
             // Attempt to load existing keys from disk
             if (keyFile.exists()) {
@@ -79,23 +81,34 @@ public class FingerprintEngine {
                         if (verbose) {
                             System.out.println("[Fingerprint] Persistent Ed25519 keys loaded from disk.");
                         }
+                        return;
                     }
                 } catch (Exception e) {
                     if (verbose) {
                         System.err.println("[Fingerprint] Failed to load persistent Ed25519 keys: " + e.getMessage());
                     }
                 }
+            } else if (privPemFile.exists() && pubPemFile.exists()) {
+                try {
+                    String priv = java.nio.file.Files.readString(privPemFile.toPath());
+                    String pub = java.nio.file.Files.readString(pubPemFile.toPath());
+                    System.setProperty("ED25519_PRIVATE_KEY", priv);
+                    System.setProperty("ED25519_PUBLIC_KEY", pub);
+                    if (verbose) {
+                        System.out.println("[Fingerprint] Persistent Ed25519 PEM keys loaded from disk.");
+                    }
+                    return;
+                } catch (Exception e) {
+                    if (verbose) {
+                        System.err.println("[Fingerprint] Failed to load persistent PEM keys: " + e.getMessage());
+                    }
+                }
             } else {
                 // Generate and persist new key pair if missing
                 try {
-                    java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("Ed25519");
-                    java.security.KeyPair kp = kpg.generateKeyPair();
-                    String privPem = "-----BEGIN PRIVATE KEY-----\n" +
-                            Base64.getMimeEncoder().encodeToString(kp.getPrivate().getEncoded()) +
-                            "\n-----END PRIVATE KEY-----";
-                    String pubPem = "-----BEGIN PUBLIC KEY-----\n" +
-                            Base64.getMimeEncoder().encodeToString(kp.getPublic().getEncoded()) +
-                            "\n-----END PUBLIC KEY-----";
+                    Map<String, String> pemResult = ChallengeUtils.generateIssuerPemKeys(configDir.getPath(), null);
+                    String privPem = pemResult.get("privateKey");
+                    String pubPem = pemResult.get("publicKey");
                     System.setProperty("ED25519_PRIVATE_KEY", privPem);
                     System.setProperty("ED25519_PUBLIC_KEY", pubPem);
                     if (!configDir.exists()) {

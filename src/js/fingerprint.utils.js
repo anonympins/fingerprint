@@ -1,5 +1,7 @@
 import {cyrb53} from "./fingerprint.builder.js";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 /**
  * Verifies a Zero-Knowledge Proof (ZKP) of the Schnorr type.
@@ -449,4 +451,41 @@ export function parseUserAgent(ua) {
     else result.device = 'desktop';
 
     return result;
+}
+
+/**
+ * Programmatically generates an Ed25519 key pair in PEM format
+ * (PKCS#8 for private key, SPKI for public key) matching OpenSSL CLI:
+ * `openssl genpkey -algorithm ed25519 -out issuer-private.pem`
+ * `openssl pkey -in issuer-private.pem -pubout -out issuer-public.pem`
+ *
+ * @param {string} [outDir='./config'] Target directory to store the PEM files.
+ * @param {object} [options={}] Optional configuration (e.g. custom file names).
+ * @returns {{privateKeyPath: string, publicKeyPath: string, privateKey: string, publicKey: string}}
+ */
+export function generateIssuerPemKeys(outDir = './config', options = {}) {
+    const privateKeyName = options.privateKeyName || 'issuer-private.pem';
+    const publicKeyName = options.publicKeyName || 'issuer-public.pem';
+
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519', {
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+        publicKeyEncoding: { type: 'spki', format: 'pem' }
+    });
+
+    if (!fs.existsSync(outDir)) {
+        fs.mkdirSync(outDir, { recursive: true });
+    }
+
+    const privateKeyPath = path.join(outDir, privateKeyName);
+    const publicKeyPath = path.join(outDir, publicKeyName);
+
+    fs.writeFileSync(privateKeyPath, privateKey, { mode: 0o600 });
+    fs.writeFileSync(publicKeyPath, publicKey, { mode: 0o644 });
+
+    return {
+        privateKeyPath,
+        publicKeyPath,
+        privateKey,
+        publicKey
+    };
 }

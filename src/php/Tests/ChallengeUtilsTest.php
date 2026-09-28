@@ -263,6 +263,37 @@ class ChallengeUtilsTest extends TestCase
         Env::clear('ED25519_PUBLIC_KEY');
     }
 
+    public function testGenerateIssuerPemKeys(): void
+    {
+        if (!extension_loaded('openssl') || !defined('OPENSSL_KEYTYPE_ED25519')) {
+            $this->markTestSkipped('OpenSSL Ed25519 is not supported in this environment.');
+        }
+
+        $pkey = @openssl_pkey_new(["private_key_type" => constant('OPENSSL_KEYTYPE_ED25519')]);
+        if (!$pkey || !@openssl_pkey_export($pkey, $testPem)) {
+            $this->markTestSkipped('Ed25519 key generation or export is not supported in this PHP/OpenSSL environment.');
+        }
+
+        $tempDir = sys_get_temp_dir() . '/fp-issuer-keys-' . time();
+        try {
+            $result = ChallengeUtils::generateIssuerPemKeys($tempDir);
+            $this->assertFileExists($result['privateKeyPath']);
+            $this->assertFileExists($result['publicKeyPath']);
+            $this->assertStringContainsString('-----BEGIN PRIVATE KEY-----', $result['privateKey']);
+            $this->assertStringContainsString('-----BEGIN PUBLIC KEY-----', $result['publicKey']);
+        } finally {
+            if (file_exists($tempDir . '/issuer-private.pem')) {
+                unlink($tempDir . '/issuer-private.pem');
+            }
+            if (file_exists($tempDir . '/issuer-public.pem')) {
+                unlink($tempDir . '/issuer-public.pem');
+            }
+            if (is_dir($tempDir)) {
+                rmdir($tempDir);
+            }
+        }
+    }
+
     public function testCooperativePoSpaceWorkflow(): void
     {
         $clientIp = '127.0.0.1';

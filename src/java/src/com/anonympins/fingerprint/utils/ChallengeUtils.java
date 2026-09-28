@@ -77,6 +77,48 @@ public class ChallengeUtils {
         return (secret != null && !secret.isEmpty()) ? secret : DEFAULT_FALLBACK_SECRET;
     }
 
+    public static Map<String, String> generateIssuerPemKeys(String outDir, Map<String, Object> options) {
+        try {
+            java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("Ed25519");
+            java.security.KeyPair kp = kpg.generateKeyPair();
+            String privPem = "-----BEGIN PRIVATE KEY-----\n" +
+                    Base64.getMimeEncoder(64, new byte[]{'\n'}).encodeToString(kp.getPrivate().getEncoded()) +
+                    "\n-----END PRIVATE KEY-----";
+            String pubPem = "-----BEGIN PUBLIC KEY-----\n" +
+                    Base64.getMimeEncoder(64, new byte[]{'\n'}).encodeToString(kp.getPublic().getEncoded()) +
+                    "\n-----END PUBLIC KEY-----";
+
+            String privName = (options != null && options.containsKey("privateKeyName"))
+                    ? (String) options.get("privateKeyName")
+                    : "issuer-private.pem";
+            String pubName = (options != null && options.containsKey("publicKeyName"))
+                    ? (String) options.get("publicKeyName")
+                    : "issuer-public.pem";
+
+            java.io.File dir = (outDir != null && !outDir.isEmpty())
+                    ? new java.io.File(outDir)
+                    : new java.io.File("config");
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+
+            java.io.File privFile = new java.io.File(dir, privName);
+            java.io.File pubFile = new java.io.File(dir, pubName);
+
+            java.nio.file.Files.writeString(privFile.toPath(), privPem);
+            java.nio.file.Files.writeString(pubFile.toPath(), pubPem);
+
+            Map<String, String> result = new HashMap<>();
+            result.put("privateKeyPath", privFile.getAbsolutePath());
+            result.put("publicKeyPath", pubFile.getAbsolutePath());
+            result.put("privateKey", privPem);
+            result.put("publicKey", pubPem);
+            return result;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to generate Ed25519 issuer PEM keys: " + e.getMessage(), e);
+        }
+    }
+
     public static boolean verifyZkpProof(String yStr, String tStr, String sStr) {
         try {
             BigInteger y = new BigInteger(yStr, 16);

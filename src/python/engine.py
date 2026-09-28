@@ -49,7 +49,7 @@ from optimization import (
 )
 from client import FingerprintClient
 from security_profiles import SecurityProfiles
-from key_manager import initialize_ed25519_keys as setup_ed25519_keys
+from key_manager import initialize_ed25519_keys as setup_ed25519_keys, generate_issuer_pem_keys
 
 __all__ = [
     # Types et contextes principaux
@@ -66,6 +66,7 @@ __all__ = [
     "record_dns_failure",
     "can_attempt_dns",
     "default_whitelist",
+    "generate_issuer_pem_keys",
     "DEFAULT_WEIGHTS",
     "parse_tcp_syn",
     "classify_tcp_os",

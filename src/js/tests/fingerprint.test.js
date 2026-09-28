@@ -3187,6 +3187,25 @@ describe('IP Registration and Filtering', () => {
             expect(process.env.ED25519_PRIVATE_KEY).toBe(dummyKeys.privateKey);
             expect(process.env.ED25519_PUBLIC_KEY).toBe(dummyKeys.publicKey);
         });
+
+        it('should generate issuer PEM files directly via generateIssuerPemKeys', async () => {
+            const fs = await import('node:fs');
+            const os = await import('node:os');
+            const path = await import('node:path');
+            const tempDir = path.join(os.tmpdir(), `fp-issuer-keys-${Date.now()}`);
+
+            try {
+                const keys = fingerprint.generateIssuerPemKeys(tempDir);
+                expect(keys.privateKeyPath).toContain('issuer-private.pem');
+                expect(keys.publicKeyPath).toContain('issuer-public.pem');
+                expect(keys.privateKey).toContain('-----BEGIN PRIVATE KEY-----');
+                expect(keys.publicKey).toContain('-----BEGIN PUBLIC KEY-----');
+                expect(fs.existsSync(keys.privateKeyPath)).toBe(true);
+                expect(fs.existsSync(keys.publicKeyPath)).toBe(true);
+            } finally {
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
     });
 
     describe('Closed-Shadow DOM Honeypot Traps (Feature 19)', () => {

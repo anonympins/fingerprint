@@ -1,3 +1,35 @@
+## Version 0.8.0
+
+- 🎟️ **Private Access Tokens (PAT / Privacy Pass) Support (RFC 9505, RFC 9577, RFC 9578)**:
+  - **Zero-Friction Cryptographic Bypass**: Integrated native validation for Privacy Pass tokens extracted from `Authorization: PrivateToken` and `Sec-Private-State-Token` headers. Clients presenting valid tokens obtain an immediate zero-friction bypass (`action: next`, `score: 0.0`) without executing CPU/Memory challenges or CAPTCHAs.
+  - **Multi-Algorithm Token Verification**: Supports Blind RSA (types `0x0001` and `0x0002` using RSA-PSS SHA-384 / SHA-256 and PKCS#1 v1.5 padding) as well as VOPRF / Ed25519 (type `0x0003`).
+  - **Anti-Replay Nonce Tracking**: Verified token nonces are indexed in the persistent datastore (`pat-nonce:{nonce}`) with configurable expiration (`pat.nonceTtl`, default 24h) to prevent token reuse.
+
+- 🔒 **TLS 1.3 Encrypted Client Hello (ECH) & RFC 9460 Validation**:
+  - Added deep inspection for ECH presence and Outer SNI discrepancies (`x-ech-outer-sni`, `x-ech-present`, `x-ech-expected`).
+  - Flags client connections where modern browsers (Chrome $\ge 119$, Firefox $\ge 118$) fail to negotiate ECH when expected on HTTPS endpoints.
+
+- 🌐 **HTTP/2 & QUIC / HTTP/3 Protocol Conformance (RFC 7540, RFC 9114, RFC 9218)**:
+  - **Hop-by-Hop Header Prohibition**: Enforced RFC 7540 and RFC 9114 constraints by heavily penalizing forbidden hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-Connection`) on HTTP/2 and HTTP/3 multiplexed streams.
+  - **Extensible Prioritization Scheme (RFC 9218)**: Validated priority urgency bounds ($u \in [0, 7]$) and incremental flags (`i`), penalizing malformed or out-of-spec client priority frames.
+  - **HTTP/2 Stream Tree & Compression Analysis**: Added detection for stream self-dependency loops (`streamId === depStreamId`), non-browser priority frame distributions, and dynamic HPACK/QPACK table zero-entry anomalies under repeated requests.
+
+- 📡 **Passive MTU & Transport Tunnel Detection (`mtuAnomalyScore`)**:
+  - Analyzes TCP SYN parameters, Path MTU, and Don't Fragment (`DF`) flags across IPv4 and IPv6 to detect WireGuard, OpenVPN, GRE encapsulation, and residential proxy backconnects.
+  - **Dynamic Weight Amplification**: When an MTU anomaly indicates network tunneling ($\text{mtuAnomalyScore} > 50$), the engine dynamically amplifies downstream weights (`tlsSpoofingScore`, `crossLayerInconsistencyScore`, `clientHintsInconsistencyScore`, `behaviorScore`, `requestPatternScore`).
+
+- 🛠️ **WordPress Plugin: Sandbox Mode & Live Telemetry Feed**:
+  - **Dedicated Sandbox / Test Mode**: Configurable non-blocking Audit-Only mode, targeted IP whitelist filter, and diagnostic HTTP headers (`X-Fingerprint-Sandbox`, `X-Fingerprint-Score`).
+  - **Real-Time Observability**: Implemented a Server-Sent Events (SSE) streaming route (`/wp-json/fingerprint/v1/sandbox/sse`) and a REST polling endpoint (`/wp-json/fingerprint/v1/sandbox/telemetry`) to monitor challenged visitors and suspicion vector breakdowns live.
+  - **Client-Side Event Injection**: Injects `window.__FINGERPRINT_VECTOR__` and dispatches `fingerprint:suspicion` DOM CustomEvents when sandbox mode or administrative sessions are active.
+
+- 🌍 **Code Standardization & Parity**:
+  - **Python Engine Enhancements**: Merged modular architecture improvements (`feature/python_classes`) for parity with Node.js and PHP.
+  - **Java Testing**: Added comprehensive test coverage for RFC 9578 Private Access Token extraction, parsing, and anti-replay verification (`PatTest.java`).
+  - **Documentation & Localization**: Standardized code comments into English across modules and updated French/German translations in compliance with WordPress guidelines.
+
+---
+
 ## Version 0.7.5
 
 - 🛡️ **Differential Privacy on Federated Threat Intelligence**:
