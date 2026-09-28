@@ -17,7 +17,7 @@ import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * Classe utilitaire pour la génération et la vérification des challenges Proof-of-Work (PoW, uPoW, ZKP, etc.).
+ * Utility class for generating and verifying Proof-of-Work challenges (PoW, uPoW, ZKP, etc.).
  */
 public class ChallengeUtils {
 
@@ -572,7 +572,7 @@ public class ChallengeUtils {
 
     static ObjectMapper objectMapper = new ObjectMapper();
     /**
-     * Analyse une chaîne JSON en liste de Maps.
+     * Parses a JSON string into a list of Maps.
      */
     public static List<Map<String, Object>> simpleJsonParseList(String json) {
         try {
@@ -1053,14 +1053,14 @@ public class ChallengeUtils {
     }
 
     /**
-     * Valide un challenge Proof of Space (uPoW).
+     * Validates a Proof of Space (uPoW) challenge.
      *
-     * @param nonce Le nonce du challenge.
-     * @param solution La solution soumise.
-     * @param proofs Les preuves associées.
-     * @param seed La graine du challenge.
-     * @param secret Le secret de sécurisation.
-     * @return true si la preuve est valide.
+     * @param nonce Challenge nonce.
+     * @param solution Submitted solution.
+     * @param proofs Associated proofs.
+     * @param seed Challenge seed.
+     * @param secret Security secret.
+     * @return true if the proof is valid.
      */
     public static boolean verifySpacePoW(String nonce, String solution, List<String> proofs, String seed, String secret) {
         if (nonce == null || solution == null || proofs == null || seed == null || secret == null) {
@@ -1088,12 +1088,12 @@ public class ChallengeUtils {
     }
 
     /**
-     * Valide un challenge GPU PoW.
+     * Validates a GPU PoW challenge.
      *
-     * @param seed La graine du challenge.
-     * @param difficulty La difficulté requise (nombre de bits de poids fort à zéro).
-     * @param solution La solution soumise.
-     * @return true si la preuve est valide.
+     * @param seed Challenge seed.
+     * @param difficulty Required difficulty (number of leading zero bits).
+     * @param solution Submitted solution.
+     * @return true if the proof is valid.
      */
     public static boolean verifyGpuPow(String seed, int difficulty, String solution) {
         if (seed == null || solution == null || difficulty < 0) {
@@ -1118,12 +1118,12 @@ public class ChallengeUtils {
     }
 
     /**
-     * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+     * Checks Token Bucket rate limiter for subnet challenge requests.
      *
-     * @param clientIp L'adresse IP du client.
-     * @param capacity Capacité maximale du réservoir de jetons.
-     * @param refillRate Vitesse de recharge en jetons par seconde.
-     * @return true si la requête est autorisée, false sinon.
+     * @param clientIp Client IP address.
+     * @param capacity Maximum token bucket capacity.
+     * @param refillRate Refill rate in tokens per second.
+     * @return true if request is permitted, false otherwise.
      */
     @SuppressWarnings("unchecked")
     public static boolean checkChallengeRateLimit(String clientIp, double capacity, double refillRate) {

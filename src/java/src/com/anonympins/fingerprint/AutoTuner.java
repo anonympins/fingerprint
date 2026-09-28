@@ -125,13 +125,13 @@ public class AutoTuner {
             return;
         }
 
-        // Exécution de l'algorithme génétique multi-objectifs
+        // Execute multi-objective genetic algorithm
         List<Individual> paretoFront = solveFullSecurityTuning(sanitizedData);
         if (paretoFront.isEmpty()) {
             return;
         }
 
-        // Filtrage par les gardes-fous de sécurité (Sanity Guardrails)
+        // Sanity guardrails filtering
         List<Individual> filteredFront = new ArrayList<>();
         for (Individual ind : paretoFront) {
             if (isValidSecurityConfig(ind.thresholds, ind.weights)) {
@@ -142,7 +142,7 @@ public class AutoTuner {
             filteredFront = paretoFront;
         }
 
-        // Sélection de la solution la plus équilibrée (distance minimale de l'origine)
+        // Select the most balanced solution (minimum distance from origin)
         Individual bestSolution = filteredFront.get(0);
         double minDistance = Math.sqrt(Math.pow(bestSolution.objectives[0], 2) + Math.pow(bestSolution.objectives[1], 2));
         for (int i = 1; i < filteredFront.size(); i++) {
@@ -154,10 +154,10 @@ public class AutoTuner {
             }
         }
 
-        // Application adaptative avec inertie (Inertial Smooth Update)
+        // Inertial smooth update
         double trafficConfidence = Math.min(1.5, Math.max(0.3, highConfidenceRatio * 4.0));
         
-        // Simulation d'une mise à jour temporaire pour la validation croisée (anti-poisoning)
+        // Simulate a temporary update for cross-validation (anti-poisoning)
         Map<String, Object> tempThresholds = new HashMap<>(engine.getThresholds());
         Map<String, Object> tempWeights = new HashMap<>(engine.getWeights());
         Map<String, Object> tempPatterns = new HashMap<>(engine.getPatterns());
@@ -166,16 +166,16 @@ public class AutoTuner {
         applyInertialUpdate(tempWeights, bestSolution.weights, "weights", trafficConfidence);
         applyInertialUpdate(tempPatterns, bestSolution.patterns, "patterns", trafficConfidence);
 
-        // Validation croisée (anti-poisoning)
+        // Cross-validation (anti-poisoning)
         double[] currentObj = evaluateFitness(engine.getThresholds(), engine.getWeights(), sanitizedData);
         double[] proposedObj = evaluateFitness(tempThresholds, tempWeights, sanitizedData);
 
         if (proposedObj[0] > currentObj[0] + validationTolerance || proposedObj[1] > currentObj[1] + validationTolerance) {
-            // Rejet car instabilité/poisoning détecté
+            // Reject due to detected instability/poisoning
             return;
         }
 
-        // Application définitive à chaud
+        // Definitive hot application
         applyInertialUpdate(engine.getThresholds(), bestSolution.thresholds, "thresholds", trafficConfidence);
         applyInertialUpdate(engine.getWeights(), bestSolution.weights, "weights", trafficConfidence);
         applyInertialUpdate(engine.getPatterns(), bestSolution.patterns, "patterns", trafficConfidence);
@@ -223,7 +223,7 @@ public class AutoTuner {
         int maxLogsPerSubnet = Math.max(5, (int) Math.floor(totalCount * 0.05));
         int maxLogsPerHardwareCluster = Math.max(3, (int) Math.floor(totalCount * 0.02));
 
-        // --- REVOLUTION : Compression de Cohorte par Densité Vectorielle (Anti-Sybil / Anti-Poisoning) ---
+        // --- Cohort Compression by Vector Density (Anti-Sybil / Anti-Poisoning) ---
         List<Map<String, Object>> clusteredLogs = new ArrayList<>();
         for (Map<String, Object> log : rawLogs) {
             Map<String, Object> matchedCluster = null;
@@ -243,7 +243,7 @@ public class AutoTuner {
             if (matchedCluster != null) {
                 int instancesCount = (int) matchedCluster.getOrDefault("instancesCount", 1) + 1;
                 matchedCluster.put("instancesCount", instancesCount);
-                matchedCluster.put("weight", 1.0 + Math.log(instancesCount)); // Compression logarithmique
+                matchedCluster.put("weight", 1.0 + Math.log(instancesCount)); // Logarithmic compression
             } else {
                 Map<String, Object> logCopy = new HashMap<>(log);
                 logCopy.put("instancesCount", 1);
@@ -363,7 +363,7 @@ public class AutoTuner {
         }
     }
 
-    // --- Résolveur d'algorithme génétique multi-objectifs de Pareto ---
+    // --- Multi-objective Pareto genetic algorithm solver ---
     private List<Individual> solveFullSecurityTuning(List<Map<String, Object>> trafficData) {
         int populationSize = 50;
         int generations = 50;

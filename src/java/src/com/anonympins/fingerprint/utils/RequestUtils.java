@@ -69,7 +69,7 @@ public class RequestUtils {
             }
             ipTimes.put(clientIp, now);
 
-            long slidingWindow = 2L * 3600L * 1000L; // 2 heures
+            long slidingWindow = 2L * 3600L * 1000L; // 2 hours
             long cutOff = now - slidingWindow;
 
             Iterator<Map.Entry<String, Long>> iterator = ipTimes.entrySet().iterator();
@@ -121,12 +121,12 @@ public class RequestUtils {
                 long clientTime = Long.parseLong(clientTimeStr);
                 long serverTime = System.currentTimeMillis();
                 long diff = Math.abs(serverTime - clientTime);
-                // Si l'écart dépasse 5 minutes, on calcule un score de suspicion proportionnel
+                // If the delta exceeds 5 minutes, calculate a proportional suspicion score
                 if (diff > 300000) {
                     score = Math.min(100.0, (diff - 300000) / 6000.0);
                 }
             } catch (NumberFormatException e) {
-                score = 50.0; // Format invalide suspect
+                score = 50.0; // Suspicious invalid format
             }
         }
         result.put("timeInconsistencyScore", score);
@@ -140,7 +140,7 @@ public class RequestUtils {
         String secChUa = context.getHeader("sec-ch-ua");
         String clientFpString = context.getHeader("x-device-fingerprint");
 
-        // 1. Incohérence entre les informations d'un User-Agent classique et les Client Hints
+        // 1. Inconsistency between classic User-Agent info and Client Hints
         if (userAgent != null && secChUa != null) {
             boolean isChromeInUA = userAgent.contains("Chrome");
             boolean isChromeInCH = secChUa.contains("Chrome") || secChUa.contains("Google Chrome");
@@ -152,7 +152,7 @@ public class RequestUtils {
         if (clientFpString != null && !clientFpString.isEmpty()) {
             Map<String, String> clientFpMap = parseFingerprint(clientFpString);
 
-            // 2. Incohérence de l'OS (client vs serveur)
+            // 2. OS inconsistency (client vs server)
             String clientOsHash = clientFpMap.get("os");
             if (clientOsHash != null && userAgent != null) {
                 Map<String, String> serverOsParts = parseUserAgent(userAgent);
@@ -161,39 +161,35 @@ public class RequestUtils {
                 }
             }
 
-            // 3. Incohérence de l'écran (viewport vs résolution physique)
+            // 3. Screen inconsistency (viewport vs physical resolution)
             String clientScreenHash = clientFpMap.get("scr");
             String viewportWidthHeader = context.getHeader("sec-ch-viewport-width");
             if (clientScreenHash != null && viewportWidthHeader != null) {
                 try {
                     int viewportWidth = Integer.parseInt(viewportWidthHeader);
-                    // Cette logique est simplifiée. Une implémentation complète nécessiterait une base de données de hash de résolutions.
-                    // Pour l'exemple, on suppose qu'on peut extraire la largeur.
-                    // Si le viewport est plus grand que l'écran physique, c'est une anomalie.
-                    // (Simulation, car on ne peut pas dé-hasher `clientScreenHash` simplement)
+                    // Simplified logic: a full implementation requires a database of resolution hashes.
+                    // Viewport larger than physical screen indicates an anomaly.
                 } catch (NumberFormatException e) {
                     // ignore
                 }
             }
 
-            // 4. Incohérence GPU vs JA3
+            // 4. GPU vs JA3 inconsistency
             String clientGpuHash = clientFpMap.get("gpu");
             String ja3 = context.ja3;
             if (clientGpuHash != null && ja3 != null) {
-                // Une implémentation complète nécessiterait une base de données de correspondances connues.
-                // Exemple simplifié : si le JA3 est celui d'une librairie (Python, Go) mais qu'un GPU est rapporté, c'est suspect.
+                // If JA3 belongs to a library (Python, Go) but GPU is reported, mark as suspicious
                 if (isKnownLibraryJa3(ja3)) {
                     score = Math.max(score, 30.0);
                 }
             }
         }
 
-        // 5. Incohérence TCP vs User-Agent (si le score TCP est déjà calculé et élevé)
+        // 5. TCP vs User-Agent inconsistency (if TCP score is already computed and high)
         if (context.preCalculatedVector != null) {
             double tcpAnomalyScore = context.preCalculatedVector.getOrDefault("tcpAnomalyScore", 0.0);
             if (tcpAnomalyScore > 70.0) {
-                // L'OS de la pile réseau ne correspond pas à l'OS du User-Agent.
-                // On augmente le score d'incohérence globale.
+                // Network stack OS does not match User-Agent OS; increase overall inconsistency score
                 score = 80.0;
             }
         }
@@ -214,8 +210,8 @@ public class RequestUtils {
     }
 
     /**
-     * Analyse les métadonnées MTU et le flag DF (Don't Fragment) de la pile TCP pour détecter
-     * les tunnels VPN / Proxy résidentiels.
+     * Analyzes MTU metadata and the DF (Don't Fragment) flag of the TCP stack
+     * to detect VPN tunnels / residential proxies.
      */
     @SuppressWarnings("unchecked")
     public static Map<String, Double> getMtuAnomalyScore(RequestContext context) {
@@ -225,7 +221,7 @@ public class RequestUtils {
         Integer mtu = null;
         boolean dfBit = true;
 
-        // 1. Décodage x-tcp-mtu-info
+        // 1. Decode x-tcp-mtu-info
         String mtuHeader = context.getHeader("x-tcp-mtu-info");
         if (mtuHeader == null || mtuHeader.trim().isEmpty()) {
             mtuHeader = context.getHeader("x-mtu-info");
@@ -261,7 +257,7 @@ public class RequestUtils {
             } catch (Exception ignored) {}
         }
 
-        // 2. Recherche MSS dans les en-têtes alternatifs
+        // 2. Lookup MSS in fallback headers
         if (mss == null) {
             String[] mssHeaders = {"x-tcp-mss", "x-mss", "x-forwarded-mss"};
             for (String h : mssHeaders) {
@@ -275,7 +271,7 @@ public class RequestUtils {
             }
         }
 
-        // 3. Extraction depuis la télémétrie client (x-behavior-metrics)
+        // 3. Extract from client telemetry (x-behavior-metrics)
         if (mss == null || mtu == null) {
             String behaviorHeader = context.getHeader("x-behavior-metrics");
             if (behaviorHeader != null && behaviorHeader.startsWith("{")) {
@@ -294,7 +290,7 @@ public class RequestUtils {
             }
         }
 
-        // 4. Reconstitution MTU selon IPv4 (+40) ou IPv6 (+60)
+        // 4. Reconstruct MTU based on IPv4 (+40) or IPv6 (+60)
         if (mtu == null && mss != null) {
             boolean isIpv6 = context.clientIp != null && context.clientIp.contains(":");
             int headerSize = isIpv6 ? 60 : 40;
@@ -306,7 +302,7 @@ public class RequestUtils {
             return result;
         }
 
-        // 5. Détection des tunnels VPN
+        // 5. Detect VPN tunnels
         if (mtu <= 1420) {
             score += 65.0; // WireGuard
         } else if (mtu <= 1450) {
@@ -315,7 +311,7 @@ public class RequestUtils {
             score += 30.0; // PPPoE / GRE
         }
 
-        // 6. Incohérences de pile OS vs User-Agent
+        // 6. OS stack vs User-Agent inconsistencies
         String ua = context.getHeader("user-agent");
         Map<String, String> uaParts = parseUserAgent(ua != null ? ua : "");
         String os = uaParts.get("os");
@@ -400,7 +396,7 @@ public class RequestUtils {
                 long lastRequest = (long) deviceData.getOrDefault("lastUpdate", now);
                 long interval = now - lastRequest;
                 
-                // Détection de requêtes trop rapides
+                // Detection of overly fast requests
                 if (interval < 100) {
                     score += 40.0;
                 }
@@ -413,7 +409,7 @@ public class RequestUtils {
                     history.remove(0);
                 }
                 
-                // Détection d'un bot programmé (intervalles fixes / écart-type ultra-faible)
+                // Detection of automated bots (fixed intervals / ultra-low std dev)
                 if (history.size() >= 5) {
                     List<Long> intervals = new ArrayList<>();
                     for (int i = 1; i < history.size(); i++) {
@@ -716,7 +712,7 @@ public class RequestUtils {
                 result.put("behaviorScore", Math.max(0.0, Math.min(100.0, directScore)));
                 return result;
             } catch (NumberFormatException ignored) {
-                // Pas un nombre brut, traitement du payload JSON
+                // Not a raw number, parse JSON payload
             }
 
             try {
@@ -747,9 +743,8 @@ public class RequestUtils {
                         else if (historyLength >= 5) score -= 20;
                         else if (historyLength >= 2) score -= 10;
                     } else {
-                        // Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
-                        // On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
-                        // signaux passifs de bot (ex: rendu offscreen) sont présents.
+                        // Penalty for lack of interaction. Low baseline penalty,
+                        // amplified only if other passive bot signals are present.
                         if (mouseAvgSpeed == 0.0 && touchAvgSpeed == 0.0 && keystrokeLatency == 0.0) { 
                             double noInteractionPenalty = 5.0;
                             if (metrics.containsKey("rendering") && metrics.get("rendering") instanceof Map) {
@@ -770,7 +765,7 @@ public class RequestUtils {
                     if (keystrokeLatency > 0.0 && keystrokeLatency < 40.0) score += 25;
                     if (keystrokeLatency > 1000.0) score += 15;
 
-                    // Digraphie/trigraphie (dwell & flight times)
+                    // Digraph / trigraph dynamics (dwell & flight times)
                     List<Object> dwellTimesObj = (List<Object>) metrics.get("keystrokeDwellTimes");
                     List<Object> flightTimesObj = (List<Object>) metrics.get("keystrokeFlightTimes");
 
@@ -843,13 +838,13 @@ public class RequestUtils {
             }
         }
 
-        // Détection de ferme mobile : un appareil mobile parfaitement immobile est suspect, indépendamment des interactions tactiles.
+        // Mobile device farm detection: a perfectly stationary mobile device is suspicious
         String ua = context.getHeader("user-agent");
         boolean isMobileDevice = ua != null && ua.contains("Mobile");
         if (behaviorHeader != null && behaviorHeader.startsWith("{") && isMobileDevice) {
             Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
             Object motionVariance = metrics != null ? metrics.get("motionVariance") : null;
-            if (motionVariance instanceof Number && ((Number) motionVariance).doubleValue() == 0.0) score += 50.0; // Terminal fixé sur un châssis mécanique (rack ADB)
+            if (motionVariance instanceof Number && ((Number) motionVariance).doubleValue() == 0.0) score += 50.0; // Device mounted on a mechanical rig (ADB rack)
         }
 
         result.put("behaviorScore", Math.min(100.0, score));
@@ -917,7 +912,7 @@ public class RequestUtils {
     private static void decaySubnetData(Map<String, Object> subnetData, long now) {
         long lastActivity = ((Number) subnetData.getOrDefault("lastActivity", now)).longValue();
         long inactivitySec = now - lastActivity;
-        long halfLives = inactivitySec / 1800L; // Demi-vie de 30 minutes
+        long halfLives = inactivitySec / 1800L; // 30-minute half-life
 
         if (halfLives > 0) {
             double decay = Math.pow(2, halfLives);
@@ -1101,26 +1096,26 @@ public class RequestUtils {
             return result;
         }
 
-        // 1. Estimation Bayésienne de densité (évite les sur-réactions sur de faibles échantillons)
+        // 1. Bayesian density estimation (avoids over-reacting to small sample sizes)
         double bayesianDensity = ((double) highScoreCount + 0.5) / ((double) deviceCount + 2.5);
 
-        // 2. Dispersion IP / Terminal (CGNAT vs Proxy Pool distribué)
+        // 2. IP / Device dispersion (CGNAT vs distributed proxy pool)
         double ipDispersion = Math.min(2.0, (double) ipCount / (double) deviceCount);
         double ipMultiplier = 0.6 + 0.4 * Math.tanh(ipDispersion);
 
-        // 3. Volatilité des User-Agents (rotation de navigateurs sur matériel identique)
+        // 3. User-Agent volatility (browser rotation on identical hardware)
         double uaDispersion = Math.min(3.0, (double) Math.max(1, uaCount) / (double) deviceCount);
         double uaMultiplier = 0.7 + 0.3 * Math.tanh(uaDispersion - 1.0);
 
-        // 4. Intensité continue de la menace (sans seuil abrupt ni dérivée nulle)
+        // 4. Continuous threat intensity (no abrupt threshold)
         double rawThreatIntensity = (double) highScoreCount * bayesianDensity * ipMultiplier * uaMultiplier;
 
-        // 5. Composante 1 : Score ambiant plafonné en zone Medium (asymptote à 45.0)
+        // 5. Component 1: Ambient score capped at Medium range (asymptote at 48.0)
         double ambientAsymptote = 48;
         double scaleFactor = 6;
         double ambientScore = ambientAsymptote * Math.tanh(rawThreatIntensity / scaleFactor);
 
-        // 6. Composante 2 : Boost de proximité micro-réseau avec des attaquants récents (jusqu'à +55.0)
+        // 6. Component 2: Micro-network proximity boost with recent attackers (up to +55.0)
         double proximityBoost = 0.0;
         List<Map<String, Object>> attackerIps = (List<Map<String, Object>>) subnetData.get("attackerIps");
         String clientIp = context.clientIp;
@@ -1584,7 +1579,7 @@ public class RequestUtils {
         String httpVersion = context.httpVersion != null ? context.httpVersion : "";
         boolean isH2orH3 = httpVersion.contains("2") || httpVersion.contains("3");
 
-        // 1. Violation RFC 7540 / RFC 9114 : En-têtes hop-by-hop interdits
+        // 1. RFC 7540 / RFC 9114 violation: forbidden hop-by-hop headers
         if (isH2orH3) {
             String[] forbiddenHeaders = {"connection", "keep-alive", "proxy-connection", "transfer-encoding"};
             for (String h : forbiddenHeaders) {
@@ -1595,7 +1590,7 @@ public class RequestUtils {
             }
         }
 
-        // 2. Corrélation Cross-Layer W3C Navigation Timing
+        // 2. Cross-layer W3C Navigation Timing correlation
         String behaviorHeader = context.getHeader("x-behavior-metrics");
         if (behaviorHeader != null && behaviorHeader.startsWith("{")) {
             try {
@@ -1631,7 +1626,7 @@ public class RequestUtils {
         Map<String, String> uaParts = parseUserAgent(ua);
         String browser = uaParts.get("browser");
 
-        // 3. Rétrogradation protocolaire (Protocol Downgrade)
+        // 3. Protocol Downgrade
         boolean isModernBrowser = browser != null && (
                 browser.startsWith("Chrome") || browser.startsWith("Firefox") ||
                 browser.startsWith("Edge") || browser.startsWith("Safari")
@@ -1644,7 +1639,7 @@ public class RequestUtils {
             protocolAnomaly += 45.0;
         }
 
-        // 4. Scrapers HTTP/3
+        // 4. HTTP/3 scrapers
         if (httpVersion.contains("3")) {
             String[] nonBrowserUas = {"python", "go-http-client", "curl", "java", "okhttp"};
             String uaLower = ua.toLowerCase();
@@ -1693,7 +1688,7 @@ public class RequestUtils {
                             }
                         }
 
-                        // Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
+                        // Detailed frame analysis (PRIORITY, WINDOW_UPDATE, CONTINUATION)
                         if (parts.length >= 5) {
                             String frameCountsStr = parts[4];
                             Map<String, Integer> frameCounts = new HashMap<>();
@@ -1711,15 +1706,15 @@ public class RequestUtils {
                             int continuationCount = frameCounts.getOrDefault("c", 0);
 
                             if (isChromium) {
-                                if (priorityCount == 0) http2Anomaly += 25.0; // Chrome envoie des trames PRIORITY
-                                if (windowUpdateCount < 2) http2Anomaly += 20.0; // Chrome est agressif avec les WINDOW_UPDATE
+                                if (priorityCount == 0) http2Anomaly += 25.0; // Chrome sends PRIORITY frames
+                                if (windowUpdateCount < 2) http2Anomaly += 20.0; // Chrome is aggressive with WINDOW_UPDATE
                             } else if (isFirefox) {
-                                if (priorityCount > 1) http2Anomaly += 20.0; // Firefox en envoie moins
+                                if (priorityCount > 1) http2Anomaly += 20.0; // Firefox sends fewer
                             }
 
                             long commaCount = headerOrder != null ? headerOrder.chars().filter(ch -> ch == ',').count() : 0;
                             if (continuationCount == 0 && commaCount > 3) {
-                                http2Anomaly += 30.0; // Les bots n'envoient souvent pas de trames CONTINUATION
+                                http2Anomaly += 30.0; // Bots often do not send CONTINUATION frames
                             }
                         }
                     } catch (NumberFormatException e) {
@@ -1728,7 +1723,7 @@ public class RequestUtils {
                 }
             }
 
-            // Délégation au module QUIC dédié pour éviter la duplication de code
+            // Delegate to dedicated QUIC module to avoid code duplication
             quicAnomaly = getQuicAnomalyScore(context).getOrDefault("quicAnomalyScore", 0.0);
         }
 
@@ -1915,10 +1910,10 @@ public class RequestUtils {
     }
 
     /**
-     * Calcule le HMAC-SHA256 d'une chaîne de données avec une clé secrète.
-     * @param data La chaîne de données à signer.
-     * @param key La clé secrète.
-     * @return La signature HMAC-SHA256 en format hexadécimal.
+     * Computes the HMAC-SHA256 of data using a secret key.
+     * @param data Data string to sign.
+     * @param key Secret key.
+     * @return HMAC-SHA256 signature in hexadecimal format.
      */
     public static String hmacSha256(String data, String key) {
         try {

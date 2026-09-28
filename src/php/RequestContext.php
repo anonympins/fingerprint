@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint;
 
 /**
- * Représente le contexte d'une requête HTTP, fournissant un accès unifié
- * aux informations nécessaires pour l'analyse de l'empreinte.
- * Cette classe est conçue pour être créée à partir d'un objet de requête
- * standard (ex: PSR-7, Symfony, Laravel).
+ * Represents the context of an HTTP request, providing unified access
+ * to information required for fingerprint analysis.
+ * This class is designed to be instantiated from a standard request object
+ * (e.g., PSR-7, Symfony, Laravel).
  */
 class RequestContext
 {
@@ -40,7 +40,7 @@ class RequestContext
     /** @var ?array<string, float> */
     public ?array $preCalculatedVector = null;
 
-    // Propriétés spécifiques qui peuvent être fournies par un proxy inverse
+    // Specific properties that may be provided by a reverse proxy
     public ?string $ja3 = null;
     public ?string $ja4 = null;
     public ?string $ja4s = null;
@@ -48,7 +48,7 @@ class RequestContext
     public ?string $http2Fingerprint = null;
     public ?string $quicFingerprint = null;
     public ?string $tcpFingerprint = null;
-    public ?string $zkpY = null; // NOUVEAU: Clé publique ZKP du client
+    public ?string $zkpY = null; // Client ZKP public key
 
     /**
      * @param string $clientIp
@@ -73,7 +73,7 @@ class RequestContext
     ) {
         $this->clientIp = $clientIp;
         $this->path = $path;
-        // Normaliser les en-têtes en minuscules pour un accès cohérent
+        // Normalize headers to lowercase for consistent access
         $this->headers = array_change_key_case($headers, CASE_LOWER);
         $this->query = $query;
         $this->body = $body;
@@ -86,7 +86,7 @@ class RequestContext
             ($this->getHeader('x-forwarded-proto') === 'https')
         );
 
-        // Extraire les empreintes TLS/HTTP2/TCP si elles sont fournies par les en-têtes
+        // Extract TLS/HTTP2/TCP fingerprints if provided by headers
         $this->ja3 = $this->headers['x-ja3-hash'] ?? null;
         $this->ja4 = $this->headers['x-ja4-hash'] ?? null;
         $this->ja4s = $this->headers['x-ja4s-hash'] ?? null;
@@ -98,10 +98,10 @@ class RequestContext
         $this->tlsSessionId = $this->headers['x-tls-session-id'] ?? $this->headers['x-ssl-session-id'] ?? null;
     }
     /**
-     * Récupère la valeur d'un en-tête HTTP de manière insensible à la casse.
+     * Retrieves the value of an HTTP header in a case-insensitive manner.
      *
-     * @param string $name Le nom de l'en-tête.
-     * @return string|null La valeur de l'en-tête ou null si non trouvé.
+     * @param string $name Header name.
+     * @return string|null Header value or null if not found.
      */
 
     public function getHeader(string $name): ?string

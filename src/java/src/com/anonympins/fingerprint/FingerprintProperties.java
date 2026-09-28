@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Propriétés de configuration pour l'engine Fingerprint.
+ * Configuration properties for the Fingerprint engine.
  */
 @ConfigurationProperties(prefix = "fingerprint")
 public class FingerprintProperties {
@@ -20,7 +20,7 @@ public class FingerprintProperties {
     private boolean challengeNewDevices = false;
     private int challengeTtl = 300;
     private Object filterWhitelist = false;
-    private long deviceIdCookieMaxAge = 2592000000L; // 30 jours par défaut
+    private long deviceIdCookieMaxAge = 2592000000L; // 30 days default
     private boolean verbose = false;
     private boolean dryRun = false;
     private double similarityThreshold = 0.7;
@@ -284,7 +284,7 @@ public class FingerprintProperties {
     }
 
 
-    // --- SOUS-CLASSES DE PROPRIETES TYPÉES ---
+    // --- TYPED PROPERTY SUBCLASSES ---
 
     public static class Thresholds {
         private int low = 20;

@@ -525,7 +525,7 @@ def generate_space_challenge_page(challenge_details: dict, client_secret: str, s
                                       try {{
                                           const req = JSON.parse(evt.data);
                                           if (req.type === 'get_block') {{
-                                              document.getElementById('loader').innerText = '📤 Transfert direct P2P (WebRTC) du bloc vers le pair...';
+                                              document.getElementById('loader').innerText = '📤 Direct P2P (WebRTC) block transfer to peer...';
                                               const blockData = await window.readSpaceBlock(req.block_idx);
                                               dc.send(JSON.stringify({{ type: 'block_data', block_data: blockData }}));
                                           }}
@@ -548,7 +548,7 @@ def generate_space_challenge_page(challenge_details: dict, client_secret: str, s
 
           let peerBlock = "";
           if (peerId && peerBlockIdx !== -1) {{
-              document.getElementById('loader').innerText = '📥 Connexion WebRTC P2P directe au pair (' + peerId + ')...';
+              document.getElementById('loader').innerText = '📥 Direct WebRTC P2P connection to peer (' + peerId + ')...';
 
               const webrtcTransferPromise = new Promise(async (resolve) => {{
                   if (!window.RTCPeerConnection) return resolve(null);
@@ -582,9 +582,9 @@ def generate_space_challenge_page(challenge_details: dict, client_secret: str, s
               peerBlock = await Promise.race([webrtcTransferPromise, webrtcTimeoutPromise]);
 
               if (peerBlock) {{
-                  document.getElementById('loader').innerText = '⚡ Bloc reçu en direct via WebRTC P2P sans transit serveur !';
+                  document.getElementById('loader').innerText = '⚡ Block received live via WebRTC P2P without server relay!';
               }} else {{
-                  document.getElementById('loader').innerText = '⚠️ WebRTC indisponible. Téléchargement via relais HTTP...';
+                  document.getElementById('loader').innerText = '⚠️ WebRTC unavailable. Downloading via HTTP relay...';
                   const reqId = Math.random().toString(36).substring(2);
                   const reqSig = await signCoop("request_peer_block", nodeId, peerId + ":" + peerBlockIdx + ":" + reqId);
                   await fetch(window.location.pathname + "?coop_op=request_peer_block&node_id=" + nodeId + "&peer_id=" + peerId + "&block_idx=" + peerBlockIdx + "&req_id=" + reqId + "&coop_sig=" + reqSig);
@@ -1468,7 +1468,7 @@ class ChallengeUtils:
         rate_limit_config: Optional[Dict[str, Any]] = None
     ) -> bool:
         """
-        Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau par domaine.
+        Checks the Token Bucket rate limiter for per-domain subnet challenge requests.
         """
         rate_limit_config = rate_limit_config or {}
         if rate_limit_config.get("enabled") is False:
@@ -1622,8 +1622,8 @@ class RequestUtils:
         steepness: float = 12.0
     ) -> float:
         """
-        Calcule un score d'incohérence analogique et lisse (sigmoïde continue),
-        plafonnant à une asymptote stricte de 99.9.
+        Calculates a smooth analog inconsistency score (continuous sigmoid),
+        capping at a strict asymptote of 99.9.
         """
         s = max(0.0, min(1.0, float(consistency_score)))
         if s >= 0.98:
@@ -1809,7 +1809,7 @@ class RequestUtils:
                     if header_order and header_order != "m,s,p,a":
                         http2_anomaly += 60.0
 
-                # Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
+                # Detailed frame analysis (PRIORITY, WINDOW_UPDATE, CONTINUATION)
                 if len(parts) >= 5:
                     frame_counts_str = parts[4]
                     frame_counts = {}
@@ -1907,23 +1907,23 @@ class RequestUtils:
             if priority_order and "u=" not in priority_order:
                 anomaly += 30.0
 
-            # Contrôle de flux bidi (Chromium alloue 6MB = 6291456 ou au minimum 512 Ko)
-            # curl-impersonate / quiche alloue 256 Ko (262144) ou 128 Ko (131072)
+            # Bidi flow control (Chromium allocates 6MB = 6291456 or at least 512 KB)
+            # curl-impersonate / quiche allocates 256 KB (262144) or 128 KB (131072)
             if bidi_local > 0 and (bidi_local < 524288 or bidi_local == 262144):
                 anomaly += 40.0
             if bidi_remote > 0 and (bidi_remote < 524288 or bidi_remote == 262144):
                 anomaly += 30.0
 
-            # Ordre des trames de contrôle QUIC (SETTINGS, MAX_STREAMS, PRIORITY)
+            # QUIC control frame order (SETTINGS, MAX_STREAMS, PRIORITY)
             if len(frame_order) >= 2:
                 s_idx = next((i for i, f in enumerate(frame_order) if f in ("s", "settings", "4")), -1)
                 m_idx = next((i for i, f in enumerate(frame_order) if f in ("m", "max_streams", "18")), -1)
                 p_idx = next((i for i, f in enumerate(frame_order) if f in ("p", "priority", "priority_update", "15")), -1)
 
                 if s_idx != 0 and s_idx != -1:
-                    anomaly += 50.0  # SETTINGS doit impérativement être la 1ère trame
+                    anomaly += 50.0  # SETTINGS must strictly be the first frame
                 if m_idx != -1 and s_idx != -1 and m_idx < s_idx:
-                    anomaly += 60.0  # MAX_STREAMS envoyé avant SETTINGS (curl/quiche)
+                    anomaly += 60.0  # MAX_STREAMS sent before SETTINGS (curl/quiche)
                 if p_idx != -1 and s_idx != -1 and p_idx < s_idx:
                     anomaly += 60.0
         elif is_firefox:
@@ -1939,7 +1939,7 @@ class RequestUtils:
                     anomaly += 50.0
         elif is_safari:
             if max_streams == 100 and max_data == 1572864 and "u=2,i" in priority_order:
-                anomaly += 60.0  # Usurpation profil Cronet
+                anomaly += 60.0  # Cronet profile spoofing
             if bidi_local == 6291456:
                 anomaly += 50.0
             if len(frame_order) >= 2:
@@ -2030,7 +2030,7 @@ class RequestUtils:
             if srv_os and client_os_hash != str(cyrb53(srv_os)):
                 score += 50.0
 
-            # 2. Incohérence de l'écran (si les Client Hints sont disponibles)
+            # 2. Screen inconsistency (if Client Hints are available)
         client_screen_hash = fp_map.get("scr")
         viewport_width = context.headers.get("sec-ch-viewport-width")
         if client_screen_hash and viewport_width:
@@ -2058,7 +2058,7 @@ class RequestUtils:
             except Exception:
                 pass
 
-        # 3. Incohérence du GPU/Canvas et JA3
+        # 3. GPU/Canvas and JA3 inconsistency
         client_gpu_hash = fp_map.get("gpu")
         ja3 = context.headers.get("x-ja3-hash")
         if client_gpu_hash and ja3:
@@ -2219,9 +2219,9 @@ class RequestUtils:
             elif hl >= 5: score -= 20.0
             elif hl >= 2: score -= 10.0
         else:
-            # Pénalité pour absence totale d'interaction. Un utilisateur légitime peut simplement lire la page.
-            # On applique donc une pénalité de base faible, qui est amplifiée uniquement si d'autres
-            # signaux passifs de bot (ex: rendu offscreen) sont présents.
+            # Penalty for total lack of interaction. Legitimate users might just read the page.
+            # A low baseline penalty is applied, amplified only if other
+            # passive bot signals (e.g. offscreen rendering) are present.
             if mouse_analysis["avgSpeed"] == 0.0 and touch_analysis["avgSpeed"] == 0.0 and metrics.get("keystrokeLatency", 0.0) == 0.0:
                 no_interaction_penalty = 5.0
                 if metrics.get("rendering", {}).get("offscreenAnom"): no_interaction_penalty += 40.0
@@ -2247,7 +2247,7 @@ class RequestUtils:
         if 0.0 < ks_latency < 40.0: score += 25.0
         if ks_latency > 1000.0: score += 15.0
 
-        # NOUVEAU: Analyse de digraphie/trigraphie (dwell & flight times)
+        # Keystroke dynamics analysis: digraph/trigraph (dwell & flight times)
         dwell_times = metrics.get("keystrokeDwellTimes") or []
         flight_times = metrics.get("keystrokeFlightTimes") or []
 
@@ -2280,19 +2280,19 @@ class RequestUtils:
             benford_deviation = Optimization.benford_test(mouse_analysis["segments"])
             if benford_deviation > 0.18: score += 35.0
 
-        # Détection de ferme mobile : Touch actif sur mobile sans aucune vibration physique (châssis/rack ADB)
+        # Device farm detection: touch active on mobile without physical jitter (ADB rack)
         ua = context.headers.get("user-agent", "")
         is_mobile_device = "Mobile" in ua
         motion_variance = metrics.get("motionVariance")
         if is_mobile_device and isinstance(motion_variance, (int, float)) and motion_variance == 0.0:
-            score += 50.0 # Terminal fixé sur un châssis mécanique (rack ADB)
+            score += 50.0  # Terminal mounted on a mechanical chassis / ADB rack
         return min(100.0, score)
 
     @staticmethod
     def get_virtualization_anomaly_score(context: RequestContext) -> float:
         """
-        Détecte si le navigateur s'exécute dans un environnement virtuel ou headless
-        (commun pour les bots hébergés directement sur des serveurs proxy résidentiels).
+        Detects if the browser runs in a virtual or headless environment
+        (common for bots hosted directly on residential proxy servers).
         """
         client_fp = context.headers.get("x-device-fingerprint")
         if not client_fp:
@@ -2307,7 +2307,7 @@ class RequestUtils:
         client_gpu_hash = fp_map.get("gpu")
         
         if client_gpu_hash:
-            # Liste de renderers virtuels ou logiciels couramment utilisés en environnement automatisé / VPS
+            # Virtual or software renderers commonly used in automated/VPS environments
             virtual_gpus = [
                 "Google SwiftShader",
                 "SwiftShader",
@@ -2316,16 +2316,16 @@ class RequestUtils:
                 "Mesa Gallium",
                 "Microsoft Basic Render Driver",
                 "HeadlessChrome",
-                "Intel(R) HD Graphics" # Souvent usurpé ou émulé par défaut
+                "Intel(R) HD Graphics"  # Often spoofed or emulated by default
             ]
-            # Génération dynamique des hashes cyrb53 correspondants pour comparaison sans faille
+            # Compute corresponding cyrb53 hashes for matching
             virtual_gpu_hashes = {str(cyrb53(gpu)) for gpu in virtual_gpus}
             
             if client_gpu_hash in virtual_gpu_hashes:
-                # Le client utilise un moteur de rendu graphique virtuel ou logiciel !
+                # Client uses a virtual or software renderer
                 score += 75.0
 
-        # Détection de résolutions d'écran caractéristiques d'instances headless Docker/VNC (ex: 800x600 ou 1024x768 par défaut)
+        # Screen resolutions characteristic of headless Docker/VNC instances (e.g. 800x600 or 1024x768)
         client_screen_hash = fp_map.get("scr")
         if client_screen_hash:
             headless_resolutions = {"800x600_24", "1024x768_24"}
@@ -2371,7 +2371,7 @@ class RequestUtils:
             if benford_deviation > benford_threshold:
                 benford_score = min(1.0, (benford_deviation - benford_threshold) / (0.5 - benford_threshold))
 
-        # Path enumeration progressif
+        # Progressive path enumeration
         enumeration_score = 0.0
         if len(history) >= 3:
             templates = [re.sub(r"\d+", "{num}", h["path"]) for h in history]
@@ -2480,8 +2480,8 @@ class RequestUtils:
 
         current_contributions = subnet_data["highScoreDevices"].get(device_id, 0)
 
-        # OPTIMISATION : Cap strict à 1 pénalité maximum par appareil unique stable
-        # pour éviter qu'une seule machine mal configurée ne sature le sous-réseau.
+        # Strict cap of 1 penalty max per stable device
+        # to prevent a single misconfigured host from polluting the subnet.
         if current_contributions < 1 and final_score < 95:
             subnet_data["highScoreDevices"][device_id] = current_contributions + 1
             subnet_data["highScoreCount"] += 1
@@ -2545,21 +2545,21 @@ class RequestUtils:
         if device_count <= 1 and high_score_count <= 1:
             return {"subnetScore": 0.0}
 
-        # 1. Estimation Bayésienne de densité (évite les sur-réactions sur de faibles échantillons)
+        # 1. Bayesian density estimation (avoids overreacting on small sample sizes)
         bayesian_density = (high_score_count + 0.5) / (device_count + 2.5)
 
-        # 2. Dispersion IP / Terminal (CGNAT vs Proxy Pool distribué)
+        # 2. IP / Device dispersion (CGNAT vs distributed proxy pool)
         ip_dispersion = min(2.0, ip_count / device_count)
         ip_multiplier = 0.6 + 0.4 * math.tanh(ip_dispersion)
 
-        # 3. Volatilité des User-Agents (rotation de navigateurs sur matériel identique)
+        # 3. User-Agent volatility (browser rotation on identical hardware)
         ua_dispersion = min(3.0, max(1, ua_count) / device_count)
         ua_multiplier = 0.7 + 0.3 * math.tanh(ua_dispersion - 1.0)
 
-        # 4. Intensité continue de la menace (sans seuil abrupt ni dérivée nulle)
+        # 4. Continuous threat intensity (smooth curve without abrupt thresholds)
         raw_threat_intensity = high_score_count * bayesian_density * ip_multiplier * ua_multiplier
 
-        # 5. Composante 1 : Score ambiant plafonné au seuil Medium (par défaut 45.0)
+        # 5. Component 1: Ambient score capped at Medium threshold (default 45.0)
         medium_threshold = 45.0
         if security_config and "thresholds" in security_config and "medium" in security_config["thresholds"]:
             try:
@@ -2571,7 +2571,7 @@ class RequestUtils:
         scale_factor = 10.0
         ambient_score = ambient_asymptote * math.tanh(raw_threat_intensity / scale_factor)
 
-        # 6. Composante 2 : Boost de proximité micro-réseau avec des attaquants récents
+        # 6. Component 2: Micro-network proximity boost against recent attackers
         proximity_boost = 0.0
         attacker_ips = subnet_data.get("attackerIps", [])
         if attacker_ips and client_ip:
@@ -3332,7 +3332,7 @@ class TLSClientHelloParser:
         ssl_version = struct.unpack("!H", binary[9:11])[0]
         ja3_string = f"{ssl_version},{'-'.join(map(str, clean_ciphers))},{'-'.join(map(str, clean_extensions))},{'-'.join(map(str, clean_curves))},{'-'.join(map(str, clean_points))}"
         
-        # Calcul natif de JA4
+        # Native JA4 computation
         highest_version = ssl_version
         if clean_supported_versions:
             highest_version = max(clean_supported_versions)
@@ -3468,11 +3468,11 @@ class FingerprintEngine:
         self.dry_run = config.get("dryRun", False)
         self._allowlist = self._build_allowlist()
 
-        # Bouclier thermique local (Fast-Path Cache) pour amortir les attaques de masse
+        # Fast-Path local cache to mitigate heavy flood attacks
         # Format: {"ip_or_subnet": (expiration_timestamp, action_to_take)}
         self._fast_path_cache: Dict[str, tuple] = {}
         self._last_prune_time: float = time.time()
-        self._prune_interval: float = 10.0 # secondes
+        self._prune_interval: float = 10.0  # seconds
         self.problem_manager = None
 
         if config.get("enableUsefulWork"):
@@ -3705,14 +3705,14 @@ class FingerprintEngine:
 
     def _has_certain_attack(self, context: RequestContext) -> bool:
         """
-        Évalue si la requête présente des caractéristiques d'attaque flagrantes
-        (comme le déclenchement d'un honeypot ou un score de bot atteignant le maximum).
+        Evaluates if the request shows clear attack characteristics
+        (such as triggering a honeypot or reaching maximum bot score).
 
         Args:
-            context (RequestContext): Le contexte de la requête.
+            context (RequestContext): The request context.
 
         Returns:
-            bool: True si une attaque flagrante est détectée, False sinon.
+            bool: True if a clear attack is detected, False otherwise.
         """
         honeypot_config = self.config.get("honeypot", {})
         
@@ -3728,8 +3728,8 @@ class FingerprintEngine:
 
     def update_config(self, new_config: Dict[str, Any]) -> None:
         """
-        Applique à chaud une nouvelle configuration de sécurité (poids, seuils, etc.)
-        sans nécessiter de redémarrage.
+        Hot-reloads a new security configuration (weights, thresholds, etc.)
+        without restarting the engine.
         """
         def deep_merge(target: dict, source: dict) -> dict:
             out = copy.deepcopy(target)
@@ -3941,7 +3941,7 @@ class FingerprintEngine:
             suspicion_vector["honeypotScore"] = 100.0
             return suspicion_vector
 
-        # Inconsistency score analogique lisse
+        # Smooth analog inconsistency score
         current_hash = self.get_composite_device_hash(context)
         similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash") or "", current_hash)
         similarity_threshold = float(self.config.get("similarityThreshold", 0.72))
@@ -3951,7 +3951,7 @@ class FingerprintEngine:
         history_score = behavioral_indicators["historyScore"]
         rotation_score = behavioral_indicators["rotationScore"]
 
-    # 1. Anomalies d'en-têtes
+        # 1. Header anomalies
         header_anomaly = RequestUtils.get_header_anomalies(context)
 
         client_hints_score = RequestUtils.get_client_hints_inconsistency(context)
@@ -4084,7 +4084,7 @@ class FingerprintEngine:
         stable_hash_for_cluster = str(cyrb53(self._extract_stable_part(current_hash)))
         botnet_cluster_score = RequestUtils.get_botnet_cluster_score(context, stable_hash_for_cluster)["botnetClusterScore"]
 
-        # Extraction et validation de la clé publique ZKP du client
+        # Client ZKP public key extraction and validation
         zkp_proof = context.headers.get("x-zkp-proof") or context.query_params.get("pow_zkp") or ""
         zkp_y = zkp_proof.split(":")[0] if zkp_proof and ":" in zkp_proof else None
         threat_intel_score = await self.calculate_threat_intel_score(context, zkp_y)
@@ -4235,7 +4235,7 @@ class FingerprintEngine:
         now_ms = int(time.time() * 1000)
         report_ts = now_ms
         if dp_enabled:
-            delta_t = 5000.0  # Sensibilité de 5s
+            delta_t = 5000.0  # 5s sensitivity
             b = delta_t / max(0.1, epsilon)
             u = random.random() - 0.5
             safe_u = (1e-7 if u >= 0 else -1e-7) if abs(u) < 1e-7 else u
@@ -4297,9 +4297,9 @@ class FingerprintEngine:
 
     def get_rtt_proxy_score(self, context: RequestContext) -> float:
         """
-        Feature 7 : Corrélation RTT & Latence de Proxy Résidentiel
-        Compare le RTT de transport TCP réel avec l'horodatage applicatif client
-        pour lever les masques des proxys résidentiels rotatifs.
+        Feature 7: RTT & Residential Proxy Latency Correlation.
+        Compares real TCP transport RTT with client application timestamp
+        to unmask rotating residential proxies.
         """
         tcp_rtt_header = context.get_header("x-tcp-rtt") or context.get_header("x-real-rtt")
         tcp_rtt = None
@@ -4332,12 +4332,12 @@ class FingerprintEngine:
                         if app_latency > 350:
                             return 40.0
             except Exception:
-                # Fail-safe silencieux
+                # Silent fail-safe
                 pass
         return 0.0
 
     async def calculate_threat_intel_score(self, context: RequestContext, zkp_y: Optional[str]) -> float:
-        # Récupération du score de base de Threat Intelligence (ZKP réputation)
+        # Base Threat Intelligence score retrieval (ZKP reputation)
         is_banned = await self.store.has(f"banned-zkp-y:{zkp_y}") if zkp_y else False
         base_score = 100.0 if is_banned else 0.0
         rtt_score = self.get_rtt_proxy_score(context)
@@ -4377,15 +4377,15 @@ class FingerprintEngine:
         """
         current_time = time.time()
 
-        # 1. Nettoyage périodique du bouclier thermique local
+        # 1. Periodic cleanup of the fast-path cache
         if current_time - self._last_prune_time > self._prune_interval:
             self._fast_path_cache = {
                 k: v for k, v in self._fast_path_cache.items() if v[0] > current_time
             }
             self._last_prune_time = current_time
 
-        # 2. Vérification du Bouclier Thermique (Short-Circuit Fast-Path)
-        # Si l'IP ou le sous-réseau est actuellement dans le cache local, on applique l'action immédiatement
+        # 2. Fast-Path short-circuit check
+        # Immediately enforce action if client IP or subnet is cached
         client_ip = context.client_ip
         subnet = get_ip_subnet(client_ip) or "unknown-subnet"
         
@@ -4400,7 +4400,7 @@ class FingerprintEngine:
                         return {"action": "block", "status": 403, "body": "Forbidden"}
                     elif fast_action == "challenge":
                         MetricsManager.increment_counter("requests_total", {"status": "challenged"})
-                        # On retourne une structure simplifiée sans régénérer de nonce coûteux
+                        # Return lightweight challenge without regenerating expensive nonces
                         if self.dry_run:
                             return {"action": "next", "intendedAction": "challenge"}
                         return {
@@ -4448,8 +4448,8 @@ class FingerprintEngine:
                     if self.problem_manager is not None:
                         await self.problem_manager.integrate_solution(pow_problem_id, work_result)
 
-                        # Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
-                        # on applique directement la meilleure solution calculée au moteur en direct.
+                        # If the solved problem is security auto-tuning and enabled,
+                        # apply the best computed solution directly to the engine.
                         if pow_problem_id == "security_auto_tuning" and self.config.get("autotuning", {}).get("enabled", False):
                             pareto_front = work_result.get("paretoFront")
                             if isinstance(pareto_front, list) and len(pareto_front) > 0:
@@ -4479,8 +4479,8 @@ class FingerprintEngine:
                         await pm.load_problems()
                     await pm.integrate_solution(pow_problem_id, work_result)
 
-                    # Si le problème résolu est l'auto-tuning de sécurité et que l'auto-tuning est activé,
-                    # on applique directement la meilleure solution calculée au moteur en direct.
+                    # If the solved problem is security auto-tuning and auto-tuning is enabled,
+                    # directly apply the best computed solution to the live engine.
                     if pow_problem_id == "security_auto_tuning" and self.config.get("autotuning", {}).get("enabled", False):
                         pareto_front = work_result.get("paretoFront")
                         if isinstance(pareto_front, list) and pareto_front:
@@ -4627,7 +4627,7 @@ class FingerprintEngine:
         block_threshold = self.thresholds.get("block", 95)
 
         if score >= medium_threshold and score < block_threshold:
-            # Utilise l'identifiant matériel stable pour éviter les faux positifs lors du cookie dropping
+            # Use stable hardware ID to prevent false positives during cookie dropping
             current_hash = self.get_composite_device_hash(context)
             stable_fp_id = str(cyrb53(self._extract_stable_part(current_hash)))
             await RequestUtils.update_subnet_metrics(self.store, context, stable_fp_id, score)
@@ -4635,8 +4635,8 @@ class FingerprintEngine:
 
 
         if score >= block_threshold:
-            # Protection contre le flood : On enregistre le blocage localement pour 10 secondes
-            # Évite d'interroger la DB ou de recalculer le fingerprint pour les requêtes suivantes du flood
+            # Flood mitigation: cache block action locally for 10s
+            # Avoids DB queries and fingerprint recalculation for subsequent flood requests
             self._fast_path_cache[client_ip] = (current_time + 10.0, "block")
             if subnet != "unknown-subnet":
                 self._fast_path_cache[subnet] = (current_time + 5.0, "block")
@@ -4653,7 +4653,7 @@ class FingerprintEngine:
         low_threshold = self.thresholds.get("low", 20)
 
         if (score >= low_threshold and not has_valid_ticket) or must_rechallenge:
-            # --- Limiteur de débit par domaine et sous-réseau (Token Bucket) ---
+            # --- Domain and subnet Token Bucket rate limiter ---
             domain = context.headers.get("host", "default")
             rate_limit_config = self.config.get("challengeRateLimit", {})
             rate_limit_passed = await ChallengeUtils.check_challenge_rate_limit(self.store, client_ip, domain, rate_limit_config)
@@ -4768,7 +4768,7 @@ class FingerprintEngine:
                 return decision
 
             cpu_target = ChallengeUtils.calculate_cpu_target(suspicion_factor, self.config)
-            # Ratio d'effort linéaire synchrone CPU / Mémoire
+            # Linear CPU / Memory synchronous work effort ratio
             mem_difficulty = int(round(suspicion_factor * 48))
 
             self._fast_path_cache[client_ip] = (current_time + 5.0, "challenge")
@@ -4980,7 +4980,7 @@ class OptimizationOperators:
     @staticmethod
     def create_tournament_selection(options: Optional[Dict[str, Any]] = None) -> Callable[[List[Dict[str, Any]]], Dict[str, Any]]:
         """
-        Crée une fonction de sélection par tournoi pour un algorithme génétique.
+        Creates a tournament selection function for a genetic algorithm.
         """
         options = options or {}
         tournament_size = options.get("size", 5)
@@ -5202,7 +5202,7 @@ class OptimizationOperators:
         fixed_cost = options.get("fixedCostPerFacility", 0.0)
         initial_temp = options.get("initialTemperature", 100000.0)
         cooling_rate = options.get("coolingRate", 0.999)
-        max_iterations = options.get("maxIterations", 5000) # Seuil raisonnable de rapidité
+        max_iterations = options.get("maxIterations", 5000)  # Reasonable speed threshold
 
         def evaluator(facilities: List[Dict[str, float]]) -> float:
             total_connection_cost = 0.0
@@ -5322,7 +5322,7 @@ class AutoTuner:
         if total_sanitized_instances < self.min_data_points or not has_enough_signal:
             return
 
-        # Execute genetic algorithm
+        # Run genetic optimization algorithm
         pareto_front = self.solve_full_security_tuning(sanitized_data)
         if not pareto_front:
             return
@@ -6290,7 +6290,7 @@ if __name__ == "__main__":
         print("  FINGERPRINT ENGINE - PYTHON DEMO RUN")
         print("=" * 60)
 
-        # 1. Configuration de sécurité type "balanced"
+        # 1. Sample "balanced" security configuration
         config = {
             "thresholds": {"low": 20, "high": 75, "block": 95},
             "weights": {
@@ -6328,7 +6328,7 @@ if __name__ == "__main__":
         store = InMemoryStore()
         engine = FingerprintEngine(config, store)
 
-        # Scénario A : Requête légitime (Nouvel appareil)
+        # Scenario A: Legitimate request (New device)
         context_legit = RequestContext(
             client_ip="192.168.1.50",
             path="/",
@@ -6340,12 +6340,12 @@ if __name__ == "__main__":
             cookies={}
         )
 
-        print("\n[Action] Simulation d'une requête légitime (humain)...")
+        print("\n[Action] Simulating legitimate request (human)...")
         decision_legit = await engine.process_request(context_legit)
-        print(f"-> Décision : {decision_legit['action']}")
-        print(f"-> Cookie généré : {json.dumps(decision_legit.get('newCookieForResponse'))}")
+        print(f"-> Decision: {decision_legit['action']}")
+        print(f"-> Generated Cookie: {json.dumps(decision_legit.get('newCookieForResponse'))}")
 
-        # Scénario B : Requête hostile (Bot accédant à une URL piège)
+        # Scenario B: Hostile request (Bot accessing a honeypot URL)
         context_bot = RequestContext(
             client_ip="203.0.113.88",
             path="/.env",
@@ -6354,10 +6354,10 @@ if __name__ == "__main__":
             cookies={}
         )
 
-        print("\n[Action] Simulation d'une attaque de bot (accès à /.env)...")
+        print("\n[Action] Simulating bot attack (accessing /.env)...")
         decision_bot = await engine.process_request(context_bot)
-        print(f"-> Décision : {decision_bot['action']} (Status: {decision_bot.get('status')})")
-        print(f"-> Réponse retournée : {decision_bot.get('body')}")
+        print(f"-> Decision: {decision_bot['action']} (Status: {decision_bot.get('status')})")
+        print(f"-> Returned response: {decision_bot.get('body')}")
         print("=" * 60)
 
     asyncio.run(run_demo())

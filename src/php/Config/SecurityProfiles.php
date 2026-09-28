@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Config;
 
 /**
- * Définit les profils de sécurité prédéfinis pour la bibliothèque Fingerprint.
- * Ces profils contiennent les poids des scores de suspicion et les seuils de déclenchement.
+ * Defines predefined security profiles for the Fingerprint library.
+ * These profiles contain suspicion score weights and trigger thresholds.
  */
 class SecurityProfiles
 {
@@ -66,7 +66,7 @@ class SecurityProfiles
                 'minDifficultyBits' => 8,
                 'maxDifficultyBits' => 22,
             ],
-        'filterWhitelist' => 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
+        'filterWhitelist' => 85.0, // Moderate inspection strategy for allowlisted IPs/paths
         'wasm' => true,
         ],
 
@@ -125,7 +125,7 @@ class SecurityProfiles
             ],
             'challengeNewDevices' => true, // Challenge all new devices
         'wasm' => true,
-        'filterWhitelist' => true, // Tout comportement d'attaque certain bypass immédiatement la liste blanche
+        'filterWhitelist' => true, // Any definite attack behavior immediately bypasses the allowlist
         ],
 
         /**
@@ -148,11 +148,11 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 0.8,
                 'tlsSpoofingScore' => 0.7,
                 'botScore' => 0.5,
-                'cookieDroppingScore' => 0.5, // Important pour les clients API qui doivent maintenir un état
+                'cookieDroppingScore' => 0.5, // Important for API clients that need to maintain state
                 'threatIntelScore' => 0.5, // APIs are often targeted by malicious IPs
                 'clientHintsInconsistencyScore' => 0.6, // Relevant signal for APIs
                 'clickVarianceScore' => 0.3, // Low weight as not applicable to APIs
-                'subnetScore' => 0.8, // Très important pour les API pour détecter les botnets
+                'subnetScore' => 0.8, // Highly important for APIs to detect botnets
                 'ipReputationScore' => 0.6,
                 'botnetClusterScore' => 0.7,
                 'tcpAnomalyScore' => 0.8,
@@ -182,7 +182,7 @@ class SecurityProfiles
             ],
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/") || req.headers.accept?.includes("application/json")',
-        'filterWhitelist' => 75.0, // Seuil bas pour parer au vol de clés/tokens API légitimes
+        'filterWhitelist' => 75.0, // Low threshold to defend against stolen legitimate API keys/tokens
         'wasm' => true,
         ],
 
@@ -239,7 +239,7 @@ class SecurityProfiles
                 'minDifficultyBits' => 8,
                 'maxDifficultyBits' => 20,
             ],
-        'filterWhitelist' => 90.0, // Très tolérant, n'inspecte que si le score est presque au blocage
+        'filterWhitelist' => 90.0, // Highly lenient, only inspects if the score is near blocking
         'wasm' => true,
         ],
 
@@ -264,11 +264,11 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 0.9,
                 'tlsSpoofingScore' => 0.9,
                 'botScore' => 1.0,
-                'cookieDroppingScore' => 0.6, // Crucial pour la détection de bots e-commerce
+                'cookieDroppingScore' => 0.6, // Crucial for e-commerce bot detection
                 'threatIntelScore' => 0.8, // Very important for e-commerce (scalping proxies)
                 'clientHintsInconsistencyScore' => 0.9, // Very important for e-commerce
                 'clickVarianceScore' => 0.8, // Very high weight for click variance
-                'subnetScore' => 0.9, // Crucial contre les attaques de scalping distribuées
+                'subnetScore' => 0.9, // Crucial against distributed scalping attacks
                 'ipReputationScore' => 0.8,
                 'botnetClusterScore' => 0.9,
                 'tcpAnomalyScore' => 0.9,
@@ -300,16 +300,16 @@ class SecurityProfiles
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/cart") || req.path.startsWith("/api/stock") || req.path.startsWith("/api/checkout")',
         'wasm' => true,
-        'filterWhitelist' => true, // Tolérance zéro pour le scraping / scalping distribué
+        'filterWhitelist' => true, // Zero tolerance for scraping / distributed scalping
         ],
     ];
 
     /**
-     * Crée une configuration de sécurité basée sur un profil nommé, avec des surcharges optionnelles.
+     * Creates a security configuration based on a named profile, with optional overrides.
      *
-     * @param string $profileName Le nom du profil à utiliser ('balanced', 'strict', 'api', etc.).
-     * @param array<string, mixed> $overrides Un tableau pour fusionner profondément avec le profil, permettant la personnalisation.
-     * @return array<string, mixed> L'objet de configuration de sécurité final.
+     * @param string $profileName The profile name to use ('balanced', 'strict', 'api', etc.).
+     * @param array<string, mixed> $overrides An array to deep-merge with the profile, allowing customization.
+     * @return array<string, mixed> The final security configuration object.
      */
     public static function createSecurityProfile(string $profileName = 'balanced', array $overrides = []): array
     {
@@ -318,11 +318,11 @@ class SecurityProfiles
     }
 
     /**
-     * Fusionne profondément deux tableaux. Les propriétés du tableau `$source` écrasent celles du tableau `$target`.
+     * Deep-merges two arrays. Properties of the `$source` array overwrite those of `$target`.
      *
-     * @param array<string, mixed> $target Le tableau cible.
-     * @param array<string, mixed> $source Le tableau source.
-     * @return array<string, mixed> Le tableau fusionné.
+     * @param array<string, mixed> $target The target array.
+     * @param array<string, mixed> $source The source array.
+     * @return array<string, mixed> The merged array.
      */
     public static function deepMerge(array $target, array $source): array
     {
