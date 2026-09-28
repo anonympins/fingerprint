@@ -81,7 +81,6 @@ public class FingerprintEngine {
                         if (verbose) {
                             System.out.println("[Fingerprint] Persistent Ed25519 keys loaded from disk.");
                         }
-                        return;
                     }
                 } catch (Exception e) {
                     if (verbose) {
@@ -94,10 +93,13 @@ public class FingerprintEngine {
                     String pub = java.nio.file.Files.readString(pubPemFile.toPath());
                     System.setProperty("ED25519_PRIVATE_KEY", priv);
                     System.setProperty("ED25519_PUBLIC_KEY", pub);
+                    if (!keyFile.exists()) {
+                        String json = "{\n  \"privateKey\": \"" + priv.replace("\n", "\\n") + "\",\n  \"publicKey\": \"" + pub.replace("\n", "\\n") + "\"\n}";
+                        java.nio.file.Files.writeString(keyFile.toPath(), json);
+                    }
                     if (verbose) {
                         System.out.println("[Fingerprint] Persistent Ed25519 PEM keys loaded from disk.");
                     }
-                    return;
                 } catch (Exception e) {
                     if (verbose) {
                         System.err.println("[Fingerprint] Failed to load persistent PEM keys: " + e.getMessage());

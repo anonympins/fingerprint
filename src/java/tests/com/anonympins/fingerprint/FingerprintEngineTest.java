@@ -23,16 +23,21 @@ import static org.junit.jupiter.api.Assertions.*;
 public class FingerprintEngineTest {
     private final File configDir = new File("config");
     private final File keyFile = new File(configDir, "ed25519_key.json");
+    private final File privPemFile = new File(configDir, "issuer-private.pem");
+    private final File pubPemFile = new File(configDir, "issuer-public.pem");
 
+    private void cleanKeyFiles() {
+        if (keyFile.exists()) keyFile.delete();
+        if (privPemFile.exists()) privPemFile.delete();
+        if (pubPemFile.exists()) pubPemFile.delete();
+    }
     private Map<String, Object> defaultConfig;
 
     @BeforeEach
     public void setUp() {
         System.clearProperty("ED25519_PRIVATE_KEY");
         System.clearProperty("ED25519_PUBLIC_KEY");
-        if (keyFile.exists()) {
-            keyFile.delete();
-        }
+        cleanKeyFiles();
 
         defaultConfig = new HashMap<>();
         defaultConfig.put("fail_safe", "fail_open");
@@ -41,9 +46,7 @@ public class FingerprintEngineTest {
 
     @AfterEach
     public void tearDown() {
-        if (keyFile.exists()) {
-            keyFile.delete();
-        }
+        cleanKeyFiles();
     }
     @Test
     public void testTrivialEngineUsageAndSecurityConfigInjection() {
