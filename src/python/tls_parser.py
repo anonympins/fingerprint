@@ -157,6 +157,7 @@ class TLSClientHelloParser:
         extensions, curves, points = [], [], []
         sig_algs, supported_versions = [], []
         has_sni = False
+        has_ech = False
         alpn_protocol = ""
         quic_params = None
         ext_limit = offset + extensions_len
@@ -169,6 +170,8 @@ class TLSClientHelloParser:
             extensions.append(ext_type)
             if ext_type == 0:
                 has_sni = True
+            elif ext_type == 0xfe0d:
+                has_ech = True
             elif ext_type == 10 and ext_len >= 2:
                 curves_len = struct.unpack("!H", binary[offset:offset+2])[0]
                 curves.extend(struct.unpack(f"!{curves_len//2}H", binary[offset+2:offset+2+curves_len]))
@@ -244,7 +247,9 @@ class TLSClientHelloParser:
         result = {
             "ja3_string": ja3_string,
             "ja3_hash": hashlib.md5(ja3_string.encode("utf-8")).hexdigest(),
-            "ja4_raw": f"{ja4_a}_{ja4_b}_{ja4_c}"
+            "ja4_raw": f"{ja4_a}_{ja4_b}_{ja4_c}",
+            "has_ech": has_ech,
+            "has_sni": has_sni
         }
         if quic_params is not None:
             result["quic_params"] = quic_params

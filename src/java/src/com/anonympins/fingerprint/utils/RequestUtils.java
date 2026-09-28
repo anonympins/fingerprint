@@ -108,6 +108,31 @@ public class RequestUtils {
         if (context.tlsSessionId != null && context.tlsSessionId.length() < 10) {
             score = 50.0;
         }
+
+        // ECH (RFC 9460) & SNI Discrepancy Detection
+        String outerSni = context.getHeader("x-ech-outer-sni");
+        String hostHeader = context.getHeader("host");
+        String host = hostHeader != null ? hostHeader.split(":")[0].trim() : "";
+        boolean hasEch = "true".equalsIgnoreCase(context.getHeader("x-ech-present"))
+                || "true".equalsIgnoreCase(context.getHeader("x-has-ech"));
+        boolean echExpected = "true".equalsIgnoreCase(context.getHeader("x-ech-expected"))
+                || (outerSni != null && !outerSni.isEmpty());
+
+        if (outerSni != null && !outerSni.isEmpty() && !host.isEmpty() && !outerSni.equalsIgnoreCase(host) && !hasEch) {
+            score = Math.max(score, 60.0);
+        }
+
+        String ua = context.getHeader("user-agent");
+        Map<String, String> uaParts = parseUserAgent(ua != null ? ua : "");
+        String browser = uaParts.get("browser");
+        int version = 0;
+        try { version = Integer.parseInt(uaParts.getOrDefault("version", "0")); } catch (NumberFormatException ignored) {}
+
+        boolean isModernEchBrowser = (("Chrome".equals(browser) || "Edge".equals(browser)) && version >= 119)
+                || ("Firefox".equals(browser) && version >= 118);
+        if (context.isHttps && isModernEchBrowser && echExpected && !hasEch) {
+            score = Math.max(score, 55.0);
+        }
         result.put("tlsSpoofingScore", score);
         return result;
     }
@@ -344,8 +369,16 @@ public class RequestUtils {
         // Browser detection
         if (ua.contains("Chrome") && !ua.contains("Edg")) {
             result.put("browser", "Chrome");
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chrome/([0-9]+)").matcher(ua);
+            if (m.find()) {
+                result.put("version", m.group(1));
+            }
         } else if (ua.contains("Firefox")) {
             result.put("browser", "Firefox");
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Firefox/([0-9]+)").matcher(ua);
+            if (m.find()) {
+                result.put("version", m.group(1));
+            }
         } else if (ua.contains("Safari") && !ua.contains("Chrome")) {
             result.put("browser", "Safari");
         } else if (ua.contains("Edg")) {
@@ -1513,7 +1546,16 @@ public class RequestUtils {
                     if (isChromium) {
                         if (maxData > 0 && maxData < 1048576) anomaly += 40.0;
                         if (maxStreams > 0 && maxStreams != 100) anomaly += 30.0;
-                        if (priorityOrder != null && !priorityOrder.isEmpty() && !priorityOrder.contains("u=")) anomaly += 30.0;
+                        if (priorityOrder != null && !priorityOrder.isEmpty()) {
+                            if (priorityOrder.contains("u=") && !priorityOrder.contains("i")) {
+                                anomaly += 40.0;
+                            } else if (!priorityOrder.contains("u=")) {
+                                anomaly += 30.0;
+                            }
+                            if ("p".equals(priorityOrder) || "i".equals(priorityOrder)) {
+                                anomaly += 50.0;
+                            }
+                        }
 
                         if (bidiLocal > 0 && (bidiLocal < 524288 || bidiLocal == 262144)) anomaly += 40.0;
                         if (bidiRemote > 0 && (bidiRemote < 524288 || bidiRemote == 262144)) anomaly += 30.0;
@@ -1708,6 +1750,11 @@ public class RequestUtils {
                             if (isChromium) {
                                 if (priorityCount == 0) http2Anomaly += 25.0; // Chrome sends PRIORITY frames
                                 if (windowUpdateCount < 2) http2Anomaly += 20.0; // Chrome is aggressive with WINDOW_UPDATE
+
+                                long priorityDependencies = streamPriority.chars().filter(ch -> ch == ',').count();
+                                if (streamPriority.contains(",") && priorityDependencies < 2 && priorityCount > 0) {
+                                    http2Anomaly += 35.0;
+                                }
                             } else if (isFirefox) {
                                 if (priorityCount > 1) http2Anomaly += 20.0; // Firefox sends fewer
                             }
@@ -1725,6 +1772,33 @@ public class RequestUtils {
 
             // Delegate to dedicated QUIC module to avoid code duplication
             quicAnomaly = getQuicAnomalyScore(context).getOrDefault("quicAnomalyScore", 0.0);
+        }
+
+        // HPACK / QPACK Compression Ratio Analysis
+        String compressionInfo = context.getHeader("x-compression-info");
+        if (compressionInfo != null && !compressionInfo.isEmpty()) {
+            Map<String, Double> info = new HashMap<>();
+            for (String p : compressionInfo.split(",")) {
+                String[] kv = p.split(":");
+                if (kv.length == 2) {
+                    try {
+                        info.put(kv[0].trim(), Double.parseDouble(kv[1].trim()));
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+            double reqCount = info.getOrDefault("req_count", 0.0);
+            Double hpackRatio = info.get("hpack_ratio");
+            Double qpackRatio = info.get("qpack_ratio");
+            boolean isHuman = browser != null && (browser.startsWith("Chrome") || browser.startsWith("Firefox") || browser.startsWith("Edge") || browser.startsWith("Safari"));
+
+            if (reqCount > 3 && isHuman) {
+                if (hpackRatio != null && hpackRatio < 0.4) {
+                    http2Anomaly += (1.0 - hpackRatio) * 50.0;
+                }
+                if (qpackRatio != null && qpackRatio < 0.4) {
+                    quicAnomaly += (1.0 - qpackRatio) * 50.0;
+                }
+            }
         }
 
         double score = Math.max(

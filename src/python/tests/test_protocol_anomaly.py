@@ -34,5 +34,23 @@ class TestProtocolAnomalyScore(unittest.TestCase):
         score = get_protocol_anomaly_score(context)
         self.assertEqual(score["protocolAnomalyScore"], 100.0)
 
+    def test_rfc9218_priority_update_anomaly(self):
+        headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+            "x-quic-fp": "1;1=1572864,4=100;u=3"  # Urgence u= sans indicateur incrémental i
+        }
+        context = RequestContext(headers=headers, http_version="2.0")
+        score = get_protocol_anomaly_score(context)
+        self.assertEqual(score["quicAnomalyScore"], 40.0)
+
+    def test_compression_ratio_anomaly(self):
+        headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
+            "x-compression-info": "req_count:5,hpack_ratio:0.15"  # Table dynamique non réutilisée
+        }
+        context = RequestContext(headers=headers, http_version="2.0")
+        score = get_protocol_anomaly_score(context)
+        self.assertGreater(score["http2AnomalyScore"], 40.0)
+
 if __name__ == "__main__":
     unittest.main()

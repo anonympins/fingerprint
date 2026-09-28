@@ -542,6 +542,29 @@ public class FingerprintEngineTest {
     }
 
     @Test
+    public void testRfc9218PriorityUpdateIncrementalOmission() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers.put("x-quic-fp", "1;1=1572864,4=100;u=2"); // Omet le flag incrémental 'i'
+
+        RequestContext context = new RequestContext("127.0.0.1", "/", headers, null, null, null, "2.0");
+        Map<String, Double> score = RequestUtils.getProtocolAnomalyScore(context);
+        assertEquals(40.0, score.getOrDefault("quicAnomalyScore", 0.0), 0.1);
+    }
+
+    @Test
+    public void testCompressionInfoRatioAnomaly() {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        headers.put("x-compression-info", "req_count:5,hpack_ratio:0.2");
+
+        RequestContext context = new RequestContext("127.0.0.1", "/", headers, null, null, null, "2.0");
+        Map<String, Double> score = RequestUtils.getProtocolAnomalyScore(context);
+        // (1 - 0.2) * 50 = 40.0
+        assertEquals(40.0, score.getOrDefault("http2AnomalyScore", 0.0), 0.1);
+    }
+
+    @Test
     public void testChromiumH2HeaderAnomaly() {
         Map<String, String> headers = new HashMap<>();
         headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");

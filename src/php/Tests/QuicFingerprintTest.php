@@ -51,4 +51,28 @@ class QuicFingerprintTest extends TestCase
         $res = RequestUtils::getProtocolAnomalyScore($context);
         $this->assertEquals(0.0, $res['protocolAnomalyScore']);
     }
+
+    public function testRfc9218PriorityWithoutIncrementalFlag(): void
+    {
+        $context = $this->createMock(RequestContext::class);
+        $context->method('getHeader')->willReturnCallback(function($name) {
+            if ($name === 'user-agent') return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+            if ($name === 'x-quic-fp') return '1;1=1572864,4=100;u=2'; // Manque le drapeau 'i'
+            return null;
+        });
+        $res = RequestUtils::getProtocolAnomalyScore($context);
+        $this->assertEquals(40.0, $res['quicAnomalyScore']);
+    }
+
+    public function testCompressionRatioPenalty(): void
+    {
+        $context = $this->createMock(RequestContext::class);
+        $context->method('getHeader')->willReturnCallback(function($name) {
+            if ($name === 'user-agent') return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+            if ($name === 'x-compression-info') return 'req_count:5,hpack_ratio:0.2';
+            return null;
+        });
+        $res = RequestUtils::getProtocolAnomalyScore($context);
+        $this->assertEquals(40.0, $res['http2AnomalyScore']);
+    }
 }

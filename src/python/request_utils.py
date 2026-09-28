@@ -166,11 +166,13 @@ class RequestUtils:
             match = re.search(r"Chrome/(\d+)", ua)
             if match:
                 result["browser"] += "/" + match.group(1)
+                result["version"] = int(match.group(1))
         elif "firefox" in ua_lower:
             result["browser"] = "Firefox"
             match = re.search(r"Firefox/(\d+)", ua)
             if match:
                 result["browser"] += "/" + match.group(1)
+                result["version"] = int(match.group(1))
         elif "safari" in ua_lower and "chrome" not in ua_lower:
             result["browser"] = "Safari"
             match = re.search(r"Version/(\d+)", ua)
@@ -441,6 +443,9 @@ class RequestUtils:
                             http2_anomaly += 25.0
                         if window_update_count < 2:
                             http2_anomaly += 20.0
+                        priority_deps = stream_priority.count(',')
+                        if "," in stream_priority and priority_deps < 2 and priority_count > 0:
+                            http2_anomaly += 35.0
                     elif is_firefox:
                         if priority_count > 1:
                             http2_anomaly += 20.0
@@ -462,6 +467,27 @@ class RequestUtils:
 
         quic_res = RequestUtils.get_quic_anomaly_score(context)
         quic_anomaly = quic_res.get("quicAnomalyScore", 0.0)
+
+        # HPACK / QPACK Compression Ratio Analysis
+        compression_info = context.headers.get("x-compression-info")
+        if compression_info:
+            info = {}
+            for p in compression_info.split(","):
+                kv = p.split(":", 1)
+                if len(kv) == 2:
+                    try: info[kv[0].strip()] = float(kv[1].strip())
+                    except ValueError: pass
+            req_count = info.get("req_count", 0.0)
+            hpack_ratio = info.get("hpack_ratio")
+            qpack_ratio = info.get("qpack_ratio")
+            claimed_family = browser.split("/")[0] if browser else ""
+            is_human = claimed_family in ("Chrome", "Firefox", "Safari", "Edge")
+            if req_count > 3 and is_human:
+                if hpack_ratio is not None and hpack_ratio < 0.4:
+                    http2_anomaly += (1.0 - hpack_ratio) * 50.0
+                if qpack_ratio is not None and qpack_ratio < 0.4:
+                    quic_anomaly += (1.0 - qpack_ratio) * 50.0
+
         proto_score = max(min(100.0, protocol_anomaly), min(100.0, http2_anomaly), min(100.0, quic_anomaly))
         return {
             "protocolAnomalyScore": proto_score,
@@ -513,8 +539,13 @@ class RequestUtils:
                 anomaly += 40.0
             if max_streams > 0 and max_streams != 100:
                 anomaly += 30.0
-            if priority_order and "u=" not in priority_order:
-                anomaly += 30.0
+            if priority_order:
+                if "u=" in priority_order and "i" not in priority_order:
+                    anomaly += 40.0
+                elif "u=" not in priority_order:
+                    anomaly += 30.0
+                if priority_order in ("p", "i"):
+                    anomaly += 50.0
 
             if bidi_local > 0 and (bidi_local < 524288 or bidi_local == 262144):
                 anomaly += 40.0

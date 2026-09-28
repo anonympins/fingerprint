@@ -176,6 +176,7 @@ public class TLSClientHelloParser {
             List<Integer> points = new ArrayList<>();
             List<Integer> sigAlgs = new ArrayList<>();
             List<Integer> supportedVersions = new ArrayList<>();
+            boolean hasEch = false;
             boolean hasSni = false;
             String alpnProtocol = "";
             Map<Long, Object> quicParams = null;
@@ -191,6 +192,8 @@ public class TLSClientHelloParser {
 
                 if (extType == 0) {
                     hasSni = true;
+                } else if (extType == 0xfe0d) { // encrypted_client_hello (RFC 9460)
+                    hasEch = true;
                 } else if (extType == 10 && extLen >= 2) {
                     int curvesLen = buffer.getShort() & 0xFFFF;
                     for (int j = 0; j < curvesLen; j += 2) {
@@ -273,6 +276,8 @@ public class TLSClientHelloParser {
             result.put("ja3_string", ja3String);
             result.put("ja3_hash", md5(ja3String));
             result.put("ja4_raw", ja4_a + "_" + ja4_b + "_" + ja4_c);
+            result.put("has_ech", hasEch ? "true" : "false");
+            result.put("has_sni", hasSni ? "true" : "false");
             if (quicParams != null) {
                 result.put("quic_fp", formatQuicFingerprint(quicParams, "", ""));
             }

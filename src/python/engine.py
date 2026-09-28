@@ -1134,6 +1134,27 @@ class FingerprintEngine:
                 if len(seen_browsers) > 1:
                     tls_spoofing_score = max(tls_spoofing_score, 85.0)
 
+        # Validation TLS 1.3 Encrypted Client Hello (ECH) & Discrépance SNI
+        outer_sni = context.headers.get("x-ech-outer-sni")
+        host = context.headers.get("host", "").split(":")[0].strip()
+        has_ech = context.headers.get("x-ech-present") == "true" or context.headers.get("x-has-ech") == "true"
+        ech_expected = context.headers.get("x-ech-expected") == "true" or bool(outer_sni)
+
+        if outer_sni and host and outer_sni.lower() != host.lower() and not has_ech:
+            tls_spoofing_score = max(tls_spoofing_score, 60.0)
+
+        browser_ver = 0
+        ua_parsed = RequestUtils.parse_user_agent(ua)
+        if "version" in ua_parsed:
+            browser_ver = ua_parsed["version"]
+
+        is_modern_ech_browser = (
+            (claimed_browser in ("Chrome", "Edge") and browser_ver >= 119) or
+            (claimed_browser == "Firefox" and browser_ver >= 118)
+        )
+        if context.is_https and is_modern_ech_browser and ech_expected and not has_ech:
+            tls_spoofing_score = max(tls_spoofing_score, 55.0)
+
         # Calculate weighted average
         bot_score = RequestUtils.get_bot_score(context)
         honeypot_score = RequestUtils.get_honeypot_score(context, self.config.get("honeypot"))

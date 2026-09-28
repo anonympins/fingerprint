@@ -400,6 +400,12 @@ export function getProtocolAnomalyScore(context) {
     const ua = context.headers?.['user-agent'] || '';
     const uaParts = parseUserAgent(ua);
     const browser = uaParts.browser;
+    const isChromium = browser?.startsWith('Chrome') || browser?.startsWith('Edge');
+    const isFirefox = browser?.startsWith('Firefox');
+    const isSafari = browser?.startsWith('Safari');
+    const isHumanBrowser = ['Chrome', 'Firefox', 'Safari', 'Edge'].includes(
+        browser?.split('/')[0] || null
+    );
 
     if (browser) {
         // HTTP/2 Anomaly Logic
@@ -410,9 +416,6 @@ export function getProtocolAnomalyScore(context) {
                 const connWindow = parseInt(parts[1], 10);
                 const streamPriority = parts[2] || '';
                 const headerOrder = parts.length > 3 ? parts[3] : '';
-                const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
-                const isFirefox = browser.startsWith('Firefox');
-                const isSafari = browser.startsWith('Safari');
 
                 if (isChromium) {
                     if (headerOrder && headerOrder !== 'm,a,s,p') http2Anomaly += 60.0;
@@ -444,6 +447,13 @@ export function getProtocolAnomalyScore(context) {
                         if (priorityCount === 0) http2Anomaly += 25.0;
                         // Chrome est agressif avec les WINDOW_UPDATE
                         if (windowUpdateCount < 2) http2Anomaly += 20.0;
+
+                        // NOUVEAU: Analyse de l'arbre de dépendances HTTP/2.
+                        // Un arbre plat (peu de dépendances) est suspect pour Chromium.
+                        const priorityDependencies = streamPriority.split(',').length - 1;
+                        if (streamPriority.includes(',') && priorityDependencies < 2 && priorityCount > 0) {
+                            http2Anomaly += 35.0;
+                        }
                     } else if (isFirefox) {
                         // Firefox utilise un schéma de priorité différent, souvent avec moins de trames PRIORITY
                         if (priorityCount > 1) http2Anomaly += 20.0;
@@ -471,10 +481,6 @@ export function getProtocolAnomalyScore(context) {
                 const frameOrderRaw = parts[3] || context.headers?.['x-quic-frame-order'] || context.quicFrameOrder || '';
                 const frameOrder = frameOrderRaw.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
 
-                const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
-                const isFirefox = browser.startsWith('Firefox');
-                const isSafari = browser.startsWith('Safari');
-
                 const maxData = parseInt(params['1'] || params['0x01'] || '0', 10);
                 const maxStreams = parseInt(params['4'] || params['8'] || params['0x08'] || '0', 10);
                 const bidiLocal = parseInt(params['5'] || params['0x05'] || '0', 10);
@@ -485,6 +491,15 @@ export function getProtocolAnomalyScore(context) {
                     if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
                     if (maxStreams > 0 && maxStreams !== 100) quicAnomaly += 30.0;
                     if (priorityOrder && !priorityOrder.includes('u=')) quicAnomaly += 30.0;
+
+                    // NOUVEAU: Analyse des trames PRIORITY_UPDATE (RFC 9218)
+                    if (priorityOrder) {
+                        // Un navigateur légitime enverra probablement une mise à jour incrémentale 'i'
+                        if (priorityOrder.includes('u=') && !priorityOrder.includes('i')) {
+                            quicAnomaly += 40.0; // Urgence envoyée sans drapeau incrémental, suspect pour Chrome
+                        }
+                        if (priorityOrder === 'p' || priorityOrder === 'i') quicAnomaly += 50.0; // Champ malformé
+                    }
 
                     // Contrôle de flux bidi (Chromium alloue 6MB = 6291456 ou au minimum 512 Ko)
                     // curl-impersonate / quiche alloue 256 Ko (262144) ou 128 Ko (131072)
@@ -532,6 +547,31 @@ export function getProtocolAnomalyScore(context) {
                             quicAnomaly += 50.0;
                         }
                     }
+                }
+            }
+        }
+
+        // NOUVEAU: Analyse du ratio de compression HPACK/QPACK
+        const compressionInfo = context.headers?.['x-compression-info'] || null;
+        if (compressionInfo) {
+            const info = {};
+            compressionInfo.split(',').forEach(p => {
+                const [key, value] = p.split(':');
+                if (key && value) info[key.trim()] = parseFloat(value);
+            });
+
+            const reqCount = info.req_count || 0;
+            const hpackRatio = info.hpack_ratio;
+            const qpackRatio = info.qpack_ratio;
+
+            // Après quelques requêtes, un vrai navigateur doit avoir un bon ratio de compression
+            if (reqCount > 3 && isHumanBrowser) {
+                if (hpackRatio !== undefined && hpackRatio < 0.4) {
+                    // Un faible ratio HPACK suggère que le client n'utilise pas la table dynamique.
+                    http2Anomaly += (1 - hpackRatio) * 50; // Pénalité proportionnelle
+                }
+                if (qpackRatio !== undefined && qpackRatio < 0.4) {
+                    quicAnomaly += (1 - qpackRatio) * 50;
                 }
             }
         }
@@ -2701,7 +2741,7 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
     }
 
     const { ja3, ja4 } = actualGetTlsFingerprintFn(context) || { ja3: null, ja4: null }; // Defensive check
-    const ua = context.headers["user-agent"] || '';
+    const ua = context.headers?.["user-agent"] || '';
     const ja3Raw = context.headers['x-ja3-raw'] || null;
     const httpVersion = context.httpVersion || '';
 
@@ -2723,7 +2763,8 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
         score = Math.max(score, 100);
     }
 
-    const claimedBrowser = parseUserAgent(ua).browser?.split('/')[0] || null;
+    const uaParts = parseUserAgent(ua);
+    const claimedBrowser = uaParts.browser?.split('/')[0] || null;
     const isHumanBrowser = ['Chrome', 'Firefox', 'Safari', 'Edge'].includes(claimedBrowser);
 
     // --- ANALYSE 2 : CONTRÔLE PROFOND SUR L'EMPREINTE BRUTE (RAW JA3) ---
@@ -2765,8 +2806,6 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
     if (ja4) {
         const parsedJa4 = parseJa4(ja4);
         if (parsedJa4) {
-            const uaParts = parseUserAgent(ua);
-
             // Check 1: Incohérence ALPN / HTTP Version
             if (parsedJa4.alpn === 'h2' && (context.httpVersion === '1.1' || context.httpVersion === '1.0')) {
                 const hasProxy = context.headers['via'] || context.headers['forwarded'] || context.headers['x-forwarded-proto'] || context.headers['x-forwarded-for'];
@@ -2788,6 +2827,25 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
                 score = Math.max(score, 50);
             }
         }
+    }
+
+    // Validation TLS 1.3 Encrypted Client Hello (ECH) & Discrépance SNI
+    const outerSni = context.headers?.['x-ech-outer-sni'];
+    const host = (context.headers?.['host'] || '').split(':')[0].trim();
+    const hasEch = context.headers?.['x-ech-present'] === 'true' || context.headers?.['x-has-ech'] === 'true';
+    const echExpected = context.headers?.['x-ech-expected'] === 'true' || Boolean(outerSni);
+
+    if (outerSni && host && outerSni.toLowerCase() !== host.toLowerCase() && !hasEch) {
+        score = Math.max(score, 60.0);
+    }
+
+    const browserVersion = parseInt(uaParts.browser?.split('/')[1] || '0', 10);
+    const isModernEchBrowser = (
+        (claimedBrowser === 'Chrome' || claimedBrowser === 'Edge') && browserVersion >= 119
+    ) || (claimedBrowser === 'Firefox' && browserVersion >= 118);
+
+    if (context.isHttps && isModernEchBrowser && echExpected && !hasEch) {
+        score = Math.max(score, 55.0);
     }
 
     // 2. If no JA3 hash is available, we cannot perform the consistency check.
@@ -2828,7 +2886,6 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
     // Create the promise for the async part (Check 4)
     const promise = (async () => {
         let asyncScore = score;
-        const uaParts = parseUserAgent(ua);
         
         if (uaParts.browser) {
             const browserFamily = uaParts.browser.split('/')[0];
@@ -6414,7 +6471,8 @@ function sanitizeProxyHeaders(context, securityConfig) {
         'x-ja4-hash',
         'x-http2-fingerprint',
         'x-tcp-fingerprint',
-        'x-ja3-raw'
+        'x-ja3-raw',
+        'x-compression-info'
     ];
 
     if (securityConfig && securityConfig.trustedProxies) {

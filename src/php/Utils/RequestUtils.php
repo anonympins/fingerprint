@@ -240,6 +240,25 @@ class RequestUtils
             }
         }
 
+        // ECH & SNI Discrepancy Checks
+        $outerSni = $context->getHeader('x-ech-outer-sni');
+        $host = explode(':', $context->getHeader('host') ?? '')[0];
+        $hasEch = $context->getHeader('x-ech-present') === 'true' || $context->getHeader('x-has-ech') === 'true';
+        $echExpected = $context->getHeader('x-ech-expected') === 'true' || !empty($outerSni);
+
+        if (!empty($outerSni) && !empty($host) && strcasecmp($outerSni, $host) !== 0 && !$hasEch) {
+            return ['tlsSpoofingScore' => max($tlsSpoofingScore ?? 0.0, 60.0)];
+        }
+
+        $browserVer = (int)($claimedBrowserInfo['version'] ?? 0);
+        $isModernEchBrowser = (
+            (in_array($claimedBrowser, ['Chrome', 'Edge'], true) && $browserVer >= 119) ||
+            ($claimedBrowser === 'Firefox' && $browserVer >= 118)
+        );
+        if ($context->isHttps && $isModernEchBrowser && $echExpected && !$hasEch) {
+            return ['tlsSpoofingScore' => max($tlsSpoofingScore ?? 0.0, 55.0)];
+        }
+
         return ['tlsSpoofingScore' => 0.0];
     }
 
@@ -648,8 +667,14 @@ class RequestUtils
 
         if (str_contains($ua, 'Chrome') && !str_contains($ua, 'Edg')) {
             $result['browser'] = 'Chrome';
+            if (preg_match('/Chrome\/(\d+)/', $ua, $matches)) {
+                $result['version'] = (int)$matches[1];
+            }
         } elseif (str_contains($ua, 'Firefox')) {
             $result['browser'] = 'Firefox';
+            if (preg_match('/Firefox\/(\d+)/', $ua, $matches)) {
+                $result['version'] = (int)$matches[1];
+            }
         } elseif (str_contains($ua, 'Safari') && !str_contains($ua, 'Chrome')) {
             $result['browser'] = 'Safari';
         } elseif (str_contains($ua, 'Edg')) {
@@ -2184,6 +2209,11 @@ class RequestUtils
                         if ($headerOrder && $headerOrder !== 'm,a,s,p') $http2Anomaly += 60.0;
                         if ($connWindow === 65535 || $connWindow === 65536) $http2Anomaly += 40.0;
                         if ($streamPriority === '0' || $streamPriority === '') $http2Anomaly += 50.0;
+
+                        $priorityDeps = substr_count($streamPriority, ',');
+                        if (str_contains($streamPriority, ',') && $priorityDeps < 2 && !empty($streamPriority) && $streamPriority !== '0') {
+                            $http2Anomaly += 35.0;
+                        }
                     } elseif ($isFirefox) {
                         if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
                     } elseif ($isSafari) {
@@ -2220,7 +2250,16 @@ class RequestUtils
                     if ($isChromium) {
                         if ($maxData > 0 && $maxData < 1048576) $quicAnomaly += 40.0;
                         if ($maxStreams > 0 && $maxStreams !== 100) $quicAnomaly += 30.0;
-                        if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $quicAnomaly += 30.0;
+                        if (!empty($priorityOrder)) {
+                            if (str_contains($priorityOrder, 'u=') && !str_contains($priorityOrder, 'i')) {
+                                $quicAnomaly += 40.0;
+                            } elseif (!str_contains($priorityOrder, 'u=')) {
+                                $quicAnomaly += 30.0;
+                            }
+                            if ($priorityOrder === 'p' || $priorityOrder === 'i') {
+                                $quicAnomaly += 50.0;
+                            }
+                        }
                         if ($bidiLocal > 0 && ($bidiLocal < 524288 || $bidiLocal === 262144)) $quicAnomaly += 40.0;
                         if ($bidiRemote > 0 && ($bidiRemote < 524288 || $bidiRemote === 262144)) $quicAnomaly += 30.0;
 
@@ -2256,6 +2295,32 @@ class RequestUtils
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // HPACK / QPACK Compression Ratio Analysis
+        $compressionInfo = $context->getHeader('x-compression-info');
+        if (!empty($compressionInfo)) {
+            $info = [];
+            foreach (explode(',', $compressionInfo) as $item) {
+                $kv = explode(':', $item, 2);
+                if (count($kv) === 2) {
+                    $info[trim($kv[0])] = (float)trim($kv[1]);
+                }
+            }
+            $reqCount = $info['req_count'] ?? 0;
+            $hpackRatio = $info['hpack_ratio'] ?? null;
+            $qpackRatio = $info['qpack_ratio'] ?? null;
+            $claimedFamily = explode('/', $browser ?? '')[0];
+            $isHuman = in_array($claimedFamily, ['Chrome', 'Firefox', 'Safari', 'Edge'], true);
+
+            if ($reqCount > 3 && $isHuman) {
+                if ($hpackRatio !== null && $hpackRatio < 0.4) {
+                    $http2Anomaly += (1.0 - $hpackRatio) * 50.0;
+                }
+                if ($qpackRatio !== null && $qpackRatio < 0.4) {
+                    $quicAnomaly += (1.0 - $qpackRatio) * 50.0;
                 }
             }
         }

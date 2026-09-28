@@ -214,6 +214,7 @@ class TLSClientHelloParser
         $points = [];
             $sigAlgs = [];
             $supportedVersions = [];
+        $hasEch = false;
             $hasSni = false;
             $alpnProtocol = '';
         $quicParams = null;
@@ -230,6 +231,8 @@ class TLSClientHelloParser
 
                 if ($extType === 0) {
                     $hasSni = true;
+            } elseif ($extType === 0xfe0d) { // encrypted_client_hello (RFC 9460)
+                $hasEch = true;
                 } elseif ($extType === 10) { // Extension Supported Groups (Elliptic Curves)
                 if ($extLen >= 2) {
                     $curvesLen = unpack('n', substr($binary, $offset, 2))[1];
@@ -357,7 +360,9 @@ class TLSClientHelloParser
         $result = [
             'ja3_string' => $ja3String,
                 'ja3_hash'   => md5($ja3String),
-                'ja4_raw'    => $ja4_hash
+            'ja4_raw'    => $ja4_hash,
+            'has_ech'    => $hasEch,
+            'has_sni'    => $hasSni
         ];
 
         if ($quicParams !== null) {
