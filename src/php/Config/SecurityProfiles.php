@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Config;
 
 /**
- * Définit les profils de sécurité prédéfinis pour la bibliothèque Fingerprint.
- * Ces profils contiennent les poids des scores de suspicion et les seuils de déclenchement.
+ * Defines predefined security profiles for the Fingerprint library.
+ * These profiles contain suspicion score weights and trigger thresholds.
  */
 class SecurityProfiles
 {
@@ -33,19 +33,21 @@ class SecurityProfiles
                 'crossLayerInconsistencyScore' => 0.4,
                 'timeInconsistencyScore' => 0.9,
                 'tlsSpoofingScore' => 0.8,
-                'botScore' => 1.0, // Poids pour le score de bot explicite
-                'cookieDroppingScore' => 0.9, // Pénalité élevée pour la suppression de cookies
-                'threatIntelScore' => 0.4, // Poids pour le renseignement sur les menaces (ex: IP de proxy connu)
-                'clientHintsInconsistencyScore' => 0.7, // Penalizes inconsistency between User-Agent and Client-Hints
-                'clickVarianceScore' => 0.6, // Poids pour la variance des clics
-                'subnetScore' => 0.5, // Pénalise les sous-réseaux IP avec une activité suspecte agrégée
-                'botnetClusterScore' => 0.6, // NOUVEAU: Poids pour le clustering botnet
+                'botScore' => 1.0,
+                'cookieDroppingScore' => 0.4,
+                'threatIntelScore' => 0.4,
+                'clientHintsInconsistencyScore' => 0.7,
+                'clickVarianceScore' => 0.6,
+                'subnetScore' => 0.5,
+                'ipReputationScore' => 0.5,
+                'botnetClusterScore' => 0.6,
                 'tcpAnomalyScore' => 0.8,
-                'protocolAnomalyScore' => 0.8, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
-                'renderingAnomalyScore' => 0.8, // NEW: Anomalie de rendu
-                'mtuAnomalyScore' => 0.9, // NOUVEAU: Poids pour l'anomalie MTU/fragmentation
-                'ipReputationScore' => 0.5, // NOUVEAU: Poids pour la réputation IP
+                'protocolAnomalyScore' => 0.8,
+                'http2AnomalyScore' => 0.8,
+                'quicAnomalyScore' => 0.8,
+                'renderingAnomalyScore' => 0.8,
                 'virtualizationScore' => 0.8,
+                'mtuAnomalyScore' => 0.9,
             ],
             'thresholds' => ['low' => 20, 'medium' => 45, 'high' => 75, 'block' => 95],
             'patterns' => [
@@ -64,7 +66,7 @@ class SecurityProfiles
                 'minDifficultyBits' => 8,
                 'maxDifficultyBits' => 22,
             ],
-        'filterWhitelist' => 85.0, // Stratégie d'inspection modérée pour les IP/chemins en liste blanche
+        'filterWhitelist' => 85.0, // Moderate inspection strategy for allowlisted IPs/paths
         'wasm' => true,
         ],
 
@@ -89,17 +91,20 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 1.0,
                 'tlsSpoofingScore' => 1.0,
                 'botScore' => 1.0,
-                'cookieDroppingScore' => 1.0, // Pénalité maximale
-                'threatIntelScore' => 0.7, // Poids élevé pour les menaces connues (Tor, etc.)
-                'clientHintsInconsistencyScore' => 0.9, // Very high penalty in strict mode
-                'clickVarianceScore' => 0.7, // High weight for click variance
-                'subnetScore' => 0.7, // Poids plus élevé en mode strict
-                'botnetClusterScore' => 0.8, // NOUVEAU: Poids pour le clustering botnet
-                'tcpAnomalyScore' => 1.0, // NEW: Anomalie de pile TCP/IP
-                'protocolAnomalyScore' => 1.0, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
-                'renderingAnomalyScore' => 1.0, // NEW: Anomalie de rendu
+                'cookieDroppingScore' => 0.6,
+                'threatIntelScore' => 0.7,
+                'clientHintsInconsistencyScore' => 0.9,
+                'clickVarianceScore' => 0.7,
+                'subnetScore' => 0.7,
+                'ipReputationScore' => 0.7,
+                'botnetClusterScore' => 0.8,
+                'tcpAnomalyScore' => 1.0,
+                'protocolAnomalyScore' => 1.0,
+                'http2AnomalyScore' => 1.0,
+                'quicAnomalyScore' => 1.0,
+                'renderingAnomalyScore' => 1.0,
+                'virtualizationScore' => 1.0,
                 'mtuAnomalyScore' => 0.9,
-
             ],
             'thresholds' => ['low' => 10, 'medium' => 35, 'high' => 65, 'block' => 90],
             'patterns' => [
@@ -120,7 +125,7 @@ class SecurityProfiles
             ],
             'challengeNewDevices' => true, // Challenge all new devices
         'wasm' => true,
-        'filterWhitelist' => true, // Tout comportement d'attaque certain bypass immédiatement la liste blanche
+        'filterWhitelist' => true, // Any definite attack behavior immediately bypasses the allowlist
         ],
 
         /**
@@ -143,16 +148,20 @@ class SecurityProfiles
                 'timeInconsistencyScore' => 0.8,
                 'tlsSpoofingScore' => 0.7,
                 'botScore' => 0.5,
-                'cookieDroppingScore' => 0.8, // Important pour les clients API qui doivent maintenir un état
+                'cookieDroppingScore' => 0.5, // Important for API clients that need to maintain state
                 'threatIntelScore' => 0.5, // APIs are often targeted by malicious IPs
                 'clientHintsInconsistencyScore' => 0.6, // Relevant signal for APIs
                 'clickVarianceScore' => 0.3, // Low weight as not applicable to APIs
-                'subnetScore' => 0.8, // Très important pour les API pour détecter les botnets
-                'botnetClusterScore' => 0.7, // NOUVEAU: Poids pour le clustering botnet
-                'tcpAnomalyScore' => 0.8, // NEW: Anomalie de pile TCP/IP
-                'protocolAnomalyScore' => 0.8, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
+                'subnetScore' => 0.8, // Highly important for APIs to detect botnets
+                'ipReputationScore' => 0.6,
+                'botnetClusterScore' => 0.7,
+                'tcpAnomalyScore' => 0.8,
+                'protocolAnomalyScore' => 0.8,
+                'http2AnomalyScore' => 0.8,
+                'quicAnomalyScore' => 0.8,
+                'renderingAnomalyScore' => 0.2,
+                'virtualizationScore' => 0.5,
                 'mtuAnomalyScore' => 0.9,
-
             ],
             'thresholds' => ['low' => 25, 'medium' => 50, 'high' => 80, 'block' => 95],
             'patterns' => [
@@ -173,7 +182,7 @@ class SecurityProfiles
             ],
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/") || req.headers.accept?.includes("application/json")',
-        'filterWhitelist' => 75.0, // Seuil bas pour parer au vol de clés/tokens API légitimes
+        'filterWhitelist' => 75.0, // Low threshold to defend against stolen legitimate API keys/tokens
         'wasm' => true,
         ],
 
@@ -196,20 +205,22 @@ class SecurityProfiles
                 'honeypotScore' => 1.0, // Crucial for comment spam
                 'crossLayerInconsistencyScore' => 0.4,
                 'timeInconsistencyScore' => 0.8,
-                'tlsSpoofingScore' => 0.6, // Moins critique pour les blogs
+                'tlsSpoofingScore' => 0.6,
                 'botScore' => 0.8,
-                'cookieDroppingScore' => 0.7, // Moins critique, mais toujours un signal
-                'threatIntelScore' => 0.3, // Lower priority for a blog
+                'cookieDroppingScore' => 0.3,
+                'threatIntelScore' => 0.3,
                 'clientHintsInconsistencyScore' => 0.5,
-                'clickVarianceScore' => 0.5, // Moderate weight for click variance
-                'subnetScore' => 0.4, // Utile contre le spam de commentaires coordonné
-                'ipReputationScore' => 0.3, // NOUVEAU: Poids pour la réputation IP
-                'botnetClusterScore' => 0.5, // NOUVEAU: Poids pour le clustering botnet
-                'tcpAnomalyScore' => 0.5, // NEW: Anomalie de pile TCP/IP
-                'protocolAnomalyScore' => 0.5, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
-                'renderingAnomalyScore' => 0.5, // NEW: Anomalie de rendu
+                'clickVarianceScore' => 0.5,
+                'subnetScore' => 0.4,
+                'ipReputationScore' => 0.3,
+                'botnetClusterScore' => 0.5,
+                'tcpAnomalyScore' => 0.5,
+                'protocolAnomalyScore' => 0.5,
+                'http2AnomalyScore' => 0.5,
+                'quicAnomalyScore' => 0.5,
+                'renderingAnomalyScore' => 0.5,
+                'virtualizationScore' => 0.6,
                 'mtuAnomalyScore' => 0.9,
-
             ],
             'thresholds' => ['low' => 25, 'medium' => 55, 'high' => 80, 'block' => 95],
             'patterns' => [
@@ -228,7 +239,7 @@ class SecurityProfiles
                 'minDifficultyBits' => 8,
                 'maxDifficultyBits' => 20,
             ],
-        'filterWhitelist' => 90.0, // Très tolérant, n'inspecte que si le score est presque au blocage
+        'filterWhitelist' => 90.0, // Highly lenient, only inspects if the score is near blocking
         'wasm' => true,
         ],
 
@@ -245,26 +256,28 @@ class SecurityProfiles
                 'historyScore' => 0.4,
                 'rotationScore' => 0.6,
                 'headerAnomalyScore' => 0.2,
+                'requestPatternScore' => 0.9,
                 'inconsistencyScore' => 1.0, // Crucial for preventing account takeover
                 'behaviorScore' => 0.8, // Important for checkout/login forms
                 'honeypotScore' => 1.0,
                 'crossLayerInconsistencyScore' => 0.7,
-                // NOUVEAU: Ajout des scores manquants pour une configuration complète
-                'requestPatternScore' => 0.9, // Poids unifié pour les patterns, remplace les scores scindés
                 'timeInconsistencyScore' => 0.9,
                 'tlsSpoofingScore' => 0.9,
                 'botScore' => 1.0,
-                'cookieDroppingScore' => 1.0, // Crucial pour la détection de bots e-commerce
+                'cookieDroppingScore' => 0.6, // Crucial for e-commerce bot detection
                 'threatIntelScore' => 0.8, // Very important for e-commerce (scalping proxies)
                 'clientHintsInconsistencyScore' => 0.9, // Very important for e-commerce
                 'clickVarianceScore' => 0.8, // Very high weight for click variance
-                'subnetScore' => 0.9, // Crucial contre les attaques de scalping distribuées
-                'botnetClusterScore' => 0.9, // NOUVEAU: Poids pour le clustering botnet
-                'tcpAnomalyScore' => 0.9, // NEW: Anomalie de pile TCP/IP
-                'protocolAnomalyScore' => 0.9, // NEW: Anomalie de protocole (HTTP/2 et QUIC)
-                'renderingAnomalyScore' => 0.9, // NEW: Anomalie de rendu
+                'subnetScore' => 0.9, // Crucial against distributed scalping attacks
+                'ipReputationScore' => 0.8,
+                'botnetClusterScore' => 0.9,
+                'tcpAnomalyScore' => 0.9,
+                'protocolAnomalyScore' => 0.9,
+                'http2AnomalyScore' => 0.9,
+                'quicAnomalyScore' => 0.9,
+                'renderingAnomalyScore' => 0.9,
+                'virtualizationScore' => 0.9,
                 'mtuAnomalyScore' => 0.9,
-
             ],
             'thresholds' => ['low' => 15, 'medium' => 40, 'high' => 70, 'block' => 90],
             'patterns' => [
@@ -287,16 +300,16 @@ class SecurityProfiles
             // This would be a callable in PHP, but for now, we represent its intent.
             'isApiRequest' => 'req.path.startsWith("/api/cart") || req.path.startsWith("/api/stock") || req.path.startsWith("/api/checkout")',
         'wasm' => true,
-        'filterWhitelist' => true, // Tolérance zéro pour le scraping / scalping distribué
+        'filterWhitelist' => true, // Zero tolerance for scraping / distributed scalping
         ],
     ];
 
     /**
-     * Crée une configuration de sécurité basée sur un profil nommé, avec des surcharges optionnelles.
+     * Creates a security configuration based on a named profile, with optional overrides.
      *
-     * @param string $profileName Le nom du profil à utiliser ('balanced', 'strict', 'api', etc.).
-     * @param array<string, mixed> $overrides Un tableau pour fusionner profondément avec le profil, permettant la personnalisation.
-     * @return array<string, mixed> L'objet de configuration de sécurité final.
+     * @param string $profileName The profile name to use ('balanced', 'strict', 'api', etc.).
+     * @param array<string, mixed> $overrides An array to deep-merge with the profile, allowing customization.
+     * @return array<string, mixed> The final security configuration object.
      */
     public static function createSecurityProfile(string $profileName = 'balanced', array $overrides = []): array
     {
@@ -305,11 +318,11 @@ class SecurityProfiles
     }
 
     /**
-     * Fusionne profondément deux tableaux. Les propriétés du tableau `$source` écrasent celles du tableau `$target`.
+     * Deep-merges two arrays. Properties of the `$source` array overwrite those of `$target`.
      *
-     * @param array<string, mixed> $target Le tableau cible.
-     * @param array<string, mixed> $source Le tableau source.
-     * @return array<string, mixed> Le tableau fusionné.
+     * @param array<string, mixed> $target The target array.
+     * @param array<string, mixed> $source The source array.
+     * @return array<string, mixed> The merged array.
      */
     public static function deepMerge(array $target, array $source): array
     {

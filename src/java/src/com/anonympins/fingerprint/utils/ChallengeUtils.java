@@ -17,7 +17,7 @@ import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * Classe utilitaire pour la génération et la vérification des challenges Proof-of-Work (PoW, uPoW, ZKP, etc.).
+ * Utility class for generating and verifying Proof-of-Work challenges (PoW, uPoW, ZKP, etc.).
  */
 public class ChallengeUtils {
 
@@ -75,6 +75,48 @@ public class ChallengeUtils {
             secret = System.getProperty("POW_SECRET");
         }
         return (secret != null && !secret.isEmpty()) ? secret : DEFAULT_FALLBACK_SECRET;
+    }
+
+    public static Map<String, String> generateIssuerPemKeys(String outDir, Map<String, Object> options) {
+        try {
+            java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("Ed25519");
+            java.security.KeyPair kp = kpg.generateKeyPair();
+            String privPem = "-----BEGIN PRIVATE KEY-----\n" +
+                    Base64.getMimeEncoder(64, new byte[]{'\n'}).encodeToString(kp.getPrivate().getEncoded()) +
+                    "\n-----END PRIVATE KEY-----";
+            String pubPem = "-----BEGIN PUBLIC KEY-----\n" +
+                    Base64.getMimeEncoder(64, new byte[]{'\n'}).encodeToString(kp.getPublic().getEncoded()) +
+                    "\n-----END PUBLIC KEY-----";
+
+            String privName = (options != null && options.containsKey("privateKeyName"))
+                    ? (String) options.get("privateKeyName")
+                    : "issuer-private.pem";
+            String pubName = (options != null && options.containsKey("publicKeyName"))
+                    ? (String) options.get("publicKeyName")
+                    : "issuer-public.pem";
+
+            java.io.File dir = (outDir != null && !outDir.isEmpty())
+                    ? new java.io.File(outDir)
+                    : new java.io.File("config");
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+
+            java.io.File privFile = new java.io.File(dir, privName);
+            java.io.File pubFile = new java.io.File(dir, pubName);
+
+            java.nio.file.Files.writeString(privFile.toPath(), privPem);
+            java.nio.file.Files.writeString(pubFile.toPath(), pubPem);
+
+            Map<String, String> result = new HashMap<>();
+            result.put("privateKeyPath", privFile.getAbsolutePath());
+            result.put("publicKeyPath", pubFile.getAbsolutePath());
+            result.put("privateKey", privPem);
+            result.put("publicKey", pubPem);
+            return result;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to generate Ed25519 issuer PEM keys: " + e.getMessage(), e);
+        }
     }
 
     public static boolean verifyZkpProof(String yStr, String tStr, String sStr) {
@@ -572,7 +614,7 @@ public class ChallengeUtils {
 
     static ObjectMapper objectMapper = new ObjectMapper();
     /**
-     * Analyse une chaîne JSON en liste de Maps.
+     * Parses a JSON string into a list of Maps.
      */
     public static List<Map<String, Object>> simpleJsonParseList(String json) {
         try {
@@ -1053,14 +1095,14 @@ public class ChallengeUtils {
     }
 
     /**
-     * Valide un challenge Proof of Space (uPoW).
+     * Validates a Proof of Space (uPoW) challenge.
      *
-     * @param nonce Le nonce du challenge.
-     * @param solution La solution soumise.
-     * @param proofs Les preuves associées.
-     * @param seed La graine du challenge.
-     * @param secret Le secret de sécurisation.
-     * @return true si la preuve est valide.
+     * @param nonce Challenge nonce.
+     * @param solution Submitted solution.
+     * @param proofs Associated proofs.
+     * @param seed Challenge seed.
+     * @param secret Security secret.
+     * @return true if the proof is valid.
      */
     public static boolean verifySpacePoW(String nonce, String solution, List<String> proofs, String seed, String secret) {
         if (nonce == null || solution == null || proofs == null || seed == null || secret == null) {
@@ -1088,12 +1130,12 @@ public class ChallengeUtils {
     }
 
     /**
-     * Valide un challenge GPU PoW.
+     * Validates a GPU PoW challenge.
      *
-     * @param seed La graine du challenge.
-     * @param difficulty La difficulté requise (nombre de bits de poids fort à zéro).
-     * @param solution La solution soumise.
-     * @return true si la preuve est valide.
+     * @param seed Challenge seed.
+     * @param difficulty Required difficulty (number of leading zero bits).
+     * @param solution Submitted solution.
+     * @return true if the proof is valid.
      */
     public static boolean verifyGpuPow(String seed, int difficulty, String solution) {
         if (seed == null || solution == null || difficulty < 0) {
@@ -1118,12 +1160,12 @@ public class ChallengeUtils {
     }
 
     /**
-     * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+     * Checks Token Bucket rate limiter for subnet challenge requests.
      *
-     * @param clientIp L'adresse IP du client.
-     * @param capacity Capacité maximale du réservoir de jetons.
-     * @param refillRate Vitesse de recharge en jetons par seconde.
-     * @return true si la requête est autorisée, false sinon.
+     * @param clientIp Client IP address.
+     * @param capacity Maximum token bucket capacity.
+     * @param refillRate Refill rate in tokens per second.
+     * @return true if request is permitted, false otherwise.
      */
     @SuppressWarnings("unchecked")
     public static boolean checkChallengeRateLimit(String clientIp, double capacity, double refillRate) {

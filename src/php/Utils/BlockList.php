@@ -5,18 +5,18 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Utils;
 
 /**
- * Implémentation PHP d'une liste de blocage IP/CIDR, similaire à Node.js `net.BlockList`.
+ * PHP implementation of an IP/CIDR blocklist, similar to Node.js `net.BlockList`.
  */
 class BlockList
 {
     /**
-     * @var array<string> Liste des IPs ou CIDR à bloquer.
+     * @var array<string> List of IPs or CIDR blocks to filter.
      */
     private array $entries = [];
 
     /**
-     * Ajoute une adresse IP ou une plage CIDR à la liste.
-     * @param string $entry Une adresse IP (ex: '192.168.1.1') ou une plage CIDR (ex: '192.168.1.0/24').
+     * Adds an IP address or CIDR range to the list.
+     * @param string $entry An IP address (e.g. '192.168.1.1') or CIDR range (e.g. '192.168.1.0/24').
      * @return void
      */
     public function add(string $entry): void
@@ -25,20 +25,20 @@ class BlockList
     }
 
     /**
-     * Vérifie si une adresse IP est présente dans la liste de blocage.
-     * @param string $ip L'adresse IP à vérifier.
-     * @return bool True si l'IP est bloquée, false sinon.
+     * Checks if an IP address exists in the blocklist.
+     * @param string $ip The IP address to verify.
+     * @return bool True if the IP matches, false otherwise.
      */
     public function check(string $ip): bool
     {
         foreach ($this->entries as $entry) {
             if (str_contains($entry, '/')) {
-                // C'est une plage CIDR
+                // CIDR range
                 if ($this->ipInCidr($ip, $entry)) {
                     return true;
                 }
             } else {
-                // C'est une IP directe
+                // Direct IP match
                 if ($ip === $entry) {
                     return true;
                 }
@@ -48,10 +48,10 @@ class BlockList
     }
 
     /**
-     * Vérifie si une adresse IP se trouve dans une plage CIDR donnée.
-     * @param string $ip L'adresse IP à vérifier.
-     * @param string $cidr La plage CIDR (ex: '192.168.1.0/24').
-     * @return bool True si l'IP est dans la plage, false sinon.
+     * Checks if an IP address belongs to a given CIDR range.
+     * @param string $ip The IP address to verify.
+     * @param string $cidr The CIDR range (e.g. '192.168.1.0/24').
+     * @return bool True if the IP is within the range, false otherwise.
      */
     private function ipInCidr(string $ip, string $cidr): bool
     {

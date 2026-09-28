@@ -17,13 +17,13 @@ class DnsCircuitBreakerTest extends TestCase
         parent::setUp();
         $this->reflection = new ReflectionClass(FingerprintEngine::class);
 
-        // Réinitialise l'état statique du disjoncteur avant chaque test
+        // Reset static circuit breaker state before each test
         $this->setCircuitBreakerState([
             'state' => 'CLOSED',
             'failureCount' => 0,
             'lastStateChange' => 0,
             'threshold' => 5,
-            'cooldown' => 1, // 1 seconde de cooldown pour accélérer le test
+            'cooldown' => 1, // 1 second cooldown for faster test execution
         ]);
     }
 

@@ -13,6 +13,9 @@ import {GpuPowSolver} from "./gpu_pow.solver.js";
 import {
     verifyZkpProof,
     sanitizeRedirectPath,
+    extractPrivateAccessTokens,
+    parsePrivateAccessToken,
+    verifyPatSignature,
     decodePolymorphicFingerprint,
     deepMerge,
     getHeaderSignature,
@@ -23,7 +26,8 @@ import {
     isLoopbackIp,
     isPrivateIp,
     parseUserAgent,
-    safeJsonStringify
+    safeJsonStringify,
+    generateIssuerPemKeys
 } from "./fingerprint.utils.js";
 
 
@@ -400,6 +404,12 @@ export function getProtocolAnomalyScore(context) {
     const ua = context.headers?.['user-agent'] || '';
     const uaParts = parseUserAgent(ua);
     const browser = uaParts.browser;
+    const isChromium = browser?.startsWith('Chrome') || browser?.startsWith('Edge');
+    const isFirefox = browser?.startsWith('Firefox');
+    const isSafari = browser?.startsWith('Safari');
+    const isHumanBrowser = ['Chrome', 'Firefox', 'Safari', 'Edge'].includes(
+        browser?.split('/')[0] || null
+    );
 
     if (browser) {
         // HTTP/2 Anomaly Logic
@@ -410,9 +420,6 @@ export function getProtocolAnomalyScore(context) {
                 const connWindow = parseInt(parts[1], 10);
                 const streamPriority = parts[2] || '';
                 const headerOrder = parts.length > 3 ? parts[3] : '';
-                const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
-                const isFirefox = browser.startsWith('Firefox');
-                const isSafari = browser.startsWith('Safari');
 
                 if (isChromium) {
                     if (headerOrder && headerOrder !== 'm,a,s,p') http2Anomaly += 60.0;
@@ -422,6 +429,33 @@ export function getProtocolAnomalyScore(context) {
                     if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
                 } else if (isSafari) {
                     if (headerOrder && headerOrder !== 'm,s,p,a') http2Anomaly += 60.0;
+                }
+
+                // Analyse de la structure des dépendances de flux HTTP/2 (RFC 7540)
+                if (streamPriority) {
+                    const priorityEntries = streamPriority.split(',').map(s => s.trim()).filter(Boolean);
+                    for (const entry of priorityEntries) {
+                        const sub = entry.split(':');
+                        if (sub.length >= 4) {
+                            const streamId = parseInt(sub[0], 10);
+                            const exclusive = parseInt(sub[1], 10);
+                            const depStreamId = parseInt(sub[2], 10);
+                            const weight = parseInt(sub[3], 10);
+
+                            // Auto-dépendance interdite (RFC 7540 Section 5.3.1)
+                            if (streamId === depStreamId && streamId > 0) {
+                                http2Anomaly += 60.0;
+                            }
+                            // Poids en dehors de [1, 256] (RFC 7540 Section 5.3.2)
+                            if (weight < 1 || weight > 256) {
+                                http2Anomaly += 45.0;
+                            }
+                            // Signature scraper : Go net/http2 ou Python h2 par défaut (poids 16 sur flux 0 non-exclusif)
+                            if (isChromium && depStreamId === 0 && weight === 16 && exclusive === 0) {
+                                http2Anomaly += 55.0;
+                            }
+                        }
+                    }
                 }
 
                 // Analyse fine des trames (PRIORITY, WINDOW_UPDATE, CONTINUATION)
@@ -444,6 +478,13 @@ export function getProtocolAnomalyScore(context) {
                         if (priorityCount === 0) http2Anomaly += 25.0;
                         // Chrome est agressif avec les WINDOW_UPDATE
                         if (windowUpdateCount < 2) http2Anomaly += 20.0;
+
+                        // NOUVEAU: Analyse de l'arbre de dépendances HTTP/2.
+                        // Un arbre plat (peu de dépendances) est suspect pour Chromium.
+                        const priorityDependencies = streamPriority.split(',').length - 1;
+                        if (streamPriority.includes(',') && priorityDependencies < 2 && priorityCount > 0) {
+                            http2Anomaly += 35.0;
+                        }
                     } else if (isFirefox) {
                         // Firefox utilise un schéma de priorité différent, souvent avec moins de trames PRIORITY
                         if (priorityCount > 1) http2Anomaly += 20.0;
@@ -471,10 +512,6 @@ export function getProtocolAnomalyScore(context) {
                 const frameOrderRaw = parts[3] || context.headers?.['x-quic-frame-order'] || context.quicFrameOrder || '';
                 const frameOrder = frameOrderRaw.toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
 
-                const isChromium = browser.startsWith('Chrome') || browser.startsWith('Edge');
-                const isFirefox = browser.startsWith('Firefox');
-                const isSafari = browser.startsWith('Safari');
-
                 const maxData = parseInt(params['1'] || params['0x01'] || '0', 10);
                 const maxStreams = parseInt(params['4'] || params['8'] || params['0x08'] || '0', 10);
                 const bidiLocal = parseInt(params['5'] || params['0x05'] || '0', 10);
@@ -484,7 +521,33 @@ export function getProtocolAnomalyScore(context) {
                     // Contrôle de flux global et nombre de flux bidirectionnels
                     if (maxData > 0 && maxData < 1048576) quicAnomaly += 40.0;
                     if (maxStreams > 0 && maxStreams !== 100) quicAnomaly += 30.0;
-                    if (priorityOrder && !priorityOrder.includes('u=')) quicAnomaly += 30.0;
+
+                    // NOUVEAU: Analyse des trames PRIORITY_UPDATE (RFC 9218)
+                    if (priorityOrder) {
+                        // Contrôle de l'urgence (u: 0 à 7 strict)
+                        const uMatch = priorityOrder.match(/\bu=(-?\d+)\b/);
+                        if (uMatch) {
+                            const urgency = parseInt(uMatch[1], 10);
+                            if (urgency < 0 || urgency > 7) {
+                                quicAnomaly += 50.0;
+                            }
+                        } else if (!priorityOrder.includes('u=')) {
+                            quicAnomaly += 30.0;
+                        }
+
+                        // Paramètre incrémental invalide ou malformé
+                        if (/\bi=\d+\b/.test(priorityOrder)) {
+                            quicAnomaly += 40.0;
+                        }
+                        if (/\bw=\d+\b/.test(priorityOrder)) {
+                            quicAnomaly += 45.0;
+                        }
+                        // Un navigateur légitime enverra probablement une mise à jour incrémentale 'i'
+                        if (priorityOrder.includes('u=') && !priorityOrder.includes('i') && !/\bu=[0-7],i\b/.test(priorityOrder)) {
+                            quicAnomaly += 40.0; // Urgence envoyée sans drapeau incrémental, suspect pour Chrome
+                        }
+                        if (priorityOrder === 'p' || priorityOrder === 'i') quicAnomaly += 50.0; // Champ malformé
+                    }
 
                     // Contrôle de flux bidi (Chromium alloue 6MB = 6291456 ou au minimum 512 Ko)
                     // curl-impersonate / quiche alloue 256 Ko (262144) ou 128 Ko (131072)
@@ -505,6 +568,12 @@ export function getProtocolAnomalyScore(context) {
                         }
                         if (pIdx !== -1 && sIdx !== -1 && pIdx < sIdx) {
                             quicAnomaly += 60.0;
+                        }
+
+                        // RFC 9114: Le flux de contrôle ne doit pas contenir de doublon SETTINGS
+                        const sCount = frameOrder.filter(f => f === 's' || f === 'settings' || f === '4').length;
+                        if (sCount > 1) {
+                            quicAnomaly += 50.0;
                         }
                     }
                 } else if (isFirefox) {
@@ -532,6 +601,55 @@ export function getProtocolAnomalyScore(context) {
                             quicAnomaly += 50.0;
                         }
                     }
+                }
+            }
+        }
+
+        // NOUVEAU: Analyse du ratio de compression HPACK/QPACK
+        const compressionInfo = context.headers?.['x-compression-info'] || null;
+        if (compressionInfo) {
+            const info = {};
+            compressionInfo.split(',').forEach(p => {
+                const [key, value] = p.split(':');
+                if (key && value) info[key.trim()] = parseFloat(value);
+            });
+
+            const reqCount = info.req_count || 0;
+            const hpackRatio = info.hpack_ratio;
+            const qpackRatio = info.qpack_ratio;
+            const dynamicEntries = info.dynamic_table_entries !== undefined ? info.dynamic_table_entries : info.table_entries;
+            const dynamicHits = info.dynamic_hits;
+            const dynamicTableSize = info.dynamic_table_size;
+
+            // Après quelques requêtes, un vrai navigateur doit avoir un bon ratio de compression
+            if (reqCount > 3 && isHumanBrowser) {
+                if (hpackRatio !== undefined) {
+                    if (hpackRatio < 0.4) {
+                        http2Anomaly += (1 - hpackRatio) * 50;
+                    } else if (hpackRatio > 0.75) {
+                        http2Anomaly += Math.min(50.0, (hpackRatio - 0.5) * 100);
+                    }
+                }
+                if (qpackRatio !== undefined) {
+                    if (qpackRatio < 0.4) {
+                        quicAnomaly += (1 - qpackRatio) * 50;
+                    } else if (qpackRatio > 0.75) {
+                        quicAnomaly += Math.min(50.0, (qpackRatio - 0.5) * 100);
+                    }
+                }
+
+                // Détection de réinitialisation de table dynamique
+                if (dynamicEntries !== undefined && dynamicEntries === 0) {
+                    http2Anomaly += 45.0;
+                    quicAnomaly += 45.0;
+                }
+                if (dynamicHits !== undefined && dynamicHits === 0) {
+                    http2Anomaly += 35.0;
+                    quicAnomaly += 35.0;
+                }
+                if (dynamicTableSize !== undefined && dynamicTableSize === 0) {
+                    http2Anomaly += 40.0;
+                    quicAnomaly += 40.0;
                 }
             }
         }
@@ -2369,29 +2487,17 @@ function getBehaviorScore(context) {
     return { behaviorScore: 0 }; // Pas de données, pas de pénalité.
   }
 
-  // Traitement direct si un flag binaire client-side (1 = humain, 0 = bot) est envoyé
-  if (behaviorHeader === 1 || behaviorHeader === '1') {
-    return { behaviorScore: 0 };
-  }
-  if (behaviorHeader === 0 || behaviorHeader === '0') {
-    return { behaviorScore: 100 };
-  }
-
   // Traitement direct si un score numérique est envoyé côté client
   if (typeof behaviorHeader === 'number') {
     return { behaviorScore: Math.max(0, Math.min(100, behaviorHeader)) };
   }
   if (typeof behaviorHeader === 'string' && !isNaN(Number(behaviorHeader)) && behaviorHeader.trim() !== '') {
     const trimmed = behaviorHeader.trim();
-    if (trimmed === '1') return { behaviorScore: 0 };
-    if (trimmed === '0') return { behaviorScore: 100 };
     return { behaviorScore: Math.max(0, Math.min(100, parseFloat(trimmed))) };
   }
 
   try {
     const metrics = JSON.parse(behaviorHeader);
-    if (metrics === 1) return { behaviorScore: 0 };
-    if (metrics === 0) return { behaviorScore: 100 };
     if (typeof metrics === 'number') {
       return { behaviorScore: Math.max(0, Math.min(100, metrics)) };
     }
@@ -2713,7 +2819,7 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
     }
 
     const { ja3, ja4 } = actualGetTlsFingerprintFn(context) || { ja3: null, ja4: null }; // Defensive check
-    const ua = context.headers["user-agent"] || '';
+    const ua = context.headers?.["user-agent"] || '';
     const ja3Raw = context.headers['x-ja3-raw'] || null;
     const httpVersion = context.httpVersion || '';
 
@@ -2735,7 +2841,8 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
         score = Math.max(score, 100);
     }
 
-    const claimedBrowser = parseUserAgent(ua).browser?.split('/')[0] || null;
+    const uaParts = parseUserAgent(ua);
+    const claimedBrowser = uaParts.browser?.split('/')[0] || null;
     const isHumanBrowser = ['Chrome', 'Firefox', 'Safari', 'Edge'].includes(claimedBrowser);
 
     // --- ANALYSE 2 : CONTRÔLE PROFOND SUR L'EMPREINTE BRUTE (RAW JA3) ---
@@ -2777,8 +2884,6 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
     if (ja4) {
         const parsedJa4 = parseJa4(ja4);
         if (parsedJa4) {
-            const uaParts = parseUserAgent(ua);
-
             // Check 1: Incohérence ALPN / HTTP Version
             if (parsedJa4.alpn === 'h2' && (context.httpVersion === '1.1' || context.httpVersion === '1.0')) {
                 const hasProxy = context.headers['via'] || context.headers['forwarded'] || context.headers['x-forwarded-proto'] || context.headers['x-forwarded-for'];
@@ -2800,6 +2905,25 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
                 score = Math.max(score, 50);
             }
         }
+    }
+
+    // Validation TLS 1.3 Encrypted Client Hello (ECH) & Discrépance SNI
+    const outerSni = context.headers?.['x-ech-outer-sni'];
+    const host = (context.headers?.['host'] || '').split(':')[0].trim();
+    const hasEch = context.headers?.['x-ech-present'] === 'true' || context.headers?.['x-has-ech'] === 'true';
+    const echExpected = context.headers?.['x-ech-expected'] === 'true' || Boolean(outerSni);
+
+    if (outerSni && host && outerSni.toLowerCase() !== host.toLowerCase() && !hasEch) {
+        score = Math.max(score, 60.0);
+    }
+
+    const browserVersion = parseInt(uaParts.browser?.split('/')[1] || '0', 10);
+    const isModernEchBrowser = (
+        (claimedBrowser === 'Chrome' || claimedBrowser === 'Edge') && browserVersion >= 119
+    ) || (claimedBrowser === 'Firefox' && browserVersion >= 118);
+
+    if (context.isHttps && isModernEchBrowser && echExpected && !hasEch) {
+        score = Math.max(score, 55.0);
     }
 
     // 2. If no JA3 hash is available, we cannot perform the consistency check.
@@ -2840,7 +2964,6 @@ export function getTlsSpoofingScore(context, getTlsFingerprintFn = getTlsFingerp
     // Create the promise for the async part (Check 4)
     const promise = (async () => {
         let asyncScore = score;
-        const uaParts = parseUserAgent(ua);
         
         if (uaParts.browser) {
             const browserFamily = uaParts.browser.split('/')[0];
@@ -4640,6 +4763,8 @@ export class FingerprintEngine {
         // Auto-generate Ed25519 key pair on load if indicated and keys are not set
         if (securityConfig && (securityConfig.useAsymmetricTickets || securityConfig.ed25519 === 'auto') && !process.env.ED25519_PRIVATE_KEY) {
             const persistentKeyPath = join(configDir, 'ed25519_key.json');
+            const privatePemPath = join(configDir, 'issuer-private.pem');
+            const publicPemPath = join(configDir, 'issuer-public.pem');
             if (existsSync(persistentKeyPath)) {
                 try {
                     const keys = JSON.parse(readFileSync(persistentKeyPath, 'utf-8'));
@@ -4648,6 +4773,14 @@ export class FingerprintEngine {
                     this._log('Persistent Ed25519 keys loaded from disk');
                 } catch (e) {
                     console.error('[Fingerprint] Failed to load persistent Ed25519 keys:', e.message);
+                }
+            } else if (existsSync(privatePemPath) && existsSync(publicPemPath)) {
+                try {
+                    process.env.ED25519_PRIVATE_KEY = readFileSync(privatePemPath, 'utf-8');
+                    process.env.ED25519_PUBLIC_KEY = readFileSync(publicPemPath, 'utf-8');
+                    this._log('Persistent Ed25519 PEM keys loaded from disk');
+                } catch (e) {
+                    console.error('[Fingerprint] Failed to load persistent Ed25519 PEM keys:', e.message);
                 }
             } else {
                 try {
@@ -4751,6 +4884,7 @@ export class FingerprintEngine {
       'federatedPeers', 'federationSecret', 'filterWhitelist',
       'challengeRateLimit',
       'differentialPrivacy', 'dpEpsilon'
+      ,'pat'
     ]);
 
     // 1. Check for essential keys
@@ -5216,6 +5350,39 @@ export class FingerprintEngine {
     if (isStatic) {
       this._log('Static resource - skipping checks');
       return { action: 'next', score: 0, vector: {} };
+    }
+
+    // --- PRIVATE ACCESS TOKENS (PAT / RFC 9505 & Privacy Pass) ZERO-FRICTION BYPASS ---
+    const rawPatTokens = extractPrivateAccessTokens(requestContext.headers);
+    if (rawPatTokens.length > 0) {
+        const patConfig = this.securityConfig.pat || {};
+        for (const rawToken of rawPatTokens) {
+            const parsedToken = parsePrivateAccessToken(rawToken);
+            if (parsedToken) {
+                const nonceKey = `pat-nonce:${parsedToken.nonce}`;
+                const isReplayed = await store.has(nonceKey);
+                if (!isReplayed) {
+                    const isValid = verifyPatSignature(parsedToken, patConfig);
+                    if (isValid) {
+                        // Anti-replay: cache nonce with 24-hour TTL
+                        const nonceTtl = patConfig.nonceTtl || 86400;
+                        await store.set(nonceKey, true, nonceTtl);
+                        this._log('Private Access Token (PAT) cryptographically verified - granting zero-friction bypass', {
+                            tokenType: parsedToken.tokenType,
+                            tokenKeyId: parsedToken.tokenKeyId
+                        });
+                        const decision = {
+                            action: 'next',
+                            score: 0.0,
+                            vector: { pat_verified: 100.0, privacy_pass: 100.0 },
+                            intendedAction: 'next'
+                        };
+                        if (newCookie) decision.newCookieForResponse = newCookie;
+                        return decision;
+                    }
+                }
+            }
+        }
     }
 
     // Resolve identity and check for persisted "condemned" status early.
@@ -6426,7 +6593,8 @@ function sanitizeProxyHeaders(context, securityConfig) {
         'x-ja4-hash',
         'x-http2-fingerprint',
         'x-tcp-fingerprint',
-        'x-ja3-raw'
+        'x-ja3-raw',
+        'x-compression-info'
     ];
 
     if (securityConfig && securityConfig.trustedProxies) {
@@ -7270,6 +7438,7 @@ export const __internal = {
     findPeerInSubnet,
     handleCooperativeRequest,
     broadcastBannedZkp,
+    generateIssuerPemKeys,
     getMetric,
     incrementCounter,
     observeValue
@@ -7970,3 +8139,4 @@ export async function handleMetricsRequest(req, res, securityConfig) {
     res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
     res.send(MetricsManager.getPrometheusMetrics(securityConfig));
 }
+export { generateIssuerPemKeys };

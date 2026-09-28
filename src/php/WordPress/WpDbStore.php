@@ -10,15 +10,15 @@ if (!defined('ABSPATH')) {
 
 use Anonympins\Fingerprint\Store\IStore;
 
-// Polyfill pour ARRAY_A si chargé hors du cycle de vie standard de WordPress
+// Polyfill for ARRAY_A if loaded outside standard WordPress lifecycle
 if (!defined('ARRAY_A')) {
     define('ARRAY_A', 'ARRAY_A');
 }
 
 /**
- * Adaptateur IStore persistant pour WordPress exploitant l'objet $wpdb.
- * Permet de stocker les sessions d'appareils, nonces et états de PoW
- * sans dépendre d'une extension mémoire comme Redis ou APCu.
+ * Persistent IStore adapter for WordPress backed by the global $wpdb database object.
+ * Stores device sessions, challenge nonces, and PoW states without
+ * requiring external memory stores such as Redis or APCu.
  */
 class WpDbStore implements IStore
 {
@@ -35,7 +35,7 @@ class WpDbStore implements IStore
     }
 
     /**
-     * Crée la table de stockage si elle n'existe pas encore.
+     * Creates the storage table if it does not exist yet.
      */
     public function ensureTable(): void
     {
@@ -52,7 +52,7 @@ class WpDbStore implements IStore
             KEY `expires_idx` (`expires_at`)
         ) {$charsetCollate};";
 
-        // Chargement sécurisé de dbDelta si ABSPATH est présent
+        // Safely load dbDelta if ABSPATH is defined
         if (!function_exists('dbDelta') && defined('ABSPATH')) {
             $upgradeFile = ABSPATH . 'wp-admin/includes/upgrade.php';
             if (file_exists($upgradeFile)) {
@@ -142,7 +142,7 @@ class WpDbStore implements IStore
     }
 
     /**
-     * Nettoie les lignes expirées (appelé par le WP-Cron périodique).
+     * Purges expired records (invoked by periodic WP-Cron).
      */
     public function pruneExpired(): int
     {

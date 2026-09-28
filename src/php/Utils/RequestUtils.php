@@ -117,6 +117,124 @@ class RequestUtils
     }
 
     /**
+     * Extracts Private Access Tokens (PAT / RFC 9578) from request headers.
+     *
+     * @param RequestContext $context
+     * @return array<int, string> Raw binary tokens.
+     */
+    public static function extractPrivateAccessTokens(RequestContext $context): array
+    {
+        $tokens = [];
+        $authHeader = $context->getHeader('authorization');
+        if ($authHeader && stripos($authHeader, 'privatetoken ') === 0) {
+            if (preg_match('/token=(?:"([^"]+)"|([a-zA-Z0-9_\-+\/=]+))/i', $authHeader, $matches)) {
+                $rawB64 = !empty($matches[1]) ? $matches[1] : $matches[2];
+                $decoded = base64_decode(strtr($rawB64, '-_', '+/'), true);
+                if ($decoded !== false) {
+                    $tokens[] = $decoded;
+                }
+            }
+        }
+
+        $pstHeader = $context->getHeader('sec-private-state-token');
+        if ($pstHeader) {
+            foreach (explode(',', $pstHeader) as $part) {
+                $trimmed = trim($part);
+                if (!empty($trimmed)) {
+                    $decoded = base64_decode(strtr($trimmed, '-_', '+/'), true);
+                    if ($decoded !== false) {
+                        $tokens[] = $decoded;
+                    }
+                }
+            }
+        }
+        return $tokens;
+    }
+
+    /**
+     * Decodes an RFC 9578 Token structure:
+     * uint16_t token_type (2 bytes)
+     * uint8_t nonce[32] (32 bytes)
+     * uint8_t challenge_digest[32] (32 bytes)
+     * uint8_t token_key_id[32] (32 bytes)
+     * uint8_t authenticator[Nk] (>= 32 bytes)
+     *
+     * @param string $binary
+     * @return array<string, mixed>|null
+     */
+    public static function parsePrivateAccessToken(string $binary): ?array
+    {
+        $len = strlen($binary);
+        if ($len < 98) {
+            return null;
+        }
+
+        $tokenType = unpack('n', substr($binary, 0, 2))[1];
+        $nonce = substr($binary, 2, 32);
+        $challengeDigest = substr($binary, 34, 32);
+        $tokenKeyId = substr($binary, 66, 32);
+        $authenticator = substr($binary, 98);
+
+        if ($authenticator === '') {
+            return null;
+        }
+
+        return [
+            'tokenType' => $tokenType,
+            'nonce' => bin2hex($nonce),
+            'challengeDigest' => bin2hex($challengeDigest),
+            'tokenKeyId' => bin2hex($tokenKeyId),
+            'authenticator' => $authenticator,
+            'signedData' => substr($binary, 0, 98),
+        ];
+    }
+
+    /**
+     * Cryptographically validates a Private Access Token signature.
+     *
+     * @param array<string, mixed> $parsedToken
+     * @param array<string, mixed> $patConfig
+     * @return bool
+     */
+    public static function verifyPatSignature(array $parsedToken, array $patConfig = []): bool
+    {
+        $trustedKeys = $patConfig['trustedKeys'] ?? [];
+        $keyId = $parsedToken['tokenKeyId'];
+        $publicKey = $trustedKeys[$keyId] ?? $trustedKeys[strtolower($keyId)] ?? ($patConfig['defaultPublicKey'] ?? null);
+
+        if (!$publicKey) {
+            return false;
+        }
+
+        $tokenType = (int)$parsedToken['tokenType'];
+        $signedData = $parsedToken['signedData'];
+        $authenticator = $parsedToken['authenticator'];
+
+        $pubKeyObj = openssl_pkey_get_public($publicKey);
+        if (!$pubKeyObj) {
+            return false;
+        }
+
+        // Type 0x0001 (Blind RSA 2048) / 0x0002 (Rate-Limited Blind RSA)
+        if ($tokenType === 1 || $tokenType === 2) {
+            // Try RSA-PSS with SHA-384, then SHA-256, then PKCS#1 v1.5
+            if (defined('OPENSSL_PKCS1_PSS_PADDING') && @openssl_verify($signedData, $authenticator, $pubKeyObj, OPENSSL_ALGO_SHA384)) {
+                return true;
+            }
+            if (defined('OPENSSL_PKCS1_PSS_PADDING') && @openssl_verify($signedData, $authenticator, $pubKeyObj, OPENSSL_ALGO_SHA256)) {
+                return true;
+            }
+            if (@openssl_verify($signedData, $authenticator, $pubKeyObj, OPENSSL_ALGO_SHA256) === 1) {
+                return true;
+            }
+        } elseif ($tokenType === 3) {
+            return @openssl_verify($signedData, $authenticator, $pubKeyObj, OPENSSL_ALGO_SHA256) === 1;
+        }
+
+        return false;
+    }
+
+    /**
      * Analyzes TCP MTU and fragmentation flags to detect network tunnels (VPN/Proxy).
      * @param RequestContext $context The request context.
      * @return array{'mtuAnomalyScore': float}
@@ -124,29 +242,44 @@ class RequestUtils
     public static function getMtuAnomalyScore(RequestContext $context): array
     {
         $mtuHeader = $context->getHeader('x-tcp-mtu-info');
-        if (empty($mtuHeader) || !is_string($mtuHeader)) {
-            return ['mtuAnomalyScore' => 0.0];
+        $mssHeader = $context->getHeader('x-tcp-mss') ?? $context->getHeader('x-mss') ?? $context->getHeader('x-forwarded-mss');
+
+        $mtu = null;
+        $df = null;
+
+        if (!empty($mtuHeader) && is_string($mtuHeader)) {
+            $parts = explode(':', $mtuHeader);
+            if (count($parts) >= 2) {
+                $parsedMtu = filter_var($parts[0], FILTER_VALIDATE_INT);
+                $parsedDf = filter_var($parts[1], FILTER_VALIDATE_INT);
+                $mtu = $parsedMtu !== false ? $parsedMtu : null;
+                $df = $parsedDf !== false ? $parsedDf : null;
+            } elseif (count($parts) === 1 && is_numeric($parts[0])) {
+                $mtu = (int)$parts[0];
+            }
         }
 
-        $parts = explode(':', $mtuHeader);
-        if (count($parts) < 2) {
-            return ['mtuAnomalyScore' => 0.0];
+        // Reconstitution depuis MSS (ex: FastCGI Nginx $tcpinfo_rcv_mss)
+        if ($mtu === null && !empty($mssHeader) && is_numeric($mssHeader)) {
+            $mss = (int)$mssHeader;
+            if ($mss > 0) {
+                $isV6 = filter_var($context->clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+                $mtu = $mss + ($isV6 ? 60 : 40);
+                $df = 1;
+            }
         }
 
-        $mtu = filter_var($parts[0], FILTER_VALIDATE_INT);
-        $df = filter_var($parts[1], FILTER_VALIDATE_INT);
-
-        if ($mtu === false || $df === false) {
+        if ($mtu === null) {
             return ['mtuAnomalyScore' => 0.0];
         }
 
         $score = 0.0;
 
-        // 1. Pénalité modérée pour les MTU typiques des VPNs/tunnels.
-        if ($mtu > 1200 && $mtu <= 1420) {
-            $score += 35.0;
+        // 1. Détection des tunnels (VPN WireGuard/OpenVPN, GRE, proxies résidentiels encapsulés)
+        if ($mtu > 500 && $mtu <= 1420) {
+            $score += 55.0;
         } elseif ($mtu > 1420 && $mtu < 1492) {
-            $score += 20.0;
+            $score += 30.0;
         }
 
         // 2. OS vs. Network Stack Inconsistency
@@ -223,6 +356,25 @@ class RequestUtils
                 // Incohérence détectée avec JA3
                 return ['tlsSpoofingScore' => 80.0];
             }
+        }
+
+        // ECH & SNI Discrepancy Checks
+        $outerSni = $context->getHeader('x-ech-outer-sni');
+        $host = explode(':', $context->getHeader('host') ?? '')[0];
+        $hasEch = $context->getHeader('x-ech-present') === 'true' || $context->getHeader('x-has-ech') === 'true';
+        $echExpected = $context->getHeader('x-ech-expected') === 'true' || !empty($outerSni);
+
+        if (!empty($outerSni) && !empty($host) && strcasecmp($outerSni, $host) !== 0 && !$hasEch) {
+            return ['tlsSpoofingScore' => max($tlsSpoofingScore ?? 0.0, 60.0)];
+        }
+
+        $browserVer = (int)($claimedBrowserInfo['version'] ?? 0);
+        $isModernEchBrowser = (
+            (in_array($claimedBrowser, ['Chrome', 'Edge'], true) && $browserVer >= 119) ||
+            ($claimedBrowser === 'Firefox' && $browserVer >= 118)
+        );
+        if ($context->isHttps && $isModernEchBrowser && $echExpected && !$hasEch) {
+            return ['tlsSpoofingScore' => max($tlsSpoofingScore ?? 0.0, 55.0)];
         }
 
         return ['tlsSpoofingScore' => 0.0];
@@ -633,8 +785,14 @@ class RequestUtils
 
         if (str_contains($ua, 'Chrome') && !str_contains($ua, 'Edg')) {
             $result['browser'] = 'Chrome';
+            if (preg_match('/Chrome\/(\d+)/', $ua, $matches)) {
+                $result['version'] = (int)$matches[1];
+            }
         } elseif (str_contains($ua, 'Firefox')) {
             $result['browser'] = 'Firefox';
+            if (preg_match('/Firefox\/(\d+)/', $ua, $matches)) {
+                $result['version'] = (int)$matches[1];
+            }
         } elseif (str_contains($ua, 'Safari') && !str_contains($ua, 'Chrome')) {
             $result['browser'] = 'Safari';
         } elseif (str_contains($ua, 'Edg')) {
@@ -2106,6 +2264,52 @@ class RequestUtils
         $uaParts = self::parseUserAgent($ua);
         $browser = $uaParts['browser'] ?? null;
 
+        $serverProtocol = strtoupper($context->httpVersion ?? '');
+        $isH2 = str_starts_with($serverProtocol, 'HTTP/2') || str_starts_with($serverProtocol, '2');
+        $isH3 = str_starts_with($serverProtocol, 'HTTP/3') || str_starts_with($serverProtocol, '3');
+        $isH1 = str_starts_with($serverProtocol, 'HTTP/1') || str_starts_with($serverProtocol, '1');
+
+        // 1. Violation RFC 7540 (HTTP/2) & RFC 9114 (HTTP/3) : en-têtes hop-by-hop interdits
+        $hasIllegalHopByHop = $context->getHeader('connection') !== null
+            || $context->getHeader('keep-alive') !== null
+            || $context->getHeader('proxy-connection') !== null;
+
+        if ($isH2 && $hasIllegalHopByHop) {
+            $http2Anomaly += 70.0;
+        }
+        if ($isH3 && $hasIllegalHopByHop) {
+            $quicAnomaly += 75.0;
+        }
+
+        // 2. Corrélation avec la télémétrie client W3C Navigation Timing
+        $clientProtocol = null;
+        $behaviorHeader = $context->getHeader('x-behavior-metrics');
+        if ($behaviorHeader && is_string($behaviorHeader) && str_starts_with($behaviorHeader, '{')) {
+            $metrics = json_decode($behaviorHeader, true);
+            if (is_array($metrics)) {
+                $clientProtocol = $metrics['protocol'] ?? $metrics['nextHopProtocol'] ?? null;
+            }
+        }
+        if ($clientProtocol && is_string($clientProtocol)) {
+            $clientProtocol = strtolower(trim($clientProtocol));
+            $hasProxy = $context->getHeader('via') || $context->getHeader('forwarded') || $context->getHeader('x-forwarded-for');
+            if ($clientProtocol === 'h3' && $isH1 && !$hasProxy) {
+                $quicAnomaly += 80.0;
+            } elseif ($clientProtocol === 'h2' && $isH1 && !$hasProxy) {
+                $http2Anomaly += 75.0;
+            } elseif ($clientProtocol === 'http/1.1' && ($isH2 || $isH3)) {
+                $http2Anomaly += 60.0;
+            }
+        }
+
+        // 3. Rétrogradation protocolaire (Navigateur moderne naviguant en HTTP/1.1 sur HTTPS)
+        if ($context->isHttps && $browser && $isH1) {
+            $hasProxy = $context->getHeader('via') || $context->getHeader('forwarded') || $context->getHeader('x-forwarded-proto') || $context->getHeader('x-forwarded-for');
+            if (!$hasProxy) {
+                $http2Anomaly += 50.0;
+            }
+        }
+
         if ($browser) {
             // HTTP/2 Anomaly logic
             $h2Fp = $context->getHeader('x-http2-fingerprint') ?? $context->http2Fingerprint ?? null;
@@ -2123,10 +2327,39 @@ class RequestUtils
                         if ($headerOrder && $headerOrder !== 'm,a,s,p') $http2Anomaly += 60.0;
                         if ($connWindow === 65535 || $connWindow === 65536) $http2Anomaly += 40.0;
                         if ($streamPriority === '0' || $streamPriority === '') $http2Anomaly += 50.0;
+
+                        $priorityDeps = substr_count($streamPriority, ',');
+                        if (str_contains($streamPriority, ',') && $priorityDeps < 2 && !empty($streamPriority) && $streamPriority !== '0') {
+                            $http2Anomaly += 35.0;
+                        }
                     } elseif ($isFirefox) {
                         if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
                     } elseif ($isSafari) {
                         if ($headerOrder && $headerOrder !== 'm,s,p,a') $http2Anomaly += 60.0;
+                    }
+
+                    // Analyse de la structure des dépendances de flux HTTP/2 (RFC 7540)
+                    if (!empty($streamPriority)) {
+                        $priorityEntries = array_filter(array_map('trim', explode(',', $streamPriority)));
+                        foreach ($priorityEntries as $entry) {
+                            $sub = explode(':', $entry);
+                            if (count($sub) >= 4) {
+                                $streamId = (int)$sub[0];
+                                $exclusive = (int)$sub[1];
+                                $depStreamId = (int)$sub[2];
+                                $weight = (int)$sub[3];
+
+                                if ($streamId === $depStreamId && $streamId > 0) {
+                                    $http2Anomaly += 60.0;
+                                }
+                                if ($weight < 1 || $weight > 256) {
+                                    $http2Anomaly += 45.0;
+                                }
+                                if ($isChromium && $depStreamId === 0 && $weight === 16 && $exclusive === 0) {
+                                    $http2Anomaly += 55.0;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2159,7 +2392,32 @@ class RequestUtils
                     if ($isChromium) {
                         if ($maxData > 0 && $maxData < 1048576) $quicAnomaly += 40.0;
                         if ($maxStreams > 0 && $maxStreams !== 100) $quicAnomaly += 30.0;
-                        if (!empty($priorityOrder) && !str_contains($priorityOrder, 'u=')) $quicAnomaly += 30.0;
+
+                        if (!empty($priorityOrder)) {
+                            if (preg_match('/\bu=(-?\d+)\b/', $priorityOrder, $uMatch)) {
+                                $urgency = (int)$uMatch[1];
+                                if ($urgency < 0 || $urgency > 7) {
+                                    $quicAnomaly += 50.0;
+                                }
+                            }
+                            if (preg_match('/\bi=\d+\b/', $priorityOrder)) {
+                                $quicAnomaly += 40.0;
+                            }
+                            if (preg_match('/\bw=\d+\b/', $priorityOrder)) {
+                                $quicAnomaly += 45.0;
+                            }
+                        }
+
+                        if (!empty($priorityOrder)) {
+                            if (str_contains($priorityOrder, 'u=') && !str_contains($priorityOrder, 'i')) {
+                                $quicAnomaly += 40.0;
+                            } elseif (!str_contains($priorityOrder, 'u=')) {
+                                $quicAnomaly += 30.0;
+                            }
+                            if ($priorityOrder === 'p' || $priorityOrder === 'i') {
+                                $quicAnomaly += 50.0;
+                            }
+                        }
                         if ($bidiLocal > 0 && ($bidiLocal < 524288 || $bidiLocal === 262144)) $quicAnomaly += 40.0;
                         if ($bidiRemote > 0 && ($bidiRemote < 524288 || $bidiRemote === 262144)) $quicAnomaly += 30.0;
 
@@ -2171,6 +2429,11 @@ class RequestUtils
                             if ($sIdx !== null && $sIdx !== 0) $quicAnomaly += 50.0;
                             if ($mIdx !== null && $sIdx !== null && $mIdx < $sIdx) $quicAnomaly += 60.0;
                             if ($pIdx !== null && $sIdx !== null && $pIdx < $sIdx) $quicAnomaly += 60.0;
+
+                            $sCount = count(array_filter($frameOrder, fn($f) => in_array($f, ['s', 'settings', '4'], true)));
+                            if ($sCount > 1) {
+                                $quicAnomaly += 50.0;
+                            }
                         }
                     } elseif ($isFirefox) {
                         if ($maxData > 0 && $maxData > 5000000) $quicAnomaly += 40.0;
@@ -2195,6 +2458,56 @@ class RequestUtils
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // HPACK / QPACK Compression Ratio Analysis
+        $compressionInfo = $context->getHeader('x-compression-info');
+        if (!empty($compressionInfo)) {
+            $info = [];
+            foreach (explode(',', $compressionInfo) as $item) {
+                $kv = explode(':', $item, 2);
+                if (count($kv) === 2) {
+                    $info[trim($kv[0])] = (float)trim($kv[1]);
+                }
+            }
+            $reqCount = $info['req_count'] ?? 0;
+            $hpackRatio = $info['hpack_ratio'] ?? null;
+            $qpackRatio = $info['qpack_ratio'] ?? null;
+            $dynamicEntries = isset($info['dynamic_table_entries']) ? (int)$info['dynamic_table_entries'] : (isset($info['table_entries']) ? (int)$info['table_entries'] : null);
+            $dynamicHits = isset($info['dynamic_hits']) ? (int)$info['dynamic_hits'] : null;
+            $dynamicTableSize = isset($info['dynamic_table_size']) ? (int)$info['dynamic_table_size'] : null;
+
+            $claimedFamily = explode('/', $browser ?? '')[0];
+            $isHuman = in_array($claimedFamily, ['Chrome', 'Firefox', 'Safari', 'Edge'], true);
+
+            if ($reqCount > 3 && $isHuman) {
+                if ($hpackRatio !== null) {
+                    if ($hpackRatio < 0.4) {
+                        $http2Anomaly += (1.0 - $hpackRatio) * 50.0;
+                    } elseif ($hpackRatio > 0.75) {
+                        $http2Anomaly += min(50.0, ($hpackRatio - 0.5) * 100.0);
+                    }
+                }
+                if ($qpackRatio !== null) {
+                    if ($qpackRatio < 0.4) {
+                        $quicAnomaly += (1.0 - $qpackRatio) * 50.0;
+                    } elseif ($qpackRatio > 0.75) {
+                        $quicAnomaly += min(50.0, ($qpackRatio - 0.5) * 100.0);
+                    }
+                }
+                if ($dynamicEntries !== null && $dynamicEntries === 0) {
+                    $http2Anomaly += 45.0;
+                    $quicAnomaly += 45.0;
+                }
+                if ($dynamicHits !== null && $dynamicHits === 0) {
+                    $http2Anomaly += 35.0;
+                    $quicAnomaly += 35.0;
+                }
+                if ($dynamicTableSize !== null && $dynamicTableSize === 0) {
+                    $http2Anomaly += 40.0;
+                    $quicAnomaly += 40.0;
                 }
             }
         }

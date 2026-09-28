@@ -10,7 +10,7 @@ self.onmessage = async (event) => {
     let solution = 0;
     const encoder = new TextEncoder();
     if (baseBlock) {
-        // Mode solveCpuTargetInline (Uint8Array base block)
+        // solveCpuTargetInline mode (Uint8Array base block)
         const blockArray = new Uint8Array(baseBlock);
         while (true) {
             const solutionBytes = encoder.encode(String(solution));
@@ -31,7 +31,7 @@ self.onmessage = async (event) => {
             }
         }
     } else {
-        // Mode solveCpuTarget standard/legacy (Message string)
+        // Standard/legacy solveCpuTarget mode (Message string)
         while (true) {
             const currentMessage = `${message}:${solution}`;
             const data = encoder.encode(currentMessage);

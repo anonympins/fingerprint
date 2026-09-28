@@ -7,12 +7,12 @@ import ClientLibrary from '../fingerprint.client.js';
 
 describe('ClientLibrary WASM Integration', () => {
     beforeEach(() => {
-        // Réinitialise le cache et les mocks avant chaque test
+        // Reset cache and spies before each test
         ClientLibrary._resetCache();
         vi.spyOn(console, 'log').mockImplementation(() => {});
         vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-        // Supprime les mocks globaux pour éviter les fuites entre les tests
+        // Remove global mocks to prevent leakage across tests
         delete window.createFingerprintModule;
     });
 
@@ -21,28 +21,27 @@ describe('ClientLibrary WASM Integration', () => {
     });
 
     it('should successfully load WASM module and switch hasher', async () => {
-        // 1. Simuler un module WASM fonctionnel
+        // 1. Mock functional WASM module
         const mockWasmModule = {
-            _hash_string: vi.fn((str) => 99999), // Un mock qui retourne une valeur distincte
+            _hash_string: vi.fn((str) => 99999), // Distinct mock hash value
             _malloc: vi.fn().mockReturnValue(0),
             HEAPU8: new Uint8Array(4096)
         };
 
-        // 2. Simuler le chargement du script et l'initialisation du module
-        // On attache les fonctions de simulation à `window` car c'est ce que le code cherche
+        // 2. Mock script loading and module factory
         window.createFingerprintModule = vi.fn().mockResolvedValue(mockWasmModule);
 
-        // On simule l'injection du script en appelant directement `onload`
+        // Mock script element injection with direct onload callback
         vi.spyOn(document.head, 'appendChild').mockImplementation((script) => {
-            // Simule le chargement réussi du script
+            // Simulate successful script load
             script.onload();
             return script;
         });
 
-        // 3. Appeler la fonction d'initialisation
+        // 3. Initialize WASM module
         await ClientLibrary.initializeWasm('/fake/path/to/fp.js');
 
-        // 4. Vérifier que le hasher a été remplacé
+        // 4. Verify hasher was switched
         const wasmHash = ClientLibrary._hasher("test");
         expect(wasmHash).toBe(99999);
         expect(mockWasmModule._hash_string).toHaveBeenCalledWith(0);
@@ -50,16 +49,16 @@ describe('ClientLibrary WASM Integration', () => {
     });
 
     it('should gracefully fall back to JS hasher if WASM module fails to load', async () => {
-        // 1. Simuler un échec de chargement du script
+        // 1. Simulate script loading failure
         vi.spyOn(document.head, 'appendChild').mockImplementation((script) => {
             script.onerror(new Error('Script loading failed'));
             return script;
         });
 
-        // 2. Appeler la fonction d'initialisation
+        // 2. Initialize WASM module
         await ClientLibrary.initializeWasm('/fake/path/to/fp.js');
 
-        // 3. Vérifier que le hasher est toujours l'implémentation JS
+        // 3. Verify hasher falls back to JS implementation
         const jsHash = ClientLibrary._hasher("test");
         const originalJsHash = (await import('../fingerprint.builder.js')).cyrb53("test");
         
@@ -68,7 +67,7 @@ describe('ClientLibrary WASM Integration', () => {
     });
 
     it('should gracefully fall back if WASM module does not export _hash_string', async () => {
-        // 1. Simuler un module WASM malformé (sans la fonction attendue)
+        // 1. Simulate malformed WASM module missing required export
         const mockWasmModule = {};
         window.createFingerprintModule = vi.fn().mockResolvedValue(mockWasmModule);
 
@@ -77,14 +76,14 @@ describe('ClientLibrary WASM Integration', () => {
             return script;
         });
 
-        // 2. Appeler la fonction d'initialisation
+        // 2. Initialize WASM module
         await ClientLibrary.initializeWasm('/fake/path/to/fp.js');
 
-        // 3. Vérifier le fallback
+        // 3. Verify fallback
         const jsHash = ClientLibrary._hasher("test");
         const originalJsHash = (await import('../fingerprint.builder.js')).cyrb53("test");
         expect(jsHash).toBe(originalJsHash); 
-        // L'assertion est maintenant plus précise : elle vérifie le message générique ET le message d'erreur spécifique.
+        // Verify both generic error log and specific missing export cause
         expect(console.warn).toHaveBeenCalledWith(
             expect.stringContaining('WASM module failed to load'), 
             expect.objectContaining({ message: 'WASM module did not export _hash_string.' })

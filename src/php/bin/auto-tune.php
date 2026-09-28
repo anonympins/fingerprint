@@ -32,7 +32,7 @@ use Anonympins\Fingerprint\Optimization\Optimization;
 use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\Utils\RequestUtils;
 
-// 1. Récupération des arguments CLI
+// 1. Retrieve CLI arguments
 $configPath = $argv[1] ?? null;
 if (!$configPath) {
     echo "Usage: php auto-tune.php [path_to_security-config.json]\n";

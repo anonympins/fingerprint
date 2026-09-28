@@ -1,0 +1,232 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Anonympins Bot Mitigation with Proof-of-Work 0.8.0\n"
+"Report-Msgid-Bugs-To: https://github.com/anonympins/fingerprint/issues\n"
+"POT-Creation-Date: 2026-09-24 12:00+0000\n"
+"PO-Revision-Date: 2026-09-24 12:00+0000\n"
+"Last-Translator: Anonympins\n"
+"Language-Team: French\n"
+"Language: fr_FR\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+
+msgid "Anonympins Bot Mitigation"
+msgstr "Anonympins Bot Mitigation"
+
+msgid "High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress."
+msgstr "Protection anti-bot haute performance et vérification de challenges Proof-of-Work pour WordPress."
+
+msgid "[Anonympins Bot Mitigation Security Warning]"
+msgstr "[Avertissement de Sécurité Anonympins Bot Mitigation]"
+
+msgid "Your website is currently running on unencrypted HTTP. In this mode, modern web browsers disable the native Web Cryptography API (crypto.subtle) for security reasons, forcing a JavaScript fallback simulation that is slower and vulnerable to Man-in-the-Middle (MitM) attacks. We strongly recommend deploying a TLS/SSL certificate and enforcing HTTPS to ensure the cryptographic integrity of Proof-of-Work computations and identity protection."
+msgstr "Votre site fonctionne actuellement sous le protocole non chiffré HTTP. Dans ce mode, l'API native Web Cryptography (crypto.subtle) des navigateurs est désactivée par mesure de sécurité par les navigateurs modernes, forçant l'exécution d'un simulacre JavaScript plus lent et vulnérable aux attaques de l'homme du milieu (MitM). Il est fortement recommandé de déployer un certificat TLS/SSL et de forcer HTTPS pour garantir l'intégrité des calculs PoW et la protection des cookies d'identité."
+
+msgid "You do not have sufficient permissions to access this page."
+msgstr "Vous n'avez pas les permissions suffisantes pour accéder à cette page."
+
+msgid "Settings updated successfully."
+msgstr "Paramètres mis à jour avec succès."
+
+msgid "Sandbox settings updated successfully."
+msgstr "Paramètres du Sandbox mis à jour avec succès."
+
+msgid "SQL cache table ($wpdb) cleared successfully."
+msgstr "Table de cache SQL ($wpdb) purgée avec succès."
+
+msgid "Client-side behavioral and cryptographic anti-bot protection without third-party CAPTCHA for WordPress."
+msgstr "Protection comportementale et cryptographique sans CAPTCHA tiers pour WordPress."
+
+msgid "Official documentation reference:"
+msgstr "Documentation officielle de référence :"
+
+msgid "View Full Configuration Options on GitHub"
+msgstr "Voir toutes les options de configuration sur GitHub"
+
+msgid "GitHub Repository"
+msgstr "Dépôt GitHub"
+
+msgid "HTTPS Status"
+msgstr "État HTTPS"
+
+msgid "Active (WebCrypto Subtle available)"
+msgstr "Actif (WebCrypto Subtle disponible)"
+
+msgid "Insecure (Unencrypted HTTP)"
+msgstr "Non sécurisé (HTTP non chiffré)"
+
+msgid "SQL Cache ($wpdb)"
+msgstr "Cache SQL ($wpdb)"
+
+msgid "keys in database"
+msgstr "clés en base de données"
+
+msgid " %d expired keys awaiting cron purge"
+msgstr " %d clés expirées en attente de purge cron"
+
+msgid "Active Profiles"
+msgstr "Profils actifs"
+
+msgid "Sandbox Mode"
+msgstr "Mode Sandbox"
+
+msgid "Active (Simulation)"
+msgstr "Actif (Simulation)"
+
+msgid "Production (Enforced)"
+msgstr "Production (Actif)"
+
+msgid "Audit-Only: non-blocking observation."
+msgstr "Audit seul : observation non bloquante."
+
+msgid "Testing: challenges & mitigations active."
+msgstr "Test : challenges et blocages actifs."
+
+msgid "Bot protection active across all visitors."
+msgstr "Protection anti-bot active sur l'ensemble des visiteurs."
+
+msgid "Settings & Profiles"
+msgstr "Réglages & Profils"
+
+msgid "Sandbox / Test Mode"
+msgstr "Sandbox / Mode Test"
+
+msgid "Metrics & Weights View"
+msgstr "Vue des métriques & pondérations"
+
+msgid "Prometheus Stream"
+msgstr "Flux Prometheus"
+
+msgid "1. Target Security Profiles"
+msgstr "1. Profils de sécurité par cible"
+
+msgid "Visitors & Frontend"
+msgstr "Visiteurs & Frontend"
+
+msgid "Blog (Optimal for content, smooth UX)"
+msgstr "Blog (Optimal pour contenus, UX fluide)"
+
+msgid "Balanced (General purpose)"
+msgstr "Balanced (Usage général équilibré)"
+
+msgid "Strict (Maximum protection)"
+msgstr "Strict (Protection maximale)"
+
+msgid "E-commerce (Anti-scraping / scalping)"
+msgstr "E-commerce (Anti-scraping / scalping)"
+
+msgid "Administration Area (wp-login / wp-admin)"
+msgstr "Zone d'administration (wp-login / wp-admin)"
+
+msgid "Strict (Recommended to secure logins)"
+msgstr "Strict (Recommandé pour sécuriser les connexions)"
+
+msgid "Balanced"
+msgstr "Balanced"
+
+msgid "REST API (/wp-json/)"
+msgstr "API REST (/wp-json/)"
+
+msgid "API (JSON challenges & machine PoW)"
+msgstr "API (Challenges JSON & PoW machine)"
+
+msgid "Strict"
+msgstr "Strict"
+
+msgid "2. Action Thresholds (Frontend)"
+msgstr "2. Seuils d'action (Frontend)"
+
+msgid "Suspicion Score Thresholds (0 - 100)"
+msgstr "Seuils de score de suspicion (0 - 100)"
+
+msgid "Low (Initial challenge):"
+msgstr "Bas (Challenge initial) :"
+
+msgid "Medium (Hardened challenge):"
+msgstr "Moyen (Challenge renforcé) :"
+
+msgid "High (Heavy Proof-of-Work):"
+msgstr "Élevé (Preuve de travail lourde) :"
+
+msgid "Block (Immediate 403 Forbidden):"
+msgstr "Blocage (403 Forbidden immédiat) :"
+
+msgid "Advanced Behaviors"
+msgstr "Comportements avancés"
+
+msgid "Automatically challenge unknown new devices (without device_id cookie)"
+msgstr "Challenger automatiquement les nouveaux appareils inconnus (sans cookie device_id)"
+
+msgid "Enable recursive WAF inspection (SQL, NoSQL, Log4j, Traversal in GET/POST)"
+msgstr "Activer l'analyse récursive WAF (SQL, NoSQL, Log4j, Traversal dans GET/POST)"
+
+msgid "Verbose mode in PHP logs (Debugging)"
+msgstr "Mode verbeux dans les logs PHP (Débogage)"
+
+msgid "Save Changes"
+msgstr "Enregistrer les modifications"
+
+msgid "Store Maintenance:"
+msgstr "Maintenance du stockage :"
+
+msgid "Purge all stored sessions and nonces?"
+msgstr "Purger toutes les sessions et nonces enregistrés ?"
+
+msgid "Clear SQL cache table ($wpdb)"
+msgstr "Vider la table de cache SQL ($wpdb)"
+
+msgid "Sandbox Mode & Dry-Run Configuration"
+msgstr "Configuration du Mode Sandbox & Simulation"
+
+msgid "Sandbox Activation"
+msgstr "Activation du Sandbox"
+
+msgid "Enable Sandbox Mode"
+msgstr "Activer le Mode Sandbox"
+
+msgid "Behavior & Enforcement"
+msgstr "Comportement & Application"
+
+msgid "Audit Only / Dry-Run (Never block or challenge visitors)"
+msgstr "Audit seul / Simulation (Ne jamais bloquer ni challenger les visiteurs)"
+
+msgid "Add diagnostic HTTP headers (X-Fingerprint-Sandbox: active)"
+msgstr "Ajouter des en-têtes HTTP de diagnostic (X-Fingerprint-Sandbox: active)"
+
+msgid "Log evaluated scores and suspicious attempts to PHP error_log"
+msgstr "Consigner les scores évalués et tentatives suspectes dans le error_log PHP"
+
+msgid "Test IP Whitelist Filter"
+msgstr "Filtre d'adresses IP de test"
+
+msgid "Use my IP"
+msgstr "Utiliser mon IP"
+
+msgid "Save Sandbox Settings"
+msgstr "Enregistrer les paramètres du Sandbox"
+
+msgid "Live Challenged Visitors & Suspicion Monitor"
+msgstr "Moniteur en direct des visiteurs challengés & suspicion"
+
+msgid "Behavioral & Transport Indicator Weights"
+msgstr "Pondérations des indicateurs comportementaux & transport"
+
+msgid "Indicator / Metric"
+msgstr "Indicateur / Métrique"
+
+msgid "Current Weight"
+msgstr "Poids actuel"
+
+msgid "Description & Detection Role"
+msgstr "Description & Rôle de détection"
+
+msgid "Behavioral suspicion indicator."
+msgstr "Indicateur de suspicion comportemental."
+
+msgid "Update Metric Weights"
+msgstr "Mettre à jour les pondérations"
+
+msgid "Real-Time Prometheus Metrics"
+msgstr "Métriques Prometheus en temps réel"

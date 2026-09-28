@@ -69,7 +69,7 @@ class MongoDbStore implements IStore
                 return null;
             }
 
-            // Active TTL check to bypass MongoDB daemon 60-second cleanup latency
+            // Active TTL check to bypass MongoDB's 60-second TTL cleanup daemon latency.
             if (isset($doc['expiresAt'])) {
                 $expiresAt = $doc['expiresAt'];
                 if ($expiresAt instanceof \MongoDB\BSON\UTCDateTime) {
@@ -168,7 +168,7 @@ class MongoDbStore implements IStore
     }
 
     /**
-     * Automatically initializes required TTL index in MongoDB collection.
+     * Automatically initializes the required TTL index in the MongoDB collection.
      */
     public function init(): void
     {

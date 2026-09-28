@@ -8,7 +8,7 @@ import java.util.Random;
 import java.util.function.Function;
 
 /**
- * Fonctions pour générer dynamiquement les données d'un problème.
+ * Functions to dynamically generate problem data.
  */
 public class ProblemInitializers {
     private static final Map<String, Function<Map<String, Object>, Object>> initializers = new HashMap<>();

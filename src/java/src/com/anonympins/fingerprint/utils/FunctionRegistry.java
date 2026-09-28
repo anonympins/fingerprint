@@ -5,8 +5,8 @@ import java.util.Map;
 import java.util.function.BiFunction;
 
 /**
- * Registre pour exposer de manière contrôlée les fonctions de la bibliothèque d'optimisation.
- * Permet de les appeler dynamiquement depuis la configuration des problèmes.
+ * Registry to expose optimization library functions in a controlled manner.
+ * Allows calling them dynamically from problem configurations.
  */
 public class FunctionRegistry {
     private static final Map<String, BiFunction<Object, Map<String, Object>, Double>> scoreFunctions = new HashMap<>();
@@ -31,10 +31,10 @@ public class FunctionRegistry {
     }
 
     /**
-     * Récupère une fonction de score depuis le registre.
+     * Retrieves a score function from the registry.
      *
-     * @param name Le nom de la fonction de score.
-     * @return La fonction de score ou null si non trouvée.
+     * @param name The name of the score function.
+     * @return The score function or null if not found.
      */
     public static BiFunction<Object, Map<String, Object>, Double> getScoreFunction(String name) {
         return scoreFunctions.get(name);

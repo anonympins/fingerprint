@@ -43,4 +43,51 @@ describe('Protocol Anomaly Flow Profiling', () => {
         const score = getProtocolAnomalyScore(context);
         expect(score.protocolAnomalyScore).toBe(100.0);
     });
+
+    it('should detect RFC 9218 invalid urgency value out of range (u=9)', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'x-quic-fp': '1;1=1572864,4=100;u=9,i'
+            }
+        };
+        const score = getProtocolAnomalyScore(context);
+        expect(score.quicAnomalyScore).toBeGreaterThanOrEqual(50.0);
+    });
+
+    it('should detect HTTP/2 flat dependency tree from Go net/http2 scraper', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'x-http2-fingerprint': 's:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|1:0:0:16|m,a,s,p|p:3,w:4,c:1'
+            },
+            httpVersion: '2.0'
+        };
+        const score = getProtocolAnomalyScore(context);
+        expect(score.http2AnomalyScore).toBeGreaterThanOrEqual(55.0);
+    });
+
+    it('should detect HTTP/2 self-dependency violation', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'x-http2-fingerprint': 's:1:65536,2:0,3:1000,4:6291456,6:262144|15663105|3:0:3:256|m,a,s,p|p:3,w:4,c:1'
+            },
+            httpVersion: '2.0'
+        };
+        const score = getProtocolAnomalyScore(context);
+        expect(score.http2AnomalyScore).toBeGreaterThanOrEqual(60.0);
+    });
+
+    it('should detect scrapers with 0 dynamic table entries on repeated requests', () => {
+        const context = {
+            headers: {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'x-compression-info': 'req_count:5,dynamic_table_entries:0'
+            },
+            httpVersion: '2.0'
+        };
+        const score = getProtocolAnomalyScore(context);
+        expect(score.http2AnomalyScore).toBeGreaterThanOrEqual(45.0);
+    });
 });

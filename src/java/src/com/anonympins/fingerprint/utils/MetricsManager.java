@@ -4,7 +4,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Gestionnaire de métriques thread-safe pour l'écosystème Java.
+ * Thread-safe metrics manager for the Java ecosystem.
  */
 public class MetricsManager {
     private static final Map<String, Double> counters = new ConcurrentHashMap<>();
@@ -24,7 +24,7 @@ public class MetricsManager {
     }
 
     /**
-     * Récupère les valeurs d'une métrique spécifique sous forme de Map dynamique (labels -> valeur).
+     * Retrieves values of a specific metric as a dynamic Map (labels -> value).
      */
     @SuppressWarnings("unchecked")
     public static Map<String, Double> getMetric(String name, Map<String, Object> securityConfig) {
@@ -64,14 +64,14 @@ public class MetricsManager {
                 }
             }
         } else {
-            // Recherche dans les compteurs enregistrés
+            // Lookup in registered counters
             for (Map.Entry<String, Double> entry : counters.entrySet()) {
                 if (entry.getKey().startsWith(queryName)) {
                     String labelsPart = extractLabelsKey(entry.getKey(), queryName);
                     result.put(labelsPart, entry.getValue());
                 }
             }
-            // Recherche dans les observations
+            // Lookup in observations
             for (Map.Entry<String, Double> entry : observations.entrySet()) {
                 if (entry.getKey().startsWith(queryName)) {
                     String labelsPart = extractLabelsKey(entry.getKey(), queryName);

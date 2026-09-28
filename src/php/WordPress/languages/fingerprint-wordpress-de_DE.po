@@ -1,6 +1,6 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: Fingerprint Anti-Bot 0.7.5\n"
+"Project-Id-Version: Fingerprint Anti-Bot 0.8.0\n"
 "Report-Msgid-Bugs-To: https://github.com/anonympins/fingerprint/issues\n"
 "POT-Creation-Date: 2026-09-24 12:00+0000\n"
 "PO-Revision-Date: 2026-09-24 12:00+0000\n"
@@ -65,6 +65,42 @@ msgstr "%d abgelaufene Schlüssel warten auf Cron-Bereinigung"
 
 msgid "Active Profiles"
 msgstr "Aktive Profile"
+
+msgid "Sandbox Mode"
+msgstr "Sandbox-Modus"
+
+msgid "Active (Simulation)"
+msgstr "Aktiv (Simulation)"
+
+msgid "Production (Enforced)"
+msgstr "Produktion (Aktiviert)"
+
+msgid "Non-blocking observation mode enabled."
+msgstr "Nicht blockierender Beobachtungsmodus aktiviert."
+
+msgid "Bot challenges and blocks are actively enforced."
+msgstr "Bot-Challenges und Blockierungen werden aktiv durchgesetzt."
+
+msgid "Sandbox / Test Mode"
+msgstr "Sandbox / Testmodus"
+
+msgid "Sandbox Mode & Dry-Run Configuration"
+msgstr "Sandbox-Modus & Dry-Run-Konfiguration"
+
+msgid "Enable Sandbox Mode"
+msgstr "Sandbox-Modus aktivieren"
+
+msgid "Audit Only / Dry-Run (Never block or challenge visitors)"
+msgstr "Nur Audit / Simulation (Besucher niemals blockieren oder prüfen)"
+
+msgid "Add diagnostic HTTP headers (X-Fingerprint-Sandbox: active)"
+msgstr "Diagnose-HTTP-Header hinzufügen (X-Fingerprint-Sandbox: active)"
+
+msgid "Log evaluated scores and suspicious attempts to PHP error_log"
+msgstr "Bewertete Scores und verdächtige Versuche im PHP-error_log protokollieren"
+
+msgid "Save Sandbox Settings"
+msgstr "Sandbox-Einstellungen speichern"
 
 msgid "Frontend:"
 msgstr "Frontend:"

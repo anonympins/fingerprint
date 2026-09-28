@@ -65,7 +65,8 @@ def get_metric(name: str, security_config: Optional[Dict[str, Any]] = None) -> D
 def _build_key(name: str, labels: Optional[Dict[str, str]]) -> str:
     if not labels:
         return f"{name}{{}}"
-    return f"{name}{{{','.join(f'{k}=\"{v}\"' for k, v in sorted(labels.items()))}}}"
+    items = [f'{k}="{v}"' for k, v in sorted(labels.items())]
+    return f"{name}{{" + ",".join(items) + "}}"
 
 def _extract_labels_key(key: str, query_name: str) -> str:
     return key[len(query_name):].strip("{}") or "value"

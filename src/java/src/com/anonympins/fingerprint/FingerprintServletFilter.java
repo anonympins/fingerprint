@@ -10,8 +10,8 @@ import java.io.IOException;
 import java.util.*;
 
 /**
- * Filtre Spring MVC Servlet classique pour évaluer la suspicion des requêtes.
- * Bloque ou challenge les requêtes suspectes avant d'atteindre les contrôleurs.
+ * Classic Spring MVC Servlet filter to assess request suspicion.
+ * Blocks or challenges suspicious requests before reaching controllers.
  */
 public class FingerprintServletFilter extends OncePerRequestFilter {
     private final FingerprintEngine engine;
@@ -21,9 +21,9 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Permet d'accéder à l'instance actuelle de l'engine utilisée par ce middleware.
+     * Provides access to the current engine instance used by this middleware.
      *
-     * @return L'instance active de FingerprintEngine.
+     * @return The active FingerprintEngine instance.
      */
     public FingerprintEngine getEngine() {
         return this.engine;
@@ -33,7 +33,7 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
 
-        // Extraction des paramètres de requête
+        // Request parameters extraction
         Map<String, Object> queryParams = new HashMap<>();
         request.getParameterMap().forEach((k, v) -> {
             if (v.length == 1) {
@@ -43,7 +43,7 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
             }
         });
 
-        // Extraction des en-têtes
+        // Header extraction
         Map<String, String> headers = new HashMap<>();
         Enumeration<String> headerNames = request.getHeaderNames();
         if (headerNames != null) {
@@ -53,7 +53,7 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
             }
         }
 
-        // Extraction des cookies
+        // Cookie extraction
         Map<String, String> cookies = new HashMap<>();
         if (request.getCookies() != null) {
             for (Cookie c : request.getCookies()) {
@@ -61,7 +61,7 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
             }
         }
 
-        // Résolution de l'adresse IP cliente (avec gestion de proxy)
+        // Client IP resolution (with proxy support)
         String clientIp = request.getHeader("X-Forwarded-For");
         if (clientIp == null || clientIp.isEmpty()) {
             clientIp = request.getRemoteAddr();
@@ -74,14 +74,15 @@ public class FingerprintServletFilter extends OncePerRequestFilter {
             request.getRequestURI(),
             headers,
             queryParams,
-            null, // Le parsing du body est délégué à la couche applicative
+            null, // Body parsing is delegated to the application layer
             cookies,
-            request.getProtocol()
+            request.getProtocol(),
+            request.getScheme()
         );
 
         Map<String, Object> decision = engine.processRequest(context);
 
-        // Écriture des cookies d'autorisation / d'identité si requis par l'engine
+        // Write authorization / identity cookies if required by the engine
         if (decision.containsKey("cookie")) {
             setServletCookie(response, (Map<String, Object>) decision.get("cookie"));
         }

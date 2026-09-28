@@ -15,6 +15,13 @@ Copy the client file from `node_modules/@anonympins/fingerprint/dist/` or your v
 ```html
 <!-- Recommended for production: Obfuscated version -->
 <script src="/assets/js/fingerprint.client.obfuscated.js"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        window.Fingerprint?.initializeClient({
+            trackBehavior: true
+        });
+    });
+</script>
 ```
 
 ### Option B: ES Module Import
@@ -36,8 +43,8 @@ const fp = window.Fingerprint.initializeClient({
     // Path to the WebAssembly utility for high-performance cryptographic solving (v0.3.2+)
     wasmPath: '/assets/wasm/hashing.wasm',
     
-    // Selectors for automatic click variance and honeypot validation
-    honeypotSelector: '.fp-trap-field',
+    // Indiquez simplement le nom des champs pièges (sélecteur CSS généré automatiquement)
+    honeypotFields: ['email_confirm'],
     
     // Enable advanced behavioral tracking immediately
     trackBehavior: true
@@ -49,7 +56,8 @@ const fp = window.Fingerprint.initializeClient({
 | Option | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `wasmPath` | `string` | `undefined` | Path or URI to the compiled WebAssembly solver module. If loaded, cryptographic tasks use WASM for near-native execution speed. |
-| `honeypotSelector` | `string` | `'.fp-honeypot'` | CSS Selector used to identify, monitor, and process input elements acting as spam-traps. |
+| `honeypotFields` | `string[] \| string` | `[]` | Noms des attributs `name` ou `id` des champs pièges. Le sélecteur CSS (`input[name="..."]`, etc.) est généré automatiquement. |
+| `honeypotSelector` | `string` | `'.fp-honeypot'` | (Optionnel) Sélecteur CSS personnalisé si vous souhaitez cibler des classes spécifiques. Accepte également un nom brut qui sera converti automatiquement. |
 | `trackBehavior` | `boolean` | `true` | Enables active physical interaction analytics (mouse trajectory, keypress speeds, click coordinate variances). |
 
 ---
@@ -101,10 +109,10 @@ Include the trap fields in your registration, login, or comment forms. Make sure
     <!-- Invisible Honeypot Trap Fields -->
     <div class="fp-trap-container" aria-hidden="true">
         <label class="fp-trap-label" for="email_confirm">Please leave this field empty:</label>
-        <input type="text" id="email_confirm" class="fp-trap-field" name="email_confirm" tabindex="-1" autocomplete="off" />
+        <input type="text" id="email_confirm" name="email_confirm" tabindex="-1" autocomplete="off" />
         
         <label class="fp-trap-label" for="user_nickname">Do not write here:</label>
-        <input type="text" id="user_nickname" class="fp-trap-field" name="user_nickname" tabindex="-1" autocomplete="off" />
+        <input type="text" id="user_nickname" name="user_nickname" tabindex="-1" autocomplete="off" />
     </div>
 
     <button type="submit" id="submit-btn">Submit Application</button>

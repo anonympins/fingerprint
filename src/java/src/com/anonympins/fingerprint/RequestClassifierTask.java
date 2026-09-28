@@ -3,7 +3,7 @@ package com.anonympins.fingerprint;
 import java.util.*;
 
 /**
- * Implémentation concrète d'une tâche d'apprentissage fédéré (Classifieur de requêtes).
+ * Concrete implementation of a federated learning task (Request Classifier).
  */
 public class RequestClassifierTask extends UpowModelTask {
     private final List<Double> weights = new ArrayList<>(Arrays.asList(0.1, -0.2, 0.8, 0.5));

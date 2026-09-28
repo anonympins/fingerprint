@@ -26,11 +26,11 @@ describe('Optimization.Operators.benfordTest', () => {
     });
 
     it('should return a very low score for a distribution that perfectly matches Benford\'s law', () => {
-        // Création d'un échantillon de 1000 nombres qui suit la loi de Benford
+        // Sample of 1000 numbers matching Benford's Law distribution
         const benfordSample = [
-            ...Array(301).fill(100), // 301 nombres commençant par 1
-            ...Array(176).fill(200), // 176 nombres commençant par 2
-            ...Array(125).fill(300), // 125 nombres commençant par 3
+            ...Array(301).fill(100), // 301 numbers leading with 1
+            ...Array(176).fill(200), // 176 numbers leading with 2
+            ...Array(125).fill(300), // 125 numbers leading with 3
             ...Array(97).fill(400),  // etc.
             ...Array(79).fill(500),
             ...Array(67).fill(600),
@@ -40,12 +40,12 @@ describe('Optimization.Operators.benfordTest', () => {
         ];
 
         const score = Optimization.Operators.benfordTest(benfordSample);
-        // Le score devrait être très proche de 0. On utilise toBeLessThan pour tolérer les imprécisions de calcul.
+        // Score should be close to 0; tolerance used for floating point variance
         expect(score).toBeLessThan(1e-9);
     });
 
     it('should return a high (suspect) score for a uniform distribution', () => {
-        // Une distribution uniforme est très peu naturelle pour ce genre de données.
+        // Uniform distribution is unnatural for this category of metrics
         const uniformSample = [];
         for (let i = 1; i <= 9; i++) {
             for (let j = 0; j < 100; j++) {
@@ -54,12 +54,12 @@ describe('Optimization.Operators.benfordTest', () => {
         }
 
         const score = Optimization.Operators.benfordTest(uniformSample);
-        // Un score > 0.15 est considéré comme suspect.
+        // A score > 0.15 is considered suspicious
         expect(score).toBeGreaterThan(0.15);
     });
 
     it('should return a high (suspect) score for a distribution skewed towards high digits', () => {
-        // L'inverse de la loi de Benford, très suspect.
+        // Inverted Benford distribution: highly unnatural
         const inverseBenfordSample = [
             ...Array(46).fill(100),
             ...Array(51).fill(200),
@@ -73,22 +73,21 @@ describe('Optimization.Operators.benfordTest', () => {
         ];
 
         const score = Optimization.Operators.benfordTest(inverseBenfordSample);
-        expect(score).toBeGreaterThan(0.3); // Score attendu encore plus élevé
+        expect(score).toBeGreaterThan(0.3); // Significantly elevated score expected
     });
 
     it('should handle real-world-like data (request timings)', () => {
-        // Simule des délais de requêtes générés par un bot (ex: aléatoire uniforme entre 500 et 1500ms)
+        // Simulates bot request intervals (uniform random between 500 and 1500ms)
         const botTimings = Array.from({ length: 100 }, () => 500 + Math.random() * 1000);
         const botScore = Optimization.Operators.benfordTest(botTimings);
 
-        // Simule des délais humains (plus de petits délais, quelques longs délais)
+        // Simulates human timings (more short delays, few long pauses)
         const humanTimings = [
             123, 234, 180, 345, 150, 456, 110, 190, 210, 280, 567, 130, 890, 1200, 310, 160
         ];
         const humanScore = Optimization.Operators.benfordTest(humanTimings);
 
-        // Le score du bot devrait être significativement plus élevé que celui de l'humain.
-        // Les valeurs exactes peuvent varier, mais la tendance doit être claire.
+        // Bot score should be significantly higher than human score
         expect(botScore).toBeGreaterThan(0.1);
         expect(humanScore).toBeLessThan(botScore);
     });

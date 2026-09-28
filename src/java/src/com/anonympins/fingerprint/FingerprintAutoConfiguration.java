@@ -14,8 +14,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Auto-configuration globale et modulaire pour l'activation facile de la librairie.
- * S'active automatiquement lorsque "fingerprint.enabled=true" est présent dans l'application.
+ * Global and modular autoconfiguration for easy library activation.
+ * Automatically activated when "fingerprint.enabled=true" is present in the application.
  */
 @AutoConfiguration
 @EnableConfigurationProperties(FingerprintProperties.class)
@@ -68,12 +68,12 @@ public class FingerprintAutoConfiguration {
     @ConditionalOnProperty(prefix = "fingerprint.autotuning", name = "enabled", havingValue = "true")
     public AutoTuner fingerprintAutoTuner(FingerprintEngine engine, IStore store, FingerprintProperties properties) {
         AutoTuner tuner = new AutoTuner(engine, store, properties);
-        tuner.start(); // Démarrage du thread de planification en tâche de fond
+        tuner.start(); // Start background scheduling thread
         return tuner;
     }
 
     /**
-     * Configuration automatique pour la pile classique Spring MVC (Servlet-based).
+     * Autoconfiguration for classic Spring MVC (Servlet-based) stack.
      */
     @Configuration
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -85,13 +85,13 @@ public class FingerprintAutoConfiguration {
             registration.setFilter(new FingerprintServletFilter(engine));
             registration.addUrlPatterns("/*");
             registration.setName("fingerprintServletFilter");
-            registration.setOrder(1); // Exécuté très tôt dans la chaîne de sécurité
+            registration.setOrder(1); // Executed very early in the security chain
             return registration;
         }
     }
 
     /**
-     * Configuration automatique pour la pile réactive Spring WebFlux.
+     * Autoconfiguration for reactive Spring WebFlux stack.
      */
     @Configuration
     @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.REACTIVE)

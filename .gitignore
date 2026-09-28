@@ -13,3 +13,4 @@ fingerprint-engine.iml
 /target
 /.pypirc
 /dist
+*.pem

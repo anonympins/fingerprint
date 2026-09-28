@@ -19,7 +19,7 @@ class BigInt
     }
 
     /**
-     * @param \GMP|string|int $number Le nombre initial.
+     * @param \GMP|string|int $number Initial number.
      */
     public function __construct($number)
     {
@@ -47,7 +47,7 @@ class BigInt
     }
 
     /**
-     * Crée une instance à partir d'une chaîne hexadécimale.
+     * Creates an instance from a hexadecimal string.
      */
     public static function fromHex(string $hex): BigInt
     {
@@ -68,8 +68,8 @@ class BigInt
     }
 
     /**
-     * Compare cette instance avec une autre.
-     * @return int < 0 si this < other, 0 si this == other, > 0 si this > other.
+     * Compares this instance with another.
+     * @return int < 0 if this < other, 0 if this == other, > 0 if this > other.
      */
     public function compareTo(BigInt $other): int
     {
@@ -81,7 +81,7 @@ class BigInt
     }
 
     /**
-     * Effectue un décalage de bits vers la gauche (<<).
+     * Performs bitwise left shift (<<).
      */
     public function shiftLeft(int $bits): BigInt
     {
@@ -93,7 +93,7 @@ class BigInt
     }
 
     /**
-     * Effectue un décalage de bits vers la droite (>>).
+     * Performs bitwise right shift (>>).
      */
     public function shiftRight(int $bits): BigInt
     {
@@ -105,7 +105,7 @@ class BigInt
     }
 
     /**
-     * Retourne la représentation en chaîne de caractères.
+     * Returns the string representation.
      */
     public function __toString(): string
     {
@@ -117,7 +117,7 @@ class BigInt
     }
 
     /**
-     * Retourne la représentation hexadécimale.
+     * Returns the hexadecimal representation.
      */
     public function toHex(): string
     {
@@ -136,7 +136,7 @@ class BigInt
     }
 
     /**
-     * Crée une instance à partir d'une puissance de 2.
+     * Creates an instance from a power of two.
      */
     public static function pow(int $base, int $exp): BigInt
     {
@@ -148,7 +148,7 @@ class BigInt
     }
 
     /**
-     * Soustrait un autre BigInt.
+     * Subtracts another BigInt.
      */
     public function sub(BigInt $other): BigInt
     {

@@ -12,14 +12,14 @@ describe('Cross-Parity Chaos PoW Floating Point Parity (JS vs WASM vs PHP)', () 
     let wasmModule = null;
 
     beforeAll(async () => {
-        // Essai de compilation WASM à la volée s'il y a em++
+        // Attempt on-the-fly WASM compilation if em++ toolchain is available
         try {
             execSync('node src/js/build-client.js', { stdio: 'ignore' });
         } catch (e) {
-            // Ignorer si Emscripten n'est pas présent dans l'env
+            // Ignore if Emscripten is missing in environment
         }
 
-        // Instancier le WASM réel si compilé
+        // Instantiate compiled WASM module if available
         if (fs.existsSync(fpJsPath) && fs.existsSync(fpWasmPath)) {
             try {
                 const module = await import(fpJsPath);

@@ -206,18 +206,18 @@ public class SecurityProfiles {
         blogWeights.put("honeypotScore", 1.0); // Crucial for comment spam
         blogWeights.put("crossLayerInconsistencyScore", 0.4);
         blogWeights.put("timeInconsistencyScore", 0.8);
-        blogWeights.put("tlsSpoofingScore", 0.6); // Moins critique pour les blogs
+        blogWeights.put("tlsSpoofingScore", 0.6); // Less critical for blogs
         blogWeights.put("botScore", 0.8);
         blogWeights.put("cookieDroppingScore", 0.7);
         blogWeights.put("threatIntelScore", 0.3);
         blogWeights.put("clientHintsInconsistencyScore", 0.5);
         blogWeights.put("clickVarianceScore", 0.5);
         blogWeights.put("subnetScore", 0.4);
-        blogWeights.put("ipReputationScore", 0.3); // NOUVEAU: Poids pour la réputation IP
-        blogWeights.put("botnetClusterScore", 0.5); // NOUVEAU: Poids pour le clustering botnet
-        blogWeights.put("tcpAnomalyScore", 0.5); // NEW: Anomalie de pile TCP/IP
-        blogWeights.put("quicAnomalyScore", 0.5); // NOUVEAU: Poids pour l'anomalie QUIC
-        blogWeights.put("renderingAnomalyScore", 0.5); // NOUVEAU: Poids pour l'anomalie de rendu
+        blogWeights.put("ipReputationScore", 0.3); // Weight for IP reputation
+        blogWeights.put("botnetClusterScore", 0.5); // Weight for botnet clustering
+        blogWeights.put("tcpAnomalyScore", 0.5); // TCP/IP stack anomaly
+        blogWeights.put("quicAnomalyScore", 0.5); // Weight for QUIC anomaly
+        blogWeights.put("renderingAnomalyScore", 0.5); // Weight for rendering anomaly
         blogWeights.put("virtualizationScore", 0.6);
         blogWeights.put("mtuAnomalyScore", 0.9);
         blog.put("weights", blogWeights);

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint;
 
 /**
- * Class to build a composite fingerprint (Multi-Hash).
+ * Builds a composite fingerprint (Multi-Hash).
  * Output format: "grp1:hash1|grp2:hash2|grp3:hash3"
  */
 class FingerprintBuilder
@@ -17,7 +17,7 @@ class FingerprintBuilder
 
     /**
      * Adds a component to the fingerprint.
-     *
+     * 
      * @param string $group Group name (e.g. 'hw', 'screen', 'geo').
      * @param string|int|bool|null $value Raw value to hash.
      * @return self
@@ -27,14 +27,14 @@ class FingerprintBuilder
         if ($value === null || $value === '') {
             return $this;
         }
-        // Hash the value individually
+        // Hash the value individually to anonymize and normalize its length.
         $this->components[$group] = self::cyrb53((string)$value);
         return $this;
     }
 
     /**
      * Adds a raw component without hashing it.
-     * Useful for metrics that need to be read as-is on the server.
+     * Useful for metrics that need to be read as-is on the server side.
      *
      * @param string $group Group name.
      * @param string|int|null $value Raw value.
@@ -51,13 +51,13 @@ class FingerprintBuilder
 
     /**
      * Generates the final fingerprint string.
-     * Components are sorted by key to guarantee deterministic ordering.
+     * Components are sorted by key to ensure deterministic ordering.
      *
      * @return string
      */
     public function __toString(): string
     {
-        // Sort array by key
+        // Sort array by key.
         ksort($this->components);
 
         $parts = [];
@@ -70,7 +70,7 @@ class FingerprintBuilder
 
     /**
      * Compares two fingerprints and returns a similarity score (0 to 1).
-     * Uses weights to emphasize strong invariants (Canvas, GPU, JA3).
+     * Uses weights to emphasize strong invariants (e.g., Canvas, GPU, JA3).
      *
      * @param string|null $fpString1 Fingerprint A.
      * @param string|null $fpString2 Fingerprint B.
@@ -137,7 +137,7 @@ class FingerprintBuilder
 
     /**
      * cyrb53 hashing algorithm (fast and low collision rate).
-     * Ported from the JavaScript version.
+     * This is a direct port of the JavaScript version.
      *
      * @param string $str String to hash.
      * @param int $seed Optional seed.
@@ -157,8 +157,8 @@ class FingerprintBuilder
         $h1 = self::imul($h1 ^ ($h1 >> 16), 2246822507) ^ self::imul($h2 ^ ($h2 >> 13), 3266489909);
         $h2 = self::imul($h2 ^ ($h2 >> 16), 2246822507) ^ self::imul($h1 ^ ($h1 >> 13), 3266489909);
 
-        // On 64-bit platforms, PHP handles 64-bit signed ints natively.
-        // Use native shifts instead of bcmath for better performance.
+        // On 64-bit platforms, PHP handles 64-bit signed integers natively.
+        // Use native shifts instead of bcmath for improved performance.
         if (PHP_INT_SIZE === 8) {
             $h1_u = $h1 & 0xffffffff;
             $h2_u = $h2 & 0xffffffff;
@@ -166,7 +166,7 @@ class FingerprintBuilder
             return (string)$val_h2;
         }
 
-        // Fallback to bcmath on 32-bit platforms
+        // Fallback to bcmath on 32-bit platforms.
         $val_h2 = bcadd(bcmul((string)(2097151 & $h2), '4294967296'), (string)($h1 >= 0 ? $h1 : $h1 + 4294967296));
         return $val_h2;
     }
@@ -180,8 +180,8 @@ class FingerprintBuilder
      */
     private static function imul(int $a, int $b): int
     {
-        // Emulation of JavaScript's Math.imul for signed 32-bit integer multiplication.
-        // This version correctly handles overflows on 64-bit systems.
+        // Emulates JavaScript's Math.imul for signed 32-bit integer multiplication.
+        // This implementation correctly handles overflows on 64-bit systems.
         $ah = ($a >> 16) & 0xffff;
         $al = $a & 0xffff;
         $bh = ($b >> 16) & 0xffff;

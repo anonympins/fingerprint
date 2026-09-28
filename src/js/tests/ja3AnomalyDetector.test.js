@@ -5,7 +5,7 @@ import { verifyZkpProof, decodePolymorphicFingerprint, deepMerge, getHeaderSigna
 
 describe('JA3 Anomaly Detector (Node.js)', () => {
     
-    // Mock d'un store de cache asynchrone en mémoire
+    // Mock async in-memory cache store
     const createMockStore = () => {
         const storage = {};
         return {
@@ -15,7 +15,7 @@ describe('JA3 Anomaly Detector (Node.js)', () => {
     };
 
     describe('parseJa3', () => {
-        it('devrait parser correctement une chaine JA3 brute', () => {
+        it('should correctly parse raw JA3 string', () => {
             const rawJa3 = '771,4865-4866-4867,0-23-65281-10-11,29-23-24,0';
             const parsed = parseJa3(rawJa3);
             
@@ -25,14 +25,14 @@ describe('JA3 Anomaly Detector (Node.js)', () => {
             expect(parsed.extensions).toEqual([0, 23, 65281, 10, 11]);
         });
 
-        it('devrait retourner null pour des chaines invalides', () => {
+        it('should return null for invalid strings', () => {
             expect(parseJa3('')).toBeNull();
             expect(parseJa3('771,4865')).toBeNull();
         });
     });
 
     describe('getTlsSpoofingScore (Anomalies JA3 hachées)', () => {
-        it('devrait détecter l\'usurpation d\'identité d\'une bibliothèque (Python)', async () => {
+        it('should detect library spoofing (Python)', async () => {
             const pythonJa3Hash = '47344a349b75c4e82333475553b5f358';
             const chromeUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0';
 
@@ -47,7 +47,7 @@ describe('JA3 Anomaly Detector (Node.js)', () => {
             expect(result.tlsSpoofingScore).toBe(90);
         });
 
-        it('devrait détecter la rotation d\'User-Agent sur un même hash JA3 (Stagnation)', async () => {
+        it('should detect User-Agent rotation on identical JA3 hash (Stagnation)', async () => {
             const mockStore = createMockStore();
             const unknownJa3 = '00000000000000000000000000000000';
             
@@ -65,20 +65,19 @@ describe('JA3 Anomaly Detector (Node.js)', () => {
                 }
             };
 
-            // Injecter le mockStore dans le module de test si nécessaire ou mocker l'importation du store global
-            // Premier passage : Chrome
+            // First call: Chrome
             const res1 = await getTlsSpoofingScore(contextChrome, mockStore);
             
-            // Deuxième passage : Firefox (Détection de la rotation de UA)
+            // Second call: Firefox (Detects UA rotation)
             const res2 = await getTlsSpoofingScore(contextFirefox, mockStore);
             expect(res2.tlsSpoofingScore).toBe(85);
         });
     });
 
     describe('getTlsSpoofingScore (Anomalies JA3 brutes)', () => {
-        it('devrait suspecter un faux Chrome n\'utilisant pas le mécanisme GREASE', async () => {
+        it('should flag fake Chrome lacking GREASE values', async () => {
             const chromeUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0';
-            // Pas de valeurs GREASE dans la suite
+            // No GREASE values in ciphers/extensions
             const ja3RawNoGrease = '771,4865-4866,0-23-10,29,0';
             const ja3Hash = crypto.createHash('md5').update(ja3RawNoGrease).digest('hex');
 
@@ -95,9 +94,9 @@ describe('JA3 Anomaly Detector (Node.js)', () => {
             expect(result.tlsSpoofingScore).toBe(75);
         });
 
-        it('devrait valider un Chrome légitime utilisant des valeurs GREASE', async () => {
+        it('should validate legitimate Chrome using GREASE values', async () => {
             const chromeUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0';
-            // 2570 est une suite GREASE valide
+            // 2570 is a valid GREASE value
             const ja3RawWithGrease = '771,4865-2570,0-23-10-16,29,0';
             const ja3Hash = crypto.createHash('md5').update(ja3RawWithGrease).digest('hex');
 
@@ -114,9 +113,9 @@ describe('JA3 Anomaly Detector (Node.js)', () => {
             expect(result.tlsSpoofingScore).toBeLessThan(70);
         });
 
-        it('devrait détecter l\'absence d\'extension ALPN pour une connexion HTTP/2', async () => {
+        it('should detect missing ALPN extension on HTTP/2 connections', async () => {
             const chromeUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0';
-            // Pas d'extension 16 (ALPN)
+            // Missing extension 16 (ALPN)
             const ja3RawNoAlpn = '771,4865-2570,0-23-10,29,0';
             const ja3Hash = crypto.createHash('md5').update(ja3RawNoAlpn).digest('hex');
 

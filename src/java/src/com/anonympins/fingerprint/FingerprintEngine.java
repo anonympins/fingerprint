@@ -66,6 +66,8 @@ public class FingerprintEngine {
             // Path to persistent key file
             java.io.File configDir = new java.io.File("config");
             java.io.File keyFile = new java.io.File(configDir, "ed25519_key.json");
+            java.io.File privPemFile = new java.io.File(configDir, "issuer-private.pem");
+            java.io.File pubPemFile = new java.io.File(configDir, "issuer-public.pem");
 
             // Attempt to load existing keys from disk
             if (keyFile.exists()) {
@@ -85,17 +87,30 @@ public class FingerprintEngine {
                         System.err.println("[Fingerprint] Failed to load persistent Ed25519 keys: " + e.getMessage());
                     }
                 }
+            } else if (privPemFile.exists() && pubPemFile.exists()) {
+                try {
+                    String priv = java.nio.file.Files.readString(privPemFile.toPath());
+                    String pub = java.nio.file.Files.readString(pubPemFile.toPath());
+                    System.setProperty("ED25519_PRIVATE_KEY", priv);
+                    System.setProperty("ED25519_PUBLIC_KEY", pub);
+                    if (!keyFile.exists()) {
+                        String json = "{\n  \"privateKey\": \"" + priv.replace("\n", "\\n") + "\",\n  \"publicKey\": \"" + pub.replace("\n", "\\n") + "\"\n}";
+                        java.nio.file.Files.writeString(keyFile.toPath(), json);
+                    }
+                    if (verbose) {
+                        System.out.println("[Fingerprint] Persistent Ed25519 PEM keys loaded from disk.");
+                    }
+                } catch (Exception e) {
+                    if (verbose) {
+                        System.err.println("[Fingerprint] Failed to load persistent PEM keys: " + e.getMessage());
+                    }
+                }
             } else {
                 // Generate and persist new key pair if missing
                 try {
-                    java.security.KeyPairGenerator kpg = java.security.KeyPairGenerator.getInstance("Ed25519");
-                    java.security.KeyPair kp = kpg.generateKeyPair();
-                    String privPem = "-----BEGIN PRIVATE KEY-----\n" +
-                            Base64.getMimeEncoder().encodeToString(kp.getPrivate().getEncoded()) +
-                            "\n-----END PRIVATE KEY-----";
-                    String pubPem = "-----BEGIN PUBLIC KEY-----\n" +
-                            Base64.getMimeEncoder().encodeToString(kp.getPublic().getEncoded()) +
-                            "\n-----END PUBLIC KEY-----";
+                    Map<String, String> pemResult = ChallengeUtils.generateIssuerPemKeys(configDir.getPath(), null);
+                    String privPem = pemResult.get("privateKey");
+                    String pubPem = pemResult.get("publicKey");
                     System.setProperty("ED25519_PRIVATE_KEY", privPem);
                     System.setProperty("ED25519_PUBLIC_KEY", pubPem);
                     if (!configDir.exists()) {
@@ -427,26 +442,22 @@ public class FingerprintEngine {
 
         double mtuScore = suspicionVector.getOrDefault("mtuAnomalyScore", 0.0);
         if (mtuScore > 50.0) {
-            if (verbose) {
-                System.out.println("[FingerprintEngine] Tunnel detected, amplifying suspicion weights (mtuScore: " + mtuScore + ")");
+            double amplificationFactor = 1.25;
+            String[] keysToAmplify = {
+                "tlsSpoofingScore", "crossLayerInconsistencyScore",
+                "clientHintsInconsistencyScore", "behaviorScore",
+                "inconsistencyScore", "rotationScore"
+            };
+            for (String key : keysToAmplify) {
+                if (dynamicWeights.containsKey(key)) {
+                    dynamicWeights.put(key, dynamicWeights.get(key) * amplificationFactor);
+                }
             }
-            // Amplifie les incohérences difficiles à falsifier
-            dynamicWeights.put("tlsSpoofingScore", dynamicWeights.getOrDefault("tlsSpoofingScore", 0.8) * 1.25);
-            dynamicWeights.put("crossLayerInconsistencyScore", dynamicWeights.getOrDefault("crossLayerInconsistencyScore", 0.4) * 1.4);
-            dynamicWeights.put("clientHintsInconsistencyScore", dynamicWeights.getOrDefault("clientHintsInconsistencyScore", 0.7) * 1.2);
-
-            // Amplifie les comportements automatisés (un bot sous tunnel VPN est plus suspect)
-            dynamicWeights.put("behaviorScore", dynamicWeights.getOrDefault("behaviorScore", 0.7) * 1.15);
-            dynamicWeights.put("requestPatternScore", dynamicWeights.getOrDefault("requestPatternScore", 0.6) * 1.2);
         }
 
         double score = 0.0;
         for (Map.Entry<String, Double> entry : dynamicWeights.entrySet()) {
             String key = entry.getKey();
-            // Le score MTU et ses poids sont uniquement des amplificateurs, pas des déclencheurs autonomes
-            if ("mtuAnomalyScore".equals(key)) {
-                continue;
-            }
             double weight = ((Number) entry.getValue()).doubleValue();
             score += suspicionVector.getOrDefault(key, 0.0) * weight;
         }
@@ -487,8 +498,7 @@ public class FingerprintEngine {
             }
 
             deviceId = UUID.randomUUID().toString();
-            boolean secureOption = "https".equalsIgnoreCase(context.getHeader("x-forwarded-proto")) 
-                    || "https".equalsIgnoreCase(context.getHeader("x-url-scheme"));
+            boolean secureOption = context.isHttps || "production".equalsIgnoreCase((String) config.get("env"));
 
             newCookie = new HashMap<>();
             newCookie.put("name", "device_id");

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Anonympins\Fingerprint\Optimization;
 
 /**
- * Registry to safely expose optimization library routines to task runners.
+ * A registry to safely expose optimization library routines to task runners.
  */
 class FunctionRegistry
 {
@@ -42,7 +42,7 @@ class FunctionRegistry
     }
     /**
      * Registers a custom function. Primarily intended for testing.
-     * @internal
+     * @internal For testing purposes only.
      * @param string $name
      * @param callable $function
      * @return void
@@ -54,8 +54,8 @@ class FunctionRegistry
     }
 
     /**
-     * Resets function registry. Intended for testing.
-     * @internal
+     * Resets the function registry. Intended for testing.
+     * @internal For testing purposes only.
      */
     public static function __internal_resetRegistry(): void
     {

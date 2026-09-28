@@ -80,7 +80,7 @@ public class BlockList {
                     return false;
                 }
             }
-            return true; // L'adresse est dans le sous-réseau
+            return true; // Address is in the subnet
         }
     }
 }

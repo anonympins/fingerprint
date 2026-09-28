@@ -85,6 +85,12 @@ Here is a complete representation of a custom security configuration containing 
     "https://peer1.example.com",
     "https://peer2.example.com"
   ],
+  "pat": {
+    "trustedKeys": {
+      "key_id_hex": "-----BEGIN PUBLIC KEY-----\n..."
+    },
+    "nonceTtl": 86400
+  },
   "useAsymmetricTickets": true,
   "ed25519": "auto",
   "reset": false
@@ -168,6 +174,11 @@ The following table details the role of each weight in the `weights` object. The
 
 ### `federatedPeers` (Federated Threat Intelligence)
 *   **`federatedPeers`** *(array of strings, default: `[]`)*: A list of URLs or identifiers of trusted peer nodes in a federated network. These peers can be used for sharing threat intelligence, device reputation scores, or challenge responses in a distributed manner.
+
+### `pat` (Private Access Tokens / Privacy Pass)
+*   **`trustedKeys`** *(object)*: Map of 32-byte hex key IDs to PEM-encoded public keys for validating RSA-PSS, PKCS#1 v1.5, or Ed25519 PAT signatures (RFC 9578).
+*   **`defaultPublicKey`** *(string, optional)*: Fallback public key used when key ID lookup is omitted.
+*   **`nonceTtl`** *(int, default: `86400`)*: Anti-replay nonce cache duration in seconds.
 
 ### Asymmetric Cryptographic Keys & Tickets (Ed25519)
 *   **`useAsymmetricTickets`** *(bool, default: `false`)*: If `true`, the engine signs and validates stateless tickets asymmetrically using Ed25519 instead of symmetrically using AES-256-CBC.
