@@ -8,22 +8,36 @@ use Anonympins\Fingerprint\Store\StoreManager;
 use Anonympins\Fingerprint\FingerprintBuilder;
 use Anonympins\Fingerprint\Utils\BigInt;
 use Anonympins\Fingerprint\Utils\RequestUtils;
- use Anonympins\Fingerprint\Utils\Env;
+use Anonympins\Fingerprint\Utils\Env;
 
 /**
- * Classe utilitaire pour la génération et la vérification des challenges Proof-of-Work.
+ * Utility class for generating and verifying Proof-of-Work challenges.
  */
 class ChallengeUtils
 {
-    /** @var array<string, float> Cache local des floats convertis pour éviter les appels système pack/unpack */
+    /** @var array<string, float> Local cache of converted floats to avoid repeated pack/unpack system calls */
     private static array $froundCache = [];
 
+    /**
+     * Emulates JavaScript's Math.fround: rounds a float to the nearest 32-bit
+     * single-precision float. Uses a local cache to avoid repeated pack/unpack calls.
+     *
+     * @param float $value The float value to round.
+     * @return float The value rounded to single precision.
+     */
     private static function fround(float $value): float
     {
         $key = (string)$value;
         return self::$froundCache[$key] ?? (self::$froundCache[$key] = unpack('f', pack('f', $value))[1]);
     }
 
+    /**
+     * Hashes a string seed into a normalized float between 0 and 1
+     * using a simple 32-bit rolling hash (similar to Java's String.hashCode).
+     *
+     * @param string $seed The seed string to hash.
+     * @return float A pseudo-random float in the range [0, 1).
+     */
     public static function hashSeedToFloat(string $seed): float
     {
         $hash = 0;
@@ -36,6 +50,15 @@ class ChallengeUtils
         return abs($hash % 1000000) / 1000000;
     }
 
+    /**
+     * Derives a set of 4 unique sample indices from the client IP and a secret,
+     * using an HMAC-SHA256 over the client IP and a 5-minute time window.
+     * This makes the indices deterministic but rotating over time.
+     *
+     * @param string $clientIp The client IP address.
+     * @param string $secret The shared secret used for the HMAC.
+     * @return array<int> An array of 4 unique indices in the range [0, 63].
+     */
     public static function deriveSampleIndices(string $clientIp, string $secret): array
     {
         $timeWindow = (int)floor(time() / (60 * 5));
@@ -56,6 +79,19 @@ class ChallengeUtils
         return $indices;
     }
 
+    /**
+     * Verifies a GPU Proof-of-Work solution based on the logistic map
+     * (chaotic iteration x_{n+1} = r * x_n * (1 - x_n) with r = 3.9999).
+     * Only a subset of the 64 values is recomputed, using indices derived
+     * from the client IP and a shared secret.
+     *
+     * @param string $seed The challenge seed.
+     * @param int $iterations The number of logistic map iterations per value.
+     * @param string $solution A comma-separated string of 64 float values.
+     * @param string $clientIp The client IP used to derive the sample indices.
+     * @param string $secret The secret used to derive the sample indices.
+     * @return bool True if the sampled values match, false otherwise.
+     */
     public static function verifyGpuPow(string $seed, int $iterations, string $solution, string $clientIp = '127.0.0.1', string $secret = 'gpu-pow-salt'): bool
     {
         $values = explode(',', $solution);
@@ -82,6 +118,7 @@ class ChallengeUtils
         return true;
     }
 
+    /** Templates used to generate signed trap URLs that lure malicious crawlers. */
     private const TRAP_URL_TEMPLATES = [
         '/includes/config-{RANDOM}.php',
         '/.env.{RANDOM}',
@@ -92,6 +129,14 @@ class ChallengeUtils
         '/.git/config_{RANDOM}'
     ];
 
+    /**
+     * Emulates a 32-bit signed integer multiplication (like Math.imul in JS),
+     * handling overflow correctly.
+     *
+     * @param int $a The first operand.
+     * @param int $b The second operand.
+     * @return int The 32-bit signed result of a * b.
+     */
     private static function imul(int $a, int $b): int
     {
         $ah = ($a >> 16) & 0xffff;
@@ -103,11 +148,21 @@ class ChallengeUtils
         return (($hi << 16) | ($lo & 0xffff)) | 0;
     }
 
+    /**
+     * Deterministically generates a 1024-byte block of pseudo-random data
+     * from a seed and a block index, using a rolling hash (cyrb53-based).
+     * This is the building block for the proof-of-space challenge.
+     *
+     * @param string $seed The seed string.
+     * @param int $blockIndex The index of the block to generate.
+     * @param int $blockSize The size of the block in bytes (default 1024).
+     * @return string The raw binary block content.
+     */
     private static function generateBlock(string $seed, int $blockIndex, int $blockSize = 1024): string
     {
         $block = str_repeat("\x00", $blockSize);
         $h = FingerprintBuilder::cyrb53($seed . ":" . $blockIndex);
-        
+
         $h_int = (int)bcmod($h, '4294967296');
         for ($i = 0; $i < $blockSize; $i++) {
             $h_int = self::imul($h_int ^ $i, 1597334677);
@@ -116,6 +171,15 @@ class ChallengeUtils
         return $block;
     }
 
+    /**
+     * Registers a cooperative node in the store, keyed by its IP subnet.
+     * Entries older than 2 minutes are pruned before adding the new node.
+     *
+     * @param string $clientIp The client IP (used to compute the subnet).
+     * @param string $nodeId The unique node identifier.
+     * @param string $seed The node's seed.
+     * @return void
+     */
     public static function registerCooperativeNode(string $clientIp, string $nodeId, string $seed): void
     {
         $subnet = RequestUtils::getIpSubnet($clientIp);
@@ -125,20 +189,28 @@ class ChallengeUtils
         $store = StoreManager::getStore();
         $key = "coop-pospace:subnet:{$subnet}";
         $nodes = $store->get($key) ?? [];
-        
+
         $now = time();
-        // Nettoyage des nœuds expirés (vieux de plus de 2 minutes)
+        // Clean up expired nodes (older than 2 minutes)
         $nodes = array_filter($nodes, fn($n) => ($now - $n['timestamp']) < 120);
-        
+
         $nodes[$nodeId] = [
             'nodeId' => $nodeId,
             'seed' => $seed,
             'timestamp' => $now
         ];
-        
+
         $store->set($key, $nodes, 120);
     }
 
+    /**
+     * Finds a random active peer node in the same subnet as the client,
+     * excluding a given node ID.
+     *
+     * @param string $clientIp The client IP (used to compute the subnet).
+     * @param string $excludeNodeId The node ID to exclude from the results.
+     * @return array|null The peer node data, or null if none is found.
+     */
     public static function findPeerInSubnet(string $clientIp, string $excludeNodeId): ?array
     {
         $subnet = RequestUtils::getIpSubnet($clientIp);
@@ -148,7 +220,7 @@ class ChallengeUtils
         $store = StoreManager::getStore();
         $key = "coop-pospace:subnet:{$subnet}";
         $nodes = $store->get($key) ?? [];
-        
+
         $now = time();
         $activePeers = [];
         foreach ($nodes as $id => $node) {
@@ -156,14 +228,25 @@ class ChallengeUtils
                 $activePeers[] = $node;
             }
         }
-        
+
         if (empty($activePeers)) {
             return null;
         }
-        
+
         return $activePeers[array_rand($activePeers)];
     }
 
+    /**
+     * Handles cooperative peer-to-peer operations (federation threat intel sharing,
+     * node registration, peer discovery, WebRTC signaling, block requests/responses).
+     * Enforces cooperative signature verification for every operation except
+     * the federation threat intel sharing path.
+     *
+     * @param array $params The request parameters (includes `coop_op`).
+     * @param string $clientIp The client IP address.
+     * @param array $config Additional configuration (federated peers, thresholds, keys).
+     * @return array|null The response payload, or null if `coop_op` is missing.
+     */
     public static function handleCooperativeRequest(array $params, string $clientIp = '127.0.0.1', array $config = []): ?array
     {
         $op = $params['coop_op'] ?? null;
@@ -252,7 +335,7 @@ class ChallengeUtils
             return ['error' => 'Missing node_id'];
         }
 
-        // --- VÉRIFICATION DE LA SIGNATURE COOPÉRATIVE ---
+        // --- COOPERATIVE SIGNATURE VERIFICATION ---
         $challengeContext = $store->get("secret:{$nodeId}");
         if (!$challengeContext || empty($challengeContext['clientSecret'])) {
             return ['error' => 'Invalid or expired node_id'];
@@ -295,7 +378,7 @@ class ChallengeUtils
         if (!hash_equals($expectedSig, $coopSig)) {
             return ['error' => 'Invalid cooperative signature'];
         }
-        // --- FIN DE LA VÉRIFICATION ---
+        // --- END OF VERIFICATION ---
 
         switch ($op) {
             case 'register':
@@ -343,7 +426,7 @@ class ChallengeUtils
                 if (empty($peerId) || empty($requestId)) {
                     return ['error' => 'Invalid parameters'];
                 }
-                
+
                 $queueKey = "coop-mailbox:queue:{$peerId}";
                 $requests = $store->get($queueKey) ?? [];
                 $requests[] = [
@@ -367,7 +450,7 @@ class ChallengeUtils
                 if (empty($requesterId) || empty($requestId)) {
                     return ['error' => 'Invalid parameters'];
                 }
-                
+
                 $responseKey = "coop-mailbox:res:{$requesterId}:{$requestId}";
                 $store->set($responseKey, ['block_data' => $blockData], 30);
                 return ['status' => 'delivered'];
@@ -385,6 +468,18 @@ class ChallengeUtils
         return null;
     }
 
+    /**
+     * Generates a proof-of-space challenge for a client, including random block
+     * queries. If a peer is found in the same subnet, a cooperative component is
+     * added to the challenge (peer ID and a random block index).
+     *
+     * @param string $clientIp The client IP address.
+     * @param string $nonce The challenge nonce.
+     * @param float $suspicionFactor The suspicion factor for the request.
+     * @param string $originalUrl The original requested URL (used as redirect path).
+     * @param array $securityConfig The security configuration array.
+     * @return array The challenge details.
+     */
     public static function generateSpaceChallenge(string $clientIp, string $nonce, float $suspicionFactor, string $originalUrl, array $securityConfig): array
     {
         $pospaceConfig = $securityConfig['pospace'] ?? [];
@@ -408,12 +503,12 @@ class ChallengeUtils
             'path' => $originalUrl
         ];
 
-        // Tentative de couplage coopératif avec un nœud du même sous-réseau
+        // Attempt cooperative coupling with a peer node in the same subnet
         $peer = self::findPeerInSubnet($clientIp, $nonce);
         if ($peer !== null) {
             $challenge['peerId'] = $peer['nodeId'];
             $challenge['peerBlockIdx'] = random_int(0, $maxBlocks - 1);
-            
+
             $store = StoreManager::getStore();
             $store->set("coop-assoc:{$nonce}", [
                 'peerNodeId' => $peer['nodeId'],
@@ -425,14 +520,26 @@ class ChallengeUtils
         return $challenge;
     }
 
+    /**
+     * Verifies a proof-of-space solution by reconstructing the expected hash
+     * from the queried blocks. If a cooperative association exists for the nonce,
+     * the peer block is also appended to the combined data.
+     *
+     * @param string $nonce The challenge nonce.
+     * @param string $solution The client-provided solution hash.
+     * @param array $queries The list of queried block indices.
+     * @param string $seed The seed used to generate the blocks.
+     * @param string $clientSecret The client secret.
+     * @return bool True if the solution matches, false otherwise.
+     */
     public static function verifySpacePoW(string $nonce, string $solution, array $queries, string $seed, string $clientSecret): bool
     {
         $combined = '';
         foreach ($queries as $idx) {
             $combined .= self::generateBlock($seed, (int)$idx);
         }
-        
-        // Vérification de la preuve coopérative
+
+        // Cooperative proof verification
         $store = StoreManager::getStore();
         $assoc = $store->get("coop-assoc:{$nonce}");
         if ($assoc !== null) {
@@ -449,6 +556,15 @@ class ChallengeUtils
         return hash_equals($hash, $solution);
     }
 
+    /**
+     * Verifies a Schnorr-style Zero-Knowledge Proof using the secp256k1 prime.
+     * Checks that g^s ≡ t * y^c (mod p), where c = SHA-256(g, y, t) mod p.
+     *
+     * @param string $yStr The public key y (hex).
+     * @param string $tStr The commitment t (hex).
+     * @param string $sStr The response s (hex).
+     * @return bool True if the proof is valid, false otherwise.
+     */
     public static function verifyZkpProof(string $yStr, string $tStr, string $sStr): bool
     {
         try {
@@ -474,7 +590,11 @@ class ChallengeUtils
     }
 
     /**
-     * Récupère la clé secrète pour les PoW depuis les variables d'environnement.
+     * Retrieves the secret key for PoW tasks from environment variables.
+     * Throws an exception in production if the secret is missing.
+     *
+     * @return string The PoW secret.
+     * @throws \RuntimeException If missing in production.
      */
     public static function getPowSecret(): string
     {
@@ -487,9 +607,12 @@ class ChallengeUtils
     }
 
     /**
-     * Génère un ticket stateless chiffré et signé contenant le contexte d'autorisation.
-     * @param array $payload
-     * @return string
+     * Generates an encrypted and signed stateless ticket containing the
+     * authorization context. Uses Ed25519 if a private key is available,
+     * otherwise falls back to AES-256-CBC + HMAC-SHA256.
+     *
+     * @param array $payload The authorization context to embed.
+     * @return string The encoded ticket.
      */
     public static function generateStatelessTicket(array $payload): string
     {
@@ -513,17 +636,19 @@ class ChallengeUtils
         $iv = random_bytes(16);
         $encrypted = openssl_encrypt(json_encode($payload), 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv);
         $signature = hash_hmac('sha256', $iv . $encrypted, $key, true);
-        
+
         return rtrim(strtr(base64_encode($iv), '+/', '-_'), '=') . '.' .
-               rtrim(strtr(base64_encode($encrypted), '+/', '-_'), '=') . '.' .
-               rtrim(strtr(base64_encode($signature), '+/', '-_'), '=');
+            rtrim(strtr(base64_encode($encrypted), '+/', '-_'), '=') . '.' .
+            rtrim(strtr(base64_encode($signature), '+/', '-_'), '=');
     }
 
     /**
-     * Décode et valide un ticket stateless chiffré et signé.
-     * @param string $ticket
-     * @param string $secret
-     * @return array|null
+     * Decodes and validates an encrypted and signed stateless ticket.
+     * Supports both Ed25519 and AES-256-CBC + HMAC-SHA256 formats.
+     *
+     * @param string $ticket The ticket to decode.
+     * @param string $secret Optional secret for HMAC verification.
+     * @return array|null The decoded payload, or null if invalid.
      */
     public static function parseStatelessTicket(string $ticket, string $secret = ''): ?array
     {
@@ -538,13 +663,13 @@ class ChallengeUtils
                 };
                 $payloadJson = $base64UrlDecode($parts[1]);
                 $signature = $base64UrlDecode($parts[2]);
-                
+
                 $ed25519PubKey = Env::get('ED25519_PUBLIC_KEY');
                 if (!$ed25519PubKey) {
                     self::logError("[ChallengeUtils] ED25519_PUBLIC_KEY is not defined in environment.");
                     return null;
                 }
-                
+
                 $publicKey = openssl_pkey_get_public($ed25519PubKey);
                 if ($publicKey && openssl_verify($payloadJson, $signature, $publicKey, null) === 1) {
                     return json_decode($payloadJson, true);
@@ -579,8 +704,18 @@ class ChallengeUtils
     }
 
     /**
-     * Vérifie si un ticket de passage est valide (supporte les tickets opaques via store et le fallback legacy).
-     * Supporte une clé secrète optionnelle passée en paramètre pour la compatibilité avec les tests.
+     * Checks whether a pass ticket is valid. Supports opaque tickets (via the store)
+     * and the legacy stateless fallback. Handles greenlist, ZKP, same-IP, same-subnet,
+     * and cross-network roaming validations.
+     *
+     * @param string|null $ip The client IP.
+     * @param string|null $ticket The ticket to validate.
+     * @param string $deviceId The client device ID.
+     * @param string $deviceHash The client device hash.
+     * @param bool $allowCrossNetworkRoaming Whether to allow roaming across networks.
+     * @param string $secret Optional secret for legacy ticket validation.
+     * @param string $zkpProof Optional ZKP proof in the format "y:t:s".
+     * @return bool True if the ticket is valid, false otherwise.
      */
     public static function isTicketValid(
         ?string $ip,
@@ -595,7 +730,7 @@ class ChallengeUtils
             return false;
         }
 
-        // Tentative de validation stateless d'abord
+        // Try stateless validation first
         $ticketData = self::parseStatelessTicket($ticket, $secret);
         if ($ticketData !== null) {
             $expiry = $ticketData['expiry'] ?? null;
@@ -611,18 +746,18 @@ class ChallengeUtils
                     return true;
                 }
             }
-                if ($storedDeviceHash && str_starts_with($storedDeviceHash, 'zkp:')) {
-                    $expectedY = explode(':', $storedDeviceHash, 2)[1] ?? '';
-                    if (!empty($zkpProof)) {
-                        $zkpParts = explode(':', $zkpProof);
-                        if (count($zkpParts) === 3 && $zkpParts[0] === $expectedY) {
-                            if (self::verifyZkpProof($zkpParts[0], $zkpParts[1], $zkpParts[2])) {
-                                return true;
-                            }
+            if ($storedDeviceHash && str_starts_with($storedDeviceHash, 'zkp:')) {
+                $expectedY = explode(':', $storedDeviceHash, 2)[1] ?? '';
+                if (!empty($zkpProof)) {
+                    $zkpParts = explode(':', $zkpProof);
+                    if (count($zkpParts) === 3 && $zkpParts[0] === $expectedY) {
+                        if (self::verifyZkpProof($zkpParts[0], $zkpParts[1], $zkpParts[2])) {
+                            return true;
                         }
                     }
-                    return false;
                 }
+                return false;
+            }
             if ($ip === $originalIp) {
                 return true;
             }
@@ -655,18 +790,18 @@ class ChallengeUtils
                     return true;
                 }
             }
-                if ($storedDeviceHash && str_starts_with($storedDeviceHash, 'zkp:')) {
-                    $expectedY = explode(':', $storedDeviceHash, 2)[1] ?? '';
-                    if (!empty($zkpProof)) {
-                        $zkpParts = explode(':', $zkpProof);
-                        if (count($zkpParts) === 3 && $zkpParts[0] === $expectedY) {
-                            if (self::verifyZkpProof($zkpParts[0], $zkpParts[1], $zkpParts[2])) {
-                                return true;
-                            }
+            if ($storedDeviceHash && str_starts_with($storedDeviceHash, 'zkp:')) {
+                $expectedY = explode(':', $storedDeviceHash, 2)[1] ?? '';
+                if (!empty($zkpProof)) {
+                    $zkpParts = explode(':', $zkpProof);
+                    if (count($zkpParts) === 3 && $zkpParts[0] === $expectedY) {
+                        if (self::verifyZkpProof($zkpParts[0], $zkpParts[1], $zkpParts[2])) {
+                            return true;
                         }
                     }
-                    return false;
                 }
+                return false;
+            }
 
             if ($ip === $originalIp) {
                 return true;
@@ -685,7 +820,7 @@ class ChallengeUtils
             return !empty($deviceId) && $deviceId === $storedDeviceId && !empty($deviceHash) && $deviceHash === $storedDeviceHash;
         }
 
-        // Fallback rétrocompatible pour les anciens tickets signés (sans état)
+        // Backward-compatible fallback for legacy signed tickets (stateless)
         if (!str_contains($ticket, ':')) {
             return false;
         }
@@ -701,7 +836,12 @@ class ChallengeUtils
     }
 
     /**
-     * Calcule la cible de difficulté pour un challenge CPU en fonction du facteur de suspicion.
+     * Computes the difficulty target for a CPU challenge based on the
+     * suspicion factor. Higher suspicion yields a harder (smaller) target.
+     *
+     * @param float $suspicionFactor The suspicion factor (0.0 to 1.0).
+     * @param array $securityConfig The security configuration.
+     * @return string The target as a hex string.
      */
     public static function calculateCpuTarget(float $suspicionFactor, array $securityConfig): string
     {
@@ -712,7 +852,7 @@ class ChallengeUtils
         $totalDifficultyBits = $minDifficultyBits + $suspicionFactor * ($maxDifficultyBits - $minDifficultyBits);
 
         if ($totalDifficultyBits <= 0) {
-            // Cible maximale (challenge trivial)
+            // Maximum target (trivial challenge)
             return (BigInt::pow(2, 256)->sub(new BigInt(1)))->toHex();
         }
 
@@ -721,7 +861,15 @@ class ChallengeUtils
     }
 
     /**
-     * Crée le bloc de données de base pour le challenge CPU.
+     * Creates the base data block used by the CPU challenge. The fingerprint
+     * parts are sorted to ensure deterministic ordering.
+     *
+     * @param string $nonce The challenge nonce.
+     * @param string $clientSecret The client secret.
+     * @param string $fingerprint The client fingerprint (pipe-separated).
+     * @param string $clientIp The client IP.
+     * @param string $tlsSessionId The TLS session ID.
+     * @return string The concatenated base block.
      */
     public static function createCpuChallengeBaseBlock(string $nonce, string $clientSecret, string $fingerprint, string $clientIp = '', string $tlsSessionId = ''): string
     {
@@ -729,13 +877,23 @@ class ChallengeUtils
         $filteredParts = array_filter($parts);
         sort($filteredParts);
         $sortedFingerprint = implode('|', $filteredParts);
-        
+
         return "{$nonce}:{$clientSecret}:{$sortedFingerprint}:{$clientIp}:{$tlsSessionId}:";
     }
 
     /**
-     * Vérifie une solution de PoW CPU et génère un ticket si elle est valide.
-     * @return string|null Le ticket opaque en cas de succès, sinon null.
+     * Verifies a CPU Proof-of-Work solution and, on success, generates a
+     * stateless ticket. In HTTP (insecure) mode, no SHA-256 computation is
+     * required and a ticket is issued directly.
+     *
+     * @param string $clientIp The client IP.
+     * @param int $ticketTtl The ticket time-to-live in milliseconds.
+     * @param string $nonce The challenge nonce.
+     * @param string $solution The client-provided solution.
+     * @param array $challengeContext The challenge context (cpuTarget, baseBlock, isHttp).
+     * @param string $deviceId The client device ID.
+     * @param string $deviceHash The client device hash.
+     * @return string|null The opaque ticket on success, or null on failure.
      */
     public static function verifyCpuTargetPoWAndGenerateTicket(
         string $clientIp,
@@ -746,9 +904,9 @@ class ChallengeUtils
         string $deviceId = '',
         string $deviceHash = ''
     ): ?string {
-        // En mode HTTP (non sécurisé), aucun calcul SHA-256 n'est exigé
+        // In HTTP (insecure) mode, no SHA-256 computation is required
         if (!empty($challengeContext['isHttp'])) {
-            self::logError('[FP Server Verify] Mode HTTP détecté (insecure policy) : validation sans SHA-256 acceptée.');
+            self::logError('[FP Server Verify] HTTP mode detected (insecure policy): validation without SHA-256 accepted.');
             $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
             return self::generateStatelessTicket([
                 'expiry' => $expiry,
@@ -775,7 +933,7 @@ class ChallengeUtils
 
         if ($isValid) {
             self::logError('[FP Server Verify] CPU PoW verification PASSED.');
-            
+
             $expiry = (int)floor(microtime(true) * 1000) + $ticketTtl;
             $payload = [
                 'expiry' => $expiry,
@@ -797,7 +955,13 @@ class ChallengeUtils
     }
 
     /**
-     * Vérifie le limiteur de débit Token Bucket pour les demandes de challenge d'un sous-réseau.
+     * Checks the Token Bucket rate limiter for challenge requests from a subnet.
+     * Tokens are refilled at a constant rate up to a maximum capacity.
+     *
+     * @param string $clientIp The client IP (subnet is used as the rate-limit key).
+     * @param float $capacity The bucket capacity (max tokens).
+     * @param float $refillRate The token refill rate (tokens per second).
+     * @return bool True if the request is allowed, false if rate-limited.
      */
     public static function checkChallengeRateLimit(string $clientIp, float $capacity = 5.0, float $refillRate = 0.1): bool
     {
@@ -836,7 +1000,14 @@ class ChallengeUtils
     }
 
     /**
-     * Vérifie une solution de PoW mémoire.
+     * Derives the set of challenged block indices for a memory PoW solution,
+     * based on the seed, the solution, and the number of blocks.
+     *
+     * @param string $seed The challenge seed.
+     * @param int $solution The client solution (used as a salt in the hash).
+     * @param int $numBlocks The total number of blocks.
+     * @param int $k The number of challenged indices to derive (default 4).
+     * @return array<int> The list of challenged block indices.
      */
     private static function getChallengedIndices(string $seed, int $solution, int $numBlocks, int $k = 4): array
     {
@@ -849,6 +1020,16 @@ class ChallengeUtils
         return $indices;
     }
 
+    /**
+     * Verifies a Merkle proof for a given leaf hash, index, and expected root.
+     * Recomputes the root by hashing pairs of siblings along the path.
+     *
+     * @param string $leafHash The hex hash of the leaf.
+     * @param int $index The leaf index in the tree.
+     * @param array $proof The list of sibling hashes (hex).
+     * @param string $root The expected Merkle root (hex).
+     * @return bool True if the proof is valid, false otherwise.
+     */
     private static function verifyMerkleProof(string $leafHash, int $index, array $proof, string $root): bool
     {
         $currentHash = $leafHash;
@@ -861,6 +1042,17 @@ class ChallengeUtils
         return $currentHash === $root;
     }
 
+    /**
+     * Legacy memory PoW verification, used for low-difficulty challenges with
+     * a simple numeric solution. Rebuilds the whole buffer and replays the
+     * random walk to compare with the provided solution.
+     *
+     * @param string $nonce The challenge nonce.
+     * @param int $solution The client-provided solution.
+     * @param int $difficulty The difficulty (in MB).
+     * @param string $clientSecret The client secret.
+     * @return bool True if the solution matches, false otherwise.
+     */
     private static function verifyMemoryPoWLegacy(string $nonce, int $solution, int $difficulty, string $clientSecret): bool
     {
         $size = $difficulty * 1024 * 1024;
@@ -887,6 +1079,17 @@ class ChallengeUtils
         return $finalHash === $solution;
     }
 
+    /**
+     * Verifies a memory PoW solution. Supports both the modern JSON format
+     * (with Merkle proofs) and the legacy numeric format for low difficulties.
+     * Enforces a maximum allowed difficulty to prevent DoS.
+     *
+     * @param string $nonce The challenge nonce.
+     * @param string $solution The client-provided solution (JSON or numeric string).
+     * @param int $difficulty The difficulty (in MB). 0 means the challenge is skipped.
+     * @param string $clientSecret The client secret.
+     * @return bool True if the solution is valid, false otherwise.
+     */
     public static function verifyMemoryPoW(
         string $nonce,
         string $solution,
@@ -972,7 +1175,12 @@ class ChallengeUtils
     }
 
     /**
-     * Émule la multiplication 32-bit `Math.imul` de JavaScript.
+     * Emulates JavaScript's 32-bit signed integer multiplication (Math.imul),
+     * handling overflow correctly.
+     *
+     * @param int $a The first operand.
+     * @param int $b The second operand.
+     * @return int The 32-bit signed result of a * b.
      */
     private static function gmp_imul(int $a, int $b): int
     {
@@ -984,9 +1192,11 @@ class ChallengeUtils
     }
 
     /**
-     * Génère une URL piège signée.
-     * @param string $nonce Le nonce pour signer l'URL.
-     * @return string L'URL piège.
+     * Generates a signed trap URL. The URL is picked from a template and a
+     * signature is appended as a query parameter.
+     *
+     * @param string $nonce The nonce used to sign the URL.
+     * @return string The trap URL.
      */
     public static function generateTrapUrl(string $nonce): string
     {
@@ -999,11 +1209,13 @@ class ChallengeUtils
     }
 
     /**
-     * Vérifie si une URL donnée est une URL piège valide pour un nonce donné.
-     * @param string $path Le chemin de la requête.
-     * @param string $signature La signature provenant de la query string.
-     * @param string $nonce Le nonce à vérifier.
-     * @return bool
+     * Verifies whether a given path and signature form a valid trap URL for
+     * the given nonce. Uses hash_equals for timing-safe comparison.
+     *
+     * @param string $path The request path.
+     * @param string $signature The signature from the query string.
+     * @param string $nonce The nonce to verify against.
+     * @return bool True if the trap URL is valid, false otherwise.
      */
     public static function verifyTrapUrl(string $path, string $signature, string $nonce): bool
     {
@@ -1011,13 +1223,15 @@ class ChallengeUtils
             return false;
         }
         $expectedSignature = substr(hash_hmac('sha256', $nonce . $path, self::getPowSecret()), 0, 16);
-        // Utilise hash_equals pour une comparaison sécurisée contre les attaques temporelles.
+        // Use hash_equals for timing-safe comparison.
         return hash_equals($expectedSignature, $signature);
     }
 
     /**
-     * Charge le contenu du solveur JS pour l'injection inline.
-     * @return string Le code JavaScript du solveur.
+     * Loads the JavaScript solver code for inline injection into challenge pages.
+     * Searches several candidate paths, including WordPress plugin directories.
+     *
+     * @return string The JavaScript solver code, or an empty string if not found.
      */
     private static function getPowSolverCode(): string
     {
@@ -1040,10 +1254,20 @@ class ChallengeUtils
                 return file_get_contents($solverPath) ?: '';
             }
         }
-        self::logError("[ChallengeUtils] Erreur: Le fichier pow.solver.inline.js n'a pas été trouvé à l'emplacement attendu.");
+        self::logError("[ChallengeUtils] Error: The pow.solver.inline.js file was not found at the expected location.");
         return '';
     }
 
+    /**
+     * Generates the HTML page for a proof-of-space challenge, embedding the
+     * solver code and the challenge script. The page initializes local storage,
+     * runs the proof-of-space solver, and redirects with the solution.
+     *
+     * @param array $challengeDetails The challenge details (nonce, sizeMb, queries, path, peerId, peerBlockIdx).
+     * @param string $clientSecret The client secret.
+     * @param array $securityConfig The security configuration.
+     * @return string The generated HTML page.
+     */
     public static function generateSpaceChallengePage(array $challengeDetails, string $clientSecret, array $securityConfig): string
     {
         $nonce = $challengeDetails['nonce'];
@@ -1089,14 +1313,21 @@ class ChallengeUtils
     }
 
     /**
-     * Génère le contenu HTML pour un challenge combiné CPU + Mémoire.
-     * @param array $cpuChallengeDetails
-     * @param int $memoryDifficulty
-     * @param string $clientSecret
-     * @param array $securityConfig
-     * @param array $trapUrls
-     * @param string $originalFingerprint
-     * @return string
+     * Generates the HTML page for a combined CPU + Memory proof-of-work challenge.
+     * The page embeds the solver code, the challenge script, and hidden trap links
+     * (rendered in random tags/positions) to lure malicious crawlers.
+     *
+     * @param array $cpuChallengeDetails The CPU challenge details (nonce, target, path).
+     * @param int $memoryDifficulty The memory difficulty in MB (0 to skip).
+     * @param string $clientSecret The client secret.
+     * @param array $securityConfig The security configuration.
+     * @param array $trapUrls The list of trap URLs to embed.
+     * @param string $originalFingerprint The original client fingerprint.
+     * @param string $clientIp The client IP.
+     * @param string $tlsSessionId The TLS session ID.
+     * @param string|null $baseBlock Optional pre-computed base block.
+     * @param bool $isHttps Whether the request is over HTTPS.
+     * @return string The generated HTML page.
      */
     public static function generateCombinedPoWChallengePage(
         array $cpuChallengeDetails,
@@ -1191,6 +1422,12 @@ class ChallengeUtils
         );
     }
 
+    /**
+     * Logs an error message using the PHP error log.
+     *
+     * @param string $message The message to log.
+     * @return void
+     */
     private static function logError(string $message): void
     {
         // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Challenge diagnostic logging

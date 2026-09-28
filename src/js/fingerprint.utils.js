@@ -1,5 +1,15 @@
 import {cyrb53} from "./fingerprint.builder.js";
 
+/**
+ * Verifies a Zero-Knowledge Proof (ZKP) of the Schnorr type.
+ * The verification checks that g^s ≡ t * y^c (mod p),
+ * where c is a challenge computed by SHA-256 hashing of (g, y, t).
+ *
+ * @param {string} yStr - The public key y, hex-encoded (without the 0x prefix).
+ * @param {string} tStr - The commitment t, hex-encoded (without the 0x prefix).
+ * @param {string} sStr - The response s, hex-encoded (without the 0x prefix).
+ * @returns {boolean} True if the proof is valid, false otherwise (or on error).
+ */
 export function verifyZkpProof(yStr, tStr, sStr) {
     try {
         const y = BigInt('0x' + yStr);
@@ -19,6 +29,14 @@ export function verifyZkpProof(yStr, tStr, sStr) {
     }
 }
 
+/**
+ * Serializes a value to JSON while escaping dangerous characters
+ * for safe inclusion in HTML/JS (XSS prevention).
+ * Escapes <, >, U+2028, and U+2029.
+ *
+ * @param {*} val - The value to serialize.
+ * @returns {string} The escaped JSON string.
+ */
 export function safeJsonStringify(val) {
     return JSON.stringify(val)
         .replace(/</g, '\\u003c')
@@ -27,6 +45,16 @@ export function safeJsonStringify(val) {
         .replace(/\u2029/g, '\\u2029');
 }
 
+/**
+ * Sanitizes and validates a redirect path to prevent open redirects.
+ * - Strips out disallowed characters.
+ * - Prevents protocol-relative redirects (//evil.com).
+ * - Prevents absolute redirects (http://evil.com).
+ * - Ensures the path starts with a single '/'.
+ *
+ * @param {string} p - The raw redirect path.
+ * @returns {string} The sanitized path (or '/' by default).
+ */
 export function sanitizeRedirectPath(p) {
     if (typeof p !== 'string') return '/';
     let sanitized = p.replace(/[^a-zA-Z0-9\/.\-_~%?&=:@+,;]/g, '');
@@ -49,6 +77,16 @@ export function sanitizeRedirectPath(p) {
     }
     return sanitized.replace(/^\/+/g, '/');
 }
+
+/**
+ * Decodes a polymorphic fingerprint by restoring the original keys
+ * from a mapping of randomized keys.
+ * Expected format: "randKey: value|randKey: value|...".
+ *
+ * @param {string} fpString - The encoded fingerprint.
+ * @param {object} mapping - The mapping object containing `keys` (orig -> rand).
+ * @returns {string} The decoded fingerprint with original keys.
+ */
 export function decodePolymorphicFingerprint(fpString, mapping) {
     if (!fpString || !mapping || !mapping.keys) return fpString;
     const reverseKeys = {};
@@ -127,6 +165,15 @@ export function parseJa3(ja3String) {
     };
 }
 
+/**
+ * Computes modular exponentiation (base^exponent mod modulus) efficiently
+ * using the binary exponentiation method (square-and-multiply).
+ *
+ * @param {bigint} base - The base.
+ * @param {bigint} exponent - The exponent.
+ * @param {bigint} modulus - The modulus.
+ * @returns {bigint} The result of base^exponent mod modulus.
+ */
 export function modPow(base, exponent, modulus) {
     if (modulus === 1n) return 0n;
     let result = 1n;
@@ -142,6 +189,14 @@ export function modPow(base, exponent, modulus) {
 }
 
 
+/**
+ * Computes a simple hash of the IP network by applying a mask (CIDR prefix).
+ * For example, with a prefix of 24, only the first 3 octets are kept.
+ *
+ * @param {string} ip - The IP address in IPv4 format (e.g. "192.168.1.42").
+ * @param {number} [prefix=24] - The network prefix length (in bits).
+ * @returns {string|null} A hexadecimal hash of the network, or null if the IP is invalid.
+ */
 export function hashNetwork(ip, prefix = 24) {
     // Network hash (/24 or /16 mask)
     const parts = ip.split('.');
@@ -157,6 +212,14 @@ export function hashNetwork(ip, prefix = 24) {
     }
     return hash.toString(16);
 }
+
+/**
+ * Checks whether an IP address is a loopback address (localhost).
+ * Handles IPv4, IPv6, and the IPv4-mapped prefix (::ffff:).
+ *
+ * @param {string} ip - The IP address to test.
+ * @returns {boolean} True if the IP is a loopback address, false otherwise.
+ */
 export function isLoopbackIp(ip) {
     if (!ip || typeof ip !== 'string') return true;
     let cleanIp = ip.trim().toLowerCase();
@@ -164,9 +227,16 @@ export function isLoopbackIp(ip) {
         cleanIp = cleanIp.substring(7);
     }
     return cleanIp === '127.0.0.1' || cleanIp === '::1' || cleanIp === 'localhost' ||
-           cleanIp.startsWith('127.') || cleanIp === '0.0.0.0' || cleanIp === '::';
+        cleanIp.startsWith('127.') || cleanIp === '0.0.0.0' || cleanIp === '::';
 }
 
+/**
+ * Normalizes a referer URL by keeping only the protocol and hostname
+ * (e.g. "https://example.com").
+ *
+ * @param {string} referer - The raw referer URL.
+ * @returns {string} The normalized URL, or the original value if invalid.
+ */
 export function normalizeReferer(referer) {
     try {
         const url = new URL(referer);
@@ -176,6 +246,13 @@ export function normalizeReferer(referer) {
     }
 }
 
+/**
+ * Checks whether an IP address belongs to a private range (RFC 1918, loopback,
+ * link-local, CGNAT, etc.). Handles both IPv4 and IPv6 formats.
+ *
+ * @param {string} ip - The IP address to test.
+ * @returns {boolean} True if the IP is private, false otherwise.
+ */
 export function isPrivateIp(ip) {
     if (!ip || typeof ip !== 'string') return false;
     let cleanIp = ip.trim().toLowerCase();
@@ -200,7 +277,16 @@ export function isPrivateIp(ip) {
     }
     return false;
 }
-// Utility parsing functions
+
+/**
+ * Basic User-Agent parsing to extract:
+ * - the browser (with major version),
+ * - the operating system,
+ * - the device type (mobile, tablet, desktop).
+ *
+ * @param {string} ua - The User-Agent string.
+ * @returns {object} An object { browser?, os?, device }.
+ */
 export function parseUserAgent(ua) {
     // Basic User-Agent parser
     const result = {};
