@@ -3,7 +3,6 @@ import hashlib
 import time
 import uuid
 import math
-import ctypes
 import re
 import random
 import logging
@@ -19,6 +18,10 @@ from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.backends import default_backend
 from typing import Dict, Any, List, Optional, Callable, Set
 from dataclasses import dataclass, field
+
+from builder import FingerprintBuilder, cyrb53, imul
+from storage import InMemoryStore, RedisStore, MongoDbStore
+from waf import MaliciousPatterns
 
 # --- UTILS ---
 
@@ -196,13 +199,6 @@ DEFAULT_WEIGHTS = {
     "mtuAnomalyScore": 0.9
 }
 
-def imul(a: int, b: int) -> int:
-    """
-    Emulates JavaScript Math.imul (signed 32-bit integer multiplication).
-    This is crucial for consistent hash calculation between JS and Python.
-    """
-    return ctypes.c_int32((a * b) & 0xffffffff).value
-
 def parse_tcp_syn(binary: bytes) -> Optional[Dict[str, Any]]:
     """Parses raw TCP SYN binary packets to extract TTL, window size, MSS, WS, and SACK."""
     if not binary or len(binary) < 40:
@@ -281,26 +277,6 @@ def classify_tcp_os(fingerprint: Optional[Dict[str, Any]]) -> str:
         return "Linux"
     return "unknown"
 # --- UTILS: Cyrb53 Hash Emulation ---
-
-# Note: This cyrb53 implementation is a direct port from the JavaScript version
-# to ensure cross-language consistency in fingerprint hashing.
-# It relies on the `imul` function for 32-bit integer multiplication emulation.
-
-def cyrb53(string: str, seed: int = 0) -> int:
-    """Deterministic cyrb53 hash ported from JS."""
-    h1 = (0xdeadbeef ^ seed) & 0xffffffff
-    h2 = (0x41c6ce57 ^ seed) & 0xffffffff
-    
-    for char in string:
-        ch = ord(char)
-        h1 = imul(h1 ^ ch, 2654435761)
-        h2 = imul(h2 ^ ch, 1597334677)
-        
-    h1 = imul(h1 ^ (h1 >> 16), 2246822507) ^ imul(h2 ^ (h2 >> 13), 3266489909)
-    h2 = imul(h2 ^ (h2 >> 16), 2246822507) ^ imul(h1 ^ (h1 >> 13), 3266489909)
-    
-    unsigned_h1 = h1 & 0xffffffff
-    return 4294967296 * (2097151 & h2) + unsigned_h1
 
 def get_ip_subnet(ip: str, ipv4_prefix: int = 24, ipv6_prefix: int = 48) -> Optional[str]:
     """Calculates the subnet of an IP address (IPv4 or IPv6)."""
@@ -755,113 +731,6 @@ class RequestContext:
 
     def get_header(self, name: str) -> Optional[str]:
         return self.headers.get(name.lower())
-
-class InMemoryStore:
-    """
-    A simple in-memory key-value store implementation with TTL support.
-    This store is suitable for development and testing, but not recommended for production
-    environments as data is lost upon application restart.
-    """
-    def __init__(self):
-        self._store: Dict[str, Any] = {}
-        self._expires: Dict[str, float] = {}
-
-    async def get(self, key: str) -> Optional[Any]:
-        """Retrieves a value associated with a key, checking for expiration."""
-        if key in self._expires and self._expires[key] < time.time():
-            await self.delete(key)
-            return None
-        return self._store.get(key)
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        """Stores a value associated with a key, with an optional time-to-live (TTL) in seconds."""
-        self._store[key] = value
-        if ttl:
-            self._expires[key] = time.time() + ttl
-        elif key in self._expires:
-            del self._expires[key]
-
-    async def has(self, key: str) -> bool:
-        """Checks if a key exists and is not expired in the store."""
-        if key in self._expires and self._expires[key] < time.time():
-            await self.delete(key)
-            return False
-        return key in self._store
-    async def delete(self, key: str) -> None:
-        """Deletes a key from the store."""
-        self._store.pop(key, None)
-        self._expires.pop(key, None)
-
-
-# --- CORE: FingerprintBuilder ---
-class FingerprintBuilder:
-    """Generates a composite device fingerprint hash."""
-    def __init__(self):
-        """Initializes the FingerprintBuilder."""
-        self.components: Dict[str, int] = {}
-
-    def add(self, group: str, value: Optional[str]) -> "FingerprintBuilder":
-        """
-        Adds a component to the composite fingerprint.
-        The value is hashed using cyrb53 for anonymization and size reduction.
-
-        Args:
-            group (str): The name of the component group (e.g., 'hw', 'screen', 'geo').
-            value (Optional[str]): The raw value to be hashed.
-
-        Returns:
-            FingerprintBuilder: The builder instance for chaining.
-        """
-        if value:
-            self.components[group] = cyrb53(value)
-        return self
-
-    def __str__(self) -> str:
-        """Generates the final fingerprint string by sorting components deterministically."""
-        sorted_components = sorted(self.components.items())
-        return "|".join(f"{k}:{v}" for k, v in sorted_components)
-
-    @staticmethod
-    def compare(fp1: str, fp2: str) -> float:
-        """
-        Compares two fingerprints and returns a similarity score (0 to 1).
-        Weights are applied to give more importance to stable invariants (Canvas, GPU, JA3).
-
-        Args:
-            fp1 (str): The first fingerprint string.
-            fp2 (str): The second fingerprint string.
-
-        Returns:
-            float: A similarity score between 0.0 (completely different) and 1.0 (identical).
-        """
-        if not fp1 or not fp2:
-            return 0.0
-        
-        def parse(fp_str: str) -> Dict[str, str]:
-            """Helper to parse a fingerprint string into a dictionary of components."""
-            return dict(part.split(":", 1) for part in fp_str.split("|") if ":" in part)
-
-        map1, map2 = parse(fp1), parse(fp2)
-        volatile_keys = {
-            "ch_ua", "ch_platform", "ch_mobile", "cookie_keys", "network", "http_ver"
-        }
-        weights = {
-            "cvs": 5.0, "gpu": 4.0, "ja3": 3.5, "ua": 2.0, "hw": 1.5, "scr": 1.0, "os": 0.8
-        }
-
-        weighted_matches = 0.0
-        total_weight = 0.0
-        all_keys = set(map1.keys()) | set(map2.keys())
-
-        for key in all_keys:
-            if key in volatile_keys:
-                continue
-            weight = weights.get(key, 0.5)
-            total_weight += weight
-            if map1.get(key) == map2.get(key):
-                weighted_matches += weight
-
-        return weighted_matches / total_weight if total_weight > 0 else 0.0
-
 
 # --- CORE: Challenge Utilities ---
 class ChallengeUtils:
@@ -2890,141 +2759,6 @@ class RequestUtils:
                 score += 35.0
 
         return min(100.0, score)
-
-class RedisStore:
-    """
-    Production-grade Redis adapter for FingerprintEngine.
-    Handles serialization, deserialization, and Set-to-list conversions.
-    """
-    def __init__(self, redis_client):
-        self._client = redis_client
-
-    def _serialize(self, value: Any) -> str:
-        def convert(obj):
-            if isinstance(obj, set):
-                return list(obj)
-            return obj
-        return json.dumps(value, default=convert)
-
-    def _deserialize(self, value: str) -> Any:
-        obj = json.loads(value)
-        if isinstance(obj, dict) and "ips" in obj and isinstance(obj["ips"], list):
-            obj["ips"] = set(obj["ips"])
-        return obj
-
-    async def get(self, key: str) -> Optional[Any]:
-        val = await self._client.get(key)
-        if not val:
-            return None
-        return self._deserialize(val.decode("utf-8") if isinstance(val, bytes) else val)
-
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        val_str = self._serialize(value)
-        if ttl:
-            await self._client.setex(key, ttl, val_str)
-        else:
-            await self._client.set(key, val_str)
-
-    async def has(self, key: str) -> bool:
-        return await self._client.exists(key) > 0
-
-    async def delete(self, key: str) -> None:
-        await self._client.delete(key)
-
-class MongoDbStore:
-    """
-    Production-grade MongoDB adapter using motor or pymongo async.
-    Includes dynamic active expiration and Set-to-list conversions.
-    """
-    def __init__(self, collection):
-        self._collection = collection
-
-    def _serialize(self, value: Any) -> str:
-        def convert(obj):
-            if isinstance(obj, set):
-                return list(obj)
-            return obj
-        return json.dumps(value, default=convert)
-
-    def _deserialize(self, value: str) -> Any:
-        obj = json.loads(value)
-        if isinstance(obj, dict) and "ips" in obj and isinstance(obj["ips"], list):
-            obj["ips"] = set(obj["ips"])
-        return obj
-
-    async def get(self, key: str) -> Optional[Any]:
-        doc = await self._collection.find_one({"_id": key})
-        if not doc:
-            return None
-        if "expiresAt" in doc:
-            expires_at = doc["expiresAt"]
-            if expires_at.tzinfo is None:
-                now = datetime.datetime.utcnow()
-            else:
-                now = datetime.datetime.now(datetime.timezone.utc)
-            if expires_at < now:
-                await self.delete(key)
-                return None
-        return self._deserialize(doc["value"])
-
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
-        doc = {
-            "_id": key,
-            "value": self._serialize(value)
-        }
-        if ttl:
-            doc["expiresAt"] = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=ttl)
-        await self._collection.replace_one({"_id": key}, doc, upsert=True)
-
-    async def has(self, key: str) -> bool:
-        doc = await self._collection.find_one({"_id": key}, {"expiresAt": 1})
-        if not doc:
-            return False
-        if "expiresAt" in doc:
-            expires_at = doc["expiresAt"]
-            if expires_at.tzinfo is None:
-                now = datetime.datetime.utcnow()
-            else:
-                now = datetime.datetime.now(datetime.timezone.utc)
-            if expires_at < now:
-                await self.delete(key)
-                return False
-        return True
-
-    async def delete(self, key: str) -> None:
-        await self._collection.delete_one({"_id": key})
-
-    async def init(self) -> None:
-        import pymongo
-        await self._collection.create_index([("expiresAt", pymongo.ASCENDING)], expireAfterSeconds=0)
-
-class MaliciousPatterns:
-    """Provides utilities for recursive WAF detection on inputs."""
-    INJECTION_PATTERNS = {
-        "sql": re.compile(r"(\$ne|' *OR *'1'='1|['\";]\s*--|; ?(DROP|TRUNCATE|DELETE)|UNION SELECT|(?:SLEEP|BENCHMARK)\s*\(|WAITFOR DELAY)", re.IGNORECASE),
-        "log4shell": re.compile(r"\$\{jndi:(ldap|rmi|dns):", re.IGNORECASE),
-        "ssti": re.compile(r"\{\{.*\}\}|\{%.*%\}"),
-        "xxe": re.compile(r"<!ENTITY\s+.*SYSTEM", re.IGNORECASE),
-        "traversal": re.compile(r"(\.\.\/|\.\.)"),
-        "rce": re.compile(r"`.*`|(?:^|[\n;&|]\s*)(?:ping|ls|whoami|cat|rm|ncat|nc|bash|sh|powershell|cmd)\b", re.IGNORECASE),
-        "ssrf": re.compile(r"(?:https?://)?(?:127\.\d+\.\d+\.\d+|169\.254\.169\.254|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|localhost|0\.0\.0\.0|\[[0:]+1\])\b", re.IGNORECASE),
-        "crlf": re.compile(r"[\r\n]|%0[ad]", re.IGNORECASE),
-        "xss": re.compile(r"(<script|javascript:|on\w+\s*=|alert\s*\(|confirm\s*\(|prompt\s*\(|<img\s+src[^>]+onerror|<iframe)", re.IGNORECASE),
-        "openRedirect": re.compile(r"^(https?:)?//(?![^\/]*?(localhost|127\.0\.0\.1))[^\s\/]+", re.IGNORECASE),
-        "lfi": re.compile(r"(?:etc/passwd|win\.ini|boot\.ini|php://filter|data://|zip://)", re.IGNORECASE),
-        "shellshock": re.compile(r"\(\)\s*\{\s*:\s*;\s*\}\s*", re.IGNORECASE),
-        "nosql": re.compile(r"\$(?:eq|ne|gt|gte|lt|lte|in|nin|and|or|nor|not|expr|jsonSchema|mod|regex|text|where|elemMatch)", re.IGNORECASE)
-    }
-
-    @staticmethod
-    def is_malicious(string: str, types_to_detect: Optional[List[str]] = None) -> bool:
-        if not types_to_detect:
-            types_to_detect = [k for k in MaliciousPatterns.INJECTION_PATTERNS.keys() if k != "openRedirect"]
-        for t in types_to_detect:
-            pattern = MaliciousPatterns.INJECTION_PATTERNS.get(t)
-            if pattern and pattern.search(string):
-                return True
-        return False
 
 class MetricsManager:
     """Prometheus-compatible real-time metrics manager."""
