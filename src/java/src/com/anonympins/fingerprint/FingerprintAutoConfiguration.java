@@ -61,6 +61,7 @@ public class FingerprintAutoConfiguration {
         }
         config.put("differentialPrivacy", properties.getDifferentialPrivacy().toMap());
         config.put("dpEpsilon", properties.getDpEpsilon());
+        config.put("pat", properties.getPat().toMap());
         return new FingerprintEngine(config, store);
     }
 

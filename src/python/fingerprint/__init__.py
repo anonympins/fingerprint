@@ -32,6 +32,10 @@ from engine import (
     FastAPIFingerprintMiddleware,
     ProblemManager,
     SecurityProfiles,
+    PatValidator,
+    PatUtils,
+    PrivateAccessToken,
+    PatValidationResult,
 )
 
 __all__ = [
@@ -68,4 +72,8 @@ __all__ = [
     "FastAPIFingerprintMiddleware",
     "ProblemManager",
     "SecurityProfiles",
+    "PatValidator",
+    "PatUtils",
+    "PrivateAccessToken",
+    "PatValidationResult",
 ]

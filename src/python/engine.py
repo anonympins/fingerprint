@@ -47,6 +47,7 @@ from optimization import (
     OptimizationOperators,
     AutoTuner,
 )
+from pat import PatValidator, PatUtils, PrivateAccessToken, PatValidationResult
 from client import FingerprintClient
 from security_profiles import SecurityProfiles
 from key_manager import initialize_ed25519_keys as setup_ed25519_keys, generate_issuer_pem_keys
@@ -96,6 +97,10 @@ __all__ = [
     "FastAPIFingerprintMiddleware",
     "ProblemManager",
     "SecurityProfiles",
+    "PatValidator",
+    "PatUtils",
+    "PrivateAccessToken",
+    "PatValidationResult",
 ]
 
 # --- UTILS ---
@@ -524,6 +529,17 @@ class FingerprintEngine:
         self._last_prune_time: float = time.time()
         self._prune_interval: float = 10.0  # seconds
         self.problem_manager = None
+
+        pat_cfg = config.get("pat", {})
+        trusted_pat_keys = pat_cfg.get("trustedKeys", {})
+        default_pat_pubkey = pat_cfg.get("defaultPublicKey")
+        pat_nonce_ttl = pat_cfg.get("nonceTtl", 86400)
+        self.pat_validator = config.get("patValidator") or PatValidator(
+            trusted_keys=trusted_pat_keys,
+            default_public_key=default_pat_pubkey,
+            nonce_store=self.store,
+            nonce_ttl_seconds=pat_nonce_ttl,
+        )
 
         if config.get("enableUsefulWork"):
             try:
@@ -1466,23 +1482,27 @@ class FingerprintEngine:
         device_id = identity["device_id"]
         device_data = identity["device_data"]
 
-        # Early block for condemned devices
-        if device_data and device_data.get("condemned"):
-            MetricsManager.increment_counter("requests_total", {"status": "blocked"})
-            if self.dry_run:
-                return {"action": "next", "intendedAction": "block"}
-            return {"action": "block", "status": 403, "body": "Forbidden"}
+        # Garde-fous : Si le terminal est condamné ou qu'une attaque applicative certaine est détectée, le token PAT ne protège pas
+        is_condemned = bool(device_data and device_data.get("condemned"))
+        is_certain_attack = self._has_certain_attack(context)
 
-        # Instant check & condemnation for certain attacks (Honeypot or Bot)
-        if self._has_certain_attack(context):
+        if is_condemned or is_certain_attack:
             if device_data:
                 device_data["condemned"] = True
+                device_data["webauthnVerified"] = False
                 await self.store.set(f"device:{device_id}", device_data)
             self._fast_path_cache[client_ip] = (current_time + 60.0, "block")
             MetricsManager.increment_counter("requests_total", {"status": "blocked"})
             if self.dry_run:
                 return {"action": "next", "intendedAction": "block"}
             return {"action": "block", "status": 403, "body": "Forbidden"}
+
+        # Validation du jeton PAT (Private Access Tokens RFC 9578)
+        has_valid_pat = False
+        if hasattr(self, "pat_validator") and self.pat_validator:
+            pat_res = await self.pat_validator.process_request_headers(context.headers)
+            if pat_res and pat_res.is_verified:
+                has_valid_pat = True
 
         # Check for challenge submission
         pow_nonce = context.query_params.get("pow_nonce")
@@ -1650,7 +1670,11 @@ class FingerprintEngine:
             if has_valid_ticket:
                 MetricsManager.increment_counter("tickets_valid_total")
 
+        has_valid_ticket = has_valid_ticket or has_valid_pat
+
         suspicion_vector = await self.get_suspicion_vector(context)
+        if has_valid_pat:
+            suspicion_vector["pat_verified"] = 100.0
         score = self.calculate_final_score(suspicion_vector)
 
         low_threshold = self.thresholds.get("low", 20)
@@ -1679,8 +1703,17 @@ class FingerprintEngine:
 
         high_threshold = self.thresholds.get("high", 75)
         medium_threshold = self.thresholds.get("medium", 45)
-        max_indicators_count = sum(1 for val in suspicion_vector.values() if isinstance(val, (int, float)) and val >= 100.0)
+        max_indicators_count = sum(
+            1 for k, val in suspicion_vector.items()
+            if k not in ("pat_verified", "ticket_valid", "webauthn_verified", "whitelisted", "privacy_pass")
+            and isinstance(val, (int, float)) and val >= 100.0
+        )
         must_rechallenge = (suspicion_vector.get("honeypotScore", 0.0) >= medium_threshold) or (max_indicators_count >= 1)
+
+        if has_valid_ticket and not must_rechallenge:
+            MetricsManager.increment_counter("requests_total", {"status": "passed"})
+            MetricsManager.observe_value("suspicion_score", 0.0, {"action": "passed"})
+            return {"action": "next", "score": 0.0, "vector": suspicion_vector}
 
         low_threshold = self.thresholds.get("low", 20)
 

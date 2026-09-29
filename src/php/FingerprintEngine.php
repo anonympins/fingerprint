@@ -1272,8 +1272,9 @@ class FingerprintEngine
             return $decision;
         }
 
-        // --- PRIVATE ACCESS TOKENS (PAT / RFC 9505 & Privacy Pass) ZERO-FRICTION BYPASS ---
+        // --- PRIVATE ACCESS TOKENS (PAT / RFC 9578 & Privacy Pass) ZERO-FRICTION CHALLENGE EXEMPTION ---
         $rawPatTokens = RequestUtils::extractPrivateAccessTokens($context);
+        $hasValidPat = false;
         if (!empty($rawPatTokens)) {
             $patConfig = $this->securityConfig['pat'] ?? [];
             foreach ($rawPatTokens as $rawToken) {
@@ -1285,16 +1286,12 @@ class FingerprintEngine
                         if ($isValid) {
                             $nonceTtl = $patConfig['nonceTtl'] ?? 86400;
                             $store->set($nonceKey, true, $nonceTtl);
-                            $this->log('Private Access Token (PAT) cryptographically verified - granting zero-friction bypass', [
+                            $this->log('Private Access Token (PAT) cryptographically verified - challenge exemption enabled', [
                                 'tokenType' => $parsedToken['tokenType'],
                                 'tokenKeyId' => $parsedToken['tokenKeyId']
                             ]);
-                            $decision = [
-                                'action' => 'next',
-                                'score' => 0.0,
-                                'vector' => ['pat_verified' => 100.0, 'privacy_pass' => 100.0]
-                            ];
-                            return $decision;
+                            $hasValidPat = true;
+                            break;
                         }
                     }
                 }
@@ -1365,14 +1362,12 @@ class FingerprintEngine
                                     $isMemValid = true;
                                 } else {
                                     $memSolution = $context->query['pow_solution_mem'] ?? null;
-                                    $isMemValid = ($memSolution !== null && $memSolution !== '')
-                                        ? ChallengeUtils::verifyMemoryPoW(
+                                    $isMemValid = $memSolution !== null && $memSolution !== '' && ChallengeUtils::verifyMemoryPoW(
                                             $powNonce,
                                             (string)$memSolution,
                                             $challengeContext['memDifficulty'] ?? 0,
                                             $challengeContext['clientSecret'] ?? ''
-                                        )
-                                        : false;
+                                        );
                                 }
                                 $isValid = $isValid && $isMemValid;
                             }
@@ -1490,7 +1485,7 @@ class FingerprintEngine
         $deviceId = $context->cookies['device_id'] ?? '';
         $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
         $allowRoaming = $this->securityConfig['allowCrossNetworkRoaming'] ?? false;
-        if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie, $deviceId, $currentDeviceHash, $allowRoaming, $zkpProof)) {
+        if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie, $deviceId, $currentDeviceHash, $allowRoaming, $zkpProof) || $hasValidPat) {
             $hasValidTicket = true;
             MetricsManager::incrementCounter('tickets_valid_total');
             // We do not return immediately to allow re-challenging.
@@ -1517,6 +1512,9 @@ class FingerprintEngine
         }
 
         $suspicionVector = $context->preCalculatedVector ?? $this->getSuspicionVector($context, $suspicionVector);
+        if ($hasValidPat) {
+            $suspicionVector['pat_verified'] = 100.0;
+        }
         $finalScore = $context->preCalculatedScore ?? $this->calculateFinalScore($suspicionVector);
         $this->log('Suspicion vector and final score calculated', [
             'finalScore' => round($finalScore, 2),

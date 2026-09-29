@@ -5352,9 +5352,20 @@ export class FingerprintEngine {
       return { action: 'next', score: 0, vector: {} };
     }
 
-    // --- PRIVATE ACCESS TOKENS (PAT / RFC 9505 & Privacy Pass) ZERO-FRICTION BYPASS ---
+    // --- PRIVATE ACCESS TOKENS (PAT / RFC 9578 & Privacy Pass) ZERO-FRICTION CHALLENGE EXEMPTION ---
     const rawPatTokens = extractPrivateAccessTokens(requestContext.headers);
+    let hasValidPat = false;
     if (rawPatTokens.length > 0) {
+        // Même avec un PAT valide, une attaque applicative avérée ou un terminal condamné doit être neutralisé
+        if (deviceData?.condemned || this._hasCertainAttack(requestContext)) {
+            return {
+                action: 'block',
+                status: 404,
+                body: 'Forbidden',
+                score: 100,
+                vector: { honeypotScore: 100 }
+            };
+        }
         const patConfig = this.securityConfig.pat || {};
         for (const rawToken of rawPatTokens) {
             const parsedToken = parsePrivateAccessToken(rawToken);
@@ -5367,18 +5378,12 @@ export class FingerprintEngine {
                         // Anti-replay: cache nonce with 24-hour TTL
                         const nonceTtl = patConfig.nonceTtl || 86400;
                         await store.set(nonceKey, true, nonceTtl);
-                        this._log('Private Access Token (PAT) cryptographically verified - granting zero-friction bypass', {
+                        this._log('Private Access Token (PAT) cryptographically verified - challenge exemption enabled', {
                             tokenType: parsedToken.tokenType,
                             tokenKeyId: parsedToken.tokenKeyId
                         });
-                        const decision = {
-                            action: 'next',
-                            score: 0.0,
-                            vector: { pat_verified: 100.0, privacy_pass: 100.0 },
-                            intendedAction: 'next'
-                        };
-                        if (newCookie) decision.newCookieForResponse = newCookie;
-                        return decision;
+                        hasValidPat = true;
+                        break;
                     }
                 }
             }
@@ -5499,6 +5504,9 @@ export class FingerprintEngine {
         // This means it claimed to be a bot but failed verification.
         // This is a strong signal of spoofing.
         suspicionVector.tlsSpoofingScore = Math.max(suspicionVector.tlsSpoofingScore || 0, 95);
+    }
+    if (hasValidPat) {
+        suspicionVector.pat_verified = 100.0;
     }
     let finalScore = preCalculatedScore !== null ? preCalculatedScore : this.calculateFinalScore(suspicionVector);
 
@@ -5988,7 +5996,7 @@ export class FingerprintEngine {
     // OU
     // 2. La requête est très suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
     const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
-    const hasValidTicket = await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof);
+    const hasValidTicket = (await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof)) || hasValidPat;
     // Correction : Pour éviter une boucle infinie de challenges (qui mène à l'erreur 429),
     // on fait confiance au ticket valide tant qu'il n'a pas expiré.
     const maxIndicatorsCount = Object.values(suspicionVector).filter(val => typeof val === 'number' && val >= 100).length;
