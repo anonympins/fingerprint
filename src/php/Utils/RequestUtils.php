@@ -9,6 +9,8 @@ use Anonympins\Fingerprint\FingerprintBuilder;
 use Anonympins\Fingerprint\Optimization\Optimization;
 use Anonympins\Fingerprint\RequestContext;
 use Anonympins\Fingerprint\Store\StoreManager;
+use Anonympins\Fingerprint\AsnLookupEngine;
+use Anonympins\Fingerprint\NetworkProfile;
 
 /**
  * Classe utilitaire pour l'analyse des requêtes et le calcul des scores de suspicion.
@@ -1021,7 +1023,7 @@ class RequestUtils
      * @param array<string, mixed> $deviceData
      * @return array{'historyScore': float, 'rotationScore': float}
      */
-    public static function getBehavioralIndicators(RequestContext $context, array &$deviceData): array
+    public static function getBehavioralIndicators(RequestContext $context, array &$deviceData, ?NetworkProfile $netProfile = null): array
     {
         $now = time() * 1000;
         $clientIp = $context->clientIp;
@@ -1089,6 +1091,11 @@ class RequestUtils
         $maxIpsPerDevice = 15;
         $freeIpChanges = 3;
         $historyScore = min(100.0, (max(0, count($deviceData['ips']) - $freeIpChanges) / $maxIpsPerDevice) * 100);
+        
+        // Mobile CGNAT : désactivation/amortissement de la pénalité de rotation rapide d'IP
+        if ($netProfile !== null && $netProfile->isToleranceRotation()) {
+            $historyScore = min($historyScore, 10.0);
+        }
         // Score de rotation basé sur les changements rapides de fingerprint
         $rotationScore = min(100.0, (($deviceData['rapidChangeCount'] ?? 0) / $maxRapidChanges) * 100);
 
@@ -1858,18 +1865,20 @@ class RequestUtils
      */
     public static function getIpReputationScore(string $ip): float
     {
+        $profile = AsnLookupEngine::getInstance()->lookup($ip);
+        $baseScore = $profile->getBaseScore();
         $store = StoreManager::getStore();
         $key = "ip-reputation:{$ip}";
         $data = $store->get($key);
         if ($data === null) {
-            return 0.0;
+            return $baseScore;
         }
 
         $now = time();
         $hoursPassed = ($now - $data['lastUpdate']) / 3600;
         $decay = (int)floor($hoursPassed * 2); // Décroissance de 2 points par heure
 
-        return (float)max(0.0, $data['score'] - $decay);
+        return (float)max($baseScore, $data['score'] - $decay);
     }
 
     /**
@@ -2693,11 +2702,19 @@ class RequestUtils
     /**
      * Calcule un score d'incohérence analogique et lisse plafonnant à 99.9 max.
      */
-    public static function calculateAnalogInconsistencyScore(float $consistencyScore, float $inflectionPoint = 0.72, float $steepness = 12.0): float
+    public static function calculateAnalogInconsistencyScore(float $consistencyScore, $inflectionOrProfile = 0.72, float $steepness = 12.0): float
     {
         $s = max(0.0, min(1.0, $consistencyScore));
         if ($s >= 0.98) {
             return 0.0;
+        }
+
+        if ($inflectionOrProfile instanceof NetworkProfile) {
+            $inflectionPoint = $inflectionOrProfile->getInflectionPoint();
+        } elseif (is_array($inflectionOrProfile)) {
+            $inflectionPoint = (float)($inflectionOrProfile['inflectionPoint'] ?? $inflectionOrProfile['inflection_point'] ?? 0.72);
+        } else {
+            $inflectionPoint = (float)$inflectionOrProfile;
         }
 
         $asymptote = 99.9;

@@ -1195,11 +1195,15 @@ public class FingerprintEngine {
         }
 
         // Gather metrics and scores
+        NetworkProfile netProfile = AsnLookupEngine.getInstance().lookup(context.clientIp);
         double similarity = FingerprintBuilder.compare(deviceData != null ? (String) deviceData.get("initialDeviceHash") : "", currentDeviceHash);
-        double similarityThreshold = ((Number) config.getOrDefault("similarityThreshold", 0.72)).doubleValue();
+        double defaultInflection = netProfile != null ? netProfile.getInflectionPoint() : 0.72;
+        double similarityThreshold = config.containsKey("similarityThreshold")
+                ? ((Number) config.get("similarityThreshold")).doubleValue()
+                : defaultInflection;
         double inconsistencyScore = calculateAnalogInconsistencyScore(similarity, similarityThreshold, 12.0);
 
-        Map<String, Double> behavioral = RequestUtils.getBehavioralIndicators(context, deviceData);
+        Map<String, Double> behavioral = RequestUtils.getBehavioralIndicators(context, deviceData, netProfile);
         double historyScore = behavioral.getOrDefault("historyScore", 0.0);
         double rotationScore = behavioral.getOrDefault("rotationScore", 0.0);
 

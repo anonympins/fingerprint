@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, urlencode
+from asn_lookup import default_asn_lookup, NetworkProfile
 
 from builder import cyrb53
 from optimization import Optimization
@@ -249,17 +250,30 @@ class RequestUtils:
     @staticmethod
     def calculate_analog_inconsistency_score(
         consistency_score: float,
-        inflection_point: float = 0.72,
+        inflection_or_profile: Any = 0.72,
         steepness: float = 12.0
     ) -> float:
         s = max(0.0, min(1.0, float(consistency_score)))
         if s >= 0.98:
             return 0.0
 
+        if isinstance(inflection_or_profile, (int, float)):
+            inflection_point = float(inflection_or_profile)
+            k = steepness
+        elif hasattr(inflection_or_profile, "inflection_point"):
+            inflection_point = float(inflection_or_profile.inflection_point)
+            k = getattr(inflection_or_profile, "steepness", steepness)
+        elif isinstance(inflection_or_profile, dict):
+            inflection_point = float(inflection_or_profile.get("inflection_point", inflection_or_profile.get("inflectionPoint", 0.72)))
+            k = float(inflection_or_profile.get("steepness", steepness))
+        else:
+            inflection_point = 0.72
+            k = steepness
+
         asymptote = 99.9
-        raw = 1.0 / (1.0 + math.exp(steepness * (s - inflection_point)))
-        min_val = 1.0 / (1.0 + math.exp(steepness * (1.0 - inflection_point)))
-        max_val = 1.0 / (1.0 + math.exp(steepness * (0.0 - inflection_point)))
+        raw = 1.0 / (1.0 + math.exp(k * (s - inflection_point)))
+        min_val = 1.0 / (1.0 + math.exp(k * (1.0 - inflection_point)))
+        max_val = 1.0 / (1.0 + math.exp(k * (0.0 - inflection_point)))
         normalized = ((raw - min_val) / (max_val - min_val)) * asymptote
         return min(asymptote, round(normalized, 1))
 
@@ -1002,13 +1016,14 @@ class RequestUtils:
 
     @staticmethod
     async def get_ip_reputation_score(store, ip: str) -> float:
+        net_profile = default_asn_lookup.lookup(ip)
         key = f"ip-reputation:{ip}"
         data = await store.get(key)
-        if not data: return 0.0
+        if not data: return net_profile.base_score
         now = time.time()
         hours_passed = (now - data.get("lastUpdate", now)) / 3600.0
         decay = int(math.floor(hours_passed * 2))
-        return max(0.0, float(data.get("score", 0.0) - decay))
+        return max(net_profile.base_score, float(data.get("score", 0.0) - decay))
 
     @staticmethod
     async def update_ip_reputation_score(store, ip: str, change: float) -> None:

@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.backends import default_backend
 from typing import Dict, Any, List, Optional, Callable, Set, Union
 
+from asn_lookup import default_asn_lookup, NetworkProfile, AsnLookupEngine
 from utils import get_ip_subnet, is_loopback_ip, get_ip_common_prefix_length
 from challenge_utils import ChallengeUtils
 from request_utils import (
@@ -57,6 +58,9 @@ __all__ = [
     "RequestContext",
     "FingerprintEngine",
     "BlockList",
+    "NetworkProfile",
+    "AsnLookupEngine",
+    "default_asn_lookup",
     "ChallengeUtils",
     "RequestUtils",
     "calculate_analog_inconsistency_score",
@@ -965,7 +969,7 @@ class FingerprintEngine:
 
         return {"device_id": device_id, "device_data": device_data, "new_cookie": new_cookie, "cookie_dropping_score": cookie_dropping_score}
 
-    async def get_behavioral_indicators(self, context: RequestContext, device_data: Dict[str, Any]) -> Dict[str, float]:
+    async def get_behavioral_indicators(self, context: RequestContext, device_data: Dict[str, Any], net_profile: Optional[NetworkProfile] = None) -> Dict[str, float]:
         now = int(time.time() * 1000)
         client_ip = context.client_ip
         current_fp = self.get_composite_device_hash(context)
@@ -1003,6 +1007,9 @@ class FingerprintEngine:
 
         max_ips, free_ips = 15, 3
         history_score = min(100.0, (max(0, len(device_data["ips"]) - free_ips) / max_ips) * 100.0)
+        if net_profile and getattr(net_profile, "tolerance_rotation", False):
+            history_score = min(history_score, 10.0)
+
         rotation_score = min(100.0, (device_data.get("rapidChangeCount", 0) / 3.0) * 100.0)
         return {"historyScore": history_score, "rotationScore": rotation_score}
 
@@ -1015,6 +1022,7 @@ class FingerprintEngine:
         device_data = identity["device_data"]
         device_id = identity["device_id"]
         cookie_dropping_score = identity.get("cookie_dropping_score", 0.0)
+        net_profile = default_asn_lookup.lookup(context.client_ip)
 
         if device_data and device_data.get("condemned"):
             suspicion_vector["honeypotScore"] = 100.0
@@ -1023,10 +1031,10 @@ class FingerprintEngine:
         # Smooth analog inconsistency score
         current_hash = self.get_composite_device_hash(context)
         similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash") or "", current_hash)
-        similarity_threshold = float(self.config.get("similarityThreshold", 0.72))
+        similarity_threshold = float(self.config.get("similarityThreshold", net_profile.inflection_point))
         inconsistency_score = RequestUtils.calculate_analog_inconsistency_score(similarity, similarity_threshold)
 
-        behavioral_indicators = await self.get_behavioral_indicators(context, device_data)
+        behavioral_indicators = await self.get_behavioral_indicators(context, device_data, net_profile)
         history_score = behavioral_indicators["historyScore"]
         rotation_score = behavioral_indicators["rotationScore"]
 

@@ -9,6 +9,8 @@ import java.net.InetAddress;
 import java.security.NoSuchAlgorithmException;
 import java.net.UnknownHostException;
 
+import com.anonympins.fingerprint.AsnLookupEngine;
+import com.anonympins.fingerprint.NetworkProfile;
 import com.anonympins.fingerprint.FingerprintBuilder;
 import com.anonympins.fingerprint.IStore;
 import com.anonympins.fingerprint.RequestContext;
@@ -17,6 +19,12 @@ public class RequestUtils {
 
     @SuppressWarnings("unchecked")
     public static Map<String, Double> getBehavioralIndicators(RequestContext context, Map<String, Object> deviceData) {
+        NetworkProfile profile = AsnLookupEngine.getInstance().lookup(context.clientIp);
+        return getBehavioralIndicators(context, deviceData, profile);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Double> getBehavioralIndicators(RequestContext context, Map<String, Object> deviceData, NetworkProfile netProfile) {
         Map<String, Double> result = new HashMap<>();
         double historyScore = 0.0;
         double rotationScore = 0.0;
@@ -82,6 +90,11 @@ public class RequestUtils {
             }
 
             historyScore = Math.min(100.0, (Math.max(0, ips.size() - 3) / 15.0) * 100.0);
+
+            // Tolérance Mobile CGNAT : désactivation/amortissement de la pénalité de rotation rapide d'IP
+            if (netProfile != null && netProfile.isToleranceRotation()) {
+                historyScore = Math.min(historyScore, 10.0);
+            }
             rotationScore = Math.min(100.0, (rapidChangeCount / (double) maxRapidChanges) * 100.0);
         }
 
@@ -1980,7 +1993,21 @@ public class RequestUtils {
     }
 
     public static double getIpReputationScore(IStore store, String clientIp) {
-        return 0.0;
+        NetworkProfile profile = AsnLookupEngine.getInstance().lookup(clientIp);
+        double baseScore = profile.getBaseScore();
+        if (store == null || clientIp == null) {
+            return baseScore;
+        }
+        Object dataObj = store.get("ip-reputation:" + clientIp);
+        if (dataObj instanceof Map) {
+            Map<?, ?> data = (Map<?, ?>) dataObj;
+            long lastUpdate = data.get("lastUpdate") instanceof Number ? ((Number) data.get("lastUpdate")).longValue() : System.currentTimeMillis();
+            double storedScore = data.get("score") instanceof Number ? ((Number) data.get("score")).doubleValue() : baseScore;
+            long hoursPassed = (System.currentTimeMillis() - lastUpdate) / (1000 * 3600);
+            double decay = Math.floor(hoursPassed * 2.0);
+            return Math.max(baseScore, storedScore - decay);
+        }
+        return baseScore;
     }
 
     /**

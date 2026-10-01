@@ -5,6 +5,7 @@ import {Worker} from "node:worker_threads";
 import {getProblemManager, problemManager} from "./problem-manager.js";
 import {Optimization} from "./library.js";
 import {cyrb53, FingerprintBuilder} from "./fingerprint.builder.js";
+import {defaultAsnLookup, NetworkProfile} from "./asn-lookup.js";
 import {DynamicWasmGenerator} from "./dynamic-wasm.js";
 import {writeFileSync, readFileSync, existsSync, promises as fsPromises} from "node:fs";
 import {fileURLToPath} from "node:url";
@@ -3438,18 +3439,26 @@ async function updateSubnetMetrics(context, deviceId, finalScore) {
 /**
  * Calcule un score d'incohérence analogique lisse plafonnant à une asymptote de 99.9.
  * @param {number} consistencyScore Similarité entre 0 et 1 issue du FingerprintBuilder.
- * @param {number} [inflectionPoint=0.72] Point d'inflexion où la suspicion accélère.
+ * @param {number|object} [inflectionOrProfile=0.72] Point d'inflexion ou profil réseau/IP.
  * @param {number} [steepness=12] Raideur de la transition sigmoïdale.
  * @returns {number} Score de 0 à 99.9 sans saut de palier ni certitude absolue à 100.
  */
-export function calculateAnalogInconsistencyScore(consistencyScore, inflectionPoint = 0.72, steepness = 12) {
+export function calculateAnalogInconsistencyScore(consistencyScore, inflectionOrProfile = 0.72, steepness = 12) {
     const s = Math.max(0.0, Math.min(1.0, consistencyScore));
     if (s >= 0.98) return 0.0;
 
+    let inflectionPoint = typeof inflectionOrProfile === 'number'
+        ? inflectionOrProfile
+        : (inflectionOrProfile?.inflectionPoint ?? 0.72);
+    
+    const k = typeof inflectionOrProfile === 'object' && inflectionOrProfile?.steepness !== undefined
+        ? inflectionOrProfile.steepness
+        : steepness;
+
     const asymptote = 99.9;
-    const raw = 1.0 / (1.0 + Math.exp(steepness * (s - inflectionPoint)));
-    const minVal = 1.0 / (1.0 + Math.exp(steepness * (1.0 - inflectionPoint)));
-    const maxVal = 1.0 / (1.0 + Math.exp(steepness * (0.0 - inflectionPoint)));
+    const raw = 1.0 / (1.0 + Math.exp(k * (s - inflectionPoint)));
+    const minVal = 1.0 / (1.0 + Math.exp(k * (1.0 - inflectionPoint)));
+    const maxVal = 1.0 / (1.0 + Math.exp(k * (0.0 - inflectionPoint)));
     const normalized = ((raw - minVal) / (maxVal - minVal)) * asymptote;
 
     return Math.min(asymptote, Math.round(normalized * 10.0) / 10.0);
@@ -3625,13 +3634,14 @@ async function getBotnetClusterScore(context, stableFpHash) {
  */
 async function getIpReputationScore(ip) {
   const key = `ip-reputation:${ip}`;
+  const netProfile = defaultAsnLookup.lookup(ip);
   const data = await store.get(key);
-  if (!data) return 0;
+  if (!data) return netProfile.baseScore;
   
   const now = Date.now();
   const hoursPassed = (now - data.lastUpdate) / (1000 * 60 * 60);
   const decay = Math.floor(hoursPassed * 2); // Decay 2 points per hour of inactivity
-  return Math.max(0, data.score - decay);
+  return Math.max(netProfile.baseScore, data.score - decay);
 }
 
 /**
@@ -3962,7 +3972,7 @@ async function resolveRequestIdentity(context, securityConfig = {}) {
  * @param {object} deviceData - The device's activity data.
  * @returns {Promise<{historyScore: number, rotationScore: number}>}
  */
-async function getBehavioralIndicators(context, deviceData) {
+async function getBehavioralIndicators(context, deviceData, netProfile = null) {
   const rapidChangeThresholdMs = 2000; // 2 secondes
   const maxRapidChanges = 3;
 
@@ -4040,12 +4050,17 @@ async function getBehavioralIndicators(context, deviceData) {
     : MAX_DISTINCT_IPS_PER_DEVICE;
   const freeIpChanges = isSharedIp ? 1 : 3;
 
-  const historyScore = Math.min(
+  let historyScore = Math.min(
     100,
     (Math.max(0, deviceData.ips.size - freeIpChanges) /
       (maxIpsForDevice - freeIpChanges)) *
       100,
   );
+
+  // Mobile CGNAT : désactivation/amortissement de la pénalité de rotation rapide d'IP
+  if (netProfile?.toleranceRotation) {
+    historyScore = Math.min(historyScore, 10.0);
+  }
 
   // Score based on rapid identity rotation (0-100)
   const rotationScore = Math.min(
@@ -4177,6 +4192,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       // Execute non-interdependent asynchronous operations in parallel
     const zkpProof = (context.getHeader ? context.getHeader('x-zkp-proof') : null) || (context.headers ? context.headers['x-zkp-proof'] : null) || (context.query ? context.query['pow_zkp'] : null) || (context.queryParams ? context.queryParams['pow_zkp'] : null) || '';
     const zkpY = zkpProof ? zkpProof.split(":")[0] : null;
+    const netProfile = defaultAsnLookup.lookup(clientIp);
 
     const [
         behavioral,
@@ -4187,7 +4203,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         { botnetClusterScore },
         _ // store.set result
       ] = await Promise.all([
-        getBehavioralIndicators(context, deviceData), // This modifies deviceData, so it must be done before saving deviceData
+        getBehavioralIndicators(context, deviceData, netProfile), // This modifies deviceData, so it must be done before saving deviceData
         getThreatIntelScore(context, zkpY, securityConfig), // NOUVEAU: Score de Threat Intelligence Fédéré
         getTlsSpoofingScore(context),
         getSubnetScore(context, deviceId, securityConfig),
@@ -4198,7 +4214,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
       // Synchronous calculations
       const { headerAnomalyScore } = getHeaderAnomalies(context);
-    const similarityThreshold = securityConfig?.similarityThreshold ?? 0.72;
+    const similarityThreshold = securityConfig?.similarityThreshold ?? netProfile.inflectionPoint;
     const inconsistencyScore = calculateAnalogInconsistencyScore(consistencyScore, similarityThreshold);
 
       const { behaviorScore } = getBehaviorScore(context); // Appel de la fonction
@@ -7390,6 +7406,8 @@ export const powMiddleware = (securityConfig) => {
  * This is a common pattern to allow mocking of ES module functions.
  */
 export const __internal = {
+    defaultAsnLookup,
+    NetworkProfile,
     get store() { return store; }, // Export the store for testing
     checkChallengeRateLimit,
     getDeviceHash,

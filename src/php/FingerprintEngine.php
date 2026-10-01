@@ -895,12 +895,13 @@ class FingerprintEngine
         // --- Computation of the various suspicion scores ---
 
         // Fingerprint inconsistency score (moved here to be with the others)
+        $netProfile = AsnLookupEngine::getInstance()->lookup($context->clientIp);
         $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
         $consistencyScore = FingerprintBuilder::compare($deviceData['initialDeviceHash'] ?? '', $currentDeviceHash);
-        $similarityThreshold = (float)($this->securityConfig['similarityThreshold'] ?? 0.72);
+        $similarityThreshold = (float)($this->securityConfig['similarityThreshold'] ?? $netProfile->getInflectionPoint());
         $inconsistencyScore = RequestUtils::calculateAnalogInconsistencyScore($consistencyScore, $similarityThreshold);
 
-        $behavioral = RequestUtils::getBehavioralIndicators($context, $deviceData);
+        $behavioral = RequestUtils::getBehavioralIndicators($context, $deviceData, $netProfile);
 
         // Header anomaly score
         $headerAnomalies = RequestUtils::getHeaderAnomalies($context);
