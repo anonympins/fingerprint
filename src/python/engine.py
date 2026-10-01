@@ -1402,8 +1402,6 @@ class FingerprintEngine:
 
                 await send_report(decoy_zkp_y, decoy_ts)
 
-        await asyncio.gather(*(send_one(peer) for peer in peers), return_exceptions=True)
-
     def _verify_ed25519_signature(self, message: str, signature_hex: str) -> bool:
         return ChallengeUtils.verify_ed25519_signature(message, signature_hex, self.config)
 

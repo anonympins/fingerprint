@@ -14,3 +14,5 @@ fingerprint-engine.iml
 /.pypirc
 /dist
 *.pem
+/src/python/anonympins_fingerprint.egg-info
+/src/python/build

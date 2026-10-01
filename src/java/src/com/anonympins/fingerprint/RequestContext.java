@@ -56,8 +56,6 @@ public class RequestContext {
         this.ja3 = this.headers.get("x-ja3-hash");
         this.ja4 = this.headers.get("x-ja4-hash");
         this.ja3Raw = this.headers.get("x-ja3-raw");
-        this.ja3 = this.headers.get("x-ja3-hash");
-        this.ja4 = this.headers.get("x-ja4-hash");
         this.http2Fingerprint = this.headers.get("x-http2-fingerprint");
         this.tcpFingerprint = this.headers.get("x-tcp-fingerprint");
         this.quicFingerprint = this.headers.get("x-quic-fp");

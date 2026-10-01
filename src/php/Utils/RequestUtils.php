@@ -316,6 +316,7 @@ class RequestUtils
 
         $claimedBrowserInfo = self::parseUserAgent($ua);
         $claimedBrowser = $claimedBrowserInfo['browser'] ?? null;
+        $tlsSpoofingScore = 0.0;
 
         if (empty($claimedBrowser) || empty($ua)) {
             return ['tlsSpoofingScore' => 0.0];
@@ -367,7 +368,7 @@ class RequestUtils
         $echExpected = $context->getHeader('x-ech-expected') === 'true' || !empty($outerSni);
 
         if (!empty($outerSni) && !empty($host) && strcasecmp($outerSni, $host) !== 0 && !$hasEch) {
-            return ['tlsSpoofingScore' => max($tlsSpoofingScore ?? 0.0, 60.0)];
+            return ['tlsSpoofingScore' => max($tlsSpoofingScore, 60.0)];
         }
 
         $browserVer = (int)($claimedBrowserInfo['version'] ?? 0);
@@ -376,7 +377,7 @@ class RequestUtils
             ($claimedBrowser === 'Firefox' && $browserVer >= 118)
         );
         if ($context->isHttps && $isModernEchBrowser && $echExpected && !$hasEch) {
-            return ['tlsSpoofingScore' => max($tlsSpoofingScore ?? 0.0, 55.0)];
+            return ['tlsSpoofingScore' => max($tlsSpoofingScore, 55.0)];
         }
 
         return ['tlsSpoofingScore' => 0.0];
