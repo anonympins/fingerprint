@@ -29,24 +29,44 @@ class DirectFingerprint
      */
     public function buildRequestContext(): RequestContext
     {
+        $sanitizeDeep = function ($data) use (&$sanitizeDeep) {
+            if (is_array($data)) {
+                $clean = [];
+                foreach ($data as $k => $v) {
+                    $cleanKey = is_string($k) ? (function_exists('sanitize_text_field') && function_exists('wp_unslash') ? sanitize_text_field(wp_unslash($k)) : trim((string)$k)) : $k;
+                    $clean[$cleanKey] = $sanitizeDeep($v);
+                }
+                return $clean;
+            }
+            if (is_string($data)) {
+                return function_exists('sanitize_text_field') && function_exists('wp_unslash') ? sanitize_text_field(wp_unslash($data)) : trim($data);
+            }
+            return $data;
+        };
+
+        $rawInput = (string)file_get_contents('php://input');
+        $decodedJson = !empty($rawInput) ? json_decode($rawInput, true) : null;
         // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.NonceVerification.Recommended -- Direct WAF inspection firewall before WP core logic
-        $body = $_POST ?: json_decode(file_get_contents('php://input'), true);
-        $headers = function_exists('getallheaders') ? getallheaders() : [];
+        $body = !empty($_POST) ? $sanitizeDeep($_POST) : (is_array($decodedJson) ? $sanitizeDeep($decodedJson) : null);
+        $rawHeaders = function_exists('getallheaders') ? getallheaders() : [];
+        $headers = is_array($rawHeaders) ? $sanitizeDeep($rawHeaders) : [];
 
         $remoteAddr = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '127.0.0.1';
         $rawUri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
         // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- Uses wp_parse_url when available
         $path = function_exists('wp_parse_url') ? (string)wp_parse_url($rawUri, PHP_URL_PATH) : (string)parse_url($rawUri, PHP_URL_PATH);
         $serverProtocol = isset($_SERVER['SERVER_PROTOCOL']) ? sanitize_text_field(wp_unslash($_SERVER['SERVER_PROTOCOL'])) : '1.1';
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $query = isset($_GET) && is_array($_GET) ? $sanitizeDeep($_GET) : [];
+        $cookies = isset($_COOKIE) && is_array($_COOKIE) ? $sanitizeDeep($_COOKIE) : [];
 
         return new RequestContext(
             $remoteAddr,
             !empty($path) ? $path : '/',
             $headers,
-            // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-            $_GET,
+            $query,
             $body,
-            $_COOKIE,
+            $cookies,
             $serverProtocol
         );
     }

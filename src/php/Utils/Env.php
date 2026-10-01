@@ -21,10 +21,15 @@ class Env
         }
         // phpcs:disable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Environment and server variables may contain raw cryptographic keys.
         if (isset($_ENV[$key]) && $_ENV[$key] !== '') {
-            return $_ENV[$key];
+            $envVal = function_exists('wp_unslash') ? wp_unslash($_ENV[$key]) : $_ENV[$key];
+            return is_string($envVal) ? (function_exists('sanitize_textarea_field') ? sanitize_textarea_field($envVal) : $envVal) : $envVal;
         }
         if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') {
-            return $_SERVER[$key];
+            $serverVal = function_exists('wp_unslash') ? wp_unslash($_SERVER[$key]) : $_SERVER[$key];
+            if (is_string($serverVal)) {
+                return function_exists('sanitize_textarea_field') ? sanitize_textarea_field($serverVal) : $serverVal;
+            }
+            return $serverVal;
         }
         // phpcs:enable WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash
         $val = getenv($key);

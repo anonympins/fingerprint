@@ -173,11 +173,12 @@ class FingerprintEngine
                     Env::set('ED25519_PUBLIC_KEY', $storedKeys['publicKey']);
                 } elseif (defined('OPENSSL_KEYTYPE_ED25519')) {
                     $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
-                    $pemResult = ChallengeUtils::generateIssuerPemKeys();
-                    $privateKeyPem = $pemResult['privateKey'];
-                    $publicKeyPem = $pemResult['publicKey'];
-                    Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
-                    Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                    if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
+                        $details = openssl_pkey_get_details($pkey);
+                        $publicKeyPem = $details['key'] ?? '';
+                        Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
+                        Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                    }
                     update_option('fingerprint_ed25519_keys', [
                         'privateKey' => $privateKeyPem,
                         'publicKey'  => $publicKeyPem,
@@ -227,12 +228,25 @@ class FingerprintEngine
      */
     private static function initStandaloneEd25519Keys(): void
     {
-        $configDir = dirname(__DIR__, 1) . '/config';
-        $persistentKeyPath = $configDir . '/ed25519_key.json';
+        if (function_exists('get_option')) {
+            return; // Managed exclusively via WordPress options in WP runtime
+        }
+
+        if (function_exists('wp_upload_dir') && function_exists('wp_mkdir_p')) {
+            $uploadDir = wp_upload_dir();
+            $configDir = (!empty($uploadDir['basedir']) && is_dir($uploadDir['basedir']))
+                ? $uploadDir['basedir'] . '/anonympins-bot-mitigation-pow'
+                : sys_get_temp_dir();
+        } else {
+            $envKeyDir = Env::get('FINGERPRINT_KEY_DIR');
+            $configDir = !empty($envKeyDir) ? (string)$envKeyDir : sys_get_temp_dir();
+        }
+        $persistentKeyPath = rtrim($configDir, '/\\') . '/ed25519_key.json';
 
         if (file_exists($persistentKeyPath)) {
             try {
-                $keys = json_decode((string)file_get_contents($persistentKeyPath), true);
+                $raw = (string)file_get_contents($persistentKeyPath);
+                $keys = json_decode($raw, true);
                 if (isset($keys['privateKey'], $keys['publicKey'])) {
                     Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
                     Env::set('ED25519_PUBLIC_KEY', $keys['publicKey']);
@@ -253,11 +267,10 @@ class FingerprintEngine
                             if (function_exists('wp_mkdir_p')) {
                                 wp_mkdir_p($configDir);
                             } else {
-                                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Non-WordPress standalone environment fallback
-                                mkdir($configDir, 0777, true);
+                                @mkdir($configDir, 0700, true);
                             }
                         }
-                        // phpcs:ignore PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- Non-WordPress standalone environment fallback
+                        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
                         file_put_contents($persistentKeyPath, json_encode([
                             'privateKey' => $privateKeyPem,
                             'publicKey' => $publicKeyPem
@@ -346,7 +359,13 @@ class FingerprintEngine
      */
     private static function loadBotWhitelist(string $filename, array $fallbackEntries): array
     {
-        $configDir = dirname(__DIR__, 2) . '/config';
+        if (defined('ANONYMPINS_BOT_MITIGATION_DIR')) {
+            $configDir = rtrim(ANONYMPINS_BOT_MITIGATION_DIR, '/\\') . '/config';
+        } elseif (is_dir(__DIR__ . '/config')) {
+            $configDir = __DIR__ . '/config';
+        } else {
+            $configDir = __DIR__;
+        }
         $filePath = $configDir . '/' . $filename;
         if (file_exists($filePath)) {
             try {
@@ -1405,8 +1424,9 @@ class FingerprintEngine
                                 'jsonLastError' => json_last_error_msg()
                             ]);
                             if (json_last_error() === JSON_ERROR_NONE) {
-                                // @phpstan-ignore-next-line - The instance is managed by the singleton
-                                $defaultPath = dirname(__DIR__, 2) . '/config/problems.config.json';
+                                $defaultPath = defined('ANONYMPINS_BOT_MITIGATION_DIR')
+                                    ? rtrim(ANONYMPINS_BOT_MITIGATION_DIR, '/\\') . '/config/problems.config.json'
+                                    : (file_exists(__DIR__ . '/config/problems.config.json') ? __DIR__ . '/config/problems.config.json' : null);
                                 $configPath = $this->securityConfig['usefulWorkConfigPath'] ?? (file_exists($defaultPath) ? $defaultPath : null);
                                 $problemManager = \Anonympins\Fingerprint\ProblemManager::getInstance($configPath, $store);
                                 // FIX: The solution is directly $workResult, not a sub-property.
@@ -1690,7 +1710,9 @@ class FingerprintEngine
 
                 if ($shouldUseUsefulWork) {
                     $this->log('Issuing a useful work challenge', ['finalScore' => $finalScore]);
-                    $defaultPath = dirname(__DIR__, 1) . '/config/problems.config.json';
+                    $defaultPath = defined('ANONYMPINS_BOT_MITIGATION_DIR')
+                        ? rtrim(ANONYMPINS_BOT_MITIGATION_DIR, '/\\') . '/config/problems.config.json'
+                        : (file_exists(__DIR__ . '/config/problems.config.json') ? __DIR__ . '/config/problems.config.json' : null);
                     $configPath = $this->securityConfig['usefulWorkConfigPath'] ?? (file_exists($defaultPath) ? $defaultPath : null);
                     $problemManager = ProblemManager::getInstance($configPath, $store);
                     $work = $problemManager->dispatchWork($finalScore);

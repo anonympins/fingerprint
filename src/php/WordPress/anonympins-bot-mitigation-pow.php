@@ -28,6 +28,10 @@ if (!defined('ANONYMPINS_BOT_MITIGATION_VERSION')) {
     define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.8.0');
 }
 
+if (!defined('ANONYMPINS_BOT_MITIGATION_DIR')) {
+    define('ANONYMPINS_BOT_MITIGATION_DIR', plugin_dir_path(__FILE__));
+}
+
 // =============================================================================
 // HONEYPOT TRAPS FOR THIRD-PARTY ENVIRONMENTS (NON-WORDPRESS)
 // =============================================================================
@@ -126,12 +130,25 @@ function fingerprint_get_sandbox_config(): array {
     ];
 }
 
+/**
+ * Retrieves the configured direct endpoint path for Prometheus metrics scraping.
+ */
+function fingerprint_get_metrics_endpoint(): string {
+    $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+    if (!isset($saved['metrics_endpoint'])) {
+        return '/metrics';
+    }
+    $path = trim((string)$saved['metrics_endpoint']);
+    if ($path === '') {
+        return '';
+    }
+    return str_starts_with($path, '/') ? $path : '/' . $path;
+}
+
 // 1. PSR-4 autoloader for the Fingerprint engine.
 if (!class_exists(DirectFingerprint::class)) {
     $fingerprint_composer_paths = [
         __DIR__ . '/vendor/autoload.php',
-        dirname(__DIR__, 2) . '/vendor/autoload.php',
-        dirname(__DIR__, 3) . '/vendor/autoload.php',
         (defined('ABSPATH') ? ABSPATH . 'vendor/autoload.php' : ''),
     ];
     foreach ($fingerprint_composer_paths as $fingerprint_composer_path) {
@@ -361,6 +378,21 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
 
     $securityConfig = SecurityProfiles::createSecurityProfile($contextConfig['profile'], $contextConfig['overrides'] ?? []);
     $guard = new DirectFingerprint($securityConfig);
+
+    // Handle direct metrics endpoint if requested
+    $metricsPath = fingerprint_get_metrics_endpoint();
+    $path = (string)wp_parse_url($requestUri, PHP_URL_PATH);
+    if ($metricsPath !== '' && ($path === $metricsPath || str_ends_with($path, $metricsPath))) {
+        $context = $guard->buildRequestContext();
+        $isAuth = current_user_can('manage_options') || apply_filters('fingerprint_metrics_authorization', false, $context);
+        if (!$isAuth) {
+            status_header(403);
+            echo "Access to metrics denied.";
+            exit;
+        }
+        $guard->handleMetricsRequest($context);
+        return;
+    }
     $guard->protect();
 }, 0);
 
@@ -431,19 +463,37 @@ function fingerprint_inject_client_suspicion_event(): void {
 // SPECIAL SANDBOX ROUTES: REST & SERVER-SENT EVENTS (SSE)
 // =============================================================================
 add_action('rest_api_init', function () {
+    // 1. Prometheus Metrics (registered under plugin namespace and legacy namespace)
+    register_rest_route('anonympins/v1', '/metrics', [
+        'methods'             => 'GET',
+        'callback'            => 'fingerprint_rest_prometheus_metrics',
+        'permission_callback' => function () {
+            return current_user_can('manage_options') || apply_filters('fingerprint_metrics_access', false);
+        },
+    ]);
+
     register_rest_route('fingerprint/v1', '/sandbox/telemetry', [
         'methods'             => 'GET',
         'callback'            => 'fingerprint_rest_sandbox_telemetry',
         'permission_callback' => function () {
-            return current_user_can('manage_options') || !empty(fingerprint_get_sandbox_config()['enabled']);
+            return current_user_can('manage_options');
         },
     ]);
 
+    // 2. Sandbox Inspection Routes (Strictly restricted to manage_options)
     register_rest_route('fingerprint/v1', '/sandbox/sse', [
         'methods'             => 'GET',
         'callback'            => 'fingerprint_rest_sandbox_sse',
         'permission_callback' => function () {
-            return current_user_can('manage_options') || !empty(fingerprint_get_sandbox_config()['enabled']);
+            return current_user_can('manage_options');
+        },
+    ]);
+
+    register_rest_route('fingerprint/v1', '/metrics', [
+        'methods'             => 'GET',
+        'callback'            => 'fingerprint_rest_prometheus_metrics',
+        'permission_callback' => function () {
+            return current_user_can('manage_options') || apply_filters('fingerprint_metrics_access', false);
         },
     ]);
 
@@ -478,7 +528,21 @@ function fingerprint_rest_sandbox_clear_challenges(): \WP_REST_Response {
     return new \WP_REST_Response(['cleared' => true], 200);
 }
 
+function fingerprint_rest_prometheus_metrics(\WP_REST_Request $request): \WP_REST_Response {
+    $effectiveProfiles = fingerprint_get_effective_profiles($GLOBALS['fingerprint_security_profiles'] ?? []);
+    $securityConfig = SecurityProfiles::createSecurityProfile($effectiveProfiles['frontend']['profile'] ?? 'blog', $effectiveProfiles['frontend']['overrides'] ?? []);
+    $metricsOutput = MetricsManager::getPrometheusMetrics($securityConfig);
+
+    $response = new \WP_REST_Response($metricsOutput, 200);
+    $response->header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    return $response;
+}
+
 function fingerprint_rest_sandbox_sse(): void {
+    if (!current_user_can('manage_options')) {
+        wp_die(esc_html__('Unauthorized access.', 'anonympins-bot-mitigation-pow'), '', ['response' => 403]);
+    }
+
     if (function_exists('apache_setenv')) {
         apache_setenv('no-gzip', '1');
     }
@@ -803,6 +867,22 @@ function fingerprint_render_admin_page(): void {
         echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Sandbox settings updated successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
     }
 
+    if (isset($_POST['fingerprint_save_prometheus']) && check_admin_referer('fingerprint_prometheus_nonce', 'fingerprint_nonce_prometheus')) {
+        $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+        if (!is_array($saved)) {
+            $saved = [];
+        }
+
+        $rawEndpoint = isset($_POST['metrics_endpoint']) ? sanitize_text_field(wp_unslash($_POST['metrics_endpoint'])) : '/metrics';
+        $rawEndpoint = trim($rawEndpoint);
+        if ($rawEndpoint !== '' && !str_starts_with($rawEndpoint, '/')) {
+            $rawEndpoint = '/' . $rawEndpoint;
+        }
+        $saved['metrics_endpoint'] = $rawEndpoint;
+        update_option('anonympins_security_options', $saved);
+        echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Prometheus settings updated successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
+    }
+
     if (isset($_POST['fingerprint_clear_store']) && check_admin_referer('fingerprint_clear_nonce', 'fingerprint_nonce_clear')) {
         $store = new WpDbStore();
         $store->clear();
@@ -813,12 +893,13 @@ function fingerprint_render_admin_page(): void {
     $effective = fingerprint_get_effective_profiles($fingerprint_security_profiles);
     $frontendConfig = SecurityProfiles::createSecurityProfile($effective['frontend']['profile'], $effective['frontend']['overrides'] ?? []);
 
+    $store = new WpDbStore();
+    $totalRows = $store->getTotalCount();
+    $expiredRows = $store->getExpiredCount();
     $tableName = esc_sql($wpdb->prefix . 'fingerprint_store');
     // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter
-    $totalRows = (int)$wpdb->get_var("SELECT COUNT(*) FROM `{$tableName}`");
     $now = time();
     // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter
-    $expiredRows = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM `{$tableName}` WHERE expires_at IS NOT NULL AND expires_at < %d", $now));
 
     $prometheusRaw = MetricsManager::getPrometheusMetrics($frontendConfig);
     ?>
@@ -1114,6 +1195,26 @@ function fingerprint_render_admin_page(): void {
 
         <div id="tab-prometheus" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
             <h3><?php esc_html_e('Real-Time Prometheus Metrics', 'anonympins-bot-mitigation-pow'); ?></h3>
+            <form method="post" action="" style="margin-bottom:20px;">
+                <?php wp_nonce_field('fingerprint_prometheus_nonce', 'fingerprint_nonce_prometheus'); ?>
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><label for="metrics_endpoint"><?php esc_html_e('Metrics Endpoint Path', 'anonympins-bot-mitigation-pow'); ?></label></th>
+                        <td>
+                            <input type="text" name="metrics_endpoint" id="metrics_endpoint" value="<?php echo esc_attr(fingerprint_get_metrics_endpoint()); ?>" class="regular-text" placeholder="/metrics">
+                            <p class="description">
+                                <?php esc_html_e('Custom path for direct Prometheus scraping (default: /metrics). Leave empty to disable direct path scraping.', 'anonympins-bot-mitigation-pow'); ?>
+                            </p>
+                            <?php if (fingerprint_get_metrics_endpoint() !== ''): ?>
+                                <p class="description">
+                                    <strong><?php esc_html_e('Scrape URL:', 'anonympins-bot-mitigation-pow'); ?></strong> <code><?php echo esc_html(home_url(fingerprint_get_metrics_endpoint())); ?></code>
+                                </p>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                </table>
+                <?php submit_button(esc_html__('Save Prometheus Settings', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_prometheus'); ?>
+            </form>
             <textarea readonly style="width:100%;height:380px;font-family:monospace;background:#f6f7f7;padding:12px;"><?php echo esc_textarea($prometheusRaw); ?></textarea>
         </div>
     </div>
