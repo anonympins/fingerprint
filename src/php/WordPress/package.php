@@ -44,6 +44,7 @@ if (file_exists($zipFile)) {
 @mkdir($buildDir . '/src', 0777, true);
 @mkdir($buildDir . '/assets', 0777, true);
 @mkdir($buildDir . '/languages', 0777, true);
+@mkdir($buildDir . '/config', 0777, true);
 
 // 2. Copy main WordPress plugin files
 copy($wpDir . '/anonympins-bot-mitigation-pow.php', $buildDir . '/anonympins-bot-mitigation-pow.php');
@@ -129,6 +130,15 @@ $clientSource = file_exists($jsSrcDir . '/fingerprint.client.obfuscated.js')
     : $jsSrcDir . '/fingerprint.client.js';
 if (file_exists($clientSource)) {
     copy($clientSource, $buildDir . '/assets/fingerprint.client.js');
+}
+
+// 3.b Copy problem/bot configuration assets
+$configSourceDir = $rootDir . '/config';
+if (is_dir($configSourceDir)) {
+    $configFiles = glob($configSourceDir . '/*.json') ?: [];
+    foreach ($configFiles as $cfgFile) {
+        copy($cfgFile, $buildDir . '/config/' . basename($cfgFile));
+    }
 }
 
 // 4. Recursively copy PHP library (src/php -> build/src), excluding dev folders

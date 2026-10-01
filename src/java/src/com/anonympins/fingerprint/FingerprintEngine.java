@@ -4,6 +4,7 @@ import com.anonympins.fingerprint.utils.ChallengeUtils;
 import com.anonympins.fingerprint.utils.RequestUtils;
 
 import java.math.BigInteger;
+import java.security.PublicKey;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.*;
 
@@ -17,6 +18,7 @@ public class FingerprintEngine {
     private final Map<String, Object> thresholds;
     private final Map<String, Object> weights;
     private final Map<String, Object> patterns;
+    private PatValidator patValidator;
 
     private ProblemManager problemManager;
     @SuppressWarnings("unchecked")
@@ -47,6 +49,50 @@ public class FingerprintEngine {
 
         if (Boolean.TRUE.equals(this.config.get("reset"))) {
             resetStore();
+        }
+
+        // Initialisation du validateur PAT (Private Access Tokens RFC 9578)
+        PatNonceStore patNonceStore = new PatNonceStore() {
+            @Override
+            public boolean exists(String nonceHex) {
+                return store != null && store.has("pat-nonce:" + nonceHex);
+            }
+
+            @Override
+            public void set(String nonceHex, long ttlSeconds) {
+                if (store != null) {
+                    store.set("pat-nonce:" + nonceHex, true, (int) ttlSeconds);
+                }
+            }
+        };
+
+        if (this.config.get("patValidator") instanceof PatValidator) {
+            this.patValidator = (PatValidator) this.config.get("patValidator");
+        } else {
+            Map<String, PublicKey> trustedPatKeys = new HashMap<>();
+            PublicKey defaultPatPublicKey = null;
+            long patNonceTtl = 86400L;
+            Object patConfigObj = this.config.get("pat");
+            if (patConfigObj instanceof Map) {
+                Map<?, ?> patMap = (Map<?, ?>) patConfigObj;
+                if (patMap.get("nonceTtl") instanceof Number) {
+                    patNonceTtl = ((Number) patMap.get("nonceTtl")).longValue();
+                } else if (patMap.get("nonceTtlSeconds") instanceof Number) {
+                    patNonceTtl = ((Number) patMap.get("nonceTtlSeconds")).longValue();
+                }
+                if (patMap.get("trustedKeys") instanceof Map) {
+                    Map<?, ?> keys = (Map<?, ?>) patMap.get("trustedKeys");
+                    for (Map.Entry<?, ?> entry : keys.entrySet()) {
+                        if (entry.getValue() instanceof PublicKey) {
+                            trustedPatKeys.put(entry.getKey().toString(), (PublicKey) entry.getValue());
+                        }
+                    }
+                }
+                if (patMap.get("defaultPublicKey") instanceof PublicKey) {
+                    defaultPatPublicKey = (PublicKey) patMap.get("defaultPublicKey");
+                }
+            }
+            this.patValidator = new PatValidator(trustedPatKeys, defaultPatPublicKey, patNonceStore, patNonceTtl);
         }
 
         // Bind Ed25519 keys if passed via config
@@ -211,6 +257,14 @@ public class FingerprintEngine {
 
     public Map<String, Object> getPatterns() {
         return patterns;
+    }
+
+    public PatValidator getPatValidator() {
+        return patValidator;
+    }
+
+    public void setPatValidator(PatValidator patValidator) {
+        this.patValidator = patValidator;
     }
 
     @SuppressWarnings("unchecked")
@@ -421,10 +475,8 @@ public class FingerprintEngine {
         if (honeypotScore >= 100.0) {
             return true;
         }
-        double botScore = RequestUtils.getBotScore(context).getOrDefault("botScore", 0.0);
-        if (botScore >= 100.0) {
-            return true;
-        }
+        // Only honeypot hits are considered "certain" enough to bypass PAT/ticket validation.
+        // Other high scores (like botScore from UA) are handled by the regular scoring flow.
         return false;
     }
 
@@ -737,6 +789,46 @@ public class FingerprintEngine {
         Map<String, Object> newCookie = (Map<String, Object>) identity.get("newCookie");
             String currentDeviceHash = (String) identity.get("currentDeviceHash");
 
+            // 1. Garde-fous : Si le terminal est condamné ou qu'une attaque applicative certaine est détectée, le token PAT ne protège pas
+            boolean isCondemned = deviceData != null && Boolean.TRUE.equals(deviceData.get("condemned"));
+            boolean isCertainAttack = hasCertainAttack(context);
+            if (isCondemned || isCertainAttack) {
+                if (deviceData != null) {
+                    deviceData.put("condemned", true);
+                    deviceData.put("webauthnVerified", false);
+                    int deviceTtl = 2592000;
+                    if (config.containsKey("deviceIdCookieMaxAge")) {
+                        deviceTtl = (int) (((Number) config.get("deviceIdCookieMaxAge")).longValue() / 1000);
+                    }
+                    store.set("device:" + deviceId, deviceData, deviceTtl);
+                }
+                Map<String, Object> res = new HashMap<>();
+                res.put("action", "block");
+                res.put("status", 403);
+                res.put("body", "Forbidden");
+                res.put("score", 100.0);
+                Map<String, Double> vec = new HashMap<>();
+                vec.put("honeypotScore", 100.0);
+                res.put("vector", vec);
+                if (dryRun) {
+                    res.put("intendedAction", "block");
+                    res.put("action", "next");
+                    res.remove("status");
+                    res.remove("body");
+                }
+                return res;
+            }
+
+            // 2. Validation PAT (Private Access Tokens RFC 9578)
+            boolean hasValidPat = false;
+            if (patValidator != null) {
+                PatValidationResult patResult = patValidator.processRequestHeaders(context.headers);
+                if (patResult != null && patResult.isVerified()) {
+                    hasValidPat = true;
+                    suspicionVector.put("pat_verified", 100.0);
+                }
+            }
+
             // Ticket validation
             boolean hasValidTicket = false;
             String powCookie = context.cookies.get("pow_clearance");
@@ -754,6 +846,8 @@ public class FingerprintEngine {
             if (powCookie != null) {
                 hasValidTicket = ChallengeUtils.isTicketValid(context.clientIp, powCookie, deviceId, currentDeviceHash, powSecret, allowRoaming, store, zkpProof);
             }
+            // Condition d'exemption : dispensation immédiate du PoW
+            hasValidTicket = hasValidTicket || hasValidPat;
 
         if (deviceData != null && Boolean.TRUE.equals(deviceData.get("webauthnVerified"))) {
             Map<String, Object> res = new HashMap<>();
@@ -765,24 +859,6 @@ public class FingerprintEngine {
             return res;
         }
 
-        if (deviceData != null && Boolean.TRUE.equals(deviceData.get("condemned"))) {
-            Map<String, Object> res = new HashMap<>();
-            res.put("action", "block");
-            res.put("status", 403);
-            res.put("body", "Forbidden");
-            res.put("score", 100.0);
-            Map<String, Double> vec = new HashMap<>();
-            vec.put("honeypotScore", 100.0);
-            res.put("vector", vec);
-            if (dryRun) {
-                res.put("intendedAction", "block");
-                res.put("action", "next");
-                res.remove("status");
-                res.remove("body");
-            }
-            return res;
-        }
-
         // Update subnet metrics
         int mediumThreshold = ((Number) thresholds.getOrDefault("medium", 45)).intValue();
         int highThreshold = ((Number) thresholds.getOrDefault("high", 75)).intValue();
@@ -791,11 +867,9 @@ public class FingerprintEngine {
             RequestUtils.updateSubnetMetrics(store, context, deviceId, finalScore);
         }
 
-        long maxIndicatorsCount = suspicionVector.values().stream()
-                .filter(val -> val != null && val >= 100.0)
-                .count();
-        boolean mustReChallenge = suspicionVector.getOrDefault("honeypotScore", 0.0) >= mediumThreshold
-                || maxIndicatorsCount >= 1;
+        // A ticket/PAT should only be re-challenged if a high-confidence attack signal (like a honeypot) is detected.
+        // Simple high scores from UA or inconsistencies are not sufficient to override a valid cryptographic token.
+        boolean mustReChallenge = suspicionVector.getOrDefault("honeypotScore", 0.0) >= mediumThreshold;
 
             if (hasValidTicket && !mustReChallenge) {
                 int deviceTtl = 2592000; // 30 jours par défaut en secondes
@@ -1121,11 +1195,15 @@ public class FingerprintEngine {
         }
 
         // Gather metrics and scores
+        NetworkProfile netProfile = AsnLookupEngine.getInstance().lookup(context.clientIp);
         double similarity = FingerprintBuilder.compare(deviceData != null ? (String) deviceData.get("initialDeviceHash") : "", currentDeviceHash);
-        double similarityThreshold = ((Number) config.getOrDefault("similarityThreshold", 0.72)).doubleValue();
+        double defaultInflection = netProfile != null ? netProfile.getInflectionPoint() : 0.72;
+        double similarityThreshold = config.containsKey("similarityThreshold")
+                ? ((Number) config.get("similarityThreshold")).doubleValue()
+                : defaultInflection;
         double inconsistencyScore = calculateAnalogInconsistencyScore(similarity, similarityThreshold, 12.0);
 
-        Map<String, Double> behavioral = RequestUtils.getBehavioralIndicators(context, deviceData);
+        Map<String, Double> behavioral = RequestUtils.getBehavioralIndicators(context, deviceData, netProfile);
         double historyScore = behavioral.getOrDefault("historyScore", 0.0);
         double rotationScore = behavioral.getOrDefault("rotationScore", 0.0);
 

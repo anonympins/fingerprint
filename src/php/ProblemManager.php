@@ -36,8 +36,18 @@ class ProblemManager
     {
         if (self::$instance === null) {
             if ($configPath === null) {
-                $defaultPath = dirname(__DIR__, 2) . '/config/problems.config.json';
-                $configPath = file_exists($defaultPath) ? $defaultPath : null;
+                $candidateDirs = [];
+                if (defined('ANONYMPINS_BOT_MITIGATION_DIR')) {
+                    $candidateDirs[] = rtrim(ANONYMPINS_BOT_MITIGATION_DIR, '/\\') . '/config';
+                }
+                $candidateDirs[] = __DIR__ . '/config';
+                foreach ($candidateDirs as $dir) {
+                    $p = $dir . '/problems.config.json';
+                    if (file_exists($p)) {
+                        $configPath = $p;
+                        break;
+                    }
+                }
             }
             // Error if accessed before initialization
             if ($configPath === null || $store === null) {

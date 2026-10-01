@@ -2,9 +2,9 @@
 Contributors: anonympins
 Tags: bot protection, security, proof of work, firewall, anti scraping
 Requires at least: 5.9
-Tested up to: 7.1
+Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.8.0
+Stable tag: 0.8.1
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -36,6 +36,12 @@ No. All evaluations, challenges, and validations occur directly on your WordPres
 
 = Is HTTPS required? =
 HTTPS is strongly recommended. Under unencrypted HTTP, modern browsers disable the Web Cryptography API (`crypto.subtle`), which reduces challenge verification performance.
+
+= How do I scrape the Prometheus metrics endpoint? =
+Metrics can be accessed in standard Prometheus text exposition format via:
+1. The REST API endpoint: `GET /wp-json/fingerprint/v1/metrics` (Requires `manage_options` permission or a custom authorization callback hooked into the `fingerprint_metrics_access` filter).
+2. Direct path endpoint: `GET /metrics` (Evaluated in early execution lifecycle; filterable with `fingerprint_metrics_authorization`).
+3. The admin dashboard: **Settings -> Anonympins Bot Mitigation -> Prometheus Stream**.
 
 = How can I monitor incoming request suspicion scores in real time? =
 Under **Settings -> Anonympins Bot Mitigation -> Sandbox / Test Mode**, the plugin provides real-time observability interfaces for all challenged visitors across the website:

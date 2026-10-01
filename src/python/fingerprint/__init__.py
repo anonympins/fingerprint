@@ -2,6 +2,9 @@ from engine import (
     RequestContext,
     FingerprintEngine,
     BlockList,
+    NetworkProfile,
+    AsnLookupEngine,
+    default_asn_lookup,
     ChallengeUtils,
     RequestUtils,
     calculate_analog_inconsistency_score,
@@ -32,12 +35,19 @@ from engine import (
     FastAPIFingerprintMiddleware,
     ProblemManager,
     SecurityProfiles,
+    PatValidator,
+    PatUtils,
+    PrivateAccessToken,
+    PatValidationResult,
 )
 
 __all__ = [
     "RequestContext",
     "FingerprintEngine",
     "BlockList",
+    "NetworkProfile",
+    "AsnLookupEngine",
+    "default_asn_lookup",
     "ChallengeUtils",
     "RequestUtils",
     "calculate_analog_inconsistency_score",
@@ -68,4 +78,8 @@ __all__ = [
     "FastAPIFingerprintMiddleware",
     "ProblemManager",
     "SecurityProfiles",
+    "PatValidator",
+    "PatUtils",
+    "PrivateAccessToken",
+    "PatValidationResult",
 ]

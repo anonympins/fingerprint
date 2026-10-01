@@ -353,19 +353,19 @@ class ChallengeUtils
                 $expectedMsg = "{$clientSecret}:find_peer:{$nodeId}";
                 break;
             case 'webrtc_signal':
-                $expectedMsg = "{$clientSecret}:webrtc_signal:{$nodeId}:" . ($params['target_peer_id'] ?? '') . ":" . ($params['signal_type'] ?? '') . ":" . ($params['signal_data'] ?? '');
+                $expectedMsg = "{$clientSecret}:webrtc_signal:{$nodeId}:" . (isset($params['target_peer_id']) ? self::sanitizeString($params['target_peer_id']) : '') . ":" . (isset($params['signal_type']) ? self::sanitizeString($params['signal_type']) : '') . ":" . (isset($params['signal_data']) ? self::sanitizeString($params['signal_data']) : '');
                 break;
             case 'poll_signals':
                 $expectedMsg = "{$clientSecret}:poll_signals:{$nodeId}";
                 break;
             case 'request_peer_block':
-                $expectedMsg = "{$clientSecret}:request_peer_block:{$nodeId}:" . ($params['peer_id'] ?? '') . ":" . ($params['block_idx'] ?? '0') . ":" . ($params['req_id'] ?? '');
+                $expectedMsg = "{$clientSecret}:request_peer_block:{$nodeId}:" . (isset($params['peer_id']) ? self::sanitizeString($params['peer_id']) : '') . ":" . ($params['block_idx'] ?? '0') . ":" . (isset($params['req_id']) ? self::sanitizeString($params['req_id']) : '');
                 break;
             case 'poll_requests':
                 $expectedMsg = "{$clientSecret}:poll_requests:{$nodeId}";
                 break;
             case 'respond_block':
-                $expectedMsg = "{$clientSecret}:respond_block:{$nodeId}:" . ($params['requester_id'] ?? '') . ":" . ($params['req_id'] ?? '') . ":" . ($params['block_data'] ?? '');
+                $expectedMsg = "{$clientSecret}:respond_block:{$nodeId}:" . (isset($params['requester_id']) ? self::sanitizeString($params['requester_id']) : '') . ":" . (isset($params['req_id']) ? self::sanitizeString($params['req_id']) : '') . ":" . (isset($params['block_data']) ? self::sanitizeString($params['block_data']) : '');
                 break;
             case 'poll_response':
                 $expectedMsg = "{$clientSecret}:poll_response:{$nodeId}:" . ($params['req_id'] ?? '');
@@ -383,7 +383,7 @@ class ChallengeUtils
         switch ($op) {
             case 'register':
                 $clientIp = self::getSanitizedServerVar('REMOTE_ADDR', '127.0.0.1');
-                $seed = $params['seed'] ?? ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+                $seed = isset($params['seed']) ? self::sanitizeString($params['seed']) : '';
                 self::registerCooperativeNode($clientIp, $nodeId, $seed);
                 return ['status' => 'registered'];
 
@@ -395,9 +395,9 @@ class ChallengeUtils
                 return ['status' => 'no_peers'];
 
             case 'webrtc_signal':
-                $targetPeerId = $params['target_peer_id'] ?? '';
-                $signalType = $params['signal_type'] ?? '';
-                $signalData = $params['signal_data'] ?? '';
+                $targetPeerId = isset($params['target_peer_id']) ? self::sanitizeString($params['target_peer_id']) : '';
+                $signalType = isset($params['signal_type']) ? self::sanitizeString($params['signal_type']) : '';
+                $signalData = isset($params['signal_data']) ? self::sanitizeString($params['signal_data']) : '';
                 if (empty($targetPeerId) || empty($signalType) || empty($signalData)) {
                     return ['error' => 'Invalid parameters'];
                 }
@@ -420,9 +420,9 @@ class ChallengeUtils
                 return ['status' => 'ok', 'signals' => $signals];
 
             case 'request_peer_block':
-                $peerId = $params['peer_id'] ?? '';
+                $peerId = isset($params['peer_id']) ? self::sanitizeString($params['peer_id']) : '';
                 $blockIdx = (int)($params['block_idx'] ?? 0);
-                $requestId = $params['req_id'] ?? '';
+                $requestId = isset($params['req_id']) ? self::sanitizeString($params['req_id']) : '';
                 if (empty($peerId) || empty($requestId)) {
                     return ['error' => 'Invalid parameters'];
                 }
@@ -444,9 +444,9 @@ class ChallengeUtils
                 return ['requests' => $requests];
 
             case 'respond_block':
-                $requesterId = $params['requester_id'] ?? '';
-                $requestId = $params['req_id'] ?? '';
-                $blockData = $params['block_data'] ?? '';
+                $requesterId = isset($params['requester_id']) ? self::sanitizeString($params['requester_id']) : '';
+                $requestId = isset($params['req_id']) ? self::sanitizeString($params['req_id']) : '';
+                $blockData = isset($params['block_data']) ? self::sanitizeString($params['block_data']) : '';
                 if (empty($requesterId) || empty($requestId)) {
                     return ['error' => 'Invalid parameters'];
                 }
@@ -456,7 +456,7 @@ class ChallengeUtils
                 return ['status' => 'delivered'];
 
             case 'poll_response':
-                $requestId = $params['req_id'] ?? '';
+                $requestId = isset($params['req_id']) ? self::sanitizeString($params['req_id']) : '';
                 $responseKey = "coop-mailbox:res:{$nodeId}:{$requestId}";
                 $data = $store->get($responseKey);
                 if ($data) {
@@ -634,28 +634,27 @@ class ChallengeUtils
             throw new \RuntimeException("Failed to extract Ed25519 public key.");
         }
 
-        if ($outDir === '') {
-            $outDir = dirname(__DIR__, 2) . '/config';
-        }
-
-        if (!is_dir($outDir)) {
-            if (function_exists('wp_mkdir_p')) {
-                wp_mkdir_p($outDir);
-            } else {
-                mkdir($outDir, 0755, true);
-            }
-        }
-
         $privName = $options['privateKeyName'] ?? 'issuer-private.pem';
         $pubName = $options['publicKeyName'] ?? 'issuer-public.pem';
 
-        $privateKeyPath = rtrim($outDir, '/\\') . '/' . $privName;
-        $publicKeyPath = rtrim($outDir, '/\\') . '/' . $pubName;
+        $privateKeyPath = '';
+        $publicKeyPath = '';
 
-        file_put_contents($privateKeyPath, $privateKeyPem);
-        @chmod($privateKeyPath, 0600);
-        file_put_contents($publicKeyPath, $publicKeyPem);
-        @chmod($publicKeyPath, 0644);
+        if ($outDir !== '') {
+            if (!is_dir($outDir)) {
+                if (function_exists('wp_mkdir_p')) {
+                    wp_mkdir_p($outDir);
+                } else {
+                    mkdir($outDir, 0755, true);
+                }
+            }
+            $privateKeyPath = rtrim($outDir, '/\\') . '/' . $privName;
+            $publicKeyPath = rtrim($outDir, '/\\') . '/' . $pubName;
+            file_put_contents($privateKeyPath, $privateKeyPem);
+            @chmod($privateKeyPath, 0600);
+            file_put_contents($publicKeyPath, $publicKeyPem);
+            @chmod($publicKeyPath, 0644);
+        }
 
         return [
             'privateKeyPath' => $privateKeyPath,
@@ -1294,20 +1293,25 @@ class ChallengeUtils
      */
     private static function getPowSolverCode(): string
     {
+        if (defined('ANONYMPINS_BOT_MITIGATION_DIR')) {
+            $wpPluginSolver = rtrim(ANONYMPINS_BOT_MITIGATION_DIR, '/\\') . '/assets/pow.solver.inline.js';
+            if (file_exists($wpPluginSolver)) {
+                return (string)file_get_contents($wpPluginSolver);
+            }
+        } elseif (defined('WP_PLUGIN_DIR')) {
+            $wpPluginSolver = WP_PLUGIN_DIR . '/anonympins-bot-mitigation-pow/assets/pow.solver.inline.js';
+            if (file_exists($wpPluginSolver)) {
+                return (string)file_get_contents($wpPluginSolver);
+            }
+        }
+
         $candidates = [
             __DIR__ . '/../../js/pow.solver.inline.js',
             __DIR__ . '/../assets/pow.solver.inline.js',
             __DIR__ . '/../js/pow.solver.inline.js',
-            dirname(__DIR__, 2) . '/assets/pow.solver.inline.js',
-            dirname(__DIR__, 2) . '/js/pow.solver.inline.js',
-            dirname(__DIR__, 1) . '/assets/pow.solver.inline.js',
+            dirname(__DIR__) . '/assets/pow.solver.inline.js',
+            dirname(__DIR__) . '/js/pow.solver.inline.js',
         ];
-        if (defined('ABSPATH')) {
-            $wpPluginSolver = ABSPATH . 'wp-content/plugins/fingerprint-anti-bot/assets/pow.solver.inline.js';
-            if (file_exists($wpPluginSolver)) {
-                return file_get_contents($wpPluginSolver) ?: '';
-            }
-        }
         foreach ($candidates as $solverPath) {
             if (file_exists($solverPath)) {
                 return file_get_contents($solverPath) ?: '';
@@ -1494,6 +1498,27 @@ class ChallengeUtils
     }
 
     /**
+     * Safely sanitizes a string input using WordPress functions if available, or fallback PHP functions.
+     *
+     * @param mixed $value
+     * @return string
+     */
+    private static function sanitizeString($value): string
+    {
+        if (!is_scalar($value)) {
+            return '';
+        }
+        $val = (string)$value;
+        if (function_exists('wp_unslash')) {
+            $val = wp_unslash($val);
+        }
+        if (function_exists('sanitize_text_field')) {
+            return sanitize_text_field($val);
+        }
+        return trim(strip_tags($val));
+    }
+
+    /**
      * Safely retrieves and sanitizes a value from the $_SERVER superglobal.
      * Uses WordPress functions if available, otherwise falls back to basic PHP sanitization.
      *
@@ -1509,14 +1534,6 @@ class ChallengeUtils
 
         // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Unslashed and sanitized immediately below
         $value = $_SERVER[$key];
-
-        if (function_exists('wp_unslash')) {
-            $value = wp_unslash($value);
-        }
-        if (function_exists('sanitize_text_field')) {
-            return sanitize_text_field($value);
-        }
-
-        return is_scalar($value) ? (string) $value : '';
+        return self::sanitizeString($value);
     }
 }

@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.backends import default_backend
 from typing import Dict, Any, List, Optional, Callable, Set, Union
 
+from asn_lookup import default_asn_lookup, NetworkProfile, AsnLookupEngine
 from utils import get_ip_subnet, is_loopback_ip, get_ip_common_prefix_length
 from challenge_utils import ChallengeUtils
 from request_utils import (
@@ -47,6 +48,7 @@ from optimization import (
     OptimizationOperators,
     AutoTuner,
 )
+from pat import PatValidator, PatUtils, PrivateAccessToken, PatValidationResult
 from client import FingerprintClient
 from security_profiles import SecurityProfiles
 from key_manager import initialize_ed25519_keys as setup_ed25519_keys, generate_issuer_pem_keys
@@ -56,6 +58,9 @@ __all__ = [
     "RequestContext",
     "FingerprintEngine",
     "BlockList",
+    "NetworkProfile",
+    "AsnLookupEngine",
+    "default_asn_lookup",
     "ChallengeUtils",
     "RequestUtils",
     "calculate_analog_inconsistency_score",
@@ -96,6 +101,10 @@ __all__ = [
     "FastAPIFingerprintMiddleware",
     "ProblemManager",
     "SecurityProfiles",
+    "PatValidator",
+    "PatUtils",
+    "PrivateAccessToken",
+    "PatValidationResult",
 ]
 
 # --- UTILS ---
@@ -525,6 +534,17 @@ class FingerprintEngine:
         self._prune_interval: float = 10.0  # seconds
         self.problem_manager = None
 
+        pat_cfg = config.get("pat", {})
+        trusted_pat_keys = pat_cfg.get("trustedKeys", {})
+        default_pat_pubkey = pat_cfg.get("defaultPublicKey")
+        pat_nonce_ttl = pat_cfg.get("nonceTtl", 86400)
+        self.pat_validator = config.get("patValidator") or PatValidator(
+            trusted_keys=trusted_pat_keys,
+            default_public_key=default_pat_pubkey,
+            nonce_store=self.store,
+            nonce_ttl_seconds=pat_nonce_ttl,
+        )
+
         if config.get("enableUsefulWork"):
             try:
                 default_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config/problems.config.json"))
@@ -949,7 +969,7 @@ class FingerprintEngine:
 
         return {"device_id": device_id, "device_data": device_data, "new_cookie": new_cookie, "cookie_dropping_score": cookie_dropping_score}
 
-    async def get_behavioral_indicators(self, context: RequestContext, device_data: Dict[str, Any]) -> Dict[str, float]:
+    async def get_behavioral_indicators(self, context: RequestContext, device_data: Dict[str, Any], net_profile: Optional[NetworkProfile] = None) -> Dict[str, float]:
         now = int(time.time() * 1000)
         client_ip = context.client_ip
         current_fp = self.get_composite_device_hash(context)
@@ -987,6 +1007,9 @@ class FingerprintEngine:
 
         max_ips, free_ips = 15, 3
         history_score = min(100.0, (max(0, len(device_data["ips"]) - free_ips) / max_ips) * 100.0)
+        if net_profile and getattr(net_profile, "tolerance_rotation", False):
+            history_score = min(history_score, 10.0)
+
         rotation_score = min(100.0, (device_data.get("rapidChangeCount", 0) / 3.0) * 100.0)
         return {"historyScore": history_score, "rotationScore": rotation_score}
 
@@ -999,6 +1022,7 @@ class FingerprintEngine:
         device_data = identity["device_data"]
         device_id = identity["device_id"]
         cookie_dropping_score = identity.get("cookie_dropping_score", 0.0)
+        net_profile = default_asn_lookup.lookup(context.client_ip)
 
         if device_data and device_data.get("condemned"):
             suspicion_vector["honeypotScore"] = 100.0
@@ -1007,10 +1031,10 @@ class FingerprintEngine:
         # Smooth analog inconsistency score
         current_hash = self.get_composite_device_hash(context)
         similarity = FingerprintBuilder.compare(device_data.get("initialDeviceHash") or "", current_hash)
-        similarity_threshold = float(self.config.get("similarityThreshold", 0.72))
+        similarity_threshold = float(self.config.get("similarityThreshold", net_profile.inflection_point))
         inconsistency_score = RequestUtils.calculate_analog_inconsistency_score(similarity, similarity_threshold)
 
-        behavioral_indicators = await self.get_behavioral_indicators(context, device_data)
+        behavioral_indicators = await self.get_behavioral_indicators(context, device_data, net_profile)
         history_score = behavioral_indicators["historyScore"]
         rotation_score = behavioral_indicators["rotationScore"]
 
@@ -1466,23 +1490,27 @@ class FingerprintEngine:
         device_id = identity["device_id"]
         device_data = identity["device_data"]
 
-        # Early block for condemned devices
-        if device_data and device_data.get("condemned"):
-            MetricsManager.increment_counter("requests_total", {"status": "blocked"})
-            if self.dry_run:
-                return {"action": "next", "intendedAction": "block"}
-            return {"action": "block", "status": 403, "body": "Forbidden"}
+        # Garde-fous : Si le terminal est condamné ou qu'une attaque applicative certaine est détectée, le token PAT ne protège pas
+        is_condemned = bool(device_data and device_data.get("condemned"))
+        is_certain_attack = self._has_certain_attack(context)
 
-        # Instant check & condemnation for certain attacks (Honeypot or Bot)
-        if self._has_certain_attack(context):
+        if is_condemned or is_certain_attack:
             if device_data:
                 device_data["condemned"] = True
+                device_data["webauthnVerified"] = False
                 await self.store.set(f"device:{device_id}", device_data)
             self._fast_path_cache[client_ip] = (current_time + 60.0, "block")
             MetricsManager.increment_counter("requests_total", {"status": "blocked"})
             if self.dry_run:
                 return {"action": "next", "intendedAction": "block"}
             return {"action": "block", "status": 403, "body": "Forbidden"}
+
+        # Validation du jeton PAT (Private Access Tokens RFC 9578)
+        has_valid_pat = False
+        if hasattr(self, "pat_validator") and self.pat_validator:
+            pat_res = await self.pat_validator.process_request_headers(context.headers)
+            if pat_res and pat_res.is_verified:
+                has_valid_pat = True
 
         # Check for challenge submission
         pow_nonce = context.query_params.get("pow_nonce")
@@ -1650,7 +1678,11 @@ class FingerprintEngine:
             if has_valid_ticket:
                 MetricsManager.increment_counter("tickets_valid_total")
 
+        has_valid_ticket = has_valid_ticket or has_valid_pat
+
         suspicion_vector = await self.get_suspicion_vector(context)
+        if has_valid_pat:
+            suspicion_vector["pat_verified"] = 100.0
         score = self.calculate_final_score(suspicion_vector)
 
         low_threshold = self.thresholds.get("low", 20)
@@ -1679,8 +1711,17 @@ class FingerprintEngine:
 
         high_threshold = self.thresholds.get("high", 75)
         medium_threshold = self.thresholds.get("medium", 45)
-        max_indicators_count = sum(1 for val in suspicion_vector.values() if isinstance(val, (int, float)) and val >= 100.0)
+        max_indicators_count = sum(
+            1 for k, val in suspicion_vector.items()
+            if k not in ("pat_verified", "ticket_valid", "webauthn_verified", "whitelisted", "privacy_pass")
+            and isinstance(val, (int, float)) and val >= 100.0
+        )
         must_rechallenge = (suspicion_vector.get("honeypotScore", 0.0) >= medium_threshold) or (max_indicators_count >= 1)
+
+        if has_valid_ticket and not must_rechallenge:
+            MetricsManager.increment_counter("requests_total", {"status": "passed"})
+            MetricsManager.observe_value("suspicion_score", 0.0, {"action": "passed"})
+            return {"action": "next", "score": 0.0, "vector": suspicion_vector}
 
         low_threshold = self.thresholds.get("low", 20)
 

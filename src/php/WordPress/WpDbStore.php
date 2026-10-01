@@ -156,4 +156,31 @@ class WpDbStore implements IStore
         );
         return is_numeric($deleted) ? (int)$deleted : 0;
     }
+
+    /**
+     * Returns the total number of records currently stored.
+     */
+    public function getTotalCount(): int
+    {
+        if (!$this->db || !method_exists($this->db, 'get_var')) {
+            return 0;
+        }
+        $count = $this->db->get_var("SELECT COUNT(*) FROM `{$this->table}`");
+        return is_numeric($count) ? (int)$count : 0;
+    }
+
+    /**
+     * Returns the number of expired records awaiting cron deletion.
+     */
+    public function getExpiredCount(): int
+    {
+        if (!$this->db || !method_exists($this->db, 'get_var') || !method_exists($this->db, 'prepare')) {
+            return 0;
+        }
+        $now = time();
+        $count = $this->db->get_var(
+            $this->db->prepare("SELECT COUNT(*) FROM `{$this->table}` WHERE expires_at IS NOT NULL AND expires_at < %d", $now)
+        );
+        return is_numeric($count) ? (int)$count : 0;
+    }
 }

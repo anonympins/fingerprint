@@ -41,6 +41,7 @@ public class FingerprintProperties {
     private String federationSecret;
     private DifferentialPrivacy differentialPrivacy = new DifferentialPrivacy();
     private Double dpEpsilon;
+    private Pat pat = new Pat();
     private boolean reset = false;
 
     public boolean isEnabled() {
@@ -273,6 +274,14 @@ public class FingerprintProperties {
 
     public void setDpEpsilon(Double dpEpsilon) {
         this.dpEpsilon = dpEpsilon;
+    }
+
+    public Pat getPat() {
+        return pat;
+    }
+
+    public void setPat(Pat pat) {
+        this.pat = pat;
     }
 
     public boolean isReset() {
@@ -628,6 +637,23 @@ public class FingerprintProperties {
             if (dummyRate != null) {
                 map.put("dummyRate", dummyRate);
             }
+            return map;
+        }
+    }
+
+    public static class Pat {
+        private boolean enabled = true;
+        private long nonceTtl = 86400L;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public long getNonceTtl() { return nonceTtl; }
+        public void setNonceTtl(long nonceTtl) { this.nonceTtl = nonceTtl; }
+
+        public Map<String, Object> toMap() {
+            Map<String, Object> map = new HashMap<>();
+            map.put("enabled", enabled);
+            map.put("nonceTtl", nonceTtl);
             return map;
         }
     }

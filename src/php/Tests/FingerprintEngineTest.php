@@ -303,11 +303,12 @@ class FingerprintEngineTest extends TestCase
             $this->markTestSkipped('Ed25519 is not supported in this PHP/OpenSSL environment.');
         }
 
-        $configDir = dirname(__FILE__, 3) . '/config'; // Match engine's behavior
+        $configDir = sys_get_temp_dir() . '/anonympins-test-keys-' . time();
         if (!is_dir($configDir)) {
             mkdir($configDir, 0777, true);
         }
         $keyPath = $configDir . '/ed25519_key.json';
+        Env::set('FINGERPRINT_KEY_DIR', $configDir);
 
         Env::clear('ED25519_PRIVATE_KEY');
         Env::clear('ED25519_PUBLIC_KEY');
@@ -338,11 +339,12 @@ class FingerprintEngineTest extends TestCase
 
     public function testEd25519KeyLoadingFromDisk(): void
     {
-        $configDir = dirname(__FILE__, 3) . '/config'; // Match engine's behavior
+        $configDir = sys_get_temp_dir() . '/anonympins-test-keys-' . time();
         if (!is_dir($configDir)) {
             mkdir($configDir, 0777, true);
         }
         $keyPath = $configDir . '/ed25519_key.json';
+        Env::set('FINGERPRINT_KEY_DIR', $configDir);
 
         $dummyKeys = [
             'privateKey' => '-----BEGIN PRIVATE KEY-----\ndummy-php-private\n-----END PRIVATE KEY-----',
