@@ -2,7 +2,7 @@
 Contributors: anonympins
 Tags: bot protection, security, proof of work, firewall, anti scraping
 Requires at least: 5.9
-Tested up to: 6.7
+Tested up to: 7.1
 Requires PHP: 8.0
 Stable tag: 0.8.1
 License: MIT

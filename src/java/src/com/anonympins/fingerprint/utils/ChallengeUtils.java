@@ -856,39 +856,11 @@ public class ChallengeUtils {
             boolean verified = false;
 
             if (sigEd25519 != null && !sigEd25519.isEmpty()) {
-                String publicKeyPem = (String) config.get("ed25519_public_key");
-                if (publicKeyPem == null) {
-                    publicKeyPem = System.getenv("ED25519_PUBLIC_KEY");
-                }
-                if (publicKeyPem == null) {
-                    publicKeyPem = System.getProperty("ED25519_PUBLIC_KEY");
-                }
-
-                if (publicKeyPem != null && !publicKeyPem.isEmpty()) {
-                    try {
-                        String cleanKey = publicKeyPem.replace("\\n", "\n")
-                                                       .replace("-----BEGIN PUBLIC KEY-----", "")
-                                                       .replace("-----END PUBLIC KEY-----", "")
-                                                       .replaceAll("\\s+", "");
-                        byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
-                        java.security.spec.X509EncodedKeySpec spec = new java.security.spec.X509EncodedKeySpec(keyBytes);
-                        java.security.KeyFactory kf = java.security.KeyFactory.getInstance("Ed25519");
-                        java.security.PublicKey publicKey = kf.generatePublic(spec);
-                        
-                        java.security.Signature sig = java.security.Signature.getInstance("Ed25519");
-                        sig.initVerify(publicKey);
-                        sig.update(msg.getBytes(StandardCharsets.UTF_8));
-                        if (sig.verify(HexFormat.of().parseHex(sigEd25519))) {
-                            verified = true;
-                            System.out.println("[ChallengeUtils] Ed25519 signature verified successfully.");
-                        } else {
-                            System.err.println("[ChallengeUtils] Ed25519 signature verification failed.");
-                        }
-                    } catch (Exception e) {
-                        System.err.println("[ChallengeUtils] Ed25519 key loading/verification failed: " + e.getMessage());
-                    }
+                if (verifyEd25519Signature(msg, sigEd25519, config)) {
+                    verified = true;
+                    System.out.println("[ChallengeUtils] Ed25519 signature verified successfully.");
                 } else {
-                    System.err.println("[ChallengeUtils] Missing Ed25519 public key.");
+                    System.err.println("[ChallengeUtils] Ed25519 signature verification failed.");
                 }
             } else if (sigHmac != null) {
                 String secret = params.get("federationSecret");
@@ -916,6 +888,49 @@ public class ChallengeUtils {
             store.set("banned-zkp-y:" + zkpY, true, 86400 * 30);
             Map<String, Object> res = new HashMap<>();
             res.put("status", "synchronized");
+            return res;
+        }
+
+        if ("share_whitelist".equals(op)) {
+            String entry = params.get("entry");
+            String entryType = params.getOrDefault("entry_type", "ip"); // ip, subnet, user_agent
+            String sigEd25519 = params.get("signature_ed25519");
+            String timestampStr = params.get("timestamp");
+            String ttlStr = params.getOrDefault("ttl", "86400"); // 24h par défaut
+
+            if (entry == null || entry.trim().isEmpty() || sigEd25519 == null || timestampStr == null) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "Missing required parameters for share_whitelist");
+                return err;
+            }
+
+            // Refuser les wildcards dangereux
+            if ("*".equals(entry.trim()) || "0.0.0.0/0".equals(entry.trim())) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "Permissive wildcard entries are prohibited");
+                return err;
+            }
+
+            long timestamp = Long.parseLong(timestampStr);
+            if (Math.abs(System.currentTimeMillis() - timestamp) > 300000) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "Timestamp expired");
+                return err;
+            }
+
+            // Vérification de la signature Ed25519
+            String msg = timestamp + ":whitelist:" + entryType + ":" + entry;
+            if (!verifyEd25519Signature(msg, sigEd25519, config)) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "Invalid Ed25519 signature for whitelist synchronization");
+                return err;
+            }
+
+            int ttl = Math.min(604800, Integer.parseInt(ttlStr)); // Capped à 7 jours max
+            store.set("federated-whitelist:" + entryType + ":" + entry, true, ttl);
+
+            Map<String, Object> res = new HashMap<>();
+            res.put("status", "whitelist_synchronized");
             return res;
         }
 
@@ -1127,6 +1142,39 @@ public class ChallengeUtils {
         String combinedProofs = String.join("|", proofs);
         String expectedSolution = FingerprintBuilder.cyrb53(combinedProofs + ":" + secret, 0);
         return expectedSolution.equals(solution);
+    }
+    public static boolean verifyEd25519Signature(String message, String signatureHex, Map<String, Object> config) {
+        if (message == null || signatureHex == null || signatureHex.isEmpty()) {
+            return false;
+        }
+        String publicKeyPem = config != null ? (String) config.get("ed25519_public_key") : null;
+        if (publicKeyPem == null) {
+            publicKeyPem = System.getenv("ED25519_PUBLIC_KEY");
+        }
+        if (publicKeyPem == null) {
+            publicKeyPem = System.getProperty("ED25519_PUBLIC_KEY");
+        }
+
+        if (publicKeyPem != null && !publicKeyPem.isEmpty()) {
+            try {
+                String cleanKey = publicKeyPem.replace("\\n", "\n")
+                        .replace("-----BEGIN PUBLIC KEY-----", "")
+                        .replace("-----END PUBLIC KEY-----", "")
+                        .replaceAll("\\s+", "");
+                byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
+                java.security.spec.X509EncodedKeySpec spec = new java.security.spec.X509EncodedKeySpec(keyBytes);
+                java.security.KeyFactory kf = java.security.KeyFactory.getInstance("Ed25519");
+                java.security.PublicKey publicKey = kf.generatePublic(spec);
+
+                java.security.Signature sig = java.security.Signature.getInstance("Ed25519");
+                sig.initVerify(publicKey);
+                sig.update(message.getBytes(StandardCharsets.UTF_8));
+                return sig.verify(HexFormat.of().parseHex(signatureHex));
+            } catch (Exception e) {
+                System.err.println("[ChallengeUtils] Ed25519 verification failed: " + e.getMessage());
+            }
+        }
+        return false;
     }
 
     /**
@@ -1742,5 +1790,84 @@ public class ChallengeUtils {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t") + "\"";
+    }
+
+    @SuppressWarnings("unchecked")
+    public static void broadcastWhitelistedEntry(String entry, String entryType, int ttl, Map<String, Object> config) {
+        if (entry == null) return;
+        String trimmed = entry.trim();
+        if (trimmed.isEmpty()) return;
+
+        if ("*".equals(trimmed) || "0.0.0.0/0".equals(trimmed) || "::/0".equals(trimmed)) {
+            throw new IllegalArgumentException("Permissive wildcard entries are prohibited");
+        }
+
+        List<String> peers = config != null ? (List<String>) config.get("federatedPeers") : null;
+        if (peers == null || peers.isEmpty()) return;
+
+        String privateKeyPem = config != null ? (String) config.get("ed25519_private_key") : null;
+        if (privateKeyPem == null || privateKeyPem.isEmpty()) {
+            privateKeyPem = System.getenv("ED25519_PRIVATE_KEY");
+        }
+        if (privateKeyPem == null || privateKeyPem.isEmpty()) {
+            privateKeyPem = System.getProperty("ED25519_PRIVATE_KEY");
+        }
+        if (privateKeyPem == null || privateKeyPem.isEmpty()) {
+            throw new IllegalStateException("ED25519_PRIVATE_KEY is required for federated whitelist broadcast");
+        }
+
+        long now = System.currentTimeMillis();
+        String msg = now + ":whitelist:" + entryType + ":" + trimmed;
+        String signature;
+        try {
+            String cleanKey = privateKeyPem.replace("\\n", "\n")
+                    .replace("-----BEGIN PRIVATE KEY-----", "")
+                    .replace("-----END PRIVATE KEY-----", "")
+                    .replaceAll("\\s+", "");
+            byte[] keyBytes = Base64.getDecoder().decode(cleanKey);
+            java.security.spec.PKCS8EncodedKeySpec spec = new java.security.spec.PKCS8EncodedKeySpec(keyBytes);
+            java.security.KeyFactory kf = java.security.KeyFactory.getInstance("Ed25519");
+            java.security.PrivateKey privateKey = kf.generatePrivate(spec);
+
+            java.security.Signature sig = java.security.Signature.getInstance("Ed25519");
+            sig.initSign(privateKey);
+            sig.update(msg.getBytes(StandardCharsets.UTF_8));
+            signature = HexFormat.of().formatHex(sig.sign());
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to sign whitelist broadcast: " + e.getMessage(), e);
+        }
+
+        int boundedTtl = Math.min(604800, Math.max(60, ttl));
+
+        for (String peerUrl : peers) {
+            String targetUrl = peerUrl + (peerUrl.contains("?") ? "&" : "?") + "coop_op=share_whitelist";
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("coop_op", "share_whitelist");
+            payload.put("entry", trimmed);
+            payload.put("entry_type", entryType);
+            payload.put("ttl", boundedTtl);
+            payload.put("signature_ed25519", signature);
+            payload.put("timestamp", now);
+            String json = simpleJsonStringify(payload);
+
+            new Thread(() -> {
+                try {
+                    java.net.URL url = new java.net.URL(targetUrl);
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setRequestProperty("Content-Type", "application/json");
+                    conn.setRequestProperty("X-Federation-Signature-Ed25519", signature);
+                    conn.setRequestProperty("X-Federation-Timestamp", String.valueOf(now));
+                    conn.setDoOutput(true);
+                    conn.setConnectTimeout(500);
+                    conn.setReadTimeout(500);
+                    try (java.io.OutputStream os = conn.getOutputStream()) {
+                        os.write(json.getBytes(StandardCharsets.UTF_8));
+                    }
+                    conn.getResponseCode();
+                    conn.disconnect();
+                } catch (Exception ignored) {}
+            }).start();
+        }
     }
 }

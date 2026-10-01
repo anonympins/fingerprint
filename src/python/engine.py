@@ -771,6 +771,37 @@ class FingerprintEngine:
     async def _check_allowlists(self, context: RequestContext) -> bool:
          whitelisted = False
          whitelist_type = ""
+
+         # 0. Auto-whitelisting des pairs fédérés
+         federated_peers = self.config.get("federatedPeers") or []
+         if federated_peers:
+             import urllib.parse
+             for peer_url in federated_peers:
+                 try:
+                     parsed_peer = urllib.parse.urlparse(peer_url)
+                     if parsed_peer.hostname == context.client_ip or peer_url == context.client_ip:
+                         whitelisted = True
+                         whitelist_type = "federated_peer"
+                         break
+                 except Exception:
+                     if peer_url == context.client_ip:
+                         whitelisted = True
+                         whitelist_type = "federated_peer"
+                         break
+
+         if not whitelisted:
+             subnet = get_ip_subnet(context.client_ip) or ""
+             ua = context.headers.get("user-agent", "")
+             if await self.store.has(f"federated-whitelist:ip:{context.client_ip}"):
+                 whitelisted = True
+                 whitelist_type = "federated_whitelist_ip"
+             elif subnet and await self.store.has(f"federated-whitelist:subnet:{subnet}"):
+                 whitelisted = True
+                 whitelist_type = "federated_whitelist_subnet"
+             elif ua and await self.store.has(f"federated-whitelist:user_agent:{ua}"):
+                 whitelisted = True
+                 whitelist_type = "federated_whitelist_user_agent"
+
          if self._is_ip_in_allowlist(context.client_ip):
              whitelisted = True
              whitelist_type = "allowlist"
@@ -1373,6 +1404,93 @@ class FingerprintEngine:
 
         await asyncio.gather(*(send_one(peer) for peer in peers), return_exceptions=True)
 
+    def _verify_ed25519_signature(self, message: str, signature_hex: str) -> bool:
+        return ChallengeUtils.verify_ed25519_signature(message, signature_hex, self.config)
+
+    async def broadcast_whitelisted_entry(self, entry: str, entry_type: str = "ip", ttl: int = 86400) -> None:
+        peers = self.config.get("federatedPeers") or []
+        if not peers or not entry:
+            return
+
+        trimmed_entry = entry.strip()
+        if trimmed_entry in ("*", "0.0.0.0/0", "::/0"):
+            raise ValueError("Permissive wildcard entries are prohibited")
+
+        ed25519_key_pem = os.environ.get("ED25519_PRIVATE_KEY") or self.config.get("ed25519_private_key")
+        if not ed25519_key_pem:
+            raise ValueError("ED25519_PRIVATE_KEY is required for federated whitelist broadcast")
+
+        import urllib.parse
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+        now_ms = int(time.time() * 1000)
+        msg = f"{now_ms}:whitelist:{entry_type}:{trimmed_entry}"
+        clean_priv = ed25519_key_pem.replace("\\n", "\n")
+        priv_key = load_pem_private_key(clean_priv.encode("utf-8"), password=None, backend=default_backend())
+        sig_ed25519 = priv_key.sign(msg.encode("utf-8")).hex()
+
+        bounded_ttl = min(604800, max(60, int(ttl)))
+        post_data = json.dumps({
+            "coop_op": "share_whitelist",
+            "entry": trimmed_entry,
+            "entry_type": entry_type,
+            "ttl": bounded_ttl,
+            "signature_ed25519": sig_ed25519,
+            "timestamp": now_ms
+        })
+
+        semaphore = asyncio.Semaphore(10)
+
+        async def send_one(peer_url: str):
+            try:
+                async with semaphore:
+                    parsed = urllib.parse.urlparse(peer_url)
+                    host = parsed.hostname
+                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                    path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+                    connector = "?" if "?" not in path else "&"
+                    path = f"{path}{connector}coop_op=share_whitelist"
+
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(host, port, ssl=(parsed.scheme == "https")),
+                        timeout=0.5
+                    )
+                    request = (
+                        f"POST {path} HTTP/1.1\r\n"
+                        f"Host: {host}\r\n"
+                        f"Content-Type: application/json\r\n"
+                        f"Content-Length: {len(post_data)}\r\n"
+                        f"X-Federation-Signature-Ed25519: {sig_ed25519}\r\n"
+                        f"X-Federation-Timestamp: {now_ms}\r\n"
+                        f"Connection: close\r\n\r\n"
+                        f"{post_data}"
+                    )
+                    writer.write(request.encode("utf-8"))
+                    await writer.drain()
+                    writer.close()
+                    await writer.wait_closed()
+            except Exception:
+                pass
+
+        await asyncio.gather(*(send_one(p) for p in peers), return_exceptions=True)
+
+    async def handle_cooperative_request(self, context: RequestContext) -> Dict[str, Any]:
+        params = dict(context.query_params or {})
+        if isinstance(context.body, dict):
+            params.update(context.body)
+
+        op = params.get("coop_op")
+        if not op:
+            return {"error": "Missing coop_op"}
+
+        coop_res = await ChallengeUtils.handle_cooperative_request(
+            self.store, params, context.client_ip, context.headers, self.config
+        )
+        if coop_res is not None:
+            return coop_res
+
+        return {"error": f"Unsupported operation: {op}"}
+
     def get_rtt_proxy_score(self, context: RequestContext) -> float:
         """
         Feature 7: RTT & Residential Proxy Latency Correlation.
@@ -1438,6 +1556,18 @@ class FingerprintEngine:
             Dict[str, Any]: A dictionary describing the action to be taken and any associated data.
         """
         await self.translate_polymorphic_headers(context)
+
+        coop_op = context.query_params.get("coop_op")
+        if not coop_op and isinstance(context.body, dict):
+            coop_op = context.body.get("coop_op")
+
+        if coop_op:
+            result = await self.handle_cooperative_request(context)
+            return {
+                "action": "challenge",
+                "status": 200,
+                "body": result
+            }
 
         if await self._check_allowlists(context):
              MetricsManager.increment_counter("requests_total", {"status": "passed"})

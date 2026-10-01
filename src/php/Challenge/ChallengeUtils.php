@@ -236,6 +236,31 @@ class ChallengeUtils
         return $activePeers[array_rand($activePeers)];
     }
 
+    public static function verifyEd25519Signature(string $message, string $signatureHex, array $config = []): bool
+    {
+        if (empty($message) || empty($signatureHex)) {
+            return false;
+        }
+        $publicKey = $config['ed25519_public_key'] ?? Env::get('ED25519_PUBLIC_KEY');
+        if (empty($publicKey)) {
+            return false;
+        }
+        try {
+            $cleanKey = str_replace('\n', "\n", $publicKey);
+            $pubKeyObj = openssl_pkey_get_public($cleanKey);
+            if (!$pubKeyObj) {
+                return false;
+            }
+            $sigBytes = hex2bin($signatureHex);
+            if ($sigBytes === false) {
+                return false;
+            }
+            return openssl_verify($message, $sigBytes, $pubKeyObj, null) === 1;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
     /**
      * Handles cooperative peer-to-peer operations (federation threat intel sharing,
      * node registration, peer discovery, WebRTC signaling, block requests/responses).
@@ -289,18 +314,8 @@ class ChallengeUtils
             $msg = "{$timestamp}:{$zkpY}";
 
             if (!empty($sigEd25519)) {
-                $publicKey = $config['ed25519_public_key'] ?? Env::get('ED25519_PUBLIC_KEY');
-                if (!$publicKey) {
-                    return ['error' => 'Missing public key for asymmetric verification'];
-                }
-                try {
-                    $cleanKey = str_replace('\n', "\n", $publicKey);
-                    $pubKeyObj = openssl_pkey_get_public($cleanKey);
-                    if (!$pubKeyObj || openssl_verify($msg, hex2bin($sigEd25519), $pubKeyObj, null) !== 1) {
-                        return ['error' => 'Invalid asymmetric federation signature'];
-                    }
-                } catch (\Throwable $e) {
-                    return ['error' => 'Asymmetric signature verification failed'];
+                if (!self::verifyEd25519Signature($msg, $sigEd25519, $config)) {
+                    return ['error' => 'Invalid asymmetric federation signature'];
                 }
             } elseif (!empty($sigHmac)) {
                 $secret = $params['federationSecret'] ?? $config['federationSecret'] ?? self::getPowSecret();
@@ -328,6 +343,50 @@ class ChallengeUtils
                 return ['status' => 'synchronized', 'banned' => true];
             }
             return ['status' => 'synchronized', 'banned' => false, 'reportsCount' => count($reportedPeers)];
+        }
+
+        if ($op === 'share_whitelist') {
+            $peers = $config['federatedPeers'] ?? [];
+            if (!empty($peers)) {
+                $allowedHosts = array_map(function ($url) {
+                    $host = function_exists('wp_parse_url') ? wp_parse_url($url, PHP_URL_HOST) : parse_url($url, PHP_URL_HOST);
+                    return !empty($host) ? $host : $url;
+                }, $peers);
+
+                if (!in_array($clientIp, $allowedHosts, true)) {
+                    return ['error' => 'Unauthorized federation sender IP'];
+                }
+            }
+
+            $entry = $params['entry'] ?? '';
+            $entryType = $params['entry_type'] ?? 'ip';
+            $headers = function_exists('getallheaders') ? array_change_key_case(getallheaders(), CASE_LOWER) : [];
+            $sigEd25519 = $params['signature_ed25519'] ?? $headers['x-federation-signature-ed25519'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_SIGNATURE_ED25519', '');
+            $timestamp = (int)($params['timestamp'] ?? $headers['x-federation-timestamp'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_TIMESTAMP', 0));
+            $ttl = (int)($params['ttl'] ?? 86400);
+
+            $cleanEntry = trim($entry);
+            if ($cleanEntry === '' || empty($sigEd25519) || empty($timestamp)) {
+                return ['error' => 'Missing required parameters for share_whitelist'];
+            }
+
+            if ($cleanEntry === '*' || $cleanEntry === '0.0.0.0/0' || $cleanEntry === '::/0') {
+                return ['error' => 'Permissive wildcard entries are prohibited'];
+            }
+
+            $now = (int)(microtime(true) * 1000);
+            if (abs($now - $timestamp) > 300000) {
+                return ['error' => 'Timestamp expired or clock skew too high'];
+            }
+
+            $msg = "{$timestamp}:whitelist:{$entryType}:{$cleanEntry}";
+            if (!self::verifyEd25519Signature($msg, $sigEd25519, $config)) {
+                return ['error' => 'Invalid Ed25519 signature for whitelist synchronization'];
+            }
+
+            $boundedTtl = min(604800, max(60, $ttl));
+            $store->set("federated-whitelist:{$entryType}:{$cleanEntry}", true, $boundedTtl);
+            return ['status' => 'whitelist_synchronized', 'entry' => $cleanEntry, 'entryType' => $entryType, 'ttl' => $boundedTtl];
         }
 
         $nodeId = $params['node_id'] ?? '';
@@ -645,15 +704,32 @@ class ChallengeUtils
                 if (function_exists('wp_mkdir_p')) {
                     wp_mkdir_p($outDir);
                 } else {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Standalone filesystem fallback
                     mkdir($outDir, 0755, true);
                 }
             }
             $privateKeyPath = rtrim($outDir, '/\\') . '/' . $privName;
             $publicKeyPath = rtrim($outDir, '/\\') . '/' . $pubName;
-            file_put_contents($privateKeyPath, $privateKeyPem);
-            @chmod($privateKeyPath, 0600);
-            file_put_contents($publicKeyPath, $publicKeyPem);
-            @chmod($publicKeyPath, 0644);
+
+            global $wp_filesystem;
+            if (empty($wp_filesystem) && defined('ABSPATH')) {
+                require_once ABSPATH . 'wp-admin/includes/file.php';
+                WP_Filesystem();
+            }
+
+            if (!empty($wp_filesystem) && is_object($wp_filesystem)) {
+                $wp_filesystem->put_contents($privateKeyPath, $privateKeyPem, 0600);
+                $wp_filesystem->put_contents($publicKeyPath, $publicKeyPem, 0644);
+            } else {
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Standalone filesystem fallback
+                file_put_contents($privateKeyPath, $privateKeyPem);
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Standalone filesystem fallback
+                @chmod($privateKeyPath, 0600);
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Standalone filesystem fallback
+                file_put_contents($publicKeyPath, $publicKeyPem);
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Standalone filesystem fallback
+                @chmod($publicKeyPath, 0644);
+            }
         }
 
         return [
@@ -1515,6 +1591,10 @@ class ChallengeUtils
         if (function_exists('sanitize_text_field')) {
             return sanitize_text_field($val);
         }
+        if (function_exists('wp_strip_all_tags')) {
+            return trim(wp_strip_all_tags($val));
+        }
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags -- Standalone fallback when running outside WordPress
         return trim(strip_tags($val));
     }
 

@@ -3885,8 +3885,26 @@ let store = inMemoryStore;
  * @param {IStore} externalStore - An implementation of the IStore interface.
  */
 export const configureStore = (externalStore) => {
+  if (externalStore && typeof externalStore.has !== 'function' && typeof externalStore.get === 'function') {
+    externalStore.has = async function (key) {
+      const val = await this.get(key);
+      return val !== null && val !== undefined;
+    };
+  }
   store = externalStore;
 };
+
+async function storeHas(key) {
+  if (!store) return false;
+  if (typeof store.has === 'function') {
+    return await store.has(key);
+  }
+  if (typeof store.get === 'function') {
+    const val = await store.get(key);
+    return val !== null && val !== undefined;
+  }
+  return false;
+}
 
 /**
  * Orchestrates request identification using a persistent anchor (cookie)
@@ -4706,7 +4724,7 @@ async function getThreatIntelScore(context, zkpY, threatIntelConfig = {}) {
 
     // 1. Détection déterministe : Clé publique ZKP bannie par consensus fédéré
     if (zkpY) {
-        const isBanned = await store.has(`banned-zkp-y:${zkpY}`);
+        const isBanned = await storeHas(`banned-zkp-y:${zkpY}`);
         if (isBanned) {
             score = 100.0;
             signals.push({
@@ -5252,12 +5270,16 @@ export class FingerprintEngine {
 
       const { clientIp = "unknown", path, cookies = {}, query = {}, isStatic, graphqlOperationType, graphqlOperationName } = requestContext;
 
-      if (query.coop_op) {
+      const queryCoopOp = query.coop_op || (typeof requestContext.body === 'object' && requestContext.body ? requestContext.body.coop_op : null);
+      if (queryCoopOp) {
+          const bodyObj = typeof requestContext.body === 'object' && requestContext.body !== null ? requestContext.body : {};
           const coopParams = {
               ...query,
-              signature: requestContext.headers?.['x-federation-signature'] || query.signature,
-              signature_ed25519: requestContext.headers?.['x-federation-signature-ed25519'] || query.signature_ed25519,
-              timestamp: requestContext.headers?.['x-federation-timestamp'] || query.timestamp
+              ...bodyObj,
+              coop_op: queryCoopOp,
+              signature: requestContext.headers?.['x-federation-signature'] || query.signature || bodyObj.signature,
+              signature_ed25519: requestContext.headers?.['x-federation-signature-ed25519'] || query.signature_ed25519 || bodyObj.signature_ed25519,
+              timestamp: requestContext.headers?.['x-federation-timestamp'] || query.timestamp || bodyObj.timestamp
           };
           const result = await handleCooperativeRequest(coopParams, clientIp, this.securityConfig);
           return {
@@ -5387,7 +5409,7 @@ export class FingerprintEngine {
             const parsedToken = parsePrivateAccessToken(rawToken);
             if (parsedToken) {
                 const nonceKey = `pat-nonce:${parsedToken.nonce}`;
-                const isReplayed = await store.has(nonceKey);
+                const isReplayed = await storeHas(nonceKey);
                 if (!isReplayed) {
                     const isValid = verifyPatSignature(parsedToken, patConfig);
                     if (isValid) {
@@ -5414,6 +5436,41 @@ export class FingerprintEngine {
     // 1. Check static IP allowlist first for maximum performance.
     let whitelisted = false;
     let whitelistType = '';
+
+    // Auto-whitelisting des pairs fédérés
+    const federatedPeers = this.securityConfig.federatedPeers || [];
+    if (federatedPeers.length > 0) {
+      for (const peerUrl of federatedPeers) {
+        try {
+          if (new URL(peerUrl).hostname === clientIp || peerUrl === clientIp) {
+            whitelisted = true;
+            whitelistType = 'federated_peer';
+            break;
+          }
+        } catch (e) {
+          if (peerUrl === clientIp) {
+            whitelisted = true;
+            whitelistType = 'federated_peer';
+            break;
+          }
+        }
+      }
+    }
+
+    if (!whitelisted) {
+      const subnet = getIpSubnet(clientIp);
+      const ua = requestContext.headers?.['user-agent'] || '';
+      if (await storeHas(`federated-whitelist:ip:${clientIp}`)) {
+        whitelisted = true;
+        whitelistType = 'federated_whitelist_ip';
+      } else if (subnet && await storeHas(`federated-whitelist:subnet:${subnet}`)) {
+        whitelisted = true;
+        whitelistType = 'federated_whitelist_subnet';
+      } else if (ua && await storeHas(`federated-whitelist:user_agent:${ua}`)) {
+        whitelisted = true;
+        whitelistType = 'federated_whitelist_user_agent';
+      }
+    }
 
     if (this._isIpInAllowlist(clientIp)) {
       whitelisted = true;
@@ -5912,7 +5969,7 @@ export class FingerprintEngine {
 
                   const threshold = this.securityConfig.federationConsensusThreshold || 3;
                   if (reportedPeers.length >= threshold) {
-                      if (!(await store.has(`banned-zkp-y:${zkpY}`))) {
+                      if (!(await storeHas(`banned-zkp-y:${zkpY}`))) {
                           await store.set(`banned-zkp-y:${zkpY}`, true, 86400 * 30); // Banni pour 30 jours
                       }
                   }
@@ -6459,6 +6516,62 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
         return { status: 'synchronized', banned: false, reportsCount: reportedPeers.length };
     }
 
+    if (op === 'share_whitelist') {
+        const peers = config.federatedPeers || [];
+        if (peers.length > 0) {
+            const allowedIPsAndHosts = peers.map(url => {
+                try { return new URL(url).hostname; } catch(e) { return url; }
+            });
+            if (!allowedIPsAndHosts.includes(clientIp)) {
+                return { error: 'Unauthorized federation sender IP' };
+            }
+        }
+        const entry = params.entry;
+        const entryType = params.entry_type || 'ip'; // ip, subnet, user_agent
+        const sigEd25519 = params.signature_ed25519;
+        const timestampStr = params.timestamp;
+        const ttlStr = params.ttl || '86400';
+
+        if (!entry || !entry.trim() || !sigEd25519 || !timestampStr) {
+            return { error: 'Missing required parameters for share_whitelist' };
+        }
+
+        const trimmedEntry = entry.trim();
+        if (trimmedEntry === '*' || trimmedEntry === '0.0.0.0/0' || trimmedEntry === '::/0') {
+            return { error: 'Permissive wildcard entries are prohibited' };
+        }
+
+        const timestamp = Number(timestampStr);
+        if (isNaN(timestamp) || Math.abs(Date.now() - timestamp) > 300000) {
+            return { error: 'Timestamp expired or clock skew too high' };
+        }
+
+        const publicKey = config.ed25519_public_key || process.env.ED25519_PUBLIC_KEY;
+        if (!publicKey) {
+            return { error: 'Missing public key for asymmetric verification' };
+        }
+
+        const msg = `${timestamp}:whitelist:${entryType}:${trimmedEntry}`;
+        try {
+            const cleanKey = publicKey.replace(/\\n/g, '\n');
+            const isVerified = crypto.verify(
+                null,
+                Buffer.from(msg, 'utf8'),
+                { key: cleanKey, format: 'pem', type: 'spki' },
+                Buffer.from(sigEd25519, 'hex')
+            );
+            if (!isVerified) {
+                return { error: 'Invalid Ed25519 signature for whitelist synchronization' };
+            }
+        } catch (e) {
+            return { error: 'Asymmetric signature verification failed: ' + e.message };
+        }
+
+        const ttl = Math.min(604800, parseInt(ttlStr, 10) || 86400);
+        await store.set(`federated-whitelist:${entryType}:${trimmedEntry}`, true, ttl);
+        return { status: 'whitelist_synchronized', entry: trimmedEntry, entryType, ttl };
+    }
+
     const nodeId = params.node_id || '';
     if (!nodeId) {
         return { error: 'Missing node_id' };
@@ -6598,6 +6711,51 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
             return { status: 'pending' };
     }
     return null;
+}
+
+export async function broadcastWhitelistedEntry(entry, entryType = 'ip', ttl = 86400, config = {}) {
+    const peers = config.federatedPeers || [];
+    if (peers.length === 0 || !entry) return;
+
+    const trimmedEntry = entry.trim();
+    if (trimmedEntry === '*' || trimmedEntry === '0.0.0.0/0' || trimmedEntry === '::/0') {
+        throw new Error('Permissive wildcard entries are prohibited');
+    }
+
+    const ed25519Key = process.env.ED25519_PRIVATE_KEY || config.ed25519_private_key;
+    if (!ed25519Key) {
+        throw new Error('ED25519_PRIVATE_KEY is required for federated whitelist broadcast');
+    }
+
+    const ts = Date.now();
+    const msg = `${ts}:whitelist:${entryType}:${trimmedEntry}`;
+    const cleanKey = ed25519Key.replace(/\\n/g, '\n');
+    const signature = crypto.sign(null, Buffer.from(msg, 'utf8'), {
+        key: cleanKey,
+        format: 'pem',
+        type: 'pkcs8'
+    }).toString('hex');
+
+    const boundedTtl = Math.min(604800, parseInt(ttl, 10) || 86400);
+
+    peers.forEach(peerUrl => {
+        const url = `${peerUrl}?coop_op=share_whitelist`;
+        fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Federation-Signature-Ed25519': signature,
+                'X-Federation-Timestamp': String(ts)
+            },
+            body: JSON.stringify({
+                entry: trimmedEntry,
+                entry_type: entryType,
+                ttl: boundedTtl,
+                signature_ed25519: signature,
+                timestamp: ts
+            })
+        }).catch(() => {});
+    });
 }
 
 
@@ -7464,6 +7622,7 @@ export const __internal = {
     findPeerInSubnet,
     handleCooperativeRequest,
     broadcastBannedZkp,
+    broadcastWhitelistedEntry,
     generateIssuerPemKeys,
     getMetric,
     incrementCounter,

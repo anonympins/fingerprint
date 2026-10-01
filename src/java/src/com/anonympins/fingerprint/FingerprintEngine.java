@@ -387,6 +387,21 @@ public class FingerprintEngine {
         BlockList bl = new BlockList();
         List<Map<String, Object>> whitelistRules = (List<Map<String, Object>>) config.get("whitelist");
         if (whitelistRules == null) return bl;
+
+        // Auto-whitelisting des federatedPeers configurés
+        List<String> peers = (List<String>) config.get("federatedPeers");
+        if (peers != null) {
+            for (String peerUrl : peers) {
+                try {
+                    java.net.URI uri = java.net.URI.create(peerUrl);
+                    String host = uri.getHost();
+                    if (host != null && !host.isEmpty()) {
+                        bl.add(host);
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
         for (Map<String, Object> rule : whitelistRules) {
             if ("allowlist".equals(rule.get("type"))) {
                 List<String> entries = (List<String>) rule.get("entries");
