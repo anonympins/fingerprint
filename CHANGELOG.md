@@ -1,3 +1,28 @@
+## Version 0.8.1
+
+- 🎟️ **Private Access Tokens (PAT / Privacy Pass) Evaluation (RFC 9578)**:
+  - Implemented end-to-end token extraction (`Authorization: PrivateToken`, `Sec-Private-State-Token`) and cryptographic verification across JS and PHP runtimes.
+  - Added multi-algorithm signature checking (Blind RSA SHA-384 / SHA-256 and VOPRF Ed25519) with anti-replay persistent nonce caching (`pat-nonce:{nonce}`).
+  - Zero-friction exemption granting immediate clearance while preserving fail-safe blocks against active honeypot probes and condemned devices.
+
+- 🔒 **Security Fix: URI Parsing & Open Redirect Hardening**:
+  - Hardened `sanitizeRedirectPath` against protocol-relative (`//evil.com`) and absolute external redirect targets.
+  - Standardized URI parsing on WordPress endpoints using `wp_parse_url()` with graceful native fallbacks.
+  - Secured PoW challenge parameter cleanup routines (`cleanUrlFromPowParams`).
+
+- 🌐 **High-Performance In-Memory ASN & Network Profile Engine**:
+  - Introduced zero-I/O Patricia/Radix Trie engine (`AsnLookupEngine`) resolving IPv4 and IPv6 subnets under 50ns in memory.
+  - Pre-loaded CIDR definitions for Datacenters (AWS, Hetzner, OVH, DigitalOcean), Cellular CGNAT (RFC 6598), Satellite (Starlink), and Tor exit relays.
+  - Dynamic modulation of `calculateAnalogInconsistencyScore` adjusting suspicion inflection points based on the network profile.
+
+- 🔌 **WordPress Plugin: Hardening & Plugin Check Compliance**:
+  - Full compliance with WordPress.org security and coding guidelines: replaced direct `<script>` injection with `wp_register_script`, `wp_enqueue_script`, and `wp_add_inline_script`.
+  - Eliminated remote CDN dependencies in automated packaging script (`package.php`).
+  - Automated native gettext compilation (`PO` to `MO`) during packaging for German and French translations.
+  - Hardened SQL caching adapter (`WpDbStore`) and sanitization routines across all admin and REST API controllers.
+
+---
+
 ## Version 0.8.0
 
 - 🎟️ **Private Access Tokens (PAT / Privacy Pass) Support (RFC 9505, RFC 9577, RFC 9578)**:
