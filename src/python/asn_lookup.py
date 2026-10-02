@@ -1,3 +1,4 @@
+from functools import lru_cache
 import ipaddress
 from dataclasses import dataclass
 from typing import Optional, List, Union
@@ -91,7 +92,9 @@ class AsnLookupEngine:
             current = current.children[bit]
 
         current.profile = profile
+        self.lookup.cache_clear()
 
+    @lru_cache(maxsize=4096)
     def lookup(self, ip: Optional[str]) -> NetworkProfile:
         if not ip or not isinstance(ip, str):
             return RESIDENTIAL

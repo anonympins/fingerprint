@@ -677,6 +677,17 @@ class ChallengeUtils:
         capacity = float(rate_limit_config.get("capacity", 30.0))
         refill_rate = float(rate_limit_config.get("refillRate", 1.0))
         now = time.time()
+        ttl = max(60, int(math.ceil(capacity / max(0.1, refill_rate))))
+
+        if hasattr(store, "rate_limit_token_bucket"):
+            return await store.rate_limit_token_bucket(
+                key=key,
+                capacity=capacity,
+                refill_rate=refill_rate,
+                now=now,
+                cost=1.0,
+                ttl=ttl
+            )
 
         rate_limit_data = await store.get(key)
         if not rate_limit_data:
@@ -684,7 +695,6 @@ class ChallengeUtils:
 
         elapsed = max(0.0, now - rate_limit_data.get("lastRefill", now))
         tokens = min(capacity, float(rate_limit_data.get("tokens", capacity)) + elapsed * refill_rate)
-        ttl = max(60, int(math.ceil(capacity / max(0.1, refill_rate))))
 
         if tokens < 1.0:
             await store.set(key, {"tokens": tokens, "lastRefill": now}, ttl)
