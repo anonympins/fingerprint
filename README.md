@@ -73,6 +73,9 @@ Supported officially on **Node.js (>=20.0.0)**, **PHP (>=8.0)**, Java (>=17), an
 ```bash
 npm install @anonympins/fingerprint
 ```
+### Wordpress plugin
+
+Just upload the extension **`public/anonympins-bot-mitigation-pow.zip`** to your Wordpress website and activate the extension.
 
 ### PHP
 
