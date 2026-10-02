@@ -940,7 +940,13 @@ function fingerprint_render_admin_page(): void {
             unset($saved['challenge_template']);
             echo '<div class="notice notice-info is-dismissible"><p><strong>' . esc_html__('Template reset to default successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
         } else {
-            $saved['challenge_template'] = isset($_POST['challenge_template']) ? wp_unslash($_POST['challenge_template']) : '';
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Administrator code template editor with script/style placeholders.
+            $rawTemplate = isset($_POST['challenge_template']) ? wp_unslash($_POST['challenge_template']) : '';
+            if (!current_user_can('unfiltered_html')) {
+                $saved['challenge_template'] = wp_kses_post($rawTemplate);
+            } else {
+                $saved['challenge_template'] = (string)$rawTemplate;
+            }
             echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Challenge template updated successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
         }
         update_option('anonympins_security_options', $saved);

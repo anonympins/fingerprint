@@ -694,6 +694,7 @@ class FingerprintEngine
         $peers = $this->securityConfig['federatedPeers'] ?? [];
         if (!empty($peers)) {
             $allowedHosts = array_map(function ($url) {
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- Covered by wp_parse_url, Fallback for standalone PHP environments
                 $host = function_exists('wp_parse_url') ? wp_parse_url($url, PHP_URL_HOST) : parse_url($url, PHP_URL_HOST);
                 return !empty($host) ? $host : $url;
             }, $peers);

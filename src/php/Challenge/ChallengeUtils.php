@@ -286,7 +286,7 @@ class ChallengeUtils
             $peers = $config['federatedPeers'] ?? [];
             if (!empty($peers)) {
                 $allowedHosts = array_map(function ($url) {
-                    // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- Fallback for standalone PHP environments
                     $host = function_exists('wp_parse_url') ? wp_parse_url($url, PHP_URL_HOST) : parse_url($url, PHP_URL_HOST);
                     return !empty($host) ? $host : $url;
                 }, $peers);
@@ -349,6 +349,7 @@ class ChallengeUtils
             $peers = $config['federatedPeers'] ?? [];
             if (!empty($peers)) {
                 $allowedHosts = array_map(function ($url) {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- Fallback for standalone PHP environments
                     $host = function_exists('wp_parse_url') ? wp_parse_url($url, PHP_URL_HOST) : parse_url($url, PHP_URL_HOST);
                     return !empty($host) ? $host : $url;
                 }, $peers);
@@ -1448,7 +1449,7 @@ class ChallengeUtils
             . '}' . "\n"
             . 'solve();';
 
-        return "<html><head><title>Security Check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\"><h1>Security Check (Level 2)</h1><p>We are verifying your storage allocation. This may take a few seconds on first load.</p><div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing storage space...</div><script>{$solverCode}</script><script>{$challengeScript}</script></body></html>";
+        return "<html><head><title>Security check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\"><h1>Security check (level 2)</h1><p>We are verifying your storage allocation. This may take a few seconds on first load.</p><div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing storage space...</div><script>{$solverCode}</script><script>{$challengeScript}</script></body></html>";
     }
 
     /**
@@ -1547,7 +1548,7 @@ class ChallengeUtils
             . '}' . "\n"
             . 'solve();';
 
-        $htmlTemplate = '<html><head><title>Advanced Security Check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced Verification... (Level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>';
+        $htmlTemplate = '<html><head><title>Advanced security check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced verification... (level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>';
         $customTemplatePath = $securityConfig['challengePagePath'] ?? null;
 
         if ($customTemplatePath && file_exists($customTemplatePath)) {
