@@ -145,6 +145,31 @@ function fingerprint_get_metrics_endpoint(): string {
     return str_starts_with($path, '/') ? $path : '/' . $path;
 }
 
+/**
+ * Returns the built-in default HTML challenge template (derived from fingerprint.js).
+ */
+function fingerprint_get_default_challenge_template(): string {
+    return "<!DOCTYPE html>\n" .
+        "<html>\n" .
+        "<head>\n" .
+        "\t<meta charset=\"utf-8\">\n" .
+        "\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n" .
+        "\t<title>{{TITLE}}</title>\n" .
+        "\t<style>\n" .
+        "\t\t{{CUSTOM_CSS}}\n" .
+        "\t\tbody { font-family: sans-serif; text-align: center; padding-top: 50px; background: #fff; color: #222; }\n" .
+        "\t\t#loader { margin: 20px; font-size: 15px; color: #2271b1; }\n" .
+        "\t</style>\n" .
+        "</head>\n" .
+        "<body>\n" .
+        "\t<h1>{{TITLE}}</h1>\n" .
+        "\t<p>{{MESSAGE}}</p>\n" .
+        "\t<div id=\"loader\">⚙️ Initializing combined verification...</div>\n" .
+        "\t{{SOLVER_SCRIPT}}\n" .
+        "</body>\n" .
+        "</html>";
+}
+
 // 1. PSR-4 autoloader for the Fingerprint engine.
 if (!class_exists(DirectFingerprint::class)) {
     $fingerprint_composer_paths = [
@@ -219,7 +244,7 @@ add_action('fingerprint_prune_expired_entries', function () {
 add_action('admin_notices', function () {
     if (!is_ssl()) {
         echo '<div class="notice notice-warning is-dismissible">';
-        echo '<p><strong>' . esc_html__('[Anonympins Bot Mitigation Security Warning]', 'anonympins-bot-mitigation-pow') . '</strong> : ' .
+        echo '<p><strong>' . esc_html__('[Anonympins bot mitigation security warning]', 'anonympins-bot-mitigation-pow') . '</strong> : ' .
             esc_html__('Your website is currently running on unencrypted HTTP. In this mode, modern web browsers disable the native Web Cryptography API (crypto.subtle) for security reasons, forcing a JavaScript fallback simulation that is slower and vulnerable to Man-in-the-Middle (MitM) attacks. We strongly recommend deploying a TLS/SSL certificate and enforcing HTTPS to ensure the cryptographic integrity of Proof-of-Work computations and identity protection.', 'anonympins-bot-mitigation-pow') .
             '</p>';
         echo '</div>';
@@ -234,9 +259,9 @@ add_action('admin_notices', function () {
             : esc_html__('Enforced test mode: suspicion analysis and PoW challenges are actively triggered.', 'anonympins-bot-mitigation-pow');
 
         echo '<div class="notice notice-warning is-dismissible">';
-        echo '<p><strong>' . esc_html__('[Anonympins Bot Mitigation Sandbox Active]', 'anonympins-bot-mitigation-pow') . '</strong> : ' .
-            esc_html__('Sandbox Mode is currently ENABLED.', 'anonympins-bot-mitigation-pow') . ' ' . esc_html($modeDesc) .
-            ' <a href="' . esc_url(admin_url('options-general.php?page=anonympins-bot-mitigation#tab-sandbox')) . '">' . esc_html__('Configure Sandbox', 'anonympins-bot-mitigation-pow') . '</a></p>';
+        echo '<p><strong>' . esc_html__('[Anonympins bot mitigation sandbox active]', 'anonympins-bot-mitigation-pow') . '</strong> : ' .
+            esc_html__('Sandbox mode is currently ENABLED.', 'anonympins-bot-mitigation-pow') . ' ' . esc_html($modeDesc) .
+            ' <a href="' . esc_url(admin_url('options-general.php?page=anonympins-bot-mitigation#tab-sandbox')) . '">' . esc_html__('Configure sandbox', 'anonympins-bot-mitigation-pow') . '</a></p>';
         echo '</div>';
     }
 });
@@ -295,6 +320,11 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
     } else {
         $contextConfig = $configs['frontend'] ?? $fingerprint_security_profiles['frontend'];
     }
+
+    $savedOptions = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+    $contextConfig['overrides']['challengeTemplate'] = (is_array($savedOptions) && isset($savedOptions['challenge_template']))
+        ? (string)$savedOptions['challenge_template']
+        : fingerprint_get_default_challenge_template();
 
     $sandboxConfig = fingerprint_get_sandbox_config();
     $isSandboxActive = false;
@@ -603,8 +633,8 @@ function fingerprint_rest_sandbox_sse(): void {
 // =============================================================================
 add_action('admin_menu', function () {
     add_options_page(
-        __('Anonympins Bot Mitigation', 'anonympins-bot-mitigation-pow'),
-        __('Anonympins Bot Mitigation', 'anonympins-bot-mitigation-pow'),
+        __('Anonympins bot mitigation', 'anonympins-bot-mitigation-pow'),
+        __('Anonympins bot mitigation', 'anonympins-bot-mitigation-pow'),
         'manage_options',
         'anonympins-bot-mitigation',
         'fingerprint_render_admin_page'
@@ -619,6 +649,9 @@ add_action('admin_enqueue_scripts', function (string $hook) {
         return;
     }
 
+    // Enqueue native WordPress CodeMirror editor for HTML template editing
+    $editorSettings = wp_enqueue_code_editor(['type' => 'text/html']);
+
     wp_register_script('anonympins-admin-settings', false, [], ANONYMPINS_BOT_MITIGATION_VERSION, true);
     wp_enqueue_script('anonympins-admin-settings');
 
@@ -627,8 +660,13 @@ add_action('admin_enqueue_scripts', function (string $hook) {
         evt.preventDefault();
         document.querySelectorAll(".fingerprint-tab-content").forEach(function(t) { t.style.display = "none"; });
         document.querySelectorAll(".nav-tab-wrapper a").forEach(function(n) { n.classList.remove("nav-tab-active"); });
-        document.getElementById(tabId).style.display = "block";
+        var target = document.getElementById(tabId);
+        if (target) { target.style.display = "block"; }
         evt.currentTarget.classList.add("nav-tab-active");
+
+        if (tabId === "tab-template" && window.fingerprintCodeMirrorInstance) {
+            window.fingerprintCodeMirrorInstance.codemirror.refresh();
+        }
         if (window.location.hash !== "#" + tabId && history.pushState) {
             history.pushState(null, null, "#" + tabId);
         }
@@ -645,6 +683,16 @@ add_action('admin_enqueue_scripts', function (string $hook) {
                 document.querySelectorAll(".nav-tab-wrapper a").forEach(function(n) { n.classList.remove("nav-tab-active"); });
                 targetContent.style.display = "block";
                 targetLink.classList.add("nav-tab-active");
+                if (targetId === "tab-template" && window.fingerprintCodeMirrorInstance) {
+                    setTimeout(function() { window.fingerprintCodeMirrorInstance.codemirror.refresh(); }, 50);
+                }
+            }
+        }
+
+        if (window.wp && wp.codeEditor && document.getElementById("challenge_template")) {
+            var editorConfig = ' . wp_json_encode($editorSettings) . ';
+            if (editorConfig) {
+                window.fingerprintCodeMirrorInstance = wp.codeEditor.initialize(document.getElementById("challenge_template"), editorConfig);
             }
         }
     });
@@ -660,9 +708,9 @@ add_action('admin_enqueue_scripts', function (string $hook) {
         if (sseSource) {
             sseSource.close();
             sseSource = null;
-            statusEl.textContent = ' . wp_json_encode(__('SSE Disconnected', 'anonympins-bot-mitigation-pow')) . ';
+            statusEl.textContent = ' . wp_json_encode(__('SSE disconnected', 'anonympins-bot-mitigation-pow')) . ';
             statusEl.style.color = "#646970";
-            btnText.textContent = ' . wp_json_encode(__('Start Real-Time SSE Stream', 'anonympins-bot-mitigation-pow')) . ';
+            btnText.textContent = ' . wp_json_encode(__('Start real-time SSE stream', 'anonympins-bot-mitigation-pow')) . ';
             return;
         }
 
@@ -671,9 +719,9 @@ add_action('admin_enqueue_scripts', function (string $hook) {
         sseSource = new EventSource(' . wp_json_encode(rest_url('fingerprint/v1/sandbox/sse')) . ' + "?_wpnonce=" + wpRestNonce);
 
         sseSource.onopen = function() {
-            statusEl.textContent = ' . wp_json_encode(__('SSE Live Connected', 'anonympins-bot-mitigation-pow')) . ';
+            statusEl.textContent = ' . wp_json_encode(__('SSE live connected', 'anonympins-bot-mitigation-pow')) . ';
             statusEl.style.color = "#007017";
-            btnText.textContent = ' . wp_json_encode(__('Stop Stream', 'anonympins-bot-mitigation-pow')) . ';
+            btnText.textContent = ' . wp_json_encode(__('Stop stream', 'anonympins-bot-mitigation-pow')) . ';
         };
 
         sseSource.addEventListener("challenge", function(e) {
@@ -689,7 +737,7 @@ add_action('admin_enqueue_scripts', function (string $hook) {
         });
 
         sseSource.onerror = function() {
-            statusEl.textContent = ' . wp_json_encode(__('SSE Reconnecting...', 'anonympins-bot-mitigation-pow')) . ';
+            statusEl.textContent = ' . wp_json_encode(__('SSE reconnecting...', 'anonympins-bot-mitigation-pow')) . ';
             statusEl.style.color = "#d63638";
         };
     }
@@ -883,6 +931,21 @@ function fingerprint_render_admin_page(): void {
         echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Prometheus settings updated successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
     }
 
+    if ((isset($_POST['fingerprint_save_template']) || isset($_POST['fingerprint_reset_template'])) && check_admin_referer('fingerprint_template_nonce', 'fingerprint_nonce_template')) {
+        $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+        if (!is_array($saved)) {
+            $saved = [];
+        }
+        if (isset($_POST['fingerprint_reset_template'])) {
+            unset($saved['challenge_template']);
+            echo '<div class="notice notice-info is-dismissible"><p><strong>' . esc_html__('Template reset to default successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
+        } else {
+            $saved['challenge_template'] = isset($_POST['challenge_template']) ? wp_unslash($_POST['challenge_template']) : '';
+            echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Challenge template updated successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
+        }
+        update_option('anonympins_security_options', $saved);
+    }
+
     if (isset($_POST['fingerprint_clear_store']) && check_admin_referer('fingerprint_clear_nonce', 'fingerprint_nonce_clear')) {
         $store = new WpDbStore();
         $store->clear();
@@ -892,6 +955,10 @@ function fingerprint_render_admin_page(): void {
     $sandboxConfig = fingerprint_get_sandbox_config();
     $effective = fingerprint_get_effective_profiles($fingerprint_security_profiles);
     $frontendConfig = SecurityProfiles::createSecurityProfile($effective['frontend']['profile'], $effective['frontend']['overrides'] ?? []);
+    $savedOptions = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+    $currentTemplate = (is_array($savedOptions) && !empty($savedOptions['challenge_template']))
+        ? (string)$savedOptions['challenge_template']
+        : fingerprint_get_default_challenge_template();
 
     $store = new WpDbStore();
     $totalRows = $store->getTotalCount();
@@ -904,17 +971,17 @@ function fingerprint_render_admin_page(): void {
     $prometheusRaw = MetricsManager::getPrometheusMetrics($frontendConfig);
     ?>
     <div class="wrap">
-        <h1><span class="dashicons dashicons-shield-alt" style="font-size:32px;vertical-align:middle;margin-right:8px;"></span> Anonympins Bot Mitigation with Proof-of-Work</h1>
+        <h1><span class="dashicons dashicons-shield-alt" style="font-size:32px;vertical-align:middle;margin-right:8px;"></span> Anonympins bot mitigation with proof-of-work</h1>
         <p class="description"><?php esc_html_e('Client-side behavioral and cryptographic anti-bot protection without third-party CAPTCHA for WordPress.', 'anonympins-bot-mitigation-pow'); ?></p>
 
         <div style="background:#fff;border-left:4px solid #2271b1;padding:12px 18px;margin:18px 0;box-shadow:0 1px 1px rgba(0,0,0,.04);">
             <p style="margin:4px 0;">
                 <strong><?php esc_html_e('Official documentation reference:', 'anonympins-bot-mitigation-pow'); ?></strong>
                 <a href="https://github.com/anonympins/fingerprint/blob/main/doc/full_options.md" target="_blank" rel="noopener noreferrer" class="button button-secondary" style="margin-left:8px;">
-                    <span class="dashicons dashicons-external" style="vertical-align:middle;"></span> <?php esc_html_e('View Full Configuration Options on GitHub', 'anonympins-bot-mitigation-pow'); ?>
+                    <span class="dashicons dashicons-external" style="vertical-align:middle;"></span> <?php esc_html_e('View full configuration options on GitHub', 'anonympins-bot-mitigation-pow'); ?>
                 </a>
                 <a href="https://github.com/anonympins/fingerprint" target="_blank" rel="noopener noreferrer" class="button button-secondary" style="margin-left:4px;">
-                    <span class="dashicons dashicons-admin-plugins" style="vertical-align:middle;"></span> <?php esc_html_e('GitHub Repository', 'anonympins-bot-mitigation-pow'); ?>
+                    <span class="dashicons dashicons-admin-plugins" style="vertical-align:middle;"></span> <?php esc_html_e('GitHub repository', 'anonympins-bot-mitigation-pow'); ?>
                 </a>
             </p>
         </div>
@@ -922,7 +989,7 @@ function fingerprint_render_admin_page(): void {
         <!-- STATISTICS & STATUS DASHBOARD -->
         <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(240px, 1fr));gap:16px;margin-bottom:24px;">
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
-                <h3 style="margin-top:0;"><?php esc_html_e('HTTPS Status', 'anonympins-bot-mitigation-pow'); ?></h3>
+                <h3 style="margin-top:0;"><?php esc_html_e('HTTPS status', 'anonympins-bot-mitigation-pow'); ?></h3>
                 <?php if (is_ssl()): ?>
                     <p style="color:#007017;font-weight:bold;font-size:16px;">
                         <span class="dashicons dashicons-yes-alt"></span> <?php esc_html_e('Active (WebCrypto Subtle available)', 'anonympins-bot-mitigation-pow'); ?>
@@ -934,7 +1001,7 @@ function fingerprint_render_admin_page(): void {
                 <?php endif; ?>
             </div>
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
-                <h3 style="margin-top:0;"><?php esc_html_e('SQL Cache ($wpdb)', 'anonympins-bot-mitigation-pow'); ?></h3>
+                <h3 style="margin-top:0;"><?php esc_html_e('SQL cache ($wpdb)', 'anonympins-bot-mitigation-pow'); ?></h3>
                 <p style="font-size:22px;margin:0;font-weight:600;"><?php echo esc_html((string)$totalRows); ?> <span style="font-size:14px;color:#646970;font-weight:normal;"><?php esc_html_e('keys in database', 'anonympins-bot-mitigation-pow'); ?></span></p>
                 <small style="color:#8c8f94;"><?php
                     /* translators: %d: number of expired keys awaiting cron purge */
@@ -942,7 +1009,7 @@ function fingerprint_render_admin_page(): void {
                 ?></small>
             </div>
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
-                <h3 style="margin-top:0;"><?php esc_html_e('Active Profiles', 'anonympins-bot-mitigation-pow'); ?></h3>
+                <h3 style="margin-top:0;"><?php esc_html_e('Active profiles', 'anonympins-bot-mitigation-pow'); ?></h3>
                 <p style="margin:0;">
                     <?php esc_html_e('Frontend:', 'anonympins-bot-mitigation-pow'); ?> <strong><?php echo esc_html($effective['frontend']['profile']); ?></strong><br>
                     <?php esc_html_e('Admin:', 'anonympins-bot-mitigation-pow'); ?> <strong><?php echo esc_html($effective['admin']['profile']); ?></strong><br>
@@ -950,7 +1017,7 @@ function fingerprint_render_admin_page(): void {
                 </p>
             </div>
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
-                <h3 style="margin-top:0;"><?php esc_html_e('Sandbox Mode', 'anonympins-bot-mitigation-pow'); ?></h3>
+                <h3 style="margin-top:0;"><?php esc_html_e('Sandbox mode', 'anonympins-bot-mitigation-pow'); ?></h3>
                 <?php if ($sandboxConfig['enabled']): ?>
                     <p style="color:#dba617;font-weight:bold;font-size:16px;margin:0;">
                         <span class="dashicons dashicons-warning"></span> <?php esc_html_e('Active (Simulation)', 'anonympins-bot-mitigation-pow'); ?>
@@ -967,30 +1034,31 @@ function fingerprint_render_admin_page(): void {
 
         <!-- NAVIGATION TABS -->
         <h2 class="nav-tab-wrapper">
-            <a href="#tab-settings" class="nav-tab nav-tab-active" onclick="fingerprintSwitchTab(event, 'tab-settings')"><?php esc_html_e('Settings & Profiles', 'anonympins-bot-mitigation-pow'); ?></a>
-            <a href="#tab-sandbox" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-sandbox')"><?php esc_html_e('Sandbox / Test Mode', 'anonympins-bot-mitigation-pow'); ?></a>
-            <a href="#tab-metrics" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-metrics')"><?php esc_html_e('Metrics & Weights View', 'anonympins-bot-mitigation-pow'); ?></a>
-            <a href="#tab-prometheus" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-prometheus')"><?php esc_html_e('Prometheus Stream', 'anonympins-bot-mitigation-pow'); ?></a>
+            <a href="#tab-settings" class="nav-tab nav-tab-active" onclick="fingerprintSwitchTab(event, 'tab-settings')"><?php esc_html_e('Settings & profiles', 'anonympins-bot-mitigation-pow'); ?></a>
+            <a href="#tab-template" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-template')"><?php esc_html_e('Challenge HTML template', 'anonympins-bot-mitigation-pow'); ?></a>
+            <a href="#tab-sandbox" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-sandbox')"><?php esc_html_e('Sandbox / test mode', 'anonympins-bot-mitigation-pow'); ?></a>
+            <a href="#tab-metrics" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-metrics')"><?php esc_html_e('Metrics & weights view', 'anonympins-bot-mitigation-pow'); ?></a>
+            <a href="#tab-prometheus" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-prometheus')"><?php esc_html_e('Prometheus stream', 'anonympins-bot-mitigation-pow'); ?></a>
         </h2>
 
         <div id="tab-settings" class="fingerprint-tab-content" style="background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
             <form method="post" action="">
                 <?php wp_nonce_field('fingerprint_settings_nonce', 'fingerprint_nonce'); ?>
-                <h3><?php esc_html_e('1. Target Security Profiles', 'anonympins-bot-mitigation-pow'); ?></h3>
+                <h3><?php esc_html_e('1. Target security profiles', 'anonympins-bot-mitigation-pow'); ?></h3>
                 <table class="form-table">
                     <tr>
-                        <th scope="row"><label for="frontend_profile"><?php esc_html_e('Visitors & Frontend', 'anonympins-bot-mitigation-pow'); ?></label></th>
+                        <th scope="row"><label for="frontend_profile"><?php esc_html_e('Visitors & frontend', 'anonympins-bot-mitigation-pow'); ?></label></th>
                         <td>
                             <select name="frontend_profile" id="frontend_profile">
                                 <option value="blog" <?php selected($effective['frontend']['profile'], 'blog'); ?>><?php esc_html_e('Blog (Optimal for content, smooth UX)', 'anonympins-bot-mitigation-pow'); ?></option>
                                 <option value="balanced" <?php selected($effective['frontend']['profile'], 'balanced'); ?>><?php esc_html_e('Balanced (General purpose)', 'anonympins-bot-mitigation-pow'); ?></option>
                                 <option value="strict" <?php selected($effective['frontend']['profile'], 'strict'); ?>><?php esc_html_e('Strict (Maximum protection)', 'anonympins-bot-mitigation-pow'); ?></option>
-                                <option value="ecommerce" <?php selected($effective['frontend']['profile'], 'ecommerce'); ?>><?php esc_html_e('E-commerce (Anti-scraping / scalping)', 'anonympins-bot-mitigation-pow'); ?></option>
+                                <option value="ecommerce" <?php selected($effective['frontend']['profile'], 'ecommerce'); ?>><?php esc_html_e('E-commerce (anti-scraping / scalping)', 'anonympins-bot-mitigation-pow'); ?></option>
                             </select>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="admin_profile"><?php esc_html_e('Administration Area (wp-login / wp-admin)', 'anonympins-bot-mitigation-pow'); ?></label></th>
+                        <th scope="row"><label for="admin_profile"><?php esc_html_e('Administration area (wp-login / wp-admin)', 'anonympins-bot-mitigation-pow'); ?></label></th>
                         <td>
                             <select name="admin_profile" id="admin_profile">
                                 <option value="strict" <?php selected($effective['admin']['profile'], 'strict'); ?>><?php esc_html_e('Strict (Recommended to secure logins)', 'anonympins-bot-mitigation-pow'); ?></option>
@@ -1009,27 +1077,27 @@ function fingerprint_render_admin_page(): void {
                     </tr>
                 </table>
                 <hr>
-                <h3><?php esc_html_e('2. Action Thresholds (Frontend)', 'anonympins-bot-mitigation-pow'); ?></h3>
+                <h3><?php esc_html_e('2. Action thresholds (frontend)', 'anonympins-bot-mitigation-pow'); ?></h3>
                 <table class="form-table">
                     <tr>
-                        <th scope="row"><?php esc_html_e('Suspicion Score Thresholds (0 - 100)', 'anonympins-bot-mitigation-pow'); ?></th>
+                        <th scope="row"><?php esc_html_e('Suspicion score thresholds (0 - 100)', 'anonympins-bot-mitigation-pow'); ?></th>
                         <td>
-                            <label><?php esc_html_e('Low (Initial challenge):', 'anonympins-bot-mitigation-pow'); ?>
+                            <label><?php esc_html_e('Low (initial challenge):', 'anonympins-bot-mitigation-pow'); ?>
                                 <input type="number" name="frontend_threshold_low" value="<?php echo esc_attr((string)($frontendConfig['thresholds']['low'] ?? 20)); ?>" min="1" max="50" style="width:80px;">
                             </label><br><br>
-                            <label><?php esc_html_e('Medium (Hardened challenge):', 'anonympins-bot-mitigation-pow'); ?>
+                            <label><?php esc_html_e('Medium (hardened challenge):', 'anonympins-bot-mitigation-pow'); ?>
                                 <input type="number" name="frontend_threshold_medium" value="<?php echo esc_attr((string)($frontendConfig['thresholds']['medium'] ?? 45)); ?>" min="10" max="75" style="width:80px;">
                             </label><br><br>
-                            <label><?php esc_html_e('High (Heavy Proof-of-Work):', 'anonympins-bot-mitigation-pow'); ?>
+                            <label><?php esc_html_e('High (heavy proof-of-work):', 'anonympins-bot-mitigation-pow'); ?>
                                 <input type="number" name="frontend_threshold_high" value="<?php echo esc_attr((string)($frontendConfig['thresholds']['high'] ?? 75)); ?>" min="30" max="95" style="width:80px;">
                             </label><br><br>
-                            <label><?php esc_html_e('Block (Immediate 403 Forbidden):', 'anonympins-bot-mitigation-pow'); ?>
+                            <label><?php esc_html_e('Block (immediate 403 forbidden):', 'anonympins-bot-mitigation-pow'); ?>
                                 <input type="number" name="frontend_threshold_block" value="<?php echo esc_attr((string)($frontendConfig['thresholds']['block'] ?? 95)); ?>" min="50" max="100" style="width:80px;">
                             </label>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><?php esc_html_e('Advanced Behaviors', 'anonympins-bot-mitigation-pow'); ?></th>
+                        <th scope="row"><?php esc_html_e('Advanced behaviors', 'anonympins-bot-mitigation-pow'); ?></th>
                         <td>
                             <label>
                                 <input type="checkbox" name="frontend_challenge_new" value="1" <?php checked(!empty($frontendConfig['challengeNewDevices'])); ?>>
@@ -1046,13 +1114,13 @@ function fingerprint_render_admin_page(): void {
                         </td>
                     </tr>
                 </table>
-                <?php submit_button(esc_html__('Save Changes', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_settings'); ?>
+                <?php submit_button(esc_html__('Save changes', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_settings'); ?>
             </form>
             <hr>
             <form method="post" action="" style="margin-top:16px;">
                 <?php wp_nonce_field('fingerprint_clear_nonce', 'fingerprint_nonce_clear'); ?>
                 <p>
-                    <strong><?php esc_html_e('Store Maintenance:', 'anonympins-bot-mitigation-pow'); ?></strong>
+                    <strong><?php esc_html_e('Store maintenance:', 'anonympins-bot-mitigation-pow'); ?></strong>
                     <button type="submit" name="fingerprint_clear_store" class="button button-secondary" onclick="return confirm('<?php echo esc_js(__('Purge all stored sessions and nonces?', 'anonympins-bot-mitigation-pow')); ?>');">
                         <?php esc_html_e('Clear SQL cache table ($wpdb)', 'anonympins-bot-mitigation-pow'); ?>
                     </button>
@@ -1060,26 +1128,90 @@ function fingerprint_render_admin_page(): void {
             </form>
         </div>
 
+        <div id="tab-template" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
+            <h3><?php esc_html_e('Challenge HTML template editor', 'anonympins-bot-mitigation-pow'); ?></h3>
+            <p class="description">
+                <?php esc_html_e('Customize the HTML markup presented to challenged visitors. Leave empty or reset to use the built-in responsive default template.', 'anonympins-bot-mitigation-pow'); ?>
+            </p>
+
+            <div style="background:#f0f6fc;border-left:4px solid #2271b1;padding:12px 16px;margin:16px 0;">
+                <h4 style="margin:0 0 8px 0;"><?php esc_html_e('Available template placeholders', 'anonympins-bot-mitigation-pow'); ?></h4>
+                <table class="widefat striped" style="background:#fff;font-size:12px;">
+                    <thead>
+                        <tr>
+                            <th style="width:200px;"><?php esc_html_e('Placeholder', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th><?php esc_html_e('Description & content injected', 'anonympins-bot-mitigation-pow'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>{{TITLE}}</code></td>
+                            <td><?php esc_html_e('Challenge page title (e.g., "Security verification")', 'anonympins-bot-mitigation-pow'); ?></td>
+                        </tr>
+                        <tr>
+                            <td><code>{{MESSAGE}}</code></td>
+                            <td><?php esc_html_e('Human-readable instruction or explanation message', 'anonympins-bot-mitigation-pow'); ?></td>
+                        </tr>
+                        <tr>
+                            <td><code>{{NONCE}}</code></td>
+                            <td><?php esc_html_e('Unique cryptographic challenge nonce generated by the server', 'anonympins-bot-mitigation-pow'); ?></td>
+                        </tr>
+                        <tr>
+                            <td><code>{{DIFFICULTY}}</code></td>
+                            <td><?php esc_html_e('Target computational difficulty complexity number', 'anonympins-bot-mitigation-pow'); ?></td>
+                        </tr>
+                        <tr>
+                            <td><code>{{ALGORITHM}}</code></td>
+                            <td><?php esc_html_e('Selected hashing algorithm (e.g., "SHA-256")', 'anonympins-bot-mitigation-pow'); ?></td>
+                        </tr>
+                        <tr>
+                            <td><code>{{FORM_ACTION}}</code></td>
+                            <td><?php esc_html_e('Target POST URI destination where the PoW result must be submitted', 'anonympins-bot-mitigation-pow'); ?></td>
+                        </tr>
+                        <tr>
+                            <td><code>{{SOLVER_SCRIPT}}</code></td>
+                            <td><?php esc_html_e('Mandatory: inlined WebAssembly/WebWorker solver script block required for verification', 'anonympins-bot-mitigation-pow'); ?></td>
+                        </tr>
+                        <tr>
+                            <td><code>{{CUSTOM_CSS}}</code></td>
+                            <td><?php esc_html_e('Optional: default reset styling and challenge animations', 'anonympins-bot-mitigation-pow'); ?></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <form method="post" action="">
+                <?php wp_nonce_field('fingerprint_template_nonce', 'fingerprint_nonce_template'); ?>
+                <p>
+                    <textarea name="challenge_template" id="challenge_template" rows="18" style="width:100%;font-family:monospace;"><?php echo esc_textarea($currentTemplate); ?></textarea>
+                </p>
+                <p style="display:flex;gap:10px;">
+                    <?php submit_button(esc_html__('Save template', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_template', false); ?>
+                    <?php submit_button(esc_html__('Reset to default template', 'anonympins-bot-mitigation-pow'), 'secondary', 'fingerprint_reset_template', false, ['onclick' => "return confirm('" . esc_js(__('Reset challenge template to default?', 'anonympins-bot-mitigation-pow')) . "');"]); ?>
+                </p>
+            </form>
+        </div>
+
         <div id="tab-sandbox" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
-            <h3><?php esc_html_e('Sandbox Mode & Dry-Run Configuration', 'anonympins-bot-mitigation-pow'); ?></h3>
+            <h3><?php esc_html_e('Sandbox mode & dry-run configuration', 'anonympins-bot-mitigation-pow'); ?></h3>
             <form method="post" action="">
                 <?php wp_nonce_field('fingerprint_sandbox_nonce', 'fingerprint_nonce_sandbox'); ?>
                 <table class="form-table">
                     <tr>
-                        <th scope="row"><?php esc_html_e('Sandbox Activation', 'anonympins-bot-mitigation-pow'); ?></th>
+                        <th scope="row"><?php esc_html_e('Sandbox activation', 'anonympins-bot-mitigation-pow'); ?></th>
                         <td>
                             <label>
                                 <input type="checkbox" name="sandbox_enabled" value="1" <?php checked($sandboxConfig['enabled']); ?>>
-                                <strong><?php esc_html_e('Enable Sandbox Mode', 'anonympins-bot-mitigation-pow'); ?></strong>
+                                <strong><?php esc_html_e('Enable sandbox mode', 'anonympins-bot-mitigation-pow'); ?></strong>
                             </label>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><?php esc_html_e('Behavior & Enforcement', 'anonympins-bot-mitigation-pow'); ?></th>
+                        <th scope="row"><?php esc_html_e('Behavior & enforcement', 'anonympins-bot-mitigation-pow'); ?></th>
                         <td>
                             <label>
                                 <input type="checkbox" name="sandbox_audit_only" value="1" <?php checked($sandboxConfig['audit_only']); ?>>
-                                <strong><?php esc_html_e('Audit Only / Dry-Run (Never block or challenge visitors)', 'anonympins-bot-mitigation-pow'); ?></strong>
+                                <strong><?php esc_html_e('Audit only / dry-run (never block or challenge visitors)', 'anonympins-bot-mitigation-pow'); ?></strong>
                             </label><br><br>
                             <label>
                                 <input type="checkbox" name="sandbox_add_headers" value="1" <?php checked($sandboxConfig['add_headers']); ?>>
@@ -1092,7 +1224,7 @@ function fingerprint_render_admin_page(): void {
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="sandbox_ip_filter"><?php esc_html_e('Test IP Whitelist Filter', 'anonympins-bot-mitigation-pow'); ?></label></th>
+                        <th scope="row"><label for="sandbox_ip_filter"><?php esc_html_e('Test IP whitelist filter', 'anonympins-bot-mitigation-pow'); ?></label></th>
                         <td>
                             <?php
                             // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
@@ -1107,32 +1239,32 @@ function fingerprint_render_admin_page(): void {
                         </td>
                     </tr>
                 </table>
-                <?php submit_button(esc_html__('Save Sandbox Settings', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_sandbox'); ?>
+                <?php submit_button(esc_html__('Save sandbox settings', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_sandbox'); ?>
             </form>
             <hr>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                <h3 style="margin:0;"><span class="dashicons dashicons-shield" style="vertical-align:text-bottom;"></span> <?php esc_html_e('Live Challenged Visitors & Suspicion Monitor', 'anonympins-bot-mitigation-pow'); ?></h3>
+                <h3 style="margin:0;"><span class="dashicons dashicons-shield" style="vertical-align:text-bottom;"></span> <?php esc_html_e('Live challenged visitors & suspicion monitor', 'anonympins-bot-mitigation-pow'); ?></h3>
                 <div>
-                    <span style="font-weight:600;color:#646970;"><?php esc_html_e('Recent Challenges:', 'anonympins-bot-mitigation-pow'); ?></span>
+                    <span style="font-weight:600;color:#646970;"><?php esc_html_e('Recent challenges:', 'anonympins-bot-mitigation-pow'); ?></span>
                     <span id="live-challenges-count" style="display:inline-block;padding:2px 8px;background:#2271b1;color:#fff;border-radius:10px;font-weight:bold;font-size:12px;">0</span>
                 </div>
             </div>
             <div style="background:#f6f7f7;padding:16px;border:1px solid #c3c4c7;border-radius:4px;margin-bottom:15px;">
                 <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
                     <button type="button" class="button button-primary" id="btn-toggle-sse" onclick="fingerprintToggleSSE();">
-                        <span class="dashicons dashicons-controls-play" style="vertical-align:middle;"></span> <span id="sse-btn-text"><?php esc_html_e('Start Real-Time SSE Stream', 'anonympins-bot-mitigation-pow'); ?></span>
+                        <span class="dashicons dashicons-controls-play" style="vertical-align:middle;"></span> <span id="sse-btn-text"><?php esc_html_e('Start real-time SSE stream', 'anonympins-bot-mitigation-pow'); ?></span>
                     </button>
                     <button type="button" class="button button-secondary" onclick="fingerprintFetchTelemetry();">
-                        <span class="dashicons dashicons-update" style="vertical-align:middle;"></span> <?php esc_html_e('Poll Now (REST)', 'anonympins-bot-mitigation-pow'); ?>
+                        <span class="dashicons dashicons-update" style="vertical-align:middle;"></span> <?php esc_html_e('Poll now (REST)', 'anonympins-bot-mitigation-pow'); ?>
                     </button>
                     <button type="button" class="button button-secondary" onclick="fingerprintClearFeed();">
-                        <span class="dashicons dashicons-trash" style="vertical-align:middle;"></span> <?php esc_html_e('Clear Feed', 'anonympins-bot-mitigation-pow'); ?>
+                        <span class="dashicons dashicons-trash" style="vertical-align:middle;"></span> <?php esc_html_e('Clear feed', 'anonympins-bot-mitigation-pow'); ?>
                     </button>
                     <span id="sse-connection-status" style="font-weight:bold;color:#646970;"></span>
                 </div>
                 <div style="display:grid;grid-template-columns: 1.4fr 1fr;gap:16px;">
                     <div style="background:#fff;padding:12px;border:1px solid #dcdcde;border-radius:4px;overflow-x:auto;">
-                        <h4 style="margin:0 0 8px 0;"><?php esc_html_e('Challenged Visitors Stream', 'anonympins-bot-mitigation-pow'); ?></h4>
+                        <h4 style="margin:0 0 8px 0;"><?php esc_html_e('Challenged visitors stream', 'anonympins-bot-mitigation-pow'); ?></h4>
                         <table class="wp-list-table widefat fixed striped" style="font-size:12px;">
                             <thead>
                                 <tr>
@@ -1151,7 +1283,7 @@ function fingerprint_render_admin_page(): void {
                     </div>
                     <div style="background:#fff;padding:14px;border:1px solid #dcdcde;border-radius:4px;">
                         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
-                            <h4 style="margin:0;"><?php esc_html_e('Inspection & Suspicion Vector', 'anonympins-bot-mitigation-pow'); ?></h4>
+                            <h4 style="margin:0;"><?php esc_html_e('Inspection & suspicion vector', 'anonympins-bot-mitigation-pow'); ?></h4>
                             <div id="live-score-val" style="font-size:28px;font-weight:bold;color:#2271b1;line-height:1;">--</div>
                         </div>
                         <div id="live-score-sub" style="font-size:12px;color:#646970;background:#f6f7f7;padding:8px;border-radius:3px;margin-bottom:10px;">
@@ -1166,15 +1298,15 @@ function fingerprint_render_admin_page(): void {
         </div>
 
         <div id="tab-metrics" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
-            <h3><?php esc_html_e('Behavioral & Transport Indicator Weights', 'anonympins-bot-mitigation-pow'); ?></h3>
+            <h3><?php esc_html_e('Behavioral & transport indicator weights', 'anonympins-bot-mitigation-pow'); ?></h3>
             <form method="post" action="">
                 <?php wp_nonce_field('fingerprint_settings_nonce', 'fingerprint_nonce'); ?>
                 <table class="wp-list-table widefat fixed striped">
                     <thead>
                         <tr>
-                            <th style="width:280px;"><?php esc_html_e('Indicator / Metric', 'anonympins-bot-mitigation-pow'); ?></th>
-                            <th style="width:120px;"><?php esc_html_e('Current Weight', 'anonympins-bot-mitigation-pow'); ?></th>
-                            <th><?php esc_html_e('Description & Detection Role', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:280px;"><?php esc_html_e('Indicator / metric', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:120px;"><?php esc_html_e('Current weight', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th><?php esc_html_e('Description & detection role', 'anonympins-bot-mitigation-pow'); ?></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1188,18 +1320,18 @@ function fingerprint_render_admin_page(): void {
                     </tbody>
                 </table>
                 <p style="margin-top:16px;">
-                    <?php submit_button(esc_html__('Update Metric Weights', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_settings', false); ?>
+                    <?php submit_button(esc_html__('Update metric weights', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_settings', false); ?>
                 </p>
             </form>
         </div>
 
         <div id="tab-prometheus" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
-            <h3><?php esc_html_e('Real-Time Prometheus Metrics', 'anonympins-bot-mitigation-pow'); ?></h3>
+            <h3><?php esc_html_e('Real-time prometheus metrics', 'anonympins-bot-mitigation-pow'); ?></h3>
             <form method="post" action="" style="margin-bottom:20px;">
                 <?php wp_nonce_field('fingerprint_prometheus_nonce', 'fingerprint_nonce_prometheus'); ?>
                 <table class="form-table">
                     <tr>
-                        <th scope="row"><label for="metrics_endpoint"><?php esc_html_e('Metrics Endpoint Path', 'anonympins-bot-mitigation-pow'); ?></label></th>
+                        <th scope="row"><label for="metrics_endpoint"><?php esc_html_e('Metrics endpoint path', 'anonympins-bot-mitigation-pow'); ?></label></th>
                         <td>
                             <input type="text" name="metrics_endpoint" id="metrics_endpoint" value="<?php echo esc_attr(fingerprint_get_metrics_endpoint()); ?>" class="regular-text" placeholder="/metrics">
                             <p class="description">
@@ -1213,7 +1345,7 @@ function fingerprint_render_admin_page(): void {
                         </td>
                     </tr>
                 </table>
-                <?php submit_button(esc_html__('Save Prometheus Settings', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_prometheus'); ?>
+                <?php submit_button(esc_html__('Save prometheus settings', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_prometheus'); ?>
             </form>
             <textarea readonly style="width:100%;height:380px;font-family:monospace;background:#f6f7f7;padding:12px;"><?php echo esc_textarea($prometheusRaw); ?></textarea>
         </div>
