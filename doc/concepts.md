@@ -1,10 +1,10 @@
-# Key Concepts and Suspicion Vectors
+# Key concepts and suspicion vectors
 
 This document details the internal workings of the `fingerprint` protection engine. It explains how the system evaluates client legitimacy through multi-layered behavioral, cryptographic, and network analysis, and how these signals are translated into an overall suspicion score.
 
 ---
 
-## Multi-Layered Decision Architecture
+## Multi-layered decision architecture
 
 The library does not rely on a single binary signal to block a user. Instead, it orchestrates a set of **suspicion vectors** that measure specific anomalies at each level of the HTTP/S request:
 
@@ -18,130 +18,130 @@ Each detected anomaly generates a partial score (from 0 to 100). The final score
 
 ---
 
-## The 24 Suspicion Vectors Explained
+## The 24 suspicion vectors explained
 
-### 1. History Score (`historyScore`)
+### 1. History score (`historyScore`)
 * **Role**: Detect IP rotation (rotating residential proxies, botnets).
 * **Mechanism**: The engine associates each unique device identifier (`device_id`) with the various IP addresses it uses over a given period. If a single device constantly changes its IP address (beyond the tolerance threshold configured for shared or mobile networks), the score increases drastically.
 
-### 2. Rotation Score (`rotationScore`)
+### 2. Rotation score (`rotationScore`)
 * **Role**: Detects attempts to rapidly spoof identity over a single connection.
 * **Mechanism**: Measures how frequently fundamental, stable device fingerprint components (such as `canvas`, `gpu`, and `os`) change within extremely short timeframes (less than 2 seconds).
 
-### 3. Header Anomaly Score (`headerAnomalyScore`)
+### 3. Header anomaly score (`headerAnomalyScore`)
 * **Role**: Identifies standard automated scripts or tools (which often mimic browsers poorly).
 * **Mechanism**: Analyzes the presence, order, and consistency of HTTP headers. Examples include:
 * Missing or abnormally sized `User-Agent`.
 * Missing `Accept-Language` header.
 * Missing or incorrect `TE` header (e.g., desktop Firefox requires `TE: trailers`; its absence in Firefox, or its presence in Chrome, is considered suspicious).
 
-### 4. Request Pattern Score (`requestPatternScore`)
+### 4. Request pattern score (`requestPatternScore`)
 * **Role**: Detects structured crawling, scraping, or API route brute-forcing.
 * **Mechanism**: Analyzes a device's request history:
 * **Temporal regularity**: Uses the standard deviation of time intervals between requests. A very low standard deviation indicates a timed bot (such as a cron job).
 * **Benford's Law**: Analyzes the statistical distribution of intervals to determine if it appears natural.
 * **Path Enumeration**: Detects if the client is traversing sequential URLs (e.g., `/api/item/1`, `/api/item/2`, `/api/item/3`) by simply varying the parameters.
 
-### 5. Cookie Inconsistency Score (`inconsistencyScore`)
+### 5. Cookie inconsistency score (`inconsistencyScore`)
 * **Role**: Prevents session cookie theft (Cookie Hijacking) and identifier spoofing.
 * **Mechanism**: Compares the client's current hardware fingerprint with the one recorded when the `device_id` cookie was initially generated. If an attacker attempts to reuse a device cookie on a machine with different hardware characteristics, consistency is lost, and the score immediately hits the maximum penalty level.
 
-### 6. Behavioral Score (`behaviorScore`)
+### 6. Behavioral score (`behaviorScore`)
 * **Role**: Validates that the user is human based on actual physical interactions with the page.
 * **Mechanism**: The client-side script captures and transmits encrypted interaction metrics:
 * **Mouse movements**: Analyzes speed, acceleration, and straightness (bots often trace perfectly straight lines at constant speeds without micro-pauses).
 * **Keystroke dynamics**: Analyzes keyboard input latency. Latencies under 40 ms or overly monotonous patterns indicate automated input.
 * **Browsing depth**: A very short browsing history (or a complete lack of prior interactions) raises suspicion, whereas a longer history boosts the trust score.
 
-### 7. Honeypot Score (`honeypotScore`)
+### 7. Honeypot score (`honeypotScore`)
 * **Role**: Instantly trap aggressive crawlers and vulnerability scanners.
 * **Mechanism**: Triggers a 100% score if the client interacts with elements invisible to humans:
 * Filling in hidden form fields (e.g., `email_confirm`, `admin`).
 * Direct requests to sensitive or forbidden files/directories (e.g., `/wp-admin`, `/.env`, `/.git`).
 * Malicious injection attempts (SQLi, XSS, RCE, Path Traversal, XXE) detected via built-in regex signatures or external advanced analyzers (such as ModSecurity or dynamic XSS filters).
 
-### 8. Multi-Layer Inconsistency Score (`crossLayerInconsistencyScore`)
+### 8. Multi-layer inconsistency score (`crossLayerInconsistencyScore`)
 * **Role**: Detect software identity spoofing.
 * **Mechanism**: Correlates information declared in the HTTP `User-Agent` with actual capabilities revealed by JavaScript API execution. For example: a client claiming to be on macOS in its HTTP header, while its JavaScript fingerprint reports a Windows system.
 
-### 9. Temporal Inconsistency Score (`timeInconsistencyScore`)
+### 9. Temporal inconsistency score (`timeInconsistencyScore`)
 * **Role**: Block behavioral telemetry replay attacks.
 * **Mechanism**: Compares the internal timestamp generated by the client during behavioral data collection with the time the request is received by the server. If the time difference (delta) is abnormally high or shifted in time, the telemetry is considered replayed.
 
-### 10. TLS Spoofing Score (`tlsSpoofingScore`)
+### 10. TLS spoofing score (`tlsSpoofingScore`)
 * **Role**: Identify headless browsers and request tools (Python, Go, cURL) masquerading as standard browsers.
 * **How it works**: Compares the cryptographic signature of the TLS handshake (JA3/JA4) with the expected signature for the browser declared in the `User-Agent`:
 * A tool like `cURL` or `Python Requests` sending a "Chrome" User-Agent will be exposed because its TLS signature will not match Chrome's extension and cipher suite structures.
 * Checks for the anomalous absence of the **GREASE** mechanism (mandatory in modern versions of Chrome/Edge).
 * Detects if the HTTP/2 protocol is negotiated while the corresponding ALPN extension is missing from the TLS layer.
 
-### 11. Automation Bot Score (`botScore`)
+### 11. Automation bot score (`botScore`)
 * **Role**: Detects browser automation frameworks (Selenium, Puppeteer, Playwright).
 * **How it works**: Inspects for the presence of specific global variables or debugging APIs introduced by client-side automation protocols (such as the Chrome DevTools Protocol—`CDP`—or WebDriver drivers).
 
-### 12. Client Hints Inconsistency Score (`clientHintsInconsistencyScore`)
+### 12. Client hints inconsistency score (`clientHintsInconsistencyScore`)
 * **Role**: Detects partial or inconsistent User-Agent spoofing.
 * **How it works**: Compares modern identification data provided by Client Hints headers (e.g., `sec-ch-ua`, `sec-ch-ua-platform`) with the traditional `User-Agent`. A major discrepancy regarding the browser family or a significant version mismatch triggers this score.
 
-### 13. Click Variance Score (`clickVarianceScore`)
+### 13. Click variance score (`clickVarianceScore`)
 * **Role**: Identifies automated clicks on forms or buttons.
 * **How it works**: Analyzes the mathematical precision of click coordinates (`x, y`) on a single interactive element. Humans rarely click on the exact same pixel twice; Zero or extremely low variance (less than 1 pixel) indicates the use of interface automation scripts.
 
-### 14. Subnet Score (`subnetScore`)
+### 14. Subnet score (`subnetScore`)
 * **Role**: Mitigate distributed attacks originating from the same network block.
 * **Mechanism**: Groups client IP addresses by subnet (e.g., `/24` masks for IPv4, `/48` for IPv6). If numerous distinct devices within the same network block exhibit anomalous behavior or high scores simultaneously, the entire subnet incurs a progressive reputation penalty, governed by a time-decay algorithm (30-minute half-life).
 
-### 15. IP Reputation Score (`ipReputationScore`)
+### 15. IP reputation score (`ipReputationScore`)
 * **Role**: Short-term historical tracking of individual IP addresses.
 * **Mechanism**: Assigns a poor reputation score to an IP address if it has recently failed challenges or triggered security alerts. This score decreases with each hour of inactivity (a decay of 2 points per hour) to automatically rehabilitate legitimate, reassigned IP addresses.
 
-### 16. Cookie Dropping Score (`cookieDroppingScore`)
+### 16. Cookie dropping score (`cookieDroppingScore`)
 * **Role**: Detects clients that refuse to store or return cookies (cookie-dropping attacks).
 * **Mechanism**: When a client requests a page, the engine registers a temporary pending state for its IP. If subsequent requests from the same IP arrive shortly after without the expected `device_id` cookie, it indicates that the client is either deleting cookies or running in a stateless mode to bypass tracking, triggering a high penalty.
 
-### 17. Threat Intel Score (`threatIntelScore`)
+### 17. Threat intel score (`threatIntelScore`)
 * **Role**: Leverages global threat intelligence feeds and known malicious IP lists.
 * **Mechanism**: Automatically penalizes requests coming from known residential proxy exits, bulletproof hosting providers, Tor exit nodes, or active malicious infrastructure registered in the system's database or external threat intelligence feeds.
 
-### 18. Botnet Cluster Score (`botnetClusterScore`)
+### 18. Botnet cluster score (`botnetClusterScore`)
 * **Role**: Identifies distributed botnet waves sharing identical hardware profiles.
 * **Mechanism**: Collects fingerprints and groups clients by their highly stable components (e.g., specific combinations of JA3/JA4, TCP, and GPU hashes). If multiple requests from different IPs (often across various geolocations or subnets) exhibit the exact same stable fingerprint within a short timeframe (e.g., 10 minutes), it indicates a coordinated botnet cluster using cloned device profiles.
 
-### 19. TCP Anomaly Score (`tcpAnomalyScore`)
+### 19. TCP anomaly score (`tcpAnomalyScore`)
 * **Role**: Detects OS-level spoofing at the transport layer.
 * **Mechanism**: Inspects raw TCP SYN packets (specifically TTL, Window Size, MSS, Window Scale, and SACK permissions) to reconstruct the client's actual operating system. If the OS classified by the TCP/IP stack (e.g., Linux) differs from the OS claimed in the HTTP `User-Agent` (e.g., Windows), a high anomaly score is applied.
 
-### 20. QUIC Anomaly Score (`quicAnomalyScore`)
+### 20. QUIC anomaly score (`quicAnomalyScore`)
 * **Role**: Detects HTTP/3 client spoofing and framework emulation.
 * **Mechanism**: Profiles the QUIC transport flow parameters (such as `initial_max_data`, `initial_max_streams_bidi`, and priority frame extensions). Since modern browsers like Chrome negotiate very specific default QUIC stream limits and frame priorities, handshakes that deviate from these defaults (e.g., tools like curl-impersonate or custom Go/Python packages) are instantly flagged.
 
-### 21. Rendering Anomaly Score (`renderingAnomalyScore`)
+### 21. Rendering anomaly score (`renderingAnomalyScore`)
 * **Role**: Exposes headless browsers and virtualized graphics environments.
 * **Mechanism**: Analyzes frame rendering telemetry sent by the client, such as vertical synchronization (V-Sync) patterns, frame-rate consistency (FPS), and rendering jitter. Automated headless clients running on virtual framebuffers or software-based GPU emulators (like SwiftShader) typically exhibit highly unstable frame times (high jitter) or abnormal FPS caps, and may trigger virtualized `OffscreenCanvas` exceptions.
 
-### 22. Virtualization Anomaly Score (`virtualizationScore`)
+### 22. Virtualization anomaly score (`virtualizationScore`)
 * **Role**: Detects headless browser runtime containers, virtual display drivers, and server-side automation setups.
 * **Mechanism**: Inspects the client's graphical rendering devices and canvas/WebGL renderer strings. Identifies software-only OpenGL emulators and headless display rendering pipelines (such as `Google SwiftShader`, `Mesa llvmpipe`, `Mesa Gallium`, `Microsoft Basic Render Driver`, or `HeadlessChrome`). It additionally correlates typical cloud/container headless viewport resolutions (such as default Docker/Xvfb `800x600_24` or `1024x768_24` configurations) to intercept automated bot runners operating inside unmanaged server racks or VPS clusters.
 
-### 23. HTTP/2 Anomaly Score (`http2AnomalyScore`)
+### 23. HTTP/2 anomaly score (`http2AnomalyScore`)
 * **Role**: Exposes HTTP/2 client impersonation, library scrapers, and headless HTTP/2 stream generators.
 * **Mechanism**: Analyzes low-level HTTP/2 connection parameters, including client initial stream window sizes, pseudo-header order (`:method`, `:authority`, `:scheme`, `:path` — e.g. strict `m,a,s,p` in Chromium vs `m,s,p,a` in Firefox), `PRIORITY` frame occurrences, `WINDOW_UPDATE` frame frequency, and `CONTINUATION` frame handling. Discrepancies between the declared User-Agent and actual framing behavior instantly expose automated scrapers and impersonation tools (e.g., `curl-impersonate`, custom Go/Python HTTP/2 clients).
 
-### 24. MTU Anomaly Score (`mtuAnomalyScore`)
+### 24. MTU anomaly score (`mtuAnomalyScore`)
 * **Role**: Detects residential proxy backconnect chains, VPN tunnels, and packet encapsulation.
 * **Mechanism**: Passively inspects TCP SYN options, specifically advertised Maximum Segment Size (MSS) and Don't Fragment (DF) flags, to reconstruct the effective Path MTU. When client requests advertise abnormal MTU sizes that deviate from standard physical Ethernet MTU (1500 bytes, typically MSS 1460) into values characteristic of GRE/WireGuard/OpenVPN or PPPoE tunnel encapsulations (e.g., 1420, 1380, or 1280 bytes), it flags residential proxy gateway hops and proxy tunnels masquerading as standard residential broadband connections.
 
 ---
 
-## Zero-Friction Bypasses (PAT & Hardware Attestation)
+## Zero-friction bypasses (PAT & hardware attestation)
 
-### Private Access Tokens (PAT / Privacy Pass — RFC 9505, RFC 9577, RFC 9578)
+### Private access tokens (PAT / Privacy Pass — RFC 9505, RFC 9577, RFC 9578)
 Clients supporting Privacy Pass or operating through attestation issuers can present cryptographically signed tokens via `Authorization: PrivateToken` or `Sec-Private-State-Token` headers. The engine verifies RSA-PSS, PKCS#1 v1.5, or VOPRF/Ed25519 token signatures against configured trusted keys (`pat.trustedKeys`) and performs anti-replay checks on the 32-byte token nonce. Verified tokens grant an immediate `action: "next"` zero-friction bypass with score `0.0`.
 
-### WebAuthn Hardware Attestation (TPM / Secure Enclave)
+### WebAuthn hardware attestation (TPM / Secure Enclave)
 Clients can register a platform authenticator credential anchored to their physical device (Apple Secure Enclave, Windows Hello TPM, Android Keystore). Verified assertions provide cryptographic greenlist clearance, making session hijacking and cookie spoofing impossible across distinct hardware.
 ---
-## Mitigation Mechanisms: The Challenge System (PoW)
+## Mitigation mechanisms: The challenge system (PoW)
 
 When a request exceeds configured suspicion thresholds, the engine does not display a definitive error page (unless the critical `block` threshold is surpassed). Instead, it imposes progressive cryptographic challenges via **Proof of Work (PoW)**, adjusting the effort required from the client based on their suspicion level.
 

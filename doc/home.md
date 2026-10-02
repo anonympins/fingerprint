@@ -73,6 +73,17 @@ Collaborate with external security entities and decentralize bot detection.
 ### 10. [Ed25519 Key Setup and Configuration](ed25519_keys)
 
 
+### 11. [ProblemManager & Useful Proof-of-Work (uPoW)](problem_manager)
+Replace arbitrary hash mining with real, distributed mathematical and machine learning tasks.
+* **Useful Work Dispatching**: Offloading optimization problems (TSP, federated AI model training) to suspicious clients.
+* **Dynamic Scaling & Anti-Poisoning**: Adjusting difficulty based on suspicion and server-side verification of submitted solutions.
+* **Cross-Language Guides**: Complete integration examples for Node.js, PHP, Java (Spring Boot), and Python.
+
+### 12. [Datastore and Ecosystem Integrations](store_integration)
+Extend the engine across custom persistent storage backends and alternative Node.js web frameworks.
+* **The `IStore` Interface**: Implementing distributed persistent stores with Redis or custom databases.
+* **Alternative Web Frameworks**: Step-by-step setup for **Koa.js** middleware and **Fastify** plugins.
+
 ---
 
 *To contribute to the project or run the test suite (Vitest / PHPUnit), please consult the CONTRIBUTING.md file in the project root.*

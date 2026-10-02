@@ -1726,9 +1726,21 @@ public class ChallengeUtils {
         String customTemplatePath = (String) securityConfig.get("challengePagePath");
         if (customTemplatePath != null) {
             try {
-                java.nio.file.Path p = java.nio.file.Paths.get(customTemplatePath);
-                if (java.nio.file.Files.exists(p)) {
-                    htmlTemplate = java.nio.file.Files.readString(p, java.nio.charset.StandardCharsets.UTF_8);
+                String cleanPath = customTemplatePath.startsWith("classpath:")
+                        ? customTemplatePath.substring("classpath:".length())
+                        : customTemplatePath;
+                java.io.InputStream resourceStream = ChallengeUtils.class.getResourceAsStream(
+                        cleanPath.startsWith("/") ? cleanPath : "/" + cleanPath
+                );
+                if (resourceStream != null) {
+                    try (resourceStream) {
+                        htmlTemplate = new String(resourceStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                    }
+                } else {
+                    java.nio.file.Path p = java.nio.file.Paths.get(customTemplatePath);
+                    if (java.nio.file.Files.exists(p)) {
+                        htmlTemplate = java.nio.file.Files.readString(p, java.nio.charset.StandardCharsets.UTF_8);
+                    }
                 }
             } catch (Exception e) {}
         }
