@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "anonympins-fingerprint"
-version = "0.8.1"
+version = "0.8.2"
 authors = [
     { name = "anonympins" }
 ]
@@ -15,7 +15,9 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+    "cryptography>=3.0.0"
+]
 
 [project.urls]
 Homepage = "https://github.com/anonympins/fingerprint"

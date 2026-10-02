@@ -1,10 +1,10 @@
-import ctypes
 from typing import Any, Dict, Optional
 
 
 def imul(a: int, b: int) -> int:
     """Emulates JavaScript Math.imul (signed 32-bit integer multiplication)."""
-    return ctypes.c_int32((a * b) & 0xffffffff).value
+    res = (a * b) & 0xffffffff
+    return res - 0x100000000 if res >= 0x80000000 else res
 
 
 def cyrb53(string: str, seed: int = 0) -> int:

@@ -5,6 +5,8 @@ import com.anonympins.fingerprint.utils.RequestUtils;
 
 import java.math.BigInteger;
 import java.security.PublicKey;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.*;
 
@@ -19,7 +21,14 @@ public class FingerprintEngine {
     private final Map<String, Object> weights;
     private final Map<String, Object> patterns;
     private PatValidator patValidator;
-
+    private static final ExecutorService ASYNC_BROADCAST_POOL = Executors.newFixedThreadPool(
+            Math.min(8, Runtime.getRuntime().availableProcessors()),
+            r -> {
+                Thread t = new Thread(r, "fp-async-broadcast");
+                t.setDaemon(true);
+                return t;
+            }
+    );
     private ProblemManager problemManager;
     @SuppressWarnings("unchecked")
     public FingerprintEngine(Map<String, Object> config, IStore store) {
@@ -387,6 +396,21 @@ public class FingerprintEngine {
         BlockList bl = new BlockList();
         List<Map<String, Object>> whitelistRules = (List<Map<String, Object>>) config.get("whitelist");
         if (whitelistRules == null) return bl;
+
+        // Auto-whitelisting des federatedPeers configurés
+        List<String> peers = (List<String>) config.get("federatedPeers");
+        if (peers != null) {
+            for (String peerUrl : peers) {
+                try {
+                    java.net.URI uri = java.net.URI.create(peerUrl);
+                    String host = uri.getHost();
+                    if (host != null && !host.isEmpty()) {
+                        bl.add(host);
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
         for (Map<String, Object> rule : whitelistRules) {
             if ("allowlist".equals(rule.get("type"))) {
                 List<String> entries = (List<String>) rule.get("entries");
@@ -1126,7 +1150,7 @@ public class FingerprintEngine {
     }
 
     protected void asyncPost(String urlStr, String zkpY, String signature, String signatureEd25519, long timestamp) {
-        new Thread(() -> {
+        ASYNC_BROADCAST_POOL.submit(() -> {
             try {
                 java.net.URL url = new java.net.URL(urlStr);
                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
@@ -1147,7 +1171,7 @@ public class FingerprintEngine {
             } catch (Exception e) {
                 // Échec silencieux
             }
-        }).start();
+        });
     }
     
     @SuppressWarnings("unchecked")

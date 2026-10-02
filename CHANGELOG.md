@@ -1,3 +1,32 @@
+## Version 0.8.2
+
+- 🌐 **Federated whitelist synchronization (`share_whitelist`)**:
+  - Implementation of the decentralized whitelist sharing protocol (`share_whitelist`) across all runtimes (JavaScript, Python, Java, PHP).
+  - Asymmetric cryptographic Ed25519 signature and verification (`signature_ed25519`) with strict timestamps and anti-replay tolerance window (5 minutes).
+  - Cross-node synchronization of trusted entries (IP addresses, CIDR subnets, and User-Agents) associated with a validity duration (TTL) capped at 7 days.
+  - Security guardrails strictly prohibiting the broadcast of permissive wildcards or dangerous open masks (`*`, `0.0.0.0/0`, `::/0`).
+
+- 🐍 **Python: race condition fixes and LRU cache**:
+  - **Resolution of race condition (PAT & token nonces)**: secured concurrent access in `PatValidator` via conditional atomic acquisition (`set_nx`) of nonces in the store, neutralizing bypasses via simultaneous requests.
+  - **LRU cache on network lookup**: added `@lru_cache(maxsize=4096)` decorator to `AsnLookupEngine.lookup` to cache recurring IPv4/IPv6 address resolutions and alleviate Patricia Trie traversal overhead under heavy load.
+  - **Memory and fast-path optimization**: reliable periodic pruning of the local fast-path cache (`_fast_path_cache`) and non-blocking cleanup of IP tracking structures.
+
+- ☕ **Java: classpath HTML template support**:
+  - Added support for the `classpath:` prefix in the `challengePagePath` option in `ChallengeUtils.generateCombinedPoWChallengePage`.
+  - Direct loading of custom HTML templates from internal JAR/WAR resources via `getResourceAsStream`, with transparent fallback to the standard filesystem.
+
+- 🔌 **WordPress: HTML template editor for challenges**:
+  - Integrated a dedicated editor in the WordPress administration interface to customize the PoW interception challenge page HTML.
+  - Support and replacement of engine placeholders (`<!-- FINGERPRINT_SOLVER_SCRIPT -->`, `<!-- FINGERPRINT_CHALLENGE_SCRIPT -->`, `<!-- FINGERPRINT_TRAPS -->`).
+  - Secure persistence of template customizations in the options table with capability and permission checks.
+
+- 🛡️ **WordPress Plugin Check compliance**:
+  - Full audit and code cleanup adhering to the official *WordPress Plugin Check* requirements.
+  - Hardened output escaping (`esc_html`, `esc_attr`, `esc_url`) and input sanitization.
+  - Resolved static analysis warnings regarding user capabilities and security nonces.
+
+---
+
 ## Version 0.8.1
 
 - 🎟️ **Private Access Tokens (PAT / Privacy Pass) Evaluation (RFC 9578)**:

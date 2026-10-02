@@ -35,6 +35,9 @@ public class BlockList {
     }
 
     public boolean check(String ip) {
+        if (ip == null || ip.isEmpty()) {
+            return false;
+        }
         try {
             InetAddress addr = InetAddress.getByName(ip);
             for (InetAddress address : addresses) {

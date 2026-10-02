@@ -227,9 +227,17 @@ class PatValidator:
             is_valid = PatUtils.verify_signature(parsed_token, key)
             if is_valid:
                 if self.nonce_store is not None:
-                    res = self.nonce_store.set(f"pat-nonce:{nonce_hex}", True, self.nonce_ttl_seconds)
-                    if asyncio.iscoroutine(res):
-                        await res
+                    nonce_key = f"pat-nonce:{nonce_hex}"
+                    if hasattr(self.nonce_store, "set_nx"):
+                        acquired = self.nonce_store.set_nx(nonce_key, True, self.nonce_ttl_seconds)
+                        if asyncio.iscoroutine(acquired):
+                            acquired = await acquired
+                        if not acquired:
+                            continue
+                    else:
+                        res = self.nonce_store.set(nonce_key, True, self.nonce_ttl_seconds)
+                        if asyncio.iscoroutine(res):
+                            await res
                 return PatValidationResult.create_bypass()
 
         return PatValidationResult.not_applicable()

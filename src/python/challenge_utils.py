@@ -143,14 +143,48 @@ class ChallengeUtils:
         return random.choice(active_peers)
 
     @staticmethod
-    async def handle_cooperative_request(store, params: Dict[str, Any], client_ip: str = '127.0.0.1', headers: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+    def verify_ed25519_signature(message: str, signature_hex: str, config: Optional[Dict[str, Any]] = None) -> bool:
+        if not message or not signature_hex:
+            return False
+        cfg = config or {}
+        pub_pem = cfg.get("ed25519_public_key") or os.environ.get("ED25519_PUBLIC_KEY")
+        if not pub_pem:
+            return False
+        try:
+            from cryptography.hazmat.primitives.serialization import load_pem_public_key
+            from cryptography.hazmat.backends import default_backend
+
+            public_key = load_pem_public_key(pub_pem.encode("utf-8"), backend=default_backend())
+            sig_bytes = bytes.fromhex(signature_hex)
+            public_key.verify(sig_bytes, message.encode("utf-8"))
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    async def handle_cooperative_request(store, params: Dict[str, Any], client_ip: str = '127.0.0.1', headers: Optional[Dict[str, str]] = None, config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         op = params.get("coop_op")
         if not op:
             return None
 
+        cfg = config or {}
+        peers = cfg.get("federatedPeers") or []
+        if peers and op in ("share_threat_intel", "share_whitelist"):
+            import urllib.parse
+            allowed_hosts = []
+            for url in peers:
+                try:
+                    parsed = urllib.parse.urlparse(url)
+                    allowed_hosts.append(parsed.hostname or url)
+                except Exception:
+                    allowed_hosts.append(url)
+            if client_ip not in allowed_hosts:
+                return {"error": "Unauthorized federation sender IP"}
+
         if op == "share_threat_intel":
             zkp_y = params.get("zkpY") or ""
             hdrs = headers or {}
+            sig_ed25519 = params.get("signature_ed25519") or hdrs.get("x-federation-signature-ed25519") or ""
             signature = params.get("signature") or hdrs.get("x-federation-signature") or ""
             timestamp_str = params.get("timestamp") or hdrs.get("x-federation-timestamp") or "0"
             try:
@@ -158,7 +192,7 @@ class ChallengeUtils:
             except ValueError:
                 timestamp = 0
 
-            if not zkp_y or not signature or not timestamp:
+            if not zkp_y or (not signature and not sig_ed25519) or not timestamp:
                 return {"error": "Missing threat intel parameters"}
 
             # Anti-replay (5 minutes safety window)
@@ -168,14 +202,55 @@ class ChallengeUtils:
 
             secret = params.get("federationSecret") or os.environ.get("POW_SECRET") or "fallback-dev-secret-32-chars-minimum"
             msg = f"{timestamp}:{zkp_y}"
-            expected_sig = hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+            verified = False
+            if sig_ed25519:
+                verified = ChallengeUtils.verify_ed25519_signature(msg, sig_ed25519, cfg)
+            elif signature:
+                expected_sig = hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+                verified = hmac.compare_digest(expected_sig, signature)
 
-            if not hmac.compare_digest(expected_sig, signature):
+            if not verified:
                 return {"error": "Invalid federation signature"}
 
             # Ban the ZKP public key for 30 days
             await store.set(f"banned-zkp-y:{zkp_y}", True, 86400 * 30)
             return {"status": "synchronized"}
+
+        if op == "share_whitelist":
+            entry = params.get("entry")
+            entry_type = params.get("entry_type", "ip")
+            hdrs = headers or {}
+            sig_ed25519 = params.get("signature_ed25519") or hdrs.get("x-federation-signature-ed25519") or ""
+            timestamp_str = params.get("timestamp") or hdrs.get("x-federation-timestamp") or ""
+            ttl_str = params.get("ttl", "86400")
+
+            if not entry or not entry.strip() or not sig_ed25519 or not timestamp_str:
+                return {"error": "Missing required parameters for share_whitelist"}
+
+            clean_entry = entry.strip()
+            if clean_entry in ("*", "0.0.0.0/0", "::/0"):
+                return {"error": "Permissive wildcard entries are prohibited"}
+
+            try:
+                timestamp = int(timestamp_str)
+            except ValueError:
+                return {"error": "Invalid timestamp format"}
+
+            now_ms = int(time.time() * 1000)
+            if abs(now_ms - timestamp) > 300000:
+                return {"error": "Timestamp expired or clock skew too high"}
+
+            msg = f"{timestamp}:whitelist:{entry_type}:{clean_entry}"
+            if not ChallengeUtils.verify_ed25519_signature(msg, sig_ed25519, cfg):
+                return {"error": "Invalid Ed25519 signature for whitelist synchronization"}
+
+            try:
+                ttl = min(604800, max(60, int(ttl_str)))
+            except ValueError:
+                ttl = 86400
+
+            await store.set(f"federated-whitelist:{entry_type}:{clean_entry}", True, ttl)
+            return {"status": "whitelist_synchronized"}
 
         node_id = params.get("node_id") or ""
         if not node_id:
@@ -602,6 +677,17 @@ class ChallengeUtils:
         capacity = float(rate_limit_config.get("capacity", 30.0))
         refill_rate = float(rate_limit_config.get("refillRate", 1.0))
         now = time.time()
+        ttl = max(60, int(math.ceil(capacity / max(0.1, refill_rate))))
+
+        if hasattr(store, "rate_limit_token_bucket"):
+            return await store.rate_limit_token_bucket(
+                key=key,
+                capacity=capacity,
+                refill_rate=refill_rate,
+                now=now,
+                cost=1.0,
+                ttl=ttl
+            )
 
         rate_limit_data = await store.get(key)
         if not rate_limit_data:
@@ -609,7 +695,6 @@ class ChallengeUtils:
 
         elapsed = max(0.0, now - rate_limit_data.get("lastRefill", now))
         tokens = min(capacity, float(rate_limit_data.get("tokens", capacity)) + elapsed * refill_rate)
-        ttl = max(60, int(math.ceil(capacity / max(0.1, refill_rate))))
 
         if tokens < 1.0:
             await store.set(key, {"tokens": tokens, "lastRefill": now}, ttl)
@@ -625,7 +710,7 @@ def verify_zkp_proof(y_str, t_str, s_str):
 def get_pow_secret():
     return os.environ.get('POW_SECRET', 'fallback-dev-secret-32-chars-minimum')
 
-async def handle_cooperative_request(store, params, client_ip='127.0.0.1', headers=None):
-    return await ChallengeUtils.handle_cooperative_request(store, params, client_ip, headers)
+async def handle_cooperative_request(store, params, client_ip='127.0.0.1', headers=None, config=None):
+    return await ChallengeUtils.handle_cooperative_request(store, params, client_ip, headers, config)
 
 __all__ = ["ChallengeUtils", "verify_zkp_proof", "get_pow_secret", "handle_cooperative_request"]

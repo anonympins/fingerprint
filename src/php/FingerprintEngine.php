@@ -267,6 +267,7 @@ class FingerprintEngine
                             if (function_exists('wp_mkdir_p')) {
                                 wp_mkdir_p($configDir);
                             } else {
+                                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Standalone filesystem fallback
                                 @mkdir($configDir, 0700, true);
                             }
                         }
@@ -689,6 +690,21 @@ class FingerprintEngine
      */
     private function checkAllowlists(RequestContext $context): bool
     {
+        // Auto-whitelisting des pairs fédérés
+        $peers = $this->securityConfig['federatedPeers'] ?? [];
+        if (!empty($peers)) {
+            $allowedHosts = array_map(function ($url) {
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- Covered by wp_parse_url, Fallback for standalone PHP environments
+                $host = function_exists('wp_parse_url') ? wp_parse_url($url, PHP_URL_HOST) : parse_url($url, PHP_URL_HOST);
+                return !empty($host) ? $host : $url;
+            }, $peers);
+
+            if (in_array($context->clientIp, $allowedHosts, true)) {
+                $this->log("Federated peer auto-whitelisted", ['clientIp' => $context->clientIp]);
+                return true;
+            }
+        }
+
         $whitelisted = false;
         $type = '';
 
@@ -701,6 +717,15 @@ class FingerprintEngine
         } elseif ($this->isHostPathInAllowlist($context->getHeader('host'), $context->path)) {
             $whitelisted = true;
             $type = 'host_path_allowlist';
+        } elseif (StoreManager::getStore()->has("federated-whitelist:ip:{$context->clientIp}")) {
+            $whitelisted = true;
+            $type = 'federated_whitelist_ip';
+        } elseif (($subnet = RequestUtils::getIpSubnet($context->clientIp)) && StoreManager::getStore()->has("federated-whitelist:subnet:{$subnet}")) {
+            $whitelisted = true;
+            $type = 'federated_whitelist_subnet';
+        } elseif (($ua = $context->getHeader('user-agent')) && StoreManager::getStore()->has("federated-whitelist:user_agent:{$ua}")) {
+            $whitelisted = true;
+            $type = 'federated_whitelist_user_agent';
         } elseif ($context->graphqlOperation && $this->isGraphqlOperationInAllowlist($context->graphqlOperation['type'], $context->graphqlOperation['name'])) {
             $whitelisted = true;
             $type = 'graphql_operation_allowlist';
@@ -2003,6 +2028,56 @@ class FingerprintEngine
                 $sendThreatReport($decoyZkpY, $decoyTimestamp);
             }
         }
+    }
+
+    public function broadcastWhitelist(string $entry, string $entryType = 'ip', int $ttl = 86400): void
+    {
+        $peers = $this->securityConfig['federatedPeers'] ?? [];
+        if (empty($peers)) return;
+
+        $cleanEntry = trim($entry);
+        if ($cleanEntry === '*' || $cleanEntry === '0.0.0.0/0' || $cleanEntry === '::/0') {
+            throw new \InvalidArgumentException('Permissive wildcard entries are prohibited');
+        }
+        if ($cleanEntry === '') {
+            return;
+        }
+
+        $boundedTtl = min(604800, max(60, $ttl));
+        $ts = (int)(microtime(true) * 1000);
+        $msg = "{$ts}:whitelist:{$entryType}:{$cleanEntry}";
+
+        $privateKey = Env::get('ED25519_PRIVATE_KEY');
+        if (!$privateKey) {
+            throw new \RuntimeException('ED25519_PRIVATE_KEY is required for federated whitelist broadcast');
+        }
+
+        $signature = '';
+        try {
+            $cleanKey = str_replace('\n', "\n", $privateKey);
+            $pkeyObj = openssl_pkey_get_private($cleanKey);
+            if ($pkeyObj && openssl_sign($msg, $sigBytes, $pkeyObj, null)) {
+                $signature = bin2hex($sigBytes);
+            }
+        } catch (\Throwable $e) {
+            return;
+        }
+        if (empty($signature)) return;
+
+        foreach ($peers as $peerUrl) {
+            $this->asyncPost($peerUrl . '?coop_op=share_whitelist', [
+                'entry' => $cleanEntry,
+                'entry_type' => $entryType,
+                'signature_ed25519' => $signature,
+                'timestamp' => $ts,
+                'ttl' => $boundedTtl,
+            ]);
+        }
+    }
+
+    public function broadcastWhitelistedEntry(string $entry, string $entryType = 'ip', int $ttl = 86400): void
+    {
+        $this->broadcastWhitelist($entry, $entryType, $ttl);
     }
 
     /**
