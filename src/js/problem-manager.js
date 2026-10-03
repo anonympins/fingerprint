@@ -26,21 +26,30 @@ FunctionRegistry['cpc.solve'] = Optimization.Operators.solveOptimalCPC; // Regis
  * @returns {number} Total cost.
  */
 FunctionRegistry['facility.calculateEnergy'] = (facilities, payload) => {
-    const customers = payload.customers || [];
-    const fixedCostPerFacility = payload.options?.fixedCostPerFacility || 0;
+    const customers = payload?.customers || [];
+    const fixedCostPerFacility = payload?.options?.fixedCostPerFacility || 0;
+    const facilityList = Array.isArray(facilities) ? facilities : (facilities?.facilities || facilities?.solution || []);
+    if (!Array.isArray(customers) || customers.length === 0 || facilityList.length === 0) {
+        return Infinity;
+    }
     const distanceSq = (p1, p2) => Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2);
     let totalConnectionCost = 0;
     for (const customer of customers) {
+        if (!customer || typeof customer.x !== 'number' || typeof customer.y !== 'number') continue;
         let minDistanceToCustomer = Infinity;
-        for (const facility of facilities) {
-            const d = distanceSq(customer, facility);
+        for (const facility of facilityList) {
+            const facPoint = typeof facility === 'number' ? customers[facility] : facility;
+            if (!facPoint || typeof facPoint.x !== 'number' || typeof facPoint.y !== 'number') continue;
+            const d = distanceSq(customer, facPoint);
             if (d < minDistanceToCustomer) {
                 minDistanceToCustomer = d;
             }
         }
-        totalConnectionCost += Math.sqrt(minDistanceToCustomer);
+        if (minDistanceToCustomer !== Infinity) {
+            totalConnectionCost += Math.sqrt(minDistanceToCustomer);
+        }
     }
-    return totalConnectionCost + facilities.length * fixedCostPerFacility;
+    return totalConnectionCost + facilityList.length * fixedCostPerFacility;
 };
 
 /**
@@ -49,7 +58,10 @@ FunctionRegistry['facility.calculateEnergy'] = (facilities, payload) => {
  * @returns {number} Total path distance.
  */
 FunctionRegistry['tsp.calculateEnergy'] = (path, payload) => {
-    const cities = payload?.cities || payload?.points || [];
+    const cities = payload?.cities || payload?.points || payload?.customers || [];
+    if (!Array.isArray(cities) || cities.length === 0 || !Array.isArray(path) || path.length === 0) {
+        return Infinity;
+    }
     if (path && typeof path[0] === 'number') {
         return Optimization.Utils.evaluatePathDistance(cities, path);
     }
@@ -467,8 +479,12 @@ class ProblemManager {
 
         // Use score function defined in config
         const scoreFunction = problem.workUnit.scoreFunction;
-        // Assume initial solution source is defined in config
-        const initialSolutionSource = problem.payload[problem.workUnit.initialSolutionSource];
+        let initialSolutionSource = problem.payload[problem.workUnit.initialSolutionSource];
+
+        // Fallback pour les problèmes de localisation d'installations
+        if (!initialSolutionSource && Array.isArray(problem.payload.customers) && problem.payload.numFacilities) {
+            initialSolutionSource = problem.payload.customers.slice(0, problem.payload.numFacilities);
+        }
 
         if (scoreFunction && initialSolutionSource && Array.isArray(initialSolutionSource)) {
             const initialSolution = initialSolutionSource;

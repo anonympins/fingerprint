@@ -125,7 +125,7 @@
     "workUnit": {
       "type": "simulated_annealing_iterations",
       "solverName": "facility.solve",
-      "scoreFunction": "tsp.calculateEnergy",
+      "scoreFunction": "facility.calculateEnergy",
       "baseIterations": 50000,
       "scalingFactor": 1.7,
       "objective": "minimize"
