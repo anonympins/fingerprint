@@ -30,6 +30,11 @@ import {
     safeJsonStringify,
     generateIssuerPemKeys
 } from "./fingerprint.utils.js";
+import { HardwareAttestationManager } from "./hardware-attestation.js";
+import { LwwElementSet, BloomFilterSync } from "./crdt.js";
+
+const threatIntelCrdt = new LwwElementSet();
+const whitelistCrdt = new LwwElementSet();
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -141,6 +146,7 @@ async function broadcastBannedZkp(zkpY, config) {
         reportTimestamp = Date.now() + clampedNoise;
     }
 
+    threatIntelCrdt.add(zkpY, Date.now(), 86400 * 30 * 1000);
     sendReport(zkpY, reportTimestamp);
 
     // 2. Differential Privacy : Réponse randomisée par injection de leurres (Decoy ZKP)
@@ -867,6 +873,7 @@ const securityProfiles = {
             tcpAnomalyScore: 0.8,
             quicAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
+            graphTopologyScore: 0.85, // NOUVEAU: Score topologique de graphe de session en streaming
             http2AnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
             virtualizationScore: 0.8,
@@ -917,6 +924,7 @@ const securityProfiles = {
             tcpAnomalyScore: 1.0,
             quicAnomalyScore: 1.0,
             renderingAnomalyScore: 1.0,
+            graphTopologyScore: 1.0,
             http2AnomalyScore: 1.0,
             threatIntelScore: 1.0,
             mtuAnomalyScore: 0.9,
@@ -968,6 +976,7 @@ const securityProfiles = {
             tcpAnomalyScore: 0.8,
             quicAnomalyScore: 0.8,
             http2AnomalyScore: 0.8,
+            graphTopologyScore: 0.9,
             renderingAnomalyScore: 0.2,
             threatIntelScore: 0.6,
             virtualizationScore: 0.8,
@@ -1021,6 +1030,7 @@ const securityProfiles = {
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
             http2AnomalyScore: 0.5,
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
+            graphTopologyScore: 0.7,
             mtuAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
@@ -1070,6 +1080,7 @@ const securityProfiles = {
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
             http2AnomalyScore: 0.9,
             renderingAnomalyScore: 0.9,
+            graphTopologyScore: 1.0,
             mtuAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
@@ -3628,6 +3639,109 @@ async function getBotnetClusterScore(context, stableFpHash) {
 }
 
 /**
+ * Évalue la cohérence topologique du flux applicatif via un graphe de sessions en streaming (Streaming GNN).
+ * Relie les sous-réseaux BGP, les transitions de routes applicatives et les cinématiques temporelles
+ * pour détecter les attaques distribuées "low & slow".
+ * @param {object} context Contexte de la requête.
+ * @param {string} deviceId Identifiant de session ou cookie.
+ * @param {string} stableFpHash Empreinte stable du terminal.
+ * @returns {Promise<{graphTopologyScore: number}>}
+ */
+async function getGraphTopologyScore(context, deviceId, stableFpHash) {
+    const clientIp = context.clientIp;
+    if (!clientIp || isLoopbackIp(clientIp)) {
+        return { graphTopologyScore: 0.0 };
+    }
+
+    const subnet = getIpSubnet(clientIp) || clientIp;
+    const path = context.path || '/';
+    const now = Date.now();
+    const timeWindowMs = 3600 * 1000; // Fenêtre d'agrégation glissante de 60 minutes
+    const decayConstant = 0.0003; // Facteur d'amortissement temporel continu
+
+    // 1. Clé de transition cinématique (Edge topologique)
+    const lastPathKey = `graph-prev-path:${deviceId || stableFpHash}`;
+    const previousPath = (await store.get(lastPathKey)) || null;
+    await store.set(lastPathKey, path, 3600);
+
+    const transitionEdge = previousPath ? `${previousPath}->${path}` : `ROOT->${path}`;
+    const transitionHash = cyrb53(transitionEdge).toString(16);
+
+    // 2. Mise à jour de la topologie de graphe partagée pour ce motif de navigation
+    const graphNodeKey = `graph-edge:${transitionHash}`;
+    let graphNode = (await store.get(graphNodeKey)) || {
+        sessions: {},
+        subnets: {},
+        firstSeen: now,
+        lastSeen: now,
+        totalHits: 0
+    };
+
+    // Amortissement des poids existants
+    const elapsed = Math.max(0, now - graphNode.lastSeen);
+    const timeDecayFactor = Math.exp(-decayConstant * (elapsed / 1000));
+
+    graphNode.totalHits = (graphNode.totalHits * timeDecayFactor) + 1;
+    graphNode.subnets[subnet] = ((graphNode.subnets[subnet] || 0) * timeDecayFactor) + 1;
+    const sessionKey = deviceId || stableFpHash || 'anon';
+    graphNode.sessions[sessionKey] = ((graphNode.sessions[sessionKey] || 0) * timeDecayFactor) + 1;
+    graphNode.lastSeen = now;
+
+    // Purge des nœuds inactifs du sous-graphe
+    for (const s of Object.keys(graphNode.subnets)) {
+        if (graphNode.subnets[s] < 0.05) delete graphNode.subnets[s];
+    }
+    for (const k of Object.keys(graphNode.sessions)) {
+        if (graphNode.sessions[k] < 0.05) delete graphNode.sessions[k];
+    }
+
+    await store.set(graphNodeKey, graphNode, 3600);
+
+    // 3. Message passing local : calcul du ratio de centralité et dispersion topologique
+    const distinctSubnets = Object.keys(graphNode.subnets).length;
+    const distinctSessions = Object.keys(graphNode.sessions).length;
+
+    if (distinctSubnets <= 1 || graphNode.totalHits < 4) {
+        return { graphTopologyScore: 0.0 };
+    }
+
+    // Distribution d'entropie de dispersion des sous-réseaux BGP pour cette même transition
+    let subnetEntropy = 0.0;
+    const subnetHitValues = Object.values(graphNode.subnets);
+    const sumHits = subnetHitValues.reduce((a, b) => a + b, 0);
+    for (const count of subnetHitValues) {
+        const p = count / sumHits;
+        if (p > 0) {
+            subnetEntropy -= p * Math.log2(p);
+        }
+    }
+
+    // 4. Modélisation de l'anomalie Low & Slow :
+    // Si de nombreuses sessions et sous-réseaux IP distincts exécutent la même séquence
+    // cinématique avec une entropie de réseau élevée mais une faible vélocité locale
+    const maxExpectedEntropy = Math.log2(Math.max(2, distinctSubnets));
+    const normalizedEntropy = maxExpectedEntropy > 0 ? (subnetEntropy / maxExpectedEntropy) : 0.0;
+    const crossSubnetConvergence = Math.min(1.0, distinctSubnets / 8.0);
+
+    let graphScore = 0.0;
+    if (distinctSubnets >= 3 && normalizedEntropy > 0.70) {
+        // Convergence anormale de multiples pools d'IP vers un chemin cinématique synchrone
+        const coordinationFactor = (distinctSessions / Math.max(1, distinctSubnets));
+        const baseAnomaly = 45.0 * crossSubnetConvergence * normalizedEntropy;
+        const structuralCohesionBoost = Math.min(50.0, graphNode.totalHits * 2.5);
+
+        graphScore = baseAnomaly + structuralCohesionBoost;
+        if (coordinationFactor >= 0.8 && distinctSubnets >= 5) {
+            graphScore += 25.0; // Collusion inter-réseaux à haute certitude
+        }
+    }
+
+    return {
+        graphTopologyScore: Math.min(100.0, Math.round(graphScore * 10) / 10)
+    };
+}
+
+/**
  * Retrieves the current local IP reputation score, applying time-based decay.
  * @param {string} ip - The client's IP address.
  * @returns {Promise<number>} The reputation score (0 to 100).
@@ -4219,7 +4333,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         { subnetScore },
         ipReputationScore,
         { botnetClusterScore },
-        _ // store.set result
+        { graphTopologyScore }
       ] = await Promise.all([
         getBehavioralIndicators(context, deviceData, netProfile), // This modifies deviceData, so it must be done before saving deviceData
         getThreatIntelScore(context, zkpY, securityConfig), // NOUVEAU: Score de Threat Intelligence Fédéré
@@ -4227,6 +4341,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         getSubnetScore(context, deviceId, securityConfig),
         getIpReputationScore(clientIp),
         getBotnetClusterScore(context, stableFpHash),
+        getGraphTopologyScore(context, deviceId, stableFpHash),
         store.set(`ip-device:${clientIp}`, deviceId, 600) // Link the IP to the device for 10 minutes
       ]);
 
@@ -4277,7 +4392,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
     // Le vecteur de suspicion est maintenant complet.
-    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore, mtuAnomalyScore };
+    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore, mtuAnomalyScore, graphTopologyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -4322,6 +4437,7 @@ export const identifyRequest = (securityConfig) => async (req, res) => {
       quicAnomalyScore: 0.8,
       renderingAnomalyScore: 0.8,
       http2AnomalyScore: 0.8,
+      graphTopologyScore: 0.85,
       threatIntelScore: 1.0,
       virtualizationScore: 0.8
     },
@@ -4724,7 +4840,7 @@ async function getThreatIntelScore(context, zkpY, threatIntelConfig = {}) {
 
     // 1. Détection déterministe : Clé publique ZKP bannie par consensus fédéré
     if (zkpY) {
-        const isBanned = await storeHas(`banned-zkp-y:${zkpY}`);
+        const isBanned = threatIntelCrdt.contains(zkpY) || await storeHas(`banned-zkp-y:${zkpY}`);
         if (isBanned) {
             score = 100.0;
             signals.push({
@@ -4861,6 +4977,7 @@ export class FingerprintEngine {
     this._allowlist = this._buildAllowlist();
     this._validateConfig(finalConfig); // Validate the configuration
     this.verbose = finalConfig.verbose || false;
+    this.hardwareAttestation = new HardwareAttestationManager(store, this.securityConfig);
     this.dryRun = finalConfig.dryRun || false;
     
     // Preload solver file asynchronously to liberate event loop during run
@@ -5385,6 +5502,16 @@ export class FingerprintEngine {
         return decision;
     }
 
+    // --- ATTESTATION MATÉRIELLE CRYPTOGRAPHIQUE SOUVERAINE (DBSC / Play Integrity / App Attest) ---
+    // L'attestation matérielle exempte des challenges de calcul (PoW) mais ne court-circuite
+    // pas l'analyse de suspicion comportementale ni les règles de blocage (WAF, Honeypot).
+    const origin = requestContext.headers?.origin || requestContext.headers?.host || '';
+    const hwAttestation = await this.hardwareAttestation.process(requestContext, deviceId, clientIp, origin);
+    const hasValidHwAttestation = hwAttestation.verified;
+    if (hasValidHwAttestation) {
+        this._log('Hardware cryptographic attestation verified', { type: hwAttestation.type });
+    }
+
     if (isStatic) {
       this._log('Static resource - skipping checks');
       return { action: 'next', score: 0, vector: {} };
@@ -5460,14 +5587,14 @@ export class FingerprintEngine {
     if (!whitelisted) {
       const subnet = getIpSubnet(clientIp);
       const ua = requestContext.headers?.['user-agent'] || '';
-      if (await storeHas(`federated-whitelist:ip:${clientIp}`)) {
-        whitelisted = true;
+        if (whitelistCrdt.contains(`ip:${clientIp}`) || await storeHas(`federated-whitelist:ip:${clientIp}`)) {
+            whitelisted = true;
         whitelistType = 'federated_whitelist_ip';
-      } else if (subnet && await storeHas(`federated-whitelist:subnet:${subnet}`)) {
-        whitelisted = true;
+        } else if (subnet && (whitelistCrdt.contains(`subnet:${subnet}`) || await storeHas(`federated-whitelist:subnet:${subnet}`))) {
+            whitelisted = true;
         whitelistType = 'federated_whitelist_subnet';
-      } else if (ua && await storeHas(`federated-whitelist:user_agent:${ua}`)) {
-        whitelisted = true;
+        } else if (ua && (whitelistCrdt.contains(`user_agent:${ua}`) || await storeHas(`federated-whitelist:user_agent:${ua}`))) {
+            whitelisted = true;
         whitelistType = 'federated_whitelist_user_agent';
       }
     }
@@ -5580,6 +5707,10 @@ export class FingerprintEngine {
     }
     if (hasValidPat) {
         suspicionVector.pat_verified = 100.0;
+    }
+    if (hasValidHwAttestation) {
+        suspicionVector.hardware_attestation_verified = 100.0;
+        suspicionVector[`hw_${hwAttestation.type}`] = 100.0;
     }
     let finalScore = preCalculatedScore !== null ? preCalculatedScore : this.calculateFinalScore(suspicionVector);
 
@@ -6069,7 +6200,7 @@ export class FingerprintEngine {
     // OU
     // 2. La requête est très suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
     const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
-    const hasValidTicket = (await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof)) || hasValidPat;
+    const hasValidTicket = (await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof)) || hasValidPat || hasValidHwAttestation;
     // Correction : Pour éviter une boucle infinie de challenges (qui mène à l'erreur 429),
     // on fait confiance au ticket valide tant qu'il n'a pas expiré.
     const maxIndicatorsCount = Object.values(suspicionVector).filter(val => typeof val === 'number' && val >= 100).length;
@@ -6321,6 +6452,23 @@ export class FingerprintEngine {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
     }
       const response = { action: 'next', score: finalScore, vector: suspicionVector, intendedAction: 'next' };
+      if (hasValidHwAttestation) {
+          const bypassTicket = generateStatelessTicket({
+              expiry: Date.now() + 86400 * 1000,
+              originalIp: clientIp,
+              deviceId,
+              deviceHash: `hw:${hwAttestation.type}:${deviceId}`,
+              greenlist: true
+          });
+          const isHttps = requestContext.headers?.['x-forwarded-proto'] === 'https' || requestContext.rawReq?.secure || false;
+          response.cookie = {
+              name: 'pow_clearance',
+              value: bypassTicket,
+              options: {
+                  httpOnly: true, secure: isHttps || this.isProduction, sameSite: 'strict', maxAge: 86400 * 1000, path: '/'
+              }
+          };
+      }
       if (requestContext._newCookies) {
           const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
           if (deviceCookie) {
@@ -6498,6 +6646,13 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
             return { error: 'Missing signature' };
         }
 
+        const durationMs = 86400 * 30 * 1000;
+        const action = params.action || 'add';
+        if (action.toLowerCase() === 'remove') {
+            threatIntelCrdt.remove(zkpY, timestamp);
+        } else {
+            threatIntelCrdt.add(zkpY, timestamp, durationMs);
+        }
         const peersKey = `fed-peers:${zkpY}`;
         let reportedPeers = await store.get(peersKey) || [];
         if (!Array.isArray(reportedPeers)) {
@@ -6568,8 +6723,74 @@ export async function handleCooperativeRequest(params, clientIp = '127.0.0.1', c
         }
 
         const ttl = Math.min(604800, parseInt(ttlStr, 10) || 86400);
+        const crdtKey = `${entryType}:${trimmedEntry}`;
+        const action = params.action || 'add';
+        if (action.toLowerCase() === 'remove') {
+            whitelistCrdt.remove(crdtKey, timestamp);
+        } else {
+            whitelistCrdt.add(crdtKey, timestamp, ttl * 1000);
+        }
         await store.set(`federated-whitelist:${entryType}:${trimmedEntry}`, true, ttl);
         return { status: 'whitelist_synchronized', entry: trimmedEntry, entryType, ttl };
+    }
+
+
+    // --- Réconciliation anti-entropie via filtres de bloom compressés (>90% gain) ---
+    if (op === 'sync_threat_intel' || op === 'sync_whitelist') {
+        const isThreat = op === 'sync_threat_intel';
+        const targetSet = isThreat ? threatIntelCrdt : whitelistCrdt;
+        const now = Date.now();
+        targetSet.pruneExpired(now, 7 * 86400 * 1000);
+
+        const filterB64 = params.bloom_filter;
+        const bitSizeStr = params.bit_size;
+        const hashCountStr = params.hash_count;
+
+        if (filterB64 && bitSizeStr && hashCountStr) {
+            const bitSize = parseInt(bitSizeStr, 10);
+            const hashCount = parseInt(hashCountStr, 10);
+            const remoteFilter = BloomFilterSync.fromCompressedBase64(filterB64, bitSize, hashCount);
+            const delta = remoteFilter.computeMissingDelta(targetSet, now);
+
+            return {
+                status: 'delta_ready',
+                delta_count: delta.length,
+                delta
+            };
+        } else {
+            const items = targetSet.getActiveElements(now);
+            const localFilter = BloomFilterSync.create(Math.max(100, items.length * 2), 0.01);
+            for (const item of items) {
+                localFilter.put(item);
+            }
+            return {
+                status: 'bloom_filter_ready',
+                bloom_filter: localFilter.exportCompressedBase64(),
+                bit_size: localFilter.bitSize,
+                hash_count: localFilter.numHashFunctions,
+                element_count: targetSet.size
+            };
+        }
+    }
+
+    if (op === 'merge_threat_intel' || op === 'merge_whitelist') {
+        const isThreat = op === 'merge_threat_intel';
+        const targetSet = isThreat ? threatIntelCrdt : whitelistCrdt;
+        let delta = params.delta;
+        if (typeof delta === 'string') {
+            try {
+                delta = JSON.parse(delta);
+            } catch (e) {
+                delta = null;
+            }
+        }
+        if (Array.isArray(delta)) {
+            targetSet.mergeDelta(delta);
+            return {
+                status: 'merged',
+                total_elements: targetSet.size
+            };
+        }
     }
 
     const nodeId = params.node_id || '';
@@ -6737,6 +6958,7 @@ export async function broadcastWhitelistedEntry(entry, entryType = 'ip', ttl = 8
     }).toString('hex');
 
     const boundedTtl = Math.min(604800, parseInt(ttl, 10) || 86400);
+    whitelistCrdt.add(`${entryType}:${trimmedEntry}`, ts, boundedTtl * 1000);
 
     peers.forEach(peerUrl => {
         const url = `${peerUrl}?coop_op=share_whitelist`;
@@ -7594,6 +7816,7 @@ export const __internal = {
     parseStatelessTicket,
     parseJa3,
     getBotnetClusterScore, // NOUVEAU: Expose pour les tests
+    getGraphTopologyScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
     getClientHintsInconsistencyScore, // Expose for testing
     generateCombinedPoWChallengePage,
@@ -7621,6 +7844,8 @@ export const __internal = {
     registerCooperativeNode,
     findPeerInSubnet,
     handleCooperativeRequest,
+    threatIntelCrdt,
+    whitelistCrdt,
     broadcastBannedZkp,
     broadcastWhitelistedEntry,
     generateIssuerPemKeys,
@@ -8324,4 +8549,4 @@ export async function handleMetricsRequest(req, res, securityConfig) {
     res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
     res.send(MetricsManager.getPrometheusMetrics(securityConfig));
 }
-export { generateIssuerPemKeys };
+export { generateIssuerPemKeys, threatIntelCrdt, whitelistCrdt };

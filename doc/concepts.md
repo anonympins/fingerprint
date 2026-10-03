@@ -131,7 +131,10 @@ Each detected anomaly generates a partial score (from 0 to 100). The final score
 * **Role**: Detects residential proxy backconnect chains, VPN tunnels, and packet encapsulation.
 * **Mechanism**: Passively inspects TCP SYN options, specifically advertised Maximum Segment Size (MSS) and Don't Fragment (DF) flags, to reconstruct the effective Path MTU. When client requests advertise abnormal MTU sizes that deviate from standard physical Ethernet MTU (1500 bytes, typically MSS 1460) into values characteristic of GRE/WireGuard/OpenVPN or PPPoE tunnel encapsulations (e.g., 1420, 1380, or 1280 bytes), it flags residential proxy gateway hops and proxy tunnels masquerading as standard residential broadband connections.
 
----
+### 25. Graph topology score (`graphTopologyScore`)
+* **Role**: Detects coordinated "low & slow" distributed attacks and cross-subnet scraping collusion.
+* **Mechanism**: Models user navigation transitions as dynamic edges in a streaming session graph with continuous temporal decay. It evaluates the Shannon entropy of BGP subnet dispersion and structural cohesion across identical route kinematic transitions. When disparate sessions originating from multiple distinct subnets execute identical sequence transitions with high network entropy but low local velocity, an elevated anomaly score is applied to flag coordinated botnet clusters.
+
 
 ## Zero-friction bypasses (PAT & hardware attestation)
 

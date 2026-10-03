@@ -355,6 +355,7 @@ public class FingerprintEngine {
         map.put("renderingAnomalyScore", 0.8);
         map.put("ipReputationScore", 0.5);
         map.put("virtualizationScore", 0.8);
+        map.put("graphTopologyScore", 0.85);
         map.put("mtuAnomalyScore", 0.9);
         return map;
     }
@@ -522,7 +523,7 @@ public class FingerprintEngine {
             String[] keysToAmplify = {
                 "tlsSpoofingScore", "crossLayerInconsistencyScore",
                 "clientHintsInconsistencyScore", "behaviorScore",
-                "inconsistencyScore", "rotationScore"
+                "inconsistencyScore", "rotationScore", "graphTopologyScore"
             };
             for (String key : keysToAmplify) {
                 if (dynamicWeights.containsKey(key)) {
@@ -642,6 +643,30 @@ public class FingerprintEngine {
             vec.put("blocklisted", 1.0);
             res.put("vector", vec);
             return res;
+        }
+
+        // Validation de l'attestation matérielle cryptographique (DBSC / Play Integrity / App Attest)
+        String dbscJwt = context.getHeader("sec-session-response");
+        String deviceIdForDbsc = context.cookies.get("device_id");
+        if (dbscJwt != null && deviceIdForDbsc != null) {
+            Object sessionObj = store.get("dbsc-session:" + deviceIdForDbsc);
+            if (sessionObj instanceof Map) {
+                Map<String, Object> sessionRecord = (Map<String, Object>) sessionObj;
+                Map<String, Object> jwk = (Map<String, Object>) sessionRecord.get("jwk");
+                String origin = context.getHeader("origin") != null ? context.getHeader("origin") : context.getHeader("host");
+                String expectedNonce = (String) store.get("dbsc-nonce:" + deviceIdForDbsc);
+                if (HardwareAttestation.verifyDbscProof(dbscJwt, jwk, deviceIdForDbsc, origin, expectedNonce)) {
+                    store.delete("dbsc-nonce:" + deviceIdForDbsc);
+                    Map<String, Object> res = new HashMap<>();
+                    res.put("action", "next");
+                    res.put("score", 0.0);
+                    Map<String, Double> vec = new HashMap<>();
+                    vec.put("hardware_attestation_verified", 100.0);
+                    vec.put("hw_dbsc_tpm", 100.0);
+                    res.put("vector", vec);
+                    return res;
+                }
+            }
         }
 
         String coopOp = null;
@@ -772,6 +797,19 @@ public class FingerprintEngine {
         boolean isPathAllowed = isPathInAllowlist(context.path);
         boolean isUaAllowed = isUserAgentInAllowlist(context.getHeader("user-agent"));
         boolean whitelisted = isIpAllowed || isPathAllowed || isUaAllowed;
+        if (!whitelisted) {
+            String subnet = RequestUtils.getIpSubnet(context.clientIp, 24, 48);
+            String ua = context.getHeader("user-agent");
+            long now = System.currentTimeMillis();
+            if (ChallengeUtils.getWhitelistCrdt().contains("ip:" + context.clientIp, now) || (store != null && store.has("federated-whitelist:ip:" + context.clientIp))) {
+                whitelisted = true;
+            } else if (subnet != null && (ChallengeUtils.getWhitelistCrdt().contains("subnet:" + subnet, now) || (store != null && store.has("federated-whitelist:subnet:" + subnet)))) {
+                whitelisted = true;
+            } else if (ua != null && (ChallengeUtils.getWhitelistCrdt().contains("user_agent:" + ua, now) || (store != null && store.has("federated-whitelist:user_agent:" + ua)))) {
+                whitelisted = true;
+            }
+        }
+
         if (whitelisted) {
             Object filterWhitelistObj = config.get("filterWhitelist");
             boolean bypassWhitelist = false;
@@ -1077,6 +1115,7 @@ public class FingerprintEngine {
             reportTimestamp = now + clampedNoise;
         }
 
+        ChallengeUtils.getThreatIntelCrdt().add(zkpY, now, 86400L * 30L * 1000L);
         sendThreatReport(zkpY, reportTimestamp, peers);
 
         if (dpEnabled) {
@@ -1252,6 +1291,9 @@ public class FingerprintEngine {
         String stableFpHash = FingerprintBuilder.cyrb53(stableFp, 0);
         double botnetClusterScore = RequestUtils.getBotnetClusterScore(store, context, stableFpHash).getOrDefault("botnetClusterScore", 0.0);
 
+        Map<String, Double> graphTopology = RequestUtils.getGraphTopologyScore(store, context, deviceId, stableFpHash);
+        double graphTopologyScore = graphTopology.getOrDefault("graphTopologyScore", 0.0);
+
         double tcpAnomalyScore = RequestUtils.getTcpAnomalyScore(context).getOrDefault("tcpAnomalyScore", 0.0);
         double protocolAnomalyScore = RequestUtils.getProtocolAnomalyScore(context).getOrDefault("protocolAnomalyScore", 0.0);
         double renderingAnomalyScore = RequestUtils.getRenderingAnomalyScore(context).getOrDefault("renderingAnomalyScore", 0.0);
@@ -1284,6 +1326,7 @@ public class FingerprintEngine {
         suspicionVector.put("subnetScore", subnetScore);
         suspicionVector.put("botnetClusterScore", botnetClusterScore);
         suspicionVector.put("tcpAnomalyScore", tcpAnomalyScore);
+        suspicionVector.put("graphTopologyScore", graphTopologyScore);
         suspicionVector.put("protocolAnomalyScore", protocolAnomalyScore);
         suspicionVector.put("renderingAnomalyScore", renderingAnomalyScore);
         suspicionVector.put("ipReputationScore", ipReputationScore);

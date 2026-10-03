@@ -9,6 +9,8 @@ use Anonympins\Fingerprint\FingerprintBuilder;
 use Anonympins\Fingerprint\Utils\BigInt;
 use Anonympins\Fingerprint\Utils\RequestUtils;
 use Anonympins\Fingerprint\Utils\Env;
+use Anonympins\Fingerprint\Crdt\LwwElementSet;
+use Anonympins\Fingerprint\Crdt\BloomFilterSync;
 
 /**
  * Utility class for generating and verifying Proof-of-Work challenges.
@@ -17,6 +19,17 @@ class ChallengeUtils
 {
     /** @var array<string, float> Local cache of converted floats to avoid repeated pack/unpack system calls */
     private static array $froundCache = [];
+    private static ?LwwElementSet $threatIntelCrdt = null;
+    private static ?LwwElementSet $whitelistCrdt = null;
+
+    public static function getThreatIntelCrdt(): LwwElementSet
+    {
+        return self::$threatIntelCrdt ?? (self::$threatIntelCrdt = new LwwElementSet());
+    }
+    public static function getWhitelistCrdt(): LwwElementSet
+    {
+        return self::$whitelistCrdt ?? (self::$whitelistCrdt = new LwwElementSet());
+    }
 
     /**
      * Emulates JavaScript's Math.fround: rounds a float to the nearest 32-bit
@@ -296,6 +309,7 @@ class ChallengeUtils
                 }
             }
             $zkpY = $params['zkpY'] ?? '';
+            $action = $params['action'] ?? 'add';
             $headers = function_exists('getallheaders') ? array_change_key_case(getallheaders(), CASE_LOWER) : [];
             $sigEd25519 = $params['signature_ed25519'] ?? $headers['x-federation-signature-ed25519'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_SIGNATURE_ED25519', '');
             $sigHmac = $params['signature'] ?? $headers['x-federation-signature'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_SIGNATURE', '');
@@ -337,6 +351,14 @@ class ChallengeUtils
                 $store->set($peersKey, $reportedPeers, 86400 * 30);
             }
 
+            $crdt = self::getThreatIntelCrdt();
+            $durationMs = 86400 * 30 * 1000;
+            if ($action === 'remove') {
+                $crdt->remove($zkpY, $timestamp);
+            } else {
+                $crdt->add($zkpY, $timestamp, $durationMs);
+            }
+
             $threshold = $config['federationConsensusThreshold'] ?? 3;
             if (count($reportedPeers) >= $threshold) {
                 $store->set("banned-zkp-y:{$zkpY}", true, 86400 * 30);
@@ -361,6 +383,7 @@ class ChallengeUtils
 
             $entry = $params['entry'] ?? '';
             $entryType = $params['entry_type'] ?? 'ip';
+            $action = $params['action'] ?? 'add';
             $headers = function_exists('getallheaders') ? array_change_key_case(getallheaders(), CASE_LOWER) : [];
             $sigEd25519 = $params['signature_ed25519'] ?? $headers['x-federation-signature-ed25519'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_SIGNATURE_ED25519', '');
             $timestamp = (int)($params['timestamp'] ?? $headers['x-federation-timestamp'] ?? self::getSanitizedServerVar('HTTP_X_FEDERATION_TIMESTAMP', 0));
@@ -386,8 +409,65 @@ class ChallengeUtils
             }
 
             $boundedTtl = min(604800, max(60, $ttl));
+            $crdt = self::getWhitelistCrdt();
+            $crdtKey = "{$entryType}:{$cleanEntry}";
+            if ($action === 'remove') {
+                $crdt->remove($crdtKey, $timestamp);
+            } else {
+                $crdt->add($crdtKey, $timestamp, $boundedTtl * 1000);
+            }
+
             $store->set("federated-whitelist:{$entryType}:{$cleanEntry}", true, $boundedTtl);
             return ['status' => 'whitelist_synchronized', 'entry' => $cleanEntry, 'entryType' => $entryType, 'ttl' => $boundedTtl];
+        }
+
+        // --- RÉCONCILIATION ANTI-ENTROPIE PAR FILTRES DE BLOOM COMPRESSÉS ---
+        if ($op === 'sync_threat_intel' || $op === 'sync_whitelist') {
+            $isThreat = $op === 'sync_threat_intel';
+            $targetSet = $isThreat ? self::getThreatIntelCrdt() : self::getWhitelistCrdt();
+            $now = (int)(microtime(true) * 1000);
+            $targetSet->pruneExpired($now);
+
+            $filterB64 = $params['bloom_filter'] ?? null;
+            $bitSizeStr = $params['bit_size'] ?? null;
+            $hashCountStr = $params['hash_count'] ?? null;
+
+            if ($filterB64 && $bitSizeStr && $hashCountStr) {
+                $remoteFilter = BloomFilterSync::fromCompressedBase64($filterB64, (int)$bitSizeStr, (int)$hashCountStr);
+                $delta = $remoteFilter->computeMissingDelta($targetSet, $now);
+                return [
+                    'status' => 'delta_ready',
+                    'delta_count' => count($delta),
+                    'delta' => $delta
+                ];
+            } else {
+                $active = $targetSet->getActiveElements($now);
+                $localFilter = BloomFilterSync::create(max(100, count($active) * 2), 0.01);
+                foreach ($active as $item) {
+                    $localFilter->put($item);
+                }
+                return [
+                    'status' => 'bloom_filter_ready',
+                    'bloom_filter' => $localFilter->exportCompressedBase64(),
+                    'bit_size' => $localFilter->getBitSize(),
+                    'hash_count' => $localFilter->getNumHashFunctions(),
+                    'element_count' => $targetSet->count()
+                ];
+            }
+        }
+
+        if ($op === 'merge_threat_intel' || $op === 'merge_whitelist') {
+            $isThreat = $op === 'merge_threat_intel';
+            $targetSet = $isThreat ? self::getThreatIntelCrdt() : self::getWhitelistCrdt();
+            $delta = $params['delta'] ?? [];
+            if (is_string($delta)) {
+                $delta = json_decode($delta, true) ?: [];
+            }
+            if (is_array($delta)) {
+                $targetSet->mergeDelta($delta);
+                return ['status' => 'merged', 'total_elements' => $targetSet->count()];
+            }
+            return ['error' => 'Invalid delta payload'];
         }
 
         $nodeId = $params['node_id'] ?? '';

@@ -360,7 +360,8 @@ class OptimizationOperators:
                     "threatIntelScore": random.random(), "clientHintsInconsistencyScore": random.random(), "clickVarianceScore": random.random(),
                     "subnetScore": random.random(), "ipReputationScore": random.random(), "botnetClusterScore": random.random(),
                     "tcpAnomalyScore": random.random(), "protocolAnomalyScore": random.random(), "quicAnomalyScore": random.random(),
-                    "renderingAnomalyScore": random.random(), "virtualizationScore": random.random()
+                    "renderingAnomalyScore": random.random(), "virtualizationScore": random.random(),
+                    "mtuAnomalyScore": random.random(), "graphTopologyScore": random.random()
                 },
                 "patterns": {
                     "velocityThreshold": 100 + random.random() * 400, "burstThreshold": 300 + random.random() * 700,

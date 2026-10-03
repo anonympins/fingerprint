@@ -1745,3 +1745,20 @@ def test_sanitize_traffic_data_hardware_clustering():
     sanitized = sanitize_traffic_data(traffic_data)
     attacker_logs = [log for log in sanitized if log["deviceId"].startswith("attacker-dev-")]
     assert len(attacker_logs) <= 3
+
+@pytest.mark.asyncio
+async def test_streaming_graph_topology_score_detects_low_and_slow():
+    store = InMemoryStore()
+    transition_path = "/api/v1/products/item-492"
+
+    context1 = RequestContext(client_ip="198.51.100.12", path=transition_path, headers={}, query_params={}, cookies={})
+    res1 = await RequestUtils.get_graph_topology_score(store, context1, "sess-1", "fp-hash-1")
+    assert res1["graphTopologyScore"] == 0.0
+
+    score_data = None
+    for i in range(2, 8):
+        context = RequestContext(client_ip=f"203.0.11{i}.45", path=transition_path, headers={}, query_params={}, cookies={})
+        score_data = await RequestUtils.get_graph_topology_score(store, context, f"sess-{i}", f"fp-hash-{i}")
+
+    assert score_data is not None
+    assert score_data["graphTopologyScore"] > 50.0

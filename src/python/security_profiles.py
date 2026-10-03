@@ -41,6 +41,7 @@ class SecurityProfiles:
                 "quicAnomalyScore": 0.8,
                 "renderingAnomalyScore": 0.8,
                 "ipReputationScore": 0.5,
+                "graphTopologyScore": 0.85,
             },
             "thresholds": {"low": 20, "medium": 45, "high": 75, "block": 95},
             "patterns": {
@@ -91,6 +92,7 @@ class SecurityProfiles:
                 "tcpAnomalyScore": 1.0,
                 "quicAnomalyScore": 1.0,
                 "renderingAnomalyScore": 1.0,
+                "graphTopologyScore": 1.0,
             },
             "thresholds": {"low": 10, "medium": 35, "high": 65, "block": 90},
             "patterns": {
@@ -141,6 +143,7 @@ class SecurityProfiles:
                 "botnetClusterScore": 0.7,
                 "tcpAnomalyScore": 0.8,
                 "quicAnomalyScore": 0.8,
+                "graphTopologyScore": 0.9,
             },
             "thresholds": {"low": 25, "medium": 50, "high": 80, "block": 95},
             "patterns": {
@@ -193,6 +196,7 @@ class SecurityProfiles:
                 "tcpAnomalyScore": 0.5,
                 "quicAnomalyScore": 0.5,
                 "renderingAnomalyScore": 0.5,
+                "graphTopologyScore": 0.7,
             },
             "thresholds": {"low": 25, "medium": 55, "high": 80, "block": 95},
             "patterns": {

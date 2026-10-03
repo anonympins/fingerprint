@@ -51,6 +51,7 @@ from optimization import (
 from pat import PatValidator, PatUtils, PrivateAccessToken, PatValidationResult
 from client import FingerprintClient
 from security_profiles import SecurityProfiles
+from hardware_attestation import HardwareAttestationManager
 from key_manager import initialize_ed25519_keys as setup_ed25519_keys, generate_issuer_pem_keys
 
 __all__ = [
@@ -280,7 +281,8 @@ DEFAULT_WEIGHTS = {
     "renderingAnomalyScore": 0.8,
     "threatIntelScore": 1.0,
     "virtualizationScore": 0.8,
-    "mtuAnomalyScore": 0.9
+    "mtuAnomalyScore": 0.9,
+    "graphTopologyScore": 0.85
 }
 
 GREASE_VALUES = {
@@ -518,6 +520,7 @@ class FingerprintEngine:
         self.initialize_ed25519_keys(config)
         self.store = store if store is not None else InMemoryStore()
         self.config = config
+        self.hardware_attestation = HardwareAttestationManager(self.store, self.config)
         if not self.config.get("whitelist"):
             self.config["whitelist"] = default_whitelist()
         self.thresholds = config.get("thresholds", {"low": 20, "medium": 45, "high": 75, "block": 95})
@@ -1231,6 +1234,9 @@ class FingerprintEngine:
         ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
         subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id, self.config))["subnetScore"]
 
+        graph_topology = await RequestUtils.get_graph_topology_score(self.store, context, device_id, stable_hash_for_cluster)
+        graph_topology_score = graph_topology.get("graphTopologyScore", 0.0)
+
         tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
         tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
 
@@ -1273,6 +1279,7 @@ class FingerprintEngine:
             "quicAnomalyScore": quic_anomaly_score,
             "tcpAnomalyScore": tcp_anomaly_score,
             "renderingAnomalyScore": rendering_anomaly_score,
+            "graphTopologyScore": graph_topology_score,
             "virtualizationScore": virtualization_score,
             "mtuAnomalyScore": mtu_anomaly_score,
         })
@@ -1291,7 +1298,7 @@ class FingerprintEngine:
             keys_to_amplify = [
                 "tlsSpoofingScore", "crossLayerInconsistencyScore", 
                 "clientHintsInconsistencyScore", "behaviorScore",
-                "inconsistencyScore", "rotationScore"
+                "inconsistencyScore", "rotationScore", "graphTopologyScore"
             ]
             for key in keys_to_amplify:
                 if key in effective_weights:
@@ -1570,6 +1577,20 @@ class FingerprintEngine:
         if await self._check_allowlists(context):
              MetricsManager.increment_counter("requests_total", {"status": "passed"})
              return {"action": "next", "score": 0.0, "vector": {"whitelisted": 100.0}}
+
+        # Vérification d'attestation matérielle cryptographique (DBSC / Play Integrity / App Attest)
+        session_id = context.cookies.get("device_id") or context.headers.get("x-session-id") or ""
+        origin = context.headers.get("origin") or context.headers.get("host") or ""
+        hw_res = await self.hardware_attestation.process_hardware_attestation(
+            headers=context.headers,
+            session_id=session_id,
+            client_ip=context.client_ip,
+            origin=origin
+        )
+        if hw_res.is_verified:
+            MetricsManager.increment_counter("requests_total", {"status": "passed"})
+            vector = {"hardware_attestation_verified": 100.0, f"hw_{hw_res.attestation_type}": 100.0}
+            return {"action": "next", "score": 0.0, "vector": vector}
 
         identity = await self.resolve_identity(context)
         decision = await self._process_request_internal(context, identity)
@@ -2059,6 +2080,8 @@ if __name__ == "__main__":
                 "quicAnomalyScore": 0.8,
                 "renderingAnomalyScore": 0.8,
                 "virtualizationScore": 0.8,
+                "mtuAnomalyScore": 0.9,
+                "graphTopologyScore": 0.85,
             },
             "honeypot": {
                 "fields": ["email_confirm"],

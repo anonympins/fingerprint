@@ -548,6 +548,7 @@ class FingerprintEngine
         $dynamicWeights = $baseWeights;
         if (($suspicionVector['mtuAnomalyScore'] ?? 0.0) > 50.0) {
             $this->log('Tunnel detected, amplifying suspicion weights.', ['mtuScore' => $suspicionVector['mtuAnomalyScore']]);
+            $dynamicWeights['graphTopologyScore'] = ($baseWeights['graphTopologyScore'] ?? 0.85) * 1.3;
 
             // Increases the weight of low-level inconsistencies (hard to falsify)
             $dynamicWeights['tlsSpoofingScore'] = ($baseWeights['tlsSpoofingScore'] ?? 0.8) * 1.25;
@@ -1027,6 +1028,9 @@ class FingerprintEngine
         // Global fingerprint similarity score (Botnet Clustering)
         $stableFp = RequestUtils::extractStablePart($currentDeviceHash);
         $stableFpHash = FingerprintBuilder::cyrb53($stableFp);
+
+        // Graph Topological Session Stream scoring
+        $graphTopology = RequestUtils::getGraphTopologyScore($context, $deviceId, (string)$stableFpHash);
         $botnetCluster = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
 
         // NEW: IP subnet reputation score
@@ -1040,6 +1044,8 @@ class FingerprintEngine
 
         // Display rendering anomaly score (V-Sync)
         $renderingAnomaly = RequestUtils::getRenderingAnomalyScore($context);
+
+        $mtuAnomaly = RequestUtils::getMtuAnomalyScore($context);
 
         // Assembly of the final suspicion vector
         $suspicionVector = array_merge($suspicionVector, [
@@ -1060,9 +1066,13 @@ class FingerprintEngine
             'subnetScore' => $subnetScore['subnetScore'],
             'botnetClusterScore' => $botnetCluster['botnetClusterScore'],
             'tcpAnomalyScore' => $tcpAnomaly['tcpAnomalyScore'],
+            'graphTopologyScore' => $graphTopology['graphTopologyScore'],
             'protocolAnomalyScore' => $protocolAnomaly['protocolAnomalyScore'],
+            'http2AnomalyScore' => $protocolAnomaly['http2AnomalyScore'],
+            'quicAnomalyScore' => $protocolAnomaly['quicAnomalyScore'],
             'renderingAnomalyScore' => $renderingAnomaly['renderingAnomalyScore'],
-            'virtualizationScore' => $virtualizationScore
+            'virtualizationScore' => $virtualizationScore,
+            'mtuAnomalyScore' => $mtuAnomaly['mtuAnomalyScore']
         ]);
 
         // Save the updated device state in the store
@@ -1317,6 +1327,13 @@ class FingerprintEngine
             return $decision;
         }
 
+        // --- ATTESTATION MATÉRIELLE CRYPTOGRAPHIQUE SOUVERAINE (DBSC / Play Integrity) ---
+        $hwAttestation = HardwareAttestation::process($context, $deviceId, $store, $this->securityConfig);
+        $hasValidHwAttestation = !empty($hwAttestation['verified']);
+        if ($hasValidHwAttestation) {
+            $this->log('Hardware cryptographic attestation verified', ['type'=> $hwAttestation['type']]);
+        }
+
         // --- PRIVATE ACCESS TOKENS (PAT / RFC 9578 & Privacy Pass) ZERO-FRICTION CHALLENGE EXEMPTION ---
         $rawPatTokens = RequestUtils::extractPrivateAccessTokens($context);
         $hasValidPat = false;
@@ -1531,7 +1548,7 @@ class FingerprintEngine
         $deviceId = $context->cookies['device_id'] ?? '';
         $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
         $allowRoaming = $this->securityConfig['allowCrossNetworkRoaming'] ?? false;
-        if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie, $deviceId, $currentDeviceHash, $allowRoaming, $zkpProof) || $hasValidPat) {
+        if (ChallengeUtils::isTicketValid($context->clientIp, $powCookie, $deviceId, $currentDeviceHash, $allowRoaming, $zkpProof) || $hasValidPat || $hasValidHwAttestation) {
             $hasValidTicket = true;
             MetricsManager::incrementCounter('tickets_valid_total');
             // We do not return immediately to allow re-challenging.
@@ -1560,6 +1577,10 @@ class FingerprintEngine
         $suspicionVector = $context->preCalculatedVector ?? $this->getSuspicionVector($context, $suspicionVector);
         if ($hasValidPat) {
             $suspicionVector['pat_verified'] = 100.0;
+        }
+        if( $hasValidHwAttestation){
+            $suspicionVector['hardware_attestation_verified'] = 100;
+            $suspicionVector["hw_${$hwAttestation['type']}"] = 100;
         }
         $finalScore = $context->preCalculatedScore ?? $this->calculateFinalScore($suspicionVector);
         $this->log('Suspicion vector and final score calculated', [
@@ -1890,7 +1911,28 @@ class FingerprintEngine
                 $response = ['action' => 'next', 'score' => $finalScore, 'vector' => $suspicionVector, 'intendedAction' => 'next'];
             }
         }
-
+        if ($hasValidHwAttestation && $response['action'] === 'next') {
+            $greenlistTtl = 86400 * 1000;
+            $greenlistTicket = ChallengeUtils::generateStatelessTicket([
+                'expiry' => (int)floor(microtime(true) * 1000) + $greenlistTtl,
+                'originalIp' => $context->clientIp,
+                'deviceId' => $deviceId,
+                'deviceHash' => "hw:{$hwAttestation['type']}:{$deviceId}",
+                'greenlist' => true
+            ]);
+            $isHttps = !empty($context->isHttps);
+            $response['cookie'] = [
+                'name' => 'pow_clearance',
+                'value' => $greenlistTicket,
+                'options' => [
+                    'httponly' => true,
+                    'secure' => $isHttps,
+                    'samesite' => 'Strict',
+                    'expires' => time() + ($greenlistTtl / 1000),
+                    'path' => '/',
+                ]
+            ];
+        }
         // If a new identification cookie has been generated, add it to the response.
         if (isset($context->newCookieForResponse)) {
             $response['newCookieForResponse'] = $context->newCookieForResponse;

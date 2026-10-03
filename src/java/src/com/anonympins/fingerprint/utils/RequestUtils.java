@@ -24,6 +24,115 @@ public class RequestUtils {
     }
 
     @SuppressWarnings("unchecked")
+    public static Map<String, Double> getGraphTopologyScore(IStore store, RequestContext context, String deviceId, String stableFpHash) {
+        Map<String, Double> result = new HashMap<>();
+        String clientIp = context.clientIp;
+        if (clientIp == null || clientIp.isEmpty() || "127.0.0.1".equals(clientIp) || "::1".equals(clientIp) || "localhost".equalsIgnoreCase(clientIp)) {
+            result.put("graphTopologyScore", 0.0);
+            return result;
+        }
+
+        String subnet = getIpSubnet(clientIp, 24, 48);
+        if (subnet == null) subnet = clientIp;
+        String path = context.path != null && !context.path.isEmpty() ? context.path : "/";
+        long now = System.currentTimeMillis() / 1000L;
+
+        String sessionIdent = (deviceId != null && !deviceId.isEmpty()) ? deviceId :
+                ((stableFpHash != null && !stableFpHash.isEmpty()) ? stableFpHash : "anon");
+        String lastPathKey = "graph-prev-path:" + sessionIdent;
+        Object prevPathObj = store.get(lastPathKey);
+        String previousPath = prevPathObj instanceof String ? (String) prevPathObj : null;
+        store.set(lastPathKey, path, 3600);
+
+        String transitionEdge = previousPath != null ? (previousPath + "->" + path) : ("ROOT->" + path);
+        String transitionHash = Long.toHexString(FingerprintBuilder.cyrb53(transitionEdge, 0) != null ? Long.parseUnsignedLong(FingerprintBuilder.cyrb53(transitionEdge, 0)) : 0L);
+
+        String graphNodeKey = "graph-edge:" + transitionHash;
+        Object nodeObj = store.get(graphNodeKey);
+        Map<String, Object> graphNode;
+        if (nodeObj instanceof Map) {
+            graphNode = (Map<String, Object>) nodeObj;
+        } else {
+            graphNode = new HashMap<>();
+            graphNode.put("sessions", new HashMap<String, Double>());
+            graphNode.put("subnets", new HashMap<String, Double>());
+            graphNode.put("lastSeen", now);
+            graphNode.put("totalHits", 0.0);
+        }
+
+        long lastSeen = graphNode.get("lastSeen") instanceof Number ? ((Number) graphNode.get("lastSeen")).longValue() : now;
+        long elapsedSec = Math.max(0L, now - lastSeen);
+        double decayFactor = Math.exp(-0.0003 * elapsedSec);
+
+        double totalHits = (graphNode.get("totalHits") instanceof Number ? ((Number) graphNode.get("totalHits")).doubleValue() : 0.0) * decayFactor + 1.0;
+        graphNode.put("totalHits", totalHits);
+
+        Map<String, Double> subnets = (Map<String, Double>) graphNode.get("subnets");
+        if (subnets == null) {
+            subnets = new HashMap<>();
+            graphNode.put("subnets", subnets);
+        }
+        Map<String, Double> sessions = (Map<String, Double>) graphNode.get("sessions");
+        if (sessions == null) {
+            sessions = new HashMap<>();
+            graphNode.put("sessions", sessions);
+        }
+
+        double curSubnetHits = subnets.getOrDefault(subnet, 0.0) * decayFactor + 1.0;
+        subnets.put(subnet, curSubnetHits);
+
+        double curSessionHits = sessions.getOrDefault(sessionIdent, 0.0) * decayFactor + 1.0;
+        sessions.put(sessionIdent, curSessionHits);
+
+        graphNode.put("lastSeen", now);
+
+        subnets.entrySet().removeIf(e -> e.getValue() < 0.05);
+        sessions.entrySet().removeIf(e -> e.getValue() < 0.05);
+
+        store.set(graphNodeKey, graphNode, 3600);
+
+        int distinctSubnets = subnets.size();
+        int distinctSessions = sessions.size();
+
+        if (distinctSubnets <= 1 || totalHits < 4.0) {
+            result.put("graphTopologyScore", 0.0);
+            return result;
+        }
+
+        double subnetEntropy = 0.0;
+        double totalSubnetHits = 0.0;
+        for (double w : subnets.values()) {
+            totalSubnetHits += w;
+        }
+        if (totalSubnetHits > 0.0) {
+            for (double w : subnets.values()) {
+                double p = w / totalSubnetHits;
+                if (p > 0.0) {
+                    subnetEntropy -= p * (Math.log(p) / Math.log(2));
+                }
+            }
+        }
+
+        double maxExpectedEntropy = Math.log(Math.max(2, distinctSubnets)) / Math.log(2);
+        double normalizedEntropy = maxExpectedEntropy > 0.0 ? (subnetEntropy / maxExpectedEntropy) : 0.0;
+        double crossSubnetConvergence = Math.min(1.0, distinctSubnets / 8.0);
+
+        double score = 0.0;
+        if (distinctSubnets >= 3 && normalizedEntropy > 0.70) {
+            double coordinationFactor = (double) distinctSessions / Math.max(1, distinctSubnets);
+            double baseAnomaly = 45.0 * crossSubnetConvergence * normalizedEntropy;
+            double structuralCohesion = Math.min(50.0, totalHits * 2.5);
+            score = baseAnomaly + structuralCohesion;
+            if (coordinationFactor >= 0.8 && distinctSubnets >= 5) {
+                score += 25.0;
+            }
+        }
+
+        result.put("graphTopologyScore", Math.min(100.0, Math.round(score * 10.0) / 10.0));
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
     public static Map<String, Double> getBehavioralIndicators(RequestContext context, Map<String, Object> deviceData, NetworkProfile netProfile) {
         Map<String, Double> result = new HashMap<>();
         double historyScore = 0.0;
@@ -1837,7 +1946,8 @@ public class RequestUtils {
     public static Map<String, Double> getThreatIntelScore(IStore store, String zkpY) {
         Map<String, Double> result = new HashMap<>();
         result.put("threatIntelScore", 0.0);
-        if (zkpY != null && store.has("banned-zkp-y:" + zkpY)) {
+        long now = System.currentTimeMillis();
+        if (zkpY != null && (ChallengeUtils.getThreatIntelCrdt().contains(zkpY, now) || (store != null && store.has("banned-zkp-y:" + zkpY)))) {
             result.put("threatIntelScore", 100.0);
         }
         return result;

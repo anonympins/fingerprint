@@ -469,4 +469,33 @@ class RequestUtilsTest extends TestCase
             }
         }
     }
+
+    public function testStreamingGraphTopologyScoreDetectsLowAndSlowCollusion(): void
+    {
+        $transitionPath = '/api/v1/products/item-492';
+
+        // 1. Première requête isolée sur un sous-réseau résidentiel
+        $context1 = $this->createRequestContext([
+            'clientIp' => '198.51.100.12',
+            'path' => $transitionPath
+        ]);
+        $res1 = RequestUtils::getGraphTopologyScore($context1, 'sess-1', 'fp-hash-1');
+        $this->assertEquals(0.0, $res1['graphTopologyScore'], 'Une requête unique ne doit avoir aucun score de collusion.');
+
+        // 2. Simulation de 6 requêtes espacées provenant de 6 sous-réseaux IP et sessions différentes
+        // exécutant exactement la même transition topologique (attaque low & slow)
+        for ($i = 2; $i <= 7; $i++) {
+            $context = $this->createRequestContext([
+                'clientIp' => "203.0.11{$i}.45",
+                'path' => $transitionPath
+            ]);
+            $score = RequestUtils::getGraphTopologyScore($context, "sess-{$i}", "fp-hash-{$i}");
+        }
+
+        $this->assertGreaterThan(
+            50.0,
+            $score['graphTopologyScore'],
+            'La convergence de sessions hétérogènes sur un même chemin cinématique doit déclencher une forte anomalie topologique.'
+        );
+    }
 }

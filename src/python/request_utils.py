@@ -1382,6 +1382,80 @@ class RequestUtils:
         return {"botnetClusterScore": botnet_cluster_score}
 
     @staticmethod
+    async def get_graph_topology_score(store: Any, context: RequestContext, device_id: str, stable_fp_hash: str) -> Dict[str, float]:
+        client_ip = context.client_ip
+        if not client_ip or client_ip in ("127.0.0.1", "::1", "localhost"):
+            return {"graphTopologyScore": 0.0}
+
+        subnet = get_ip_subnet(client_ip) or client_ip
+        path = context.path or "/"
+        now = time.time()
+        decay_constant = 0.0003
+
+        session_ident = device_id or stable_fp_hash or "anon"
+        last_path_key = f"graph-prev-path:{session_ident}"
+        previous_path = await store.get(last_path_key)
+        await store.set(last_path_key, path, 3600)
+
+        transition_edge = f"{previous_path}->{path}" if (previous_path and isinstance(previous_path, str)) else f"ROOT->{path}"
+        transition_hash = hex(cyrb53(transition_edge))[2:]
+
+        graph_node_key = f"graph-edge:{transition_hash}"
+        graph_node = await store.get(graph_node_key)
+        if not isinstance(graph_node, dict):
+            graph_node = {
+                "sessions": {},
+                "subnets": {},
+                "lastSeen": now,
+                "totalHits": 0.0
+            }
+
+        elapsed_sec = max(0.0, now - float(graph_node.get("lastSeen", now)))
+        decay_factor = math.exp(-decay_constant * elapsed_sec)
+
+        graph_node["totalHits"] = (float(graph_node.get("totalHits", 0.0)) * decay_factor) + 1.0
+        subnets = graph_node.setdefault("subnets", {})
+        sessions = graph_node.setdefault("sessions", {})
+
+        subnets[subnet] = (float(subnets.get(subnet, 0.0)) * decay_factor) + 1.0
+        sessions[session_ident] = (float(sessions.get(session_ident, 0.0)) * decay_factor) + 1.0
+        graph_node["lastSeen"] = now
+
+        graph_node["subnets"] = {s: w for s, w in subnets.items() if w >= 0.05}
+        graph_node["sessions"] = {k: w for k, w in sessions.items() if w >= 0.05}
+
+        await store.set(graph_node_key, graph_node, 3600)
+
+        distinct_subnets = len(graph_node["subnets"])
+        distinct_sessions = len(graph_node["sessions"])
+
+        if distinct_subnets <= 1 or graph_node["totalHits"] < 4.0:
+            return {"graphTopologyScore": 0.0}
+
+        subnet_entropy = 0.0
+        total_subnet_hits = sum(graph_node["subnets"].values())
+        if total_subnet_hits > 0.0:
+            for w in graph_node["subnets"].values():
+                p = w / total_subnet_hits
+                if p > 0.0:
+                    subnet_entropy -= p * math.log2(p)
+
+        max_expected_entropy = math.log2(max(2, distinct_subnets))
+        normalized_entropy = (subnet_entropy / max_expected_entropy) if max_expected_entropy > 0.0 else 0.0
+        cross_subnet_convergence = min(1.0, distinct_subnets / 8.0)
+
+        score = 0.0
+        if distinct_subnets >= 3 and normalized_entropy > 0.70:
+            coordination_factor = distinct_sessions / max(1, distinct_subnets)
+            base_anomaly = 45.0 * cross_subnet_convergence * normalized_entropy
+            structural_cohesion = min(50.0, float(graph_node["totalHits"]) * 2.5)
+            score = base_anomaly + structural_cohesion
+            if coordination_factor >= 0.8 and distinct_subnets >= 5:
+                score += 25.0
+
+        return {"graphTopologyScore": min(100.0, round(score, 1))}
+
+    @staticmethod
     def get_mtu_anomaly_score(context: RequestContext) -> float:
         score = 0.0
         mss = None

@@ -345,6 +345,7 @@ public class FingerprintProperties {
         private double ipReputationScore = 0.5;
         private double virtualizationScore = 0.8;
         private double mtuAnomalyScore = 0.9;
+        private double graphTopologyScore = 0.85;
 
         public double getHistoryScore() { return historyScore; }
         public void setHistoryScore(double historyScore) { this.historyScore = historyScore; }
@@ -396,6 +397,9 @@ public class FingerprintProperties {
         public double getMtuAnomalyScore() { return mtuAnomalyScore; }
         public void setMtuAnomalyScore(double mtuAnomalyScore) { this.mtuAnomalyScore = mtuAnomalyScore; }
 
+        public double getGraphTopologyScore() { return graphTopologyScore; }
+        public void setGraphTopologyScore(double graphTopologyScore) { this.graphTopologyScore = graphTopologyScore; }
+
         public Map<String, Object> toMap() {
             Map<String, Object> map = new HashMap<>();
             map.put("historyScore", historyScore);
@@ -422,6 +426,7 @@ public class FingerprintProperties {
             map.put("ipReputationScore", ipReputationScore);
             map.put("virtualizationScore", virtualizationScore);
             map.put("mtuAnomalyScore", mtuAnomalyScore);
+            map.put("graphTopologyScore", graphTopologyScore);
             return map;
         }
     }

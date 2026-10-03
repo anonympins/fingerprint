@@ -3,6 +3,8 @@ package com.anonympins.fingerprint.utils;
 import com.anonympins.fingerprint.FingerprintBuilder;
 import com.anonympins.fingerprint.IStore;
 import com.anonympins.fingerprint.InMemoryStore;
+import com.anonympins.fingerprint.crdt.BloomFilterSync;
+import com.anonympins.fingerprint.crdt.LwwElementSet;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
@@ -22,6 +24,10 @@ import javax.crypto.spec.SecretKeySpec;
 public class ChallengeUtils {
 
     private static final String DEFAULT_FALLBACK_SECRET = "fallback-dev-secret-32-chars-minimum";
+    private static final LwwElementSet threatIntelCrdt = new LwwElementSet();
+    private static final LwwElementSet whitelistCrdt = new LwwElementSet();
+    public static LwwElementSet getThreatIntelCrdt() { return threatIntelCrdt; }
+    public static LwwElementSet getWhitelistCrdt() { return whitelistCrdt; }
     private static IStore store = new InMemoryStore();
 
     public static void setStore(IStore externalStore) {
@@ -823,6 +829,7 @@ public class ChallengeUtils {
             }
 
             String zkpY = params.getOrDefault("zkpY", "");
+            String action = params.getOrDefault("action", "add");
             String sigHmac = params.get("signature");
             String sigEd25519 = params.get("signature_ed25519");
             String timestampStr = params.get("timestamp");
@@ -885,6 +892,12 @@ public class ChallengeUtils {
                 return err;
             }
 
+            long durationMs = 86400L * 30L * 1000L;
+            if ("remove".equalsIgnoreCase(action)) {
+                threatIntelCrdt.remove(zkpY, timestamp);
+            } else {
+                threatIntelCrdt.add(zkpY, timestamp, durationMs);
+            }
             store.set("banned-zkp-y:" + zkpY, true, 86400 * 30);
             Map<String, Object> res = new HashMap<>();
             res.put("status", "synchronized");
@@ -927,11 +940,66 @@ public class ChallengeUtils {
             }
 
             int ttl = Math.min(604800, Integer.parseInt(ttlStr)); // Capped à 7 jours max
-            store.set("federated-whitelist:" + entryType + ":" + entry, true, ttl);
+            String crdtKey = entryType + ":" + entry;
+            String action = params.getOrDefault("action", "add");
+            if ("remove".equalsIgnoreCase(action)) {
+                whitelistCrdt.remove(crdtKey, timestamp);
+            } else {
+                whitelistCrdt.add(crdtKey, timestamp, ttl * 1000L);
+            }
+            store.set("federated-whitelist:" + crdtKey, true, ttl);
 
             Map<String, Object> res = new HashMap<>();
             res.put("status", "whitelist_synchronized");
             return res;
+        }
+
+        // --- RECONCILIATION ANTI-ENTROPIE VIA FILTRES DE BLOOM COMPRESSÉS (>90% GAIN) ---
+        if ("sync_threat_intel".equals(op) || "sync_whitelist".equals(op)) {
+            boolean isThreat = "sync_threat_intel".equals(op);
+            LwwElementSet targetSet = isThreat ? threatIntelCrdt : whitelistCrdt;
+            long now = System.currentTimeMillis();
+            targetSet.pruneExpiredTombstones(now, 86400000L * 7L);
+
+            String filterB64 = params.get("bloom_filter");
+            String bitSizeStr = params.get("bit_size");
+            String hashCountStr = params.get("hash_count");
+
+            if (filterB64 != null && bitSizeStr != null && hashCountStr != null) {
+                int bitSize = Integer.parseInt(bitSizeStr);
+                int hashCount = Integer.parseInt(hashCountStr);
+                BloomFilterSync remoteFilter = BloomFilterSync.fromCompressedBase64(filterB64, bitSize, hashCount);
+                List<Map<String, Object>> delta = remoteFilter.computeMissingDelta(targetSet, now);
+
+                Map<String, Object> syncRes = new HashMap<>();
+                syncRes.put("status", "delta_ready");
+                syncRes.put("delta_count", delta.size());
+                syncRes.put("delta", delta);
+                return syncRes;
+            } else {
+                BloomFilterSync localFilter = BloomFilterSync.createFromSet(targetSet, now);
+                Map<String, Object> filterMeta = new HashMap<>();
+                filterMeta.put("status", "bloom_filter_ready");
+                filterMeta.put("bloom_filter", localFilter.exportCompressedBase64());
+                filterMeta.put("bit_size", localFilter.getBitSize());
+                filterMeta.put("hash_count", localFilter.getNumHashFunctions());
+                filterMeta.put("element_count", targetSet.size());
+                return filterMeta;
+            }
+        }
+
+        if ("merge_threat_intel".equals(op) || "merge_whitelist".equals(op)) {
+            boolean isThreat = "merge_threat_intel".equals(op);
+            LwwElementSet targetSet = isThreat ? threatIntelCrdt : whitelistCrdt;
+            String deltaJson = params.get("delta");
+            if (deltaJson != null) {
+                List<Map<String, Object>> delta = simpleJsonParseList(deltaJson);
+                targetSet.mergeDelta(delta);
+                Map<String, Object> mergeRes = new HashMap<>();
+                mergeRes.put("status", "merged");
+                mergeRes.put("total_elements", targetSet.size());
+                return mergeRes;
+            }
         }
 
         String nodeId = params.getOrDefault("node_id", "");
@@ -1850,6 +1918,7 @@ public class ChallengeUtils {
         }
 
         int boundedTtl = Math.min(604800, Math.max(60, ttl));
+        whitelistCrdt.add(entryType + ":" + trimmed, now, boundedTtl * 1000L);
 
         for (String peerUrl : peers) {
             String targetUrl = peerUrl + (peerUrl.contains("?") ? "&" : "?") + "coop_op=share_whitelist";
