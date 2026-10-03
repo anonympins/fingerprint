@@ -797,6 +797,19 @@ public class FingerprintEngine {
         boolean isPathAllowed = isPathInAllowlist(context.path);
         boolean isUaAllowed = isUserAgentInAllowlist(context.getHeader("user-agent"));
         boolean whitelisted = isIpAllowed || isPathAllowed || isUaAllowed;
+        if (!whitelisted) {
+            String subnet = RequestUtils.getIpSubnet(context.clientIp, 24, 48);
+            String ua = context.getHeader("user-agent");
+            long now = System.currentTimeMillis();
+            if (ChallengeUtils.getWhitelistCrdt().contains("ip:" + context.clientIp, now) || (store != null && store.has("federated-whitelist:ip:" + context.clientIp))) {
+                whitelisted = true;
+            } else if (subnet != null && (ChallengeUtils.getWhitelistCrdt().contains("subnet:" + subnet, now) || (store != null && store.has("federated-whitelist:subnet:" + subnet)))) {
+                whitelisted = true;
+            } else if (ua != null && (ChallengeUtils.getWhitelistCrdt().contains("user_agent:" + ua, now) || (store != null && store.has("federated-whitelist:user_agent:" + ua)))) {
+                whitelisted = true;
+            }
+        }
+
         if (whitelisted) {
             Object filterWhitelistObj = config.get("filterWhitelist");
             boolean bypassWhitelist = false;
@@ -1102,6 +1115,7 @@ public class FingerprintEngine {
             reportTimestamp = now + clampedNoise;
         }
 
+        ChallengeUtils.getThreatIntelCrdt().add(zkpY, now, 86400L * 30L * 1000L);
         sendThreatReport(zkpY, reportTimestamp, peers);
 
         if (dpEnabled) {

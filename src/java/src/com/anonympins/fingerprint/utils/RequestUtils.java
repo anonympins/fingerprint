@@ -1946,7 +1946,8 @@ public class RequestUtils {
     public static Map<String, Double> getThreatIntelScore(IStore store, String zkpY) {
         Map<String, Double> result = new HashMap<>();
         result.put("threatIntelScore", 0.0);
-        if (zkpY != null && store.has("banned-zkp-y:" + zkpY)) {
+        long now = System.currentTimeMillis();
+        if (zkpY != null && (ChallengeUtils.getThreatIntelCrdt().contains(zkpY, now) || (store != null && store.has("banned-zkp-y:" + zkpY)))) {
             result.put("threatIntelScore", 100.0);
         }
         return result;

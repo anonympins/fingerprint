@@ -14,8 +14,12 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
 
+from crdt import LwwElementSet, BloomFilterSync
 from utils import get_ip_subnet, is_loopback_ip
 from builder import cyrb53, imul
+
+threat_intel_crdt = LwwElementSet()
+whitelist_crdt = LwwElementSet()
 
 
 class ChallengeUtils:
@@ -183,6 +187,7 @@ class ChallengeUtils:
 
         if op == "share_threat_intel":
             zkp_y = params.get("zkpY") or ""
+            action = params.get("action", "add")
             hdrs = headers or {}
             sig_ed25519 = params.get("signature_ed25519") or hdrs.get("x-federation-signature-ed25519") or ""
             signature = params.get("signature") or hdrs.get("x-federation-signature") or ""
@@ -212,6 +217,12 @@ class ChallengeUtils:
             if not verified:
                 return {"error": "Invalid federation signature"}
 
+            duration_ms = 86400 * 30 * 1000
+            if action == "remove":
+                threat_intel_crdt.remove(zkp_y, timestamp)
+            else:
+                threat_intel_crdt.add(zkp_y, timestamp, duration_ms)
+
             # Ban the ZKP public key for 30 days
             await store.set(f"banned-zkp-y:{zkp_y}", True, 86400 * 30)
             return {"status": "synchronized"}
@@ -219,6 +230,7 @@ class ChallengeUtils:
         if op == "share_whitelist":
             entry = params.get("entry")
             entry_type = params.get("entry_type", "ip")
+            action = params.get("action", "add")
             hdrs = headers or {}
             sig_ed25519 = params.get("signature_ed25519") or hdrs.get("x-federation-signature-ed25519") or ""
             timestamp_str = params.get("timestamp") or hdrs.get("x-federation-timestamp") or ""
@@ -249,8 +261,58 @@ class ChallengeUtils:
             except ValueError:
                 ttl = 86400
 
+            crdt_key = f"{entry_type}:{clean_entry}"
+            if action == "remove":
+                whitelist_crdt.remove(crdt_key, timestamp)
+            else:
+                whitelist_crdt.add(crdt_key, timestamp, ttl * 1000)
+
             await store.set(f"federated-whitelist:{entry_type}:{clean_entry}", True, ttl)
             return {"status": "whitelist_synchronized"}
+
+        # --- RECONCILIATION ANTI-ENTROPIE PAR FILTRES DE BLOOM COMPRESSÉS ---
+        if op in ("sync_threat_intel", "sync_whitelist"):
+            is_threat = op == "sync_threat_intel"
+            target_set = threat_intel_crdt if is_threat else whitelist_crdt
+            now_ms = int(time.time() * 1000)
+            target_set.prune_expired(now_ms)
+
+            filter_b64 = params.get("bloom_filter")
+            bit_size = params.get("bit_size")
+            hash_count = params.get("hash_count")
+
+            if filter_b64 and bit_size and hash_count:
+                remote_filter = BloomFilterSync.from_compressed_base64(
+                    filter_b64, int(bit_size), int(hash_count)
+                )
+                delta = remote_filter.compute_missing_delta(target_set, now_ms)
+                return {
+                    "status": "delta_ready",
+                    "delta_count": len(delta),
+                    "delta": delta
+                }
+            else:
+                active = target_set.get_active_elements(now_ms)
+                local_filter = BloomFilterSync.create(max(100, len(active) * 2), 0.01)
+                for item in active:
+                    local_filter.put(item)
+                return {
+                    "status": "bloom_filter_ready",
+                    "bloom_filter": local_filter.export_compressed_base64(),
+                    "bit_size": local_filter.bit_size,
+                    "hash_count": local_filter.num_hash_functions,
+                    "element_count": len(target_set)
+                }
+
+        if op in ("merge_threat_intel", "merge_whitelist"):
+            is_threat = op == "merge_threat_intel"
+            target_set = threat_intel_crdt if is_threat else whitelist_crdt
+            delta = params.get("delta")
+            if isinstance(delta, str):
+                delta = json.loads(delta)
+            if isinstance(delta, list):
+                target_set.merge_delta(delta)
+                return {"status": "merged", "total_elements": len(target_set)}
 
         node_id = params.get("node_id") or ""
         if not node_id:
