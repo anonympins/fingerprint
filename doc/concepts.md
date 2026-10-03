@@ -18,7 +18,7 @@ Each detected anomaly generates a partial score (from 0 to 100). The final score
 
 ---
 
-## The 24 suspicion vectors explained
+## The 25 suspicion vectors explained
 
 ### 1. History score (`historyScore`)
 * **Role**: Detect IP rotation (rotating residential proxies, botnets).
