@@ -548,6 +548,7 @@ class FingerprintEngine
         $dynamicWeights = $baseWeights;
         if (($suspicionVector['mtuAnomalyScore'] ?? 0.0) > 50.0) {
             $this->log('Tunnel detected, amplifying suspicion weights.', ['mtuScore' => $suspicionVector['mtuAnomalyScore']]);
+            $dynamicWeights['graphTopologyScore'] = ($baseWeights['graphTopologyScore'] ?? 0.85) * 1.3;
 
             // Increases the weight of low-level inconsistencies (hard to falsify)
             $dynamicWeights['tlsSpoofingScore'] = ($baseWeights['tlsSpoofingScore'] ?? 0.8) * 1.25;
@@ -1027,6 +1028,9 @@ class FingerprintEngine
         // Global fingerprint similarity score (Botnet Clustering)
         $stableFp = RequestUtils::extractStablePart($currentDeviceHash);
         $stableFpHash = FingerprintBuilder::cyrb53($stableFp);
+
+        // Graph Topological Session Stream scoring
+        $graphTopology = RequestUtils::getGraphTopologyScore($context, $deviceId, (string)$stableFpHash);
         $botnetCluster = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
 
         // NEW: IP subnet reputation score
@@ -1060,6 +1064,7 @@ class FingerprintEngine
             'subnetScore' => $subnetScore['subnetScore'],
             'botnetClusterScore' => $botnetCluster['botnetClusterScore'],
             'tcpAnomalyScore' => $tcpAnomaly['tcpAnomalyScore'],
+            'graphTopologyScore' => $graphTopology['graphTopologyScore'],
             'protocolAnomalyScore' => $protocolAnomaly['protocolAnomalyScore'],
             'renderingAnomalyScore' => $renderingAnomaly['renderingAnomalyScore'],
             'virtualizationScore' => $virtualizationScore

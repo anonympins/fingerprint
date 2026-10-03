@@ -868,6 +868,7 @@ const securityProfiles = {
             tcpAnomalyScore: 0.8,
             quicAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie QUIC
             renderingAnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie de rendu
+            graphTopologyScore: 0.85, // NOUVEAU: Score topologique de graphe de session en streaming
             http2AnomalyScore: 0.8, // NOUVEAU: Poids pour l'anomalie HTTP/2
             threatIntelScore: 1.0, // NOUVEAU: Poids pour le réseau de Threat Intelligence Fédéré
             virtualizationScore: 0.8,
@@ -918,6 +919,7 @@ const securityProfiles = {
             tcpAnomalyScore: 1.0,
             quicAnomalyScore: 1.0,
             renderingAnomalyScore: 1.0,
+            graphTopologyScore: 1.0,
             http2AnomalyScore: 1.0,
             threatIntelScore: 1.0,
             mtuAnomalyScore: 0.9,
@@ -969,6 +971,7 @@ const securityProfiles = {
             tcpAnomalyScore: 0.8,
             quicAnomalyScore: 0.8,
             http2AnomalyScore: 0.8,
+            graphTopologyScore: 0.9,
             renderingAnomalyScore: 0.2,
             threatIntelScore: 0.6,
             virtualizationScore: 0.8,
@@ -1022,6 +1025,7 @@ const securityProfiles = {
             quicAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie QUIC
             http2AnomalyScore: 0.5,
             renderingAnomalyScore: 0.5, // NOUVEAU: Poids pour l'anomalie de rendu
+            graphTopologyScore: 0.7,
             mtuAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
@@ -1071,6 +1075,7 @@ const securityProfiles = {
             quicAnomalyScore: 0.9, // NOUVEAU: Poids pour l'anomalie QUIC
             http2AnomalyScore: 0.9,
             renderingAnomalyScore: 0.9,
+            graphTopologyScore: 1.0,
             mtuAnomalyScore: 0.9,
             virtualizationScore: 0.8,
         },
@@ -3629,6 +3634,109 @@ async function getBotnetClusterScore(context, stableFpHash) {
 }
 
 /**
+ * Évalue la cohérence topologique du flux applicatif via un graphe de sessions en streaming (Streaming GNN).
+ * Relie les sous-réseaux BGP, les transitions de routes applicatives et les cinématiques temporelles
+ * pour détecter les attaques distribuées "low & slow".
+ * @param {object} context Contexte de la requête.
+ * @param {string} deviceId Identifiant de session ou cookie.
+ * @param {string} stableFpHash Empreinte stable du terminal.
+ * @returns {Promise<{graphTopologyScore: number}>}
+ */
+async function getGraphTopologyScore(context, deviceId, stableFpHash) {
+    const clientIp = context.clientIp;
+    if (!clientIp || isLoopbackIp(clientIp)) {
+        return { graphTopologyScore: 0.0 };
+    }
+
+    const subnet = getIpSubnet(clientIp) || clientIp;
+    const path = context.path || '/';
+    const now = Date.now();
+    const timeWindowMs = 3600 * 1000; // Fenêtre d'agrégation glissante de 60 minutes
+    const decayConstant = 0.0003; // Facteur d'amortissement temporel continu
+
+    // 1. Clé de transition cinématique (Edge topologique)
+    const lastPathKey = `graph-prev-path:${deviceId || stableFpHash}`;
+    const previousPath = (await store.get(lastPathKey)) || null;
+    await store.set(lastPathKey, path, 3600);
+
+    const transitionEdge = previousPath ? `${previousPath}->${path}` : `ROOT->${path}`;
+    const transitionHash = cyrb53(transitionEdge).toString(16);
+
+    // 2. Mise à jour de la topologie de graphe partagée pour ce motif de navigation
+    const graphNodeKey = `graph-edge:${transitionHash}`;
+    let graphNode = (await store.get(graphNodeKey)) || {
+        sessions: {},
+        subnets: {},
+        firstSeen: now,
+        lastSeen: now,
+        totalHits: 0
+    };
+
+    // Amortissement des poids existants
+    const elapsed = Math.max(0, now - graphNode.lastSeen);
+    const timeDecayFactor = Math.exp(-decayConstant * (elapsed / 1000));
+
+    graphNode.totalHits = (graphNode.totalHits * timeDecayFactor) + 1;
+    graphNode.subnets[subnet] = ((graphNode.subnets[subnet] || 0) * timeDecayFactor) + 1;
+    const sessionKey = deviceId || stableFpHash || 'anon';
+    graphNode.sessions[sessionKey] = ((graphNode.sessions[sessionKey] || 0) * timeDecayFactor) + 1;
+    graphNode.lastSeen = now;
+
+    // Purge des nœuds inactifs du sous-graphe
+    for (const s of Object.keys(graphNode.subnets)) {
+        if (graphNode.subnets[s] < 0.05) delete graphNode.subnets[s];
+    }
+    for (const k of Object.keys(graphNode.sessions)) {
+        if (graphNode.sessions[k] < 0.05) delete graphNode.sessions[k];
+    }
+
+    await store.set(graphNodeKey, graphNode, 3600);
+
+    // 3. Message passing local : calcul du ratio de centralité et dispersion topologique
+    const distinctSubnets = Object.keys(graphNode.subnets).length;
+    const distinctSessions = Object.keys(graphNode.sessions).length;
+
+    if (distinctSubnets <= 1 || graphNode.totalHits < 4) {
+        return { graphTopologyScore: 0.0 };
+    }
+
+    // Distribution d'entropie de dispersion des sous-réseaux BGP pour cette même transition
+    let subnetEntropy = 0.0;
+    const subnetHitValues = Object.values(graphNode.subnets);
+    const sumHits = subnetHitValues.reduce((a, b) => a + b, 0);
+    for (const count of subnetHitValues) {
+        const p = count / sumHits;
+        if (p > 0) {
+            subnetEntropy -= p * Math.log2(p);
+        }
+    }
+
+    // 4. Modélisation de l'anomalie Low & Slow :
+    // Si de nombreuses sessions et sous-réseaux IP distincts exécutent la même séquence
+    // cinématique avec une entropie de réseau élevée mais une faible vélocité locale
+    const maxExpectedEntropy = Math.log2(Math.max(2, distinctSubnets));
+    const normalizedEntropy = maxExpectedEntropy > 0 ? (subnetEntropy / maxExpectedEntropy) : 0.0;
+    const crossSubnetConvergence = Math.min(1.0, distinctSubnets / 8.0);
+
+    let graphScore = 0.0;
+    if (distinctSubnets >= 3 && normalizedEntropy > 0.70) {
+        // Convergence anormale de multiples pools d'IP vers un chemin cinématique synchrone
+        const coordinationFactor = (distinctSessions / Math.max(1, distinctSubnets));
+        const baseAnomaly = 45.0 * crossSubnetConvergence * normalizedEntropy;
+        const structuralCohesionBoost = Math.min(50.0, graphNode.totalHits * 2.5);
+
+        graphScore = baseAnomaly + structuralCohesionBoost;
+        if (coordinationFactor >= 0.8 && distinctSubnets >= 5) {
+            graphScore += 25.0; // Collusion inter-réseaux à haute certitude
+        }
+    }
+
+    return {
+        graphTopologyScore: Math.min(100.0, Math.round(graphScore * 10) / 10)
+    };
+}
+
+/**
  * Retrieves the current local IP reputation score, applying time-based decay.
  * @param {string} ip - The client's IP address.
  * @returns {Promise<number>} The reputation score (0 to 100).
@@ -4228,6 +4336,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         getSubnetScore(context, deviceId, securityConfig),
         getIpReputationScore(clientIp),
         getBotnetClusterScore(context, stableFpHash),
+        getGraphTopologyScore(context, deviceId, stableFpHash),
         store.set(`ip-device:${clientIp}`, deviceId, 600) // Link the IP to the device for 10 minutes
       ]);
 
@@ -4259,6 +4368,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
       // NOUVEAU: On calcule le score d'incohérence des Client-Hints.
       const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
+      const { graphTopologyScore } = await getGraphTopologyScore(context, deviceId, stableFpHash);
 
       const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 
@@ -4278,7 +4388,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
       deviceData.ips = new Set(deviceData.ips);
   }
     // Le vecteur de suspicion est maintenant complet.
-    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore, mtuAnomalyScore };
+    return { ...behavioral, headerAnomalyScore, inconsistencyScore, behaviorScore, honeypotScore, botScore, requestPatternScore, crossLayerInconsistencyScore, timeInconsistencyScore, tlsSpoofingScore, clickVarianceScore, clientHintsInconsistencyScore, subnetScore, ipReputationScore, botnetClusterScore, tcpAnomalyScore, protocolAnomalyScore, http2AnomalyScore, quicAnomalyScore, renderingAnomalyScore, threatIntelScore, virtualizationScore, mtuAnomalyScore, graphTopologyScore };
 };
 
 // A residential user can change networks (home, 4G, public wifi).
@@ -4323,6 +4433,7 @@ export const identifyRequest = (securityConfig) => async (req, res) => {
       quicAnomalyScore: 0.8,
       renderingAnomalyScore: 0.8,
       http2AnomalyScore: 0.8,
+      graphTopologyScore: 0.85,
       threatIntelScore: 1.0,
       virtualizationScore: 0.8
     },
@@ -7627,6 +7738,7 @@ export const __internal = {
     parseStatelessTicket,
     parseJa3,
     getBotnetClusterScore, // NOUVEAU: Expose pour les tests
+    getGraphTopologyScore, // NOUVEAU: Expose pour les tests
     generateCpuTargetChallengePage,
     getClientHintsInconsistencyScore, // Expose for testing
     generateCombinedPoWChallengePage,

@@ -355,6 +355,7 @@ public class FingerprintEngine {
         map.put("renderingAnomalyScore", 0.8);
         map.put("ipReputationScore", 0.5);
         map.put("virtualizationScore", 0.8);
+        map.put("graphTopologyScore", 0.85);
         map.put("mtuAnomalyScore", 0.9);
         return map;
     }
@@ -522,7 +523,7 @@ public class FingerprintEngine {
             String[] keysToAmplify = {
                 "tlsSpoofingScore", "crossLayerInconsistencyScore",
                 "clientHintsInconsistencyScore", "behaviorScore",
-                "inconsistencyScore", "rotationScore"
+                "inconsistencyScore", "rotationScore", "graphTopologyScore"
             };
             for (String key : keysToAmplify) {
                 if (dynamicWeights.containsKey(key)) {
@@ -1276,6 +1277,9 @@ public class FingerprintEngine {
         String stableFpHash = FingerprintBuilder.cyrb53(stableFp, 0);
         double botnetClusterScore = RequestUtils.getBotnetClusterScore(store, context, stableFpHash).getOrDefault("botnetClusterScore", 0.0);
 
+        Map<String, Double> graphTopology = RequestUtils.getGraphTopologyScore(store, context, deviceId, stableFpHash);
+        double graphTopologyScore = graphTopology.getOrDefault("graphTopologyScore", 0.0);
+
         double tcpAnomalyScore = RequestUtils.getTcpAnomalyScore(context).getOrDefault("tcpAnomalyScore", 0.0);
         double protocolAnomalyScore = RequestUtils.getProtocolAnomalyScore(context).getOrDefault("protocolAnomalyScore", 0.0);
         double renderingAnomalyScore = RequestUtils.getRenderingAnomalyScore(context).getOrDefault("renderingAnomalyScore", 0.0);
@@ -1308,6 +1312,7 @@ public class FingerprintEngine {
         suspicionVector.put("subnetScore", subnetScore);
         suspicionVector.put("botnetClusterScore", botnetClusterScore);
         suspicionVector.put("tcpAnomalyScore", tcpAnomalyScore);
+        suspicionVector.put("graphTopologyScore", graphTopologyScore);
         suspicionVector.put("protocolAnomalyScore", protocolAnomalyScore);
         suspicionVector.put("renderingAnomalyScore", renderingAnomalyScore);
         suspicionVector.put("ipReputationScore", ipReputationScore);

@@ -281,7 +281,8 @@ DEFAULT_WEIGHTS = {
     "renderingAnomalyScore": 0.8,
     "threatIntelScore": 1.0,
     "virtualizationScore": 0.8,
-    "mtuAnomalyScore": 0.9
+    "mtuAnomalyScore": 0.9,
+    "graphTopologyScore": 0.85
 }
 
 GREASE_VALUES = {
@@ -1233,6 +1234,9 @@ class FingerprintEngine:
         ip_reputation_score = await RequestUtils.get_ip_reputation_score(self.store, context.client_ip)
         subnet_score = (await RequestUtils.get_subnet_score(self.store, context.client_ip, device_id, self.config))["subnetScore"]
 
+        graph_topology = await RequestUtils.get_graph_topology_score(self.store, context, device_id, stable_hash_for_cluster)
+        graph_topology_score = graph_topology.get("graphTopologyScore", 0.0)
+
         tcp_anomaly = RequestUtils.get_tcp_anomaly_score(context)
         tcp_anomaly_score = tcp_anomaly.get("tcpAnomalyScore", 0.0)
 
@@ -1275,6 +1279,7 @@ class FingerprintEngine:
             "quicAnomalyScore": quic_anomaly_score,
             "tcpAnomalyScore": tcp_anomaly_score,
             "renderingAnomalyScore": rendering_anomaly_score,
+            "graphTopologyScore": graph_topology_score,
             "virtualizationScore": virtualization_score,
             "mtuAnomalyScore": mtu_anomaly_score,
         })
@@ -1293,7 +1298,7 @@ class FingerprintEngine:
             keys_to_amplify = [
                 "tlsSpoofingScore", "crossLayerInconsistencyScore", 
                 "clientHintsInconsistencyScore", "behaviorScore",
-                "inconsistencyScore", "rotationScore"
+                "inconsistencyScore", "rotationScore", "graphTopologyScore"
             ]
             for key in keys_to_amplify:
                 if key in effective_weights:

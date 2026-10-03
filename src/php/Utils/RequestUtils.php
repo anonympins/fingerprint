@@ -1862,6 +1862,102 @@ class RequestUtils
     }
 
     /**
+     * Évalue la corrélation topologique en streaming (Streaming Session Graph Neural Network)
+     * reliant les sessions, préfixes BGP et cinématiques de parcours pour contrer les scrapers "low & slow".
+     *
+     * @param RequestContext $context
+     * @param string $deviceId
+     * @param string $stableFpHash
+     * @return array{'graphTopologyScore': float}
+     */
+    public static function getGraphTopologyScore(RequestContext $context, string $deviceId, string $stableFpHash): array
+    {
+        $clientIp = $context->clientIp;
+        if (empty($clientIp) || filter_var($clientIp, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false) {
+            return ['graphTopologyScore' => 0.0];
+        }
+
+        $subnet = self::getIpSubnet($clientIp) ?? $clientIp;
+        $path = !empty($context->path) ? $context->path : '/';
+        $now = time();
+        $store = StoreManager::getStore();
+
+        // 1. Suivi cinématique de la transition de route
+        $sessionIdent = !empty($deviceId) ? $deviceId : (!empty($stableFpHash) ? $stableFpHash : 'anon');
+        $lastPathKey = "graph-prev-path:{$sessionIdent}";
+        $previousPath = $store->get($lastPathKey);
+        $store->set($lastPathKey, $path, 3600);
+
+        $transitionEdge = ($previousPath !== null && is_string($previousPath)) ? "{$previousPath}->{$path}" : "ROOT->{$path}";
+        $transitionHash = dechex(self::cyrb53($transitionEdge));
+
+        // 2. Récupération et amortissement temporel de l'état du sous-graphe
+        $graphNodeKey = "graph-edge:{$transitionHash}";
+        $graphNode = $store->get($graphNodeKey);
+        if (!is_array($graphNode)) {
+            $graphNode = [
+                'sessions' => [],
+                'subnets' => [],
+                'lastSeen' => $now,
+                'totalHits' => 0.0
+            ];
+        }
+
+        $elapsedSec = max(0, $now - ($graphNode['lastSeen'] ?? $now));
+        $decayFactor = exp(-0.0003 * $elapsedSec); // Demi-vie ~40 minutes
+
+        $graphNode['totalHits'] = ((float)($graphNode['totalHits'] ?? 0.0) * $decayFactor) + 1.0;
+        $graphNode['subnets'][$subnet] = ((float)($graphNode['subnets'][$subnet] ?? 0.0) * $decayFactor) + 1.0;
+        $graphNode['sessions'][$sessionIdent] = ((float)($graphNode['sessions'][$sessionIdent] ?? 0.0) * $decayFactor) + 1.0;
+        $graphNode['lastSeen'] = $now;
+
+        // Élagage des arêtes affaiblies
+        foreach ($graphNode['subnets'] as $s => $w) {
+            if ($w < 0.05) unset($graphNode['subnets'][$s]);
+        }
+        foreach ($graphNode['sessions'] as $s => $w) {
+            if ($w < 0.05) unset($graphNode['sessions'][$s]);
+        }
+        $store->set($graphNodeKey, $graphNode, 3600);
+
+        $distinctSubnets = count($graphNode['subnets']);
+        $distinctSessions = count($graphNode['sessions']);
+
+        if ($distinctSubnets <= 1 || $graphNode['totalHits'] < 4.0) {
+            return ['graphTopologyScore' => 0.0];
+        }
+
+        // 3. Calcul de l'entropie de Shannon de dispersion BGP sur cette transition cinématique
+        $subnetEntropy = 0.0;
+        $totalSubnetHits = array_sum($graphNode['subnets']);
+        if ($totalSubnetHits > 0) {
+            foreach ($graphNode['subnets'] as $w) {
+                $p = $w / $totalSubnetHits;
+                if ($p > 0) {
+                    $subnetEntropy -= $p * log($p, 2);
+                }
+            }
+        }
+
+        $maxExpectedEntropy = log(max(2, $distinctSubnets), 2);
+        $normalizedEntropy = $maxExpectedEntropy > 0 ? ($subnetEntropy / $maxExpectedEntropy) : 0.0;
+        $crossSubnetConvergence = min(1.0, $distinctSubnets / 8.0);
+
+        $score = 0.0;
+        if ($distinctSubnets >= 3 && $normalizedEntropy > 0.70) {
+            $coordinationFactor = $distinctSessions / max(1, $distinctSubnets);
+            $baseAnomaly = 45.0 * $crossSubnetConvergence * $normalizedEntropy;
+            $structuralCohesion = min(50.0, (float)$graphNode['totalHits'] * 2.5);
+            $score = $baseAnomaly + $structuralCohesion;
+            if ($coordinationFactor >= 0.8 && $distinctSubnets >= 5) {
+                $score += 25.0;
+            }
+        }
+
+        return ['graphTopologyScore' => min(100.0, round($score, 1))];
+    }
+
+    /**
      * Calcule le score de réputation d'une IP en appliquant la décroissance temporelle.
      */
     public static function getIpReputationScore(string $ip): float
@@ -2634,22 +2730,29 @@ class RequestUtils
 
     private static function imul(int $a, int $b): int
     {
-        return ($a * $b) & 0xffffffff;
+        $ah = ($a >> 16) & 0xffff;
+        $al = $a & 0xffff;
+        $bh = ($b >> 16) & 0xffff;
+        $bl = $b & 0xffff;
+        $lo = $al * $bl;
+        $hi = (($lo >> 16) + ($al * $bh) + ($ah * $bl)) & 0xffff;
+        return (($hi << 16) | ($lo & 0xffff)) | 0;
     }
 
     public static function cyrb53(string $str, int $seed = 0): int
     {
         $h1 = (0xdeadbeef ^ $seed) & 0xffffffff;
         $h2 = (0x41c6ce57 ^ $seed) & 0xffffffff;
-        for ($i = 0; $i < strlen($str); $i++) {
+        for ($i = 0, $l = strlen($str); $i < $l; $i++) {
             $ch = ord($str[$i]);
             $h1 = self::imul($h1 ^ $ch, 2654435761);
             $h2 = self::imul($h2 ^ $ch, 1597334677);
         }
         $h1 = self::imul($h1 ^ ($h1 >> 16), 2246822507) ^ self::imul($h2 ^ ($h2 >> 13), 3266489909);
         $h2 = self::imul($h2 ^ ($h2 >> 16), 2246822507) ^ self::imul($h1 ^ ($h1 >> 13), 3266489909);
-        $unsigned_h1 = $h1 & 0xffffffff;
-        return 4294967296 * (2097151 & $h2) + $unsigned_h1;
+        $h1_u = $h1 & 0xffffffff;
+        $h2_u = $h2 & 0xffffffff;
+        return ((2097151 & $h2_u) << 32) | $h1_u;
     }
 
     public static function getVirtualizationAnomalyScore(RequestContext $context): float
