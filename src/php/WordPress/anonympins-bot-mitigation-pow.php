@@ -3,7 +3,7 @@
  * Plugin Name: Anonympins Bot Mitigation with Proof-of-Work
  * Plugin URI: https://github.com/anonympins/fingerprint
  * Description: High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress.
- * Version: 0.8.2
+ * Version: 0.8.3
  * Author: anonympins
  * Requires at least: 5.9
  * Requires PHP: 8.0
@@ -25,7 +25,7 @@ if (!defined('ABSPATH')) {
 }
 
 if (!defined('ANONYMPINS_BOT_MITIGATION_VERSION')) {
-    define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.8.2');
+    define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.8.3');
 }
 
 if (!defined('ANONYMPINS_BOT_MITIGATION_DIR')) {

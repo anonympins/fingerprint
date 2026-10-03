@@ -1,3 +1,30 @@
+## Version 0.8.3
+
+- 🛡️ **Cryptographic hardware attestations (Apple App Attest, Google Play Integrity, DBSC)**:
+  - **Apple App Attest support (Secure Enclave)**: decoding and cryptographic validation of binary assertions issued by Apple Secure Enclave, EC P-256 signature verification, and monotonic counter anti-replay checks across PHP (`HardwareAttestation.php`) and Node.js (`hardware-attestation.js`).
+  - **Google Play Integrity validation (Titan M / Android TEE)**: JWS signature verification of integrity tokens (`x-play-integrity-token`), package name verification, anti-replay nonce validation, and evaluation of hardware recognition verdicts (`MEETS_STRONG_INTEGRITY`, `MEETS_DEVICE_INTEGRITY`).
+  - **Device Bound Session Credentials (DBSC / W3C & TPM 2.0)**: support for hardware-anchored session proofs delivered via the `Sec-Session-Response` header, validating TPM/FIDO2 EC P-256 JWK signatures, origin/audience, and single-use challenge nonces.
+  - **Zero-friction hardware bypass**: verified hardware-attested sessions obtain transparent challenge exemption while preserving fail-safe blocks against active honeypot probes and malicious injection attempts.
+
+- 🌐 **Streaming graph topology anomaly scoring (`graphTopologyScore`)**:
+  - **Kinematic streaming session graph**: models navigation trajectories as time-decayed directed edges in a streaming session graph (40-minute half-life decay) to uncover distributed "low & slow" attacks and collusive scraping.
+  - **Shannon entropy and BGP dispersion analysis**: evaluates BGP subnet dispersion entropy across identical kinematic route transitions, detecting coordinated botnet clusters converging across multiple subnets with low local velocity.
+  - **Cross-runtime integration and profile weighting**: added the 25th suspicion vector to PHP, Node.js, Python, and Java engines with profile weights (`0.85` in `balanced`, `1.0` in `strict` and `ecommerce`, `0.9` in `api`, and `0.7` in `blog`).
+
+- 🔄 **Federated synchronization via CRDT and Bloom filters**:
+  - **LWW-Element-Set CRDT (`LwwElementSet`)**: Conflict-free Replicated Data Type (Last-Write-Wins Element Set) for decentralized sharing of threat intelligence and federated whitelists, with automatic tombstone cleanup and TTL expiration.
+  - **Compressed Bloom filter synchronization (`BloomFilterSync`)**: binary double-hashing (SHA-256) with zlib compression in base64url for anti-entropy state reconciliation across federated peers, slashing network synchronization overhead by over 90%.
+  - **Federated cooperative operations**: added `sync_threat_intel`, `merge_threat_intel`, `sync_whitelist`, and `merge_whitelist` operations to cooperative exchange endpoints.
+
+- 🧠 **Useful work (uPoW) stabilization and hardening**:
+  - **Problem manager anti-DoS guardrails**: enforced strict size boundaries on submitted solutions (150-individual cap and 100-gene chromosome limit on genetic algorithms, payload bounds on simulated annealing).
+  - **Cheat detection stabilization**: eliminated false-positive cheating detections on portfolio optimization metrics (`portfolio.calculateMetrics`) and reinforced atomic Pareto front merges into the datastore (`IStore`).
+
+- 📖 **Documentation and options reference updates**:
+  - Documented the 25th suspicion vector (`graphTopologyScore`) and hardware attestation options across `concepts.md` and `full_options.md`.
+
+---
+
 ## Version 0.8.2
 
 - 🌐 **Federated whitelist synchronization (`share_whitelist`)**:
