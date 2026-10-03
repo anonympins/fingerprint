@@ -4328,7 +4328,7 @@ export const getSuspicionVector = async (context, securityConfig) => {
         { subnetScore },
         ipReputationScore,
         { botnetClusterScore },
-        _ // store.set result
+        { graphTopologyScore }
       ] = await Promise.all([
         getBehavioralIndicators(context, deviceData, netProfile), // This modifies deviceData, so it must be done before saving deviceData
         getThreatIntelScore(context, zkpY, securityConfig), // NOUVEAU: Score de Threat Intelligence Fédéré
@@ -4368,7 +4368,6 @@ export const getSuspicionVector = async (context, securityConfig) => {
 
       // NOUVEAU: On calcule le score d'incohérence des Client-Hints.
       const { clientHintsInconsistencyScore } = getClientHintsInconsistencyScore(context);
-      const { graphTopologyScore } = await getGraphTopologyScore(context, deviceId, stableFpHash);
 
       const { requestPatternScore } = getRequestPatternScore(context, deviceData, securityConfig.patterns);
 

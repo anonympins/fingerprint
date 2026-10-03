@@ -2080,6 +2080,8 @@ if __name__ == "__main__":
                 "quicAnomalyScore": 0.8,
                 "renderingAnomalyScore": 0.8,
                 "virtualizationScore": 0.8,
+                "mtuAnomalyScore": 0.9,
+                "graphTopologyScore": 0.85,
             },
             "honeypot": {
                 "fields": ["email_confirm"],

@@ -1,6 +1,6 @@
 # Configuration options reference
 
-This document provides a comprehensive reference for all configuration options available in the `fingerprint` protection engine, with a specific focus on the **24 score weights** used to compute the final suspicion score.
+This document provides a comprehensive reference for all configuration options available in the `fingerprint` protection engine, with a specific focus on the **25 score weights** used to compute the final suspicion score.
  
 ---
 
@@ -46,6 +46,7 @@ Here is a complete representation of a custom security configuration containing 
     "quicAnomalyScore": 0.80,
     "http2AnomalyScore": 0.80,
     "renderingAnomalyScore": 0.80,
+    "graphTopologyScore": 0.85,
     "virtualizationScore": 0.80,
     "mtuAnomalyScore": 0.90,
     "ipReputationScore": 0.50
@@ -105,7 +106,7 @@ Here is a complete representation of a custom security configuration containing 
  
 ---
 
-## Detailed score weights reference (the 24 invariants)
+## Detailed score weights reference (the 25 invariants)
 
 The following table details the role of each weight in the `weights` object. These weights determine how heavily each suspicion indicator influences the final score (calculated dynamically out of 100).
 
@@ -122,6 +123,7 @@ The following table details the role of each weight in the `weights` object. The
 | **`quicAnomalyScore`** | `0.80` | **High**. Identifies spoofed flow parameters and frame ordering on HTTP/3 and QUIC transport streams. |
 | **`http2AnomalyScore`** | `0.80` | **High**. Exposes HTTP/2 spoofing via connection window sizes, pseudo-header order (e.g. `m,a,s,p`), PRIORITY frame counts, and WINDOW_UPDATE frequencies. |
 | **`renderingAnomalyScore`** | `0.80` | **High**. Exposes headless browsers and virtualized graphics layers (e.g., SwiftShader) using rendering jitter telemetry. |
+| **`graphTopologyScore`** | `0.85` | **High**. Evaluates streaming session graph topology and cross-subnet kinematic route transitions to detect coordinated low & slow attacks. |
 | **`virtualizationScore`** | `0.80` | **High**. Flags headless browsers and virtualized display environments (virtual GPU renderers like Mesa llvmpipe, SwiftShader, Basic Render Driver, and emulated headless display resolutions). |
 | **`behaviorScore`** | `0.70` | **High**. Analyzes real-time mouse speed, acceleration, keystroke latency, and scroll patterns to flag bot-like interactions. |
 | **`clientHintsInconsistencyScore`** | `0.70` | **High**. Detects inconsistencies between user-agent strings and modern client hints headers (`sec-ch-ua`). |

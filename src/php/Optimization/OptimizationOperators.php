@@ -113,7 +113,7 @@ class OptimizationOperators
                     'importance' => 6.0,
                     'ux_vs_security_ratio' => 0.5,
                     'target_threshold' => 'high',
-                    'indicators' => ['subnetScore', 'botnetClusterScore', 'ipReputationScore', 'tlsSpoofingScore']
+                    'indicators' => ['subnetScore', 'botnetClusterScore', 'ipReputationScore', 'tlsSpoofingScore', 'graphTopologyScore']
                 ],
                 'basic_automation' => [
                     'importance' => 5.0,

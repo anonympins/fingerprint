@@ -1045,6 +1045,8 @@ class FingerprintEngine
         // Display rendering anomaly score (V-Sync)
         $renderingAnomaly = RequestUtils::getRenderingAnomalyScore($context);
 
+        $mtuAnomaly = RequestUtils::getMtuAnomalyScore($context);
+
         // Assembly of the final suspicion vector
         $suspicionVector = array_merge($suspicionVector, [
             'inconsistencyScore' => $inconsistencyScore,
@@ -1066,8 +1068,11 @@ class FingerprintEngine
             'tcpAnomalyScore' => $tcpAnomaly['tcpAnomalyScore'],
             'graphTopologyScore' => $graphTopology['graphTopologyScore'],
             'protocolAnomalyScore' => $protocolAnomaly['protocolAnomalyScore'],
+            'http2AnomalyScore' => $protocolAnomaly['http2AnomalyScore'],
+            'quicAnomalyScore' => $protocolAnomaly['quicAnomalyScore'],
             'renderingAnomalyScore' => $renderingAnomaly['renderingAnomalyScore'],
-            'virtualizationScore' => $virtualizationScore
+            'virtualizationScore' => $virtualizationScore,
+            'mtuAnomalyScore' => $mtuAnomaly['mtuAnomalyScore']
         ]);
 
         // Save the updated device state in the store
