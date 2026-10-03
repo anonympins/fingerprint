@@ -30,6 +30,7 @@ import {
     safeJsonStringify,
     generateIssuerPemKeys
 } from "./fingerprint.utils.js";
+import { HardwareAttestationManager } from "./hardware-attestation.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -4861,6 +4862,7 @@ export class FingerprintEngine {
     this._allowlist = this._buildAllowlist();
     this._validateConfig(finalConfig); // Validate the configuration
     this.verbose = finalConfig.verbose || false;
+    this.hardwareAttestation = new HardwareAttestationManager(store, this.securityConfig);
     this.dryRun = finalConfig.dryRun || false;
     
     // Preload solver file asynchronously to liberate event loop during run
@@ -5385,6 +5387,16 @@ export class FingerprintEngine {
         return decision;
     }
 
+    // --- ATTESTATION MATÉRIELLE CRYPTOGRAPHIQUE SOUVERAINE (DBSC / Play Integrity / App Attest) ---
+    // L'attestation matérielle exempte des challenges de calcul (PoW) mais ne court-circuite
+    // pas l'analyse de suspicion comportementale ni les règles de blocage (WAF, Honeypot).
+    const origin = requestContext.headers?.origin || requestContext.headers?.host || '';
+    const hwAttestation = await this.hardwareAttestation.process(requestContext, deviceId, clientIp, origin);
+    const hasValidHwAttestation = hwAttestation.verified;
+    if (hasValidHwAttestation) {
+        this._log('Hardware cryptographic attestation verified', { type: hwAttestation.type });
+    }
+
     if (isStatic) {
       this._log('Static resource - skipping checks');
       return { action: 'next', score: 0, vector: {} };
@@ -5580,6 +5592,10 @@ export class FingerprintEngine {
     }
     if (hasValidPat) {
         suspicionVector.pat_verified = 100.0;
+    }
+    if (hasValidHwAttestation) {
+        suspicionVector.hardware_attestation_verified = 100.0;
+        suspicionVector[`hw_${hwAttestation.type}`] = 100.0;
     }
     let finalScore = preCalculatedScore !== null ? preCalculatedScore : this.calculateFinalScore(suspicionVector);
 
@@ -6069,7 +6085,7 @@ export class FingerprintEngine {
     // OU
     // 2. La requête est très suspecte (dépasse le seuil 'high'), ce qui annule la validité du ticket actuel.
     const zkpProof = requestContext.headers['x-zkp-proof'] || query.pow_zkp || '';
-    const hasValidTicket = (await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof)) || hasValidPat;
+    const hasValidTicket = (await isTicketValid(clientIp, powCookie, deviceId, currentDeviceHash, allowRoaming, zkpProof)) || hasValidPat || hasValidHwAttestation;
     // Correction : Pour éviter une boucle infinie de challenges (qui mène à l'erreur 429),
     // on fait confiance au ticket valide tant qu'il n'a pas expiré.
     const maxIndicatorsCount = Object.values(suspicionVector).filter(val => typeof val === 'number' && val >= 100).length;
@@ -6321,6 +6337,23 @@ export class FingerprintEngine {
         logger({ type: 'request_passed', deviceId: cookies?.device_id, score: finalScore, timestamp: Date.now(), vector: suspicionVector });
     }
       const response = { action: 'next', score: finalScore, vector: suspicionVector, intendedAction: 'next' };
+      if (hasValidHwAttestation) {
+          const bypassTicket = generateStatelessTicket({
+              expiry: Date.now() + 86400 * 1000,
+              originalIp: clientIp,
+              deviceId,
+              deviceHash: `hw:${hwAttestation.type}:${deviceId}`,
+              greenlist: true
+          });
+          const isHttps = requestContext.headers?.['x-forwarded-proto'] === 'https' || requestContext.rawReq?.secure || false;
+          response.cookie = {
+              name: 'pow_clearance',
+              value: bypassTicket,
+              options: {
+                  httpOnly: true, secure: isHttps || this.isProduction, sameSite: 'strict', maxAge: 86400 * 1000, path: '/'
+              }
+          };
+      }
       if (requestContext._newCookies) {
           const deviceCookie = requestContext._newCookies.find(c => c.name === 'device_id');
           if (deviceCookie) {

@@ -644,6 +644,30 @@ public class FingerprintEngine {
             return res;
         }
 
+        // Validation de l'attestation matérielle cryptographique (DBSC / Play Integrity / App Attest)
+        String dbscJwt = context.getHeader("sec-session-response");
+        String deviceIdForDbsc = context.cookies.get("device_id");
+        if (dbscJwt != null && deviceIdForDbsc != null) {
+            Object sessionObj = store.get("dbsc-session:" + deviceIdForDbsc);
+            if (sessionObj instanceof Map) {
+                Map<String, Object> sessionRecord = (Map<String, Object>) sessionObj;
+                Map<String, Object> jwk = (Map<String, Object>) sessionRecord.get("jwk");
+                String origin = context.getHeader("origin") != null ? context.getHeader("origin") : context.getHeader("host");
+                String expectedNonce = (String) store.get("dbsc-nonce:" + deviceIdForDbsc);
+                if (HardwareAttestation.verifyDbscProof(dbscJwt, jwk, deviceIdForDbsc, origin, expectedNonce)) {
+                    store.delete("dbsc-nonce:" + deviceIdForDbsc);
+                    Map<String, Object> res = new HashMap<>();
+                    res.put("action", "next");
+                    res.put("score", 0.0);
+                    Map<String, Double> vec = new HashMap<>();
+                    vec.put("hardware_attestation_verified", 100.0);
+                    vec.put("hw_dbsc_tpm", 100.0);
+                    res.put("vector", vec);
+                    return res;
+                }
+            }
+        }
+
         String coopOp = null;
         Object rawCoopOp = context.queryParams.get("coop_op");
         if (rawCoopOp instanceof String) {
