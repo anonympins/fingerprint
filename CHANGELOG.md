@@ -1,3 +1,21 @@
+## Version 0.8.4
+
+- 🧬 **Autotuner: no more weight changes**:
+- **Strictly invariant weights**: safety weights remain unchanged during genetic optimization cycles on heterogeneous traffic, focusing the autotuner exclusively on action thresholds, patterns, and PoW difficulty.
+- **Stability and convergence**: elimination of scale drift in suspicion vectors to ensure stable and predictable classification.
+
+- 🔌 **WordPress: official plugin integration pass**:
+
+- 🦀 **Rust for the best: WASM**:
+- **Rust-optimized WebAssembly module**: integration of the `fingerprint_wasm.wasm` binary (compiled from Rust) to accelerate cryptographic resolution and client-side execution with SIMD128 support.
+- **Resilience and performance**: drastic reduction in memory footprint and seamless execution with automatic fallback to pure JavaScript.
+
+- 🛡️ **Align Apple hardware attestation across languages**:
+- **Multi-runtime parity for Apple App Attest**: cryptographic validation of Secure Enclave assertions, anti-replay incremental counter management, and public key extraction aligned across PHP (`HardwareAttestation.php`), Node.js, Python, and Java.
+- **Sovereign hardware exemption**: seamless granting of verified status for Secure Enclave-attested sessions while maintaining fail-safe protection.
+
+---
+
 ## Version 0.8.3
 
 - 🛡️ **Cryptographic hardware attestations (Apple App Attest, Google Play Integrity, DBSC)**:
