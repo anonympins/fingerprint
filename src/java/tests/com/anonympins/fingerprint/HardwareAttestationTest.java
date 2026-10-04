@@ -280,4 +280,59 @@ public class HardwareAttestationTest {
         assertEquals(0.0, ((Number) decision.get("score")).doubleValue());
         assertNull(store.get("dbsc-nonce:" + deviceId), "Le nonce DBSC doit être consommé et purgé.");
     }
+
+    @Test
+    public void testAppleAppAttestRegistrationAndEngineAssertionFlow() throws Exception {
+        String deviceId = "ios_hardware_client";
+        String keyId = "test_apple_key_id";
+        long storedCounter = 0;
+        int newCounter = 1;
+
+        // Enregistrement manuel de la clé publique de l'appareil comme après validation de registration
+        Map<String, Object> appAttestRecord = new HashMap<>();
+        appAttestRecord.put("pubkey_der", Base64.getEncoder().encodeToString(ecKeyPair.getPublic().getEncoded()));
+        appAttestRecord.put("counter", storedCounter);
+        store.set("app-attest:" + keyId, appAttestRecord, 86400);
+
+        // Préparation de l'assertion signée par la Secure Enclave
+        byte[] rpIdHash = new byte[32];
+        Arrays.fill(rpIdHash, (byte) 0xBB);
+        byte flags = 0x01;
+
+        ByteBuffer authBuf = ByteBuffer.allocate(37);
+        authBuf.put(rpIdHash);
+        authBuf.put(flags);
+        authBuf.putInt(newCounter);
+        byte[] authData = authBuf.array();
+
+        byte[] clientDataHash = MessageDigest.getInstance("SHA-256")
+                .digest((deviceId + ":1.2.3.4").getBytes(StandardCharsets.UTF_8));
+
+        byte[] signedData = new byte[authData.length + clientDataHash.length];
+        System.arraycopy(authData, 0, signedData, 0, authData.length);
+        System.arraycopy(clientDataHash, 0, signedData, authData.length, clientDataHash.length);
+
+        Signature ecdsa = Signature.getInstance("SHA256withECDSA");
+        ecdsa.initSign(ecKeyPair.getPrivate());
+        ecdsa.update(signedData);
+        byte[] signature = ecdsa.sign();
+
+        ByteBuffer assertionBuf = ByteBuffer.allocate(authData.length + signature.length);
+        assertionBuf.put(authData);
+        assertionBuf.put(signature);
+        String assertionB64 = Base64.getEncoder().encodeToString(assertionBuf.array());
+
+        Map<String, String> headers = new HashMap<>();
+        headers.put("x-apple-app-attest", "{\"keyId\":\"" + keyId + "\",\"assertion\":\"" + assertionB64 + "\"}");
+        Map<String, String> cookies = Collections.singletonMap("device_id", deviceId);
+
+        FingerprintEngine engine = new FingerprintEngine(new HashMap<>(), store);
+        RequestContext context = new RequestContext("1.2.3.4", "/", headers, new HashMap<>(), null, cookies, "1.1");
+        Map<String, Object> decision = engine.processRequest(context);
+
+        assertEquals("next", decision.get("action"));
+        assertEquals(0.0, ((Number) decision.get("score")).doubleValue());
+        Map<?, ?> vec = (Map<?, ?>) decision.get("vector");
+        assertEquals(100.0, ((Number) vec.get("hw_apple_secure_enclave")).doubleValue());
+    }
 }

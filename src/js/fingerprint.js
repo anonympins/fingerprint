@@ -6027,7 +6027,14 @@ export class FingerprintEngine {
                             }
                         }
                         if (bestSolution && bestSolution.solution) {
-                            this.updateConfig(bestSolution.solution);
+                            // Restriction : On n'applique que les seuils et paramètres PoW, les 25 poids restent immuables
+                            const { thresholds, cpu, ticketMaxAge, challengeTtl } = bestSolution.solution;
+                            const restrictedConfig = {};
+                            if (thresholds) restrictedConfig.thresholds = thresholds;
+                            if (cpu) restrictedConfig.cpu = cpu;
+                            if (ticketMaxAge) restrictedConfig.ticketMaxAge = ticketMaxAge;
+                            if (challengeTtl) restrictedConfig.challengeTtl = challengeTtl;
+                            this.updateConfig(restrictedConfig);
                             this._log('Useful Work auto-tuning applied successfully to live config.');
                         }
                     }
@@ -8125,6 +8132,10 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
           // Les coefficients de score doivent rester réalistes
           // Un poids ne doit jamais tomber à zéro complet (perte du signal) ni dépasser 2.0 (hyper-sensibilité)
           updatedVal = Math.max(0.05, Math.min(1.8, updatedVal));
+        } else if (type === 'pow') {
+          if (key === 'minDifficultyBits') updatedVal = Math.max(6, Math.min(16, Math.round(updatedVal)));
+          else if (key === 'maxDifficultyBits') updatedVal = Math.max(16, Math.min(28, Math.round(updatedVal)));
+          else if (key === 'ticketMaxAge' || key === 'challengeTtl') updatedVal = Math.max(60000, Math.min(86400000, Math.round(updatedVal)));
         } else if (type === 'patterns') {
           // Limitation des paramètres de pattern pour éviter l'empoisonnement par le trafic bruyant
           if (key === 'benfordThreshold') updatedVal = Math.max(0.05, Math.min(0.30, updatedVal));
@@ -8161,13 +8172,15 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
     // --- VALIDATION POST-CALCUL (Anti-empoisonnement & Validation Croisée) ---
     const tempConfig = {
         thresholds: { ...securityConfig.thresholds },
-        weights: { ...securityConfig.weights },
-        patterns: { ...securityConfig.patterns }
+        weights: { ...securityConfig.weights }, // Poids sanctuarisés (non modifiés)
+        patterns: { ...securityConfig.patterns },
+        cpu: { ...(securityConfig.cpu || { minDifficultyBits: 8, maxDifficultyBits: 22 }) }
     };
 
     applyInertialUpdate(tempConfig.thresholds, newConfig.thresholds, 'thresholds', trafficConfidence);
-    applyInertialUpdate(tempConfig.weights, newConfig.weights, 'weights', trafficConfidence);
-    applyInertialUpdate(tempConfig.patterns, newConfig.patterns, 'patterns', trafficConfidence);
+    if (newConfig.cpu) {
+      applyInertialUpdate(tempConfig.cpu, newConfig.cpu, 'pow', trafficConfidence);
+    }
 
     const fitnessFunction = Optimization.Operators.createFullSecurityConfigEvaluator({ trafficData: sanitizedData });
     const currentObjectives = fitnessFunction(securityConfig);
@@ -8195,8 +8208,18 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
         return; // Rollback automatique : On arrête l'application
     }
 
+  // Application réelle : Seuils et PoW uniquement
   applyInertialUpdate(securityConfig.thresholds, newConfig.thresholds, 'thresholds', trafficConfidence);
-  applyInertialUpdate(securityConfig.weights, newConfig.weights, 'weights', trafficConfidence);
+  if (!securityConfig.cpu) {
+    securityConfig.cpu = { minDifficultyBits: 8, maxDifficultyBits: 22 };
+  }
+  if (newConfig.cpu) {
+    applyInertialUpdate(securityConfig.cpu, newConfig.cpu, 'pow', trafficConfidence);
+  }
+  if (typeof newConfig.ticketMaxAge === 'number') {
+    const currentTtl = securityConfig.ticketMaxAge || 3600000;
+    securityConfig.ticketMaxAge = Math.round(currentTtl + (newConfig.ticketMaxAge - currentTtl) * Math.min(0.3, 0.15 * trafficConfidence));
+  }
   applyInertialUpdate(securityConfig.patterns, newConfig.patterns, 'patterns', trafficConfidence);
 
   // NOUVEAU: Stocker la meilleure solution pour une consultation externe
@@ -8205,13 +8228,17 @@ function runThresholdOptimization(securityConfig, trafficData, minDataPoints, ma
   console.log("[AutoTuning] Nouvelle configuration de sécurité optimisée appliquée.");
   console.log("[AutoTuning] Objectifs atteints :", { falsePositiveRate: bestSolution.objectives[0].toFixed(4), falseNegativeRate: bestSolution.objectives[1].toFixed(4) });
   console.log("[AutoTuning] Nouveaux seuils :", securityConfig.thresholds);
-  console.log("[AutoTuning] Nouveaux poids :", securityConfig.weights);
-  console.log("[AutoTuning] Nouveaux patterns :", securityConfig.patterns);
+  console.log("[AutoTuning] Nouveaux paramètres PoW :", { cpu: securityConfig.cpu, ticketMaxAge: securityConfig.ticketMaxAge });
 
   // NOUVEAU: Sauvegarder la meilleure configuration si un chemin est fourni.
   if (savePath) {
       try {
-          const configToSave = JSON.stringify(bestSolution.solution, null, 2);
+          const configToSave = JSON.stringify({
+              thresholds: securityConfig.thresholds,
+              cpu: securityConfig.cpu,
+              ticketMaxAge: securityConfig.ticketMaxAge,
+              challengeTtl: securityConfig.challengeTtl
+          }, null, 2);
           writeFileSync(savePath, configToSave, 'utf-8');
           console.log(`[AutoTuning] Meilleure configuration sauvegardée dans : ${savePath}`);
       } catch (error) {

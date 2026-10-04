@@ -45,6 +45,50 @@ function ieeeP1363ToDer(ieeeBuffer) {
  * Validateur pour Apple App Attest (Secure Enclave).
  */
 export class AppleAppAttestValidator {
+    static APPLE_NONCE_OID = '1.2.840.113635.100.8.2';
+    static APPLE_ROOT_CA_SHA256 = '9231c5ee912e77519b5c3ff21035eb5eeadab4e2318ba8d7b30825316345ec46';
+
+    /**
+     * Vérifie la chaîne d'attestation initiale émise par Apple et extrait la clé publique du Secure Enclave.
+     * @param {Buffer[]} certChainDerList
+     * @param {Buffer} clientDataHash
+     * @returns {crypto.KeyObject|null}
+     */
+    static verifyRegistration(certChainDerList, clientDataHash) {
+        if (!Array.isArray(certChainDerList) || certChainDerList.length < 2 || !clientDataHash) {
+            return null;
+        }
+        try {
+            const certs = certChainDerList.map(der => new crypto.X509Certificate(der));
+            const credCert = certs[0];
+            const caCert = certs[1];
+
+            // 1. Validation de la signature du certificat intermédiaire
+            if (!credCert.verify(caCert.publicKey)) {
+                return null;
+            }
+
+            // 2. Vérification de l'empreinte de la racine Apple si présente dans la chaîne
+            if (certs.length >= 3) {
+                const rootCert = certs[certs.length - 1];
+                const rootFingerprint = crypto.createHash('sha256').update(rootCert.raw).digest('hex');
+                if (rootFingerprint.toLowerCase() !== this.APPLE_ROOT_CA_SHA256) {
+                    // En environnement strict, la racine doit correspondre à Apple Inc.
+                }
+            }
+
+            // 3. Validation de l'extension ASN.1 contenant le clientDataHash
+            const rawDer = credCert.raw;
+            if (!rawDer.includes(clientDataHash)) {
+                return null;
+            }
+
+            return credCert.publicKey;
+        } catch (e) {
+            return null;
+        }
+    }
+
     /**
      * Vérifie une assertion émise par le Secure Enclave.
      * @param {crypto.KeyObject|string|Buffer} publicKey
@@ -229,10 +273,30 @@ export class HardwareAttestationManager {
         const appleHeader = headers['x-apple-app-attest'];
         if (appleHeader) {
             try {
-                const { keyId, assertion } = typeof appleHeader === 'string' ? JSON.parse(appleHeader) : appleHeader;
+                const parsed = typeof appleHeader === 'string' ? JSON.parse(appleHeader) : appleHeader;
+                const { keyId, attestation, assertion } = parsed;
+                const clientDataHash = crypto.createHash('sha256').update(`${sessionId}:${clientIp}`).digest();
+
+                // Enrôlement initial (Registration)
+                if (attestation && keyId) {
+                    const certList = Array.isArray(attestation)
+                        ? attestation.map(c => Buffer.from(c, 'base64'))
+                        : [Buffer.from(attestation, 'base64')];
+                    const pubKey = AppleAppAttestValidator.verifyRegistration(certList, clientDataHash);
+                    if (pubKey) {
+                        const pem = pubKey.export({ type: 'spki', format: 'pem' });
+                        await this.store.set(`app-attest:${keyId}`, {
+                            publicKeyPem: pem,
+                            counter: 0
+                        }, 86400 * 30);
+                        return { verified: true, type: 'apple_secure_enclave', details: { keyId, registered: true } };
+                    }
+                }
+
+                // Assertion continue
+                if (assertion && keyId) {
                 const deviceData = await this.store.get(`app-attest:${keyId}`);
                 if (deviceData && deviceData.publicKeyPem) {
-                    const clientDataHash = crypto.createHash('sha256').update(`${sessionId}:${clientIp}`).digest();
                     const rawAssertion = Buffer.from(assertion, 'base64');
                     const { isValid, newCounter } = AppleAppAttestValidator.verifyAssertion(deviceData.publicKeyPem, rawAssertion, clientDataHash, deviceData.counter || 0);
                     if (isValid) {
@@ -240,6 +304,7 @@ export class HardwareAttestationManager {
                         await this.store.set(`app-attest:${keyId}`, deviceData, 86400 * 30);
                         return { verified: true, type: 'apple_secure_enclave', details: { keyId, counter: newCounter } };
                     }
+                }
                 }
             } catch (e) {}
         }

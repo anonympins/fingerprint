@@ -262,4 +262,47 @@ class HardwareAttestationTest extends TestCase
         $this->assertFalse($res['verified']);
         $this->assertEquals('none', $res['type']);
     }
+
+    public function testProcessOrchestratesAppleAppAttestFlow(): void
+    {
+        $sessionId = 'ios_device_session_1';
+        $keyId = 'apple_key_id_456';
+        $newCounter = 5;
+
+        // Enregistrement préalable de la clé publique de l'appareil (simulant registration validée)
+        $this->store->set("app-attest:{$keyId}", [
+            'publicKeyPem' => self::MOCK_PUB_KEY,
+            'counter'      => 4
+        ]);
+
+        $rpIdHash = str_repeat("\xAA", 32);
+        $flags = "\x01";
+        $counterBytes = pack('N', $newCounter);
+        $authData = $rpIdHash . $flags . $counterBytes;
+        $dummySignature = 'valid_mock_signature';
+        $assertionB64 = base64_encode($authData . $dummySignature);
+
+        $context = new RequestContext(
+            '127.0.0.1',
+            '/',
+            [
+                'x-apple-app-attest' => json_encode([
+                    'keyId'     => $keyId,
+                    'assertion' => $assertionB64
+                ])
+            ],
+            [],
+            null,
+            ['device_id' => $sessionId],
+            '1.1'
+        );
+
+        $res = HardwareAttestation::process($context, $sessionId, $this->store);
+
+        $this->assertTrue($res['verified'], "L'assertion continue Apple Secure Enclave doit être acceptée.");
+        $this->assertEquals('apple_secure_enclave', $res['type']);
+        
+        $updatedRecord = $this->store->get("app-attest:{$keyId}");
+        $this->assertEquals($newCounter, $updatedRecord['counter']);
+    }
 }

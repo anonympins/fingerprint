@@ -188,6 +188,13 @@ class AutoTuner
             if ($t['medium'] < $t['low'] + 5 || $t['medium'] > 70) return false;
             if ($t['high'] < $t['medium'] + 5 || $t['high'] > 90) return false;
             if ($t['block'] < $t['high'] + 5 || $t['block'] > 99) return false;
+            if (isset($config['pow']) && is_array($config['pow'])) {
+                $pow = $config['pow'];
+                $ttl = $pow['challengeTtl'] ?? 300;
+                $minB = $pow['minDifficultyBits'] ?? 8;
+                $maxB = $pow['maxDifficultyBits'] ?? 22;
+                if ($ttl < 60 || $ttl > 900 || $minB < 4 || $minB > 16 || $maxB < $minB || $maxB > 28) return false;
+            }
             return true;
         };
 
@@ -229,18 +236,23 @@ class AutoTuner
                     $updatedVal = $currentVal + ($targetVal - $currentVal) * $learningRate;
 
                     if ($type === 'weights') {
-                        $updatedVal = max(0.05, min(1.8, $updatedVal));
+                        continue; // Poids strictement invariants sur trafic hétérogène
                     } elseif ($type === 'patterns') {
                         if ($key === 'benfordThreshold') $updatedVal = max(0.05, min(0.30, $updatedVal));
                         elseif ($key === 'decayFactor') $updatedVal = max(0.70, min(0.98, $updatedVal));
                         elseif ($key === 'minSamples') $updatedVal = max(3, min(15, (int)round($updatedVal)));
                         elseif ($key === 'historySize') $updatedVal = max(5, min(30, (int)round($updatedVal)));
                         elseif (str_ends_with($key, 'Threshold')) $updatedVal = max(50, min(3000, (int)round($updatedVal)));
+                    } elseif ($type === 'pow') {
+                        if ($key === 'challengeTtl') $updatedVal = max(60, min(900, (int)round($updatedVal)));
+                        elseif ($key === 'minDifficultyBits') $updatedVal = max(4, min(16, (int)round($updatedVal)));
+                        elseif ($key === 'maxDifficultyBits') $updatedVal = max(16, min(28, (int)round($updatedVal)));
                     }
 
                     $value = $updatedVal;
                 }
             }
+            unset($value);
 
             if ($type === 'thresholds') {
                 $low = max(10, min(35, $currentConfig['low']));
@@ -252,19 +264,29 @@ class AutoTuner
                 $currentConfig['medium'] = (int)round($medium);
                 $currentConfig['high'] = (int)round($high);
                 $currentConfig['block'] = (int)round($block);
+            } elseif ($type === 'pow') {
+                if (($currentConfig['minDifficultyBits'] ?? 8) > ($currentConfig['maxDifficultyBits'] ?? 22)) {
+                    $currentConfig['minDifficultyBits'] = max(4, ($currentConfig['maxDifficultyBits'] ?? 22) - 2);
+                }
             }
         };
 
         // --- POST-COMPUTATION VALIDATION (Rollback guard & tolerance threshold) ---
+        $tempPow = [
+            'challengeTtl' => $this->securityConfig['challengeTtl'] ?? 300,
+            'minDifficultyBits' => $this->securityConfig['cpu']['minDifficultyBits'] ?? 8,
+            'maxDifficultyBits' => $this->securityConfig['cpu']['maxDifficultyBits'] ?? 22,
+        ];
         $tempConfig = [
             'thresholds' => $this->securityConfig['thresholds'],
             'weights' => $this->securityConfig['weights'],
             'patterns' => $this->securityConfig['patterns'],
+            'pow' => $tempPow,
         ];
 
         $applyInertialUpdate($tempConfig['thresholds'], $newConfig['thresholds'], 'thresholds', $trafficConfidence);
-        $applyInertialUpdate($tempConfig['weights'], $newConfig['weights'], 'weights', $trafficConfidence);
         $applyInertialUpdate($tempConfig['patterns'], $newConfig['patterns'], 'patterns', $trafficConfidence);
+        $applyInertialUpdate($tempConfig['pow'], $newConfig['pow'] ?? [], 'pow', $trafficConfidence);
 
         $evaluator = OptimizationOperators::createFullSecurityConfigEvaluator(['trafficData' => $sanitizedData]);
         $currentObjectives = $evaluator($this->securityConfig);
@@ -297,8 +319,15 @@ class AutoTuner
         }
 
         $applyInertialUpdate($this->securityConfig['thresholds'], $newConfig['thresholds'], 'thresholds', $trafficConfidence);
-        $applyInertialUpdate($this->securityConfig['weights'], $newConfig['weights'], 'weights', $trafficConfidence);
         $applyInertialUpdate($this->securityConfig['patterns'], $newConfig['patterns'], 'patterns', $trafficConfidence);
+        $applyInertialUpdate($tempPow, $newConfig['pow'] ?? [], 'pow', $trafficConfidence);
+
+        $this->securityConfig['challengeTtl'] = (int)$tempPow['challengeTtl'];
+        if (!isset($this->securityConfig['cpu']) || !is_array($this->securityConfig['cpu'])) {
+            $this->securityConfig['cpu'] = [];
+        }
+        $this->securityConfig['cpu']['minDifficultyBits'] = (int)$tempPow['minDifficultyBits'];
+        $this->securityConfig['cpu']['maxDifficultyBits'] = (int)$tempPow['maxDifficultyBits'];
 
         self::$lastBestSolution = $bestSolution;
 
@@ -308,18 +337,12 @@ class AutoTuner
             'falseNegativeRate' => round($bestSolution['objectives'][1], 4)
         ]) . "\n");
         $this->logMessage("[AutoTuning] New thresholds: " . json_encode($this->securityConfig['thresholds']) . "\n");
-        $this->logMessage("[AutoTuning] New weights: " . json_encode($this->securityConfig['weights']) . "\n");
+        $this->logMessage("[AutoTuning] PoW parameters: " . json_encode($tempPow) . "\n");
         $this->logMessage("[AutoTuning] New patterns: " . json_encode($this->securityConfig['patterns']) . "\n");
 
         // Persist best configuration if savePath is configured
         if ($this->savePath !== null) {
-            try {
-                file_put_contents($this->savePath, json_encode($bestSolution['solution'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                $this->logMessage("[AutoTuning] Best configuration saved to: {$this->savePath}\n");
-            } catch (\Throwable $e) {
-                // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
-                $this->logError("[AutoTuning] Error saving optimized configuration: " . $e->getMessage());
-            }
+            $this->saveConfigurationToFile($bestSolution['solution']);
         }
 
         if ($this->clearAfterTuning) {
@@ -348,6 +371,146 @@ class AutoTuner
     {
         // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
         error_log($message);
+    }
+
+    /**
+     * Validates and resolves the configuration save path.
+     * Restricts file writes to the WordPress uploads directory (or system temp directory in standalone mode)
+     * and strictly requires a .json file extension to prevent arbitrary file overwrite or code execution.
+     */
+    private function validateAndResolveSavePath(?string $path): ?string
+    {
+        if ($path === null || trim($path) === '') {
+            return null;
+        }
+
+        $cleanPath = trim($path);
+
+        // 1. Prevent null-byte injection
+        if (str_contains($cleanPath, "\0")) {
+            $this->logError('[AutoTuning] Security alert: null byte detected in savePath.');
+            return null;
+        }
+
+        // 2. Strictly require .json extension
+        if (strtolower(pathinfo($cleanPath, PATHINFO_EXTENSION)) !== 'json') {
+            $this->logError('[AutoTuning] Security warning: savePath must have a .json extension.');
+            return null;
+        }
+
+        // 3. Resolve path according to environment
+        if (function_exists('wp_upload_dir')) {
+            $uploadInfo = wp_upload_dir();
+            $uploadBase = !empty($uploadInfo['basedir']) ? $uploadInfo['basedir'] : null;
+
+            if ($uploadBase === null) {
+                $this->logError('[AutoTuning] Unable to determine WordPress uploads directory.');
+                return null;
+            }
+
+            $normalizedUploadBase = str_replace('\\', '/', $uploadBase);
+            $normalizedPath = str_replace('\\', '/', $cleanPath);
+
+            // If a relative path or bare filename is provided, place it inside uploads
+            if (!str_starts_with($normalizedPath, '/') && !preg_match('#^[a-zA-Z]:/#', $normalizedPath)) {
+                $targetFile = rtrim($normalizedUploadBase, '/') . '/' . ltrim($normalizedPath, '/');
+            } else {
+                $targetFile = $normalizedPath;
+            }
+
+            // Ensure parent directory exists
+            $targetDir = dirname($targetFile);
+            if (!is_dir($targetDir)) {
+                if (function_exists('wp_mkdir_p')) {
+                    wp_mkdir_p($targetDir);
+                } else {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Upload directory creation
+                    @mkdir($targetDir, 0755, true);
+                }
+            }
+
+            $realTargetDir = realpath($targetDir);
+            $realUploadBase = realpath($uploadBase);
+
+            if ($realTargetDir === false || $realUploadBase === false) {
+                $this->logError('[AutoTuning] Failed to resolve canonical path for savePath.');
+                return null;
+            }
+
+            $normRealTarget = str_replace('\\', '/', $realTargetDir);
+            $normRealUpload = str_replace('\\', '/', $realUploadBase);
+
+            // Verify canonical path is strictly contained within uploads directory
+            if ($normRealTarget !== $normRealUpload && !str_starts_with($normRealTarget, $normRealUpload . '/')) {
+                $this->logError('[AutoTuning] Security alert: savePath must be located within the WordPress uploads directory.');
+                return null;
+            }
+
+            return $realTargetDir . DIRECTORY_SEPARATOR . basename($targetFile);
+        }
+
+        // Standalone PHP / CLI fallback: prevent path traversal and ensure directory is valid
+        if (str_contains($cleanPath, '..')) {
+            $this->logError('[AutoTuning] Security alert: path traversal detected in savePath.');
+            return null;
+        }
+
+        $targetDir = dirname($cleanPath);
+        if (!is_dir($targetDir)) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Standalone directory creation
+            @mkdir($targetDir, 0755, true);
+        }
+
+        $realTargetDir = realpath($targetDir);
+        if ($realTargetDir === false) {
+            $this->logError('[AutoTuning] Failed to resolve directory for savePath.');
+            return null;
+        }
+
+        return $realTargetDir . DIRECTORY_SEPARATOR . basename($cleanPath);
+    }
+
+    /**
+     * Persists the best configuration to disk if savePath is valid.
+     *
+     * @param array<string, mixed> $solution
+     */
+    private function saveConfigurationToFile(array $solution): void
+    {
+        $safePath = $this->validateAndResolveSavePath($this->savePath);
+        if ($safePath === null) {
+            return;
+        }
+
+        $jsonContent = json_encode($solution, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if ($jsonContent === false) {
+            $this->logError('[AutoTuning] Failed to encode configuration JSON.');
+            return;
+        }
+
+        try {
+            global $wp_filesystem;
+            if (empty($wp_filesystem) && defined('ABSPATH')) {
+                require_once ABSPATH . 'wp-admin/includes/file.php';
+                WP_Filesystem();
+            }
+
+            if (!empty($wp_filesystem) && is_object($wp_filesystem) && method_exists($wp_filesystem, 'put_contents')) {
+                $written = (bool)$wp_filesystem->put_contents($safePath, $jsonContent, 0644);
+            } else {
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Safe validated JSON save path
+                $written = file_put_contents($safePath, $jsonContent, LOCK_EX) !== false;
+            }
+
+            if ($written) {
+                $this->logMessage("[AutoTuning] Best configuration saved to: {$safePath}\n");
+            } else {
+                $this->logError("[AutoTuning] Error writing configuration to: {$safePath}");
+            }
+        } catch (\Throwable $e) {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
+            $this->logError("[AutoTuning] Error saving optimized configuration: " . $e->getMessage());
+        }
     }
 
     /**

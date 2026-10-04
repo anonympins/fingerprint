@@ -3,6 +3,10 @@ package com.anonympins.fingerprint;
 import com.anonympins.fingerprint.utils.ChallengeUtils;
 import com.anonympins.fingerprint.utils.RequestUtils;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyFactory;
+import java.security.MessageDigest;
 import java.math.BigInteger;
 import java.security.PublicKey;
 import java.util.concurrent.ExecutorService;
@@ -666,6 +670,109 @@ public class FingerprintEngine {
                     res.put("vector", vec);
                     return res;
                 }
+            }
+        }
+
+        // Apple App Attest (iOS Secure Enclave) : Enrôlement initial et assertions
+        String appleAttestHeader = context.getHeader("x-apple-app-attest");
+        if (appleAttestHeader != null && !appleAttestHeader.isEmpty()) {
+            try {
+                Map<String, Object> attestJson = ChallengeUtils.simpleJsonParse(appleAttestHeader);
+                String keyId = (String) attestJson.get("keyId");
+                if (keyId != null) {
+                    String deviceId = context.cookies.get("device_id") != null ? context.cookies.get("device_id") : "";
+                    byte[] clientDataHash = MessageDigest.getInstance("SHA-256")
+                            .digest((deviceId + ":" + context.clientIp).getBytes(StandardCharsets.UTF_8));
+
+                    // 1. Enrôlement initial (Registration)
+                    if (attestJson.containsKey("attestation")) {
+                        Object rawCerts = attestJson.get("attestation");
+                        List<byte[]> certChain = new ArrayList<>();
+                        if (rawCerts instanceof List) {
+                            for (Object c : (List<?>) rawCerts) {
+                                if (c instanceof String) {
+                                    certChain.add(Base64.getDecoder().decode((String) c));
+                                }
+                            }
+                        }
+                        PublicKey pubKey = HardwareAttestation.verifyAppleAppAttestRegistration(certChain, clientDataHash);
+                        if (pubKey != null) {
+                            Map<String, Object> record = new HashMap<>();
+                            record.put("pubkey_der", Base64.getEncoder().encodeToString(pubKey.getEncoded()));
+                            record.put("counter", 0L);
+                            store.set("app-attest:" + keyId, record, 86400 * 30);
+
+                            Map<String, Object> res = new HashMap<>();
+                            res.put("action", "next");
+                            res.put("score", 0.0);
+                            Map<String, Double> vec = new HashMap<>();
+                            vec.put("hardware_attestation_verified", 100.0);
+                            vec.put("hw_apple_secure_enclave", 100.0);
+                            res.put("vector", vec);
+                            return res;
+                        }
+                    }
+
+                    // 2. Vérification d'assertion continue
+                    if (attestJson.containsKey("assertion")) {
+                        Object deviceRecordObj = store.get("app-attest:" + keyId);
+                        if (deviceRecordObj instanceof Map) {
+                            Map<String, Object> record = (Map<String, Object>) deviceRecordObj;
+                            String pubKeyB64 = (String) record.get("pubkey_der");
+                            long counter = record.get("counter") instanceof Number ? ((Number) record.get("counter")).longValue() : 0L;
+                            if (pubKeyB64 != null) {
+                                byte[] pubKeyBytes = Base64.getDecoder().decode(pubKeyB64);
+                                java.security.spec.X509EncodedKeySpec keySpec = new java.security.spec.X509EncodedKeySpec(pubKeyBytes);
+                                PublicKey pubKey = KeyFactory.getInstance("EC").generatePublic(keySpec);
+                                byte[] assertionBytes = Base64.getDecoder().decode((String) attestJson.get("assertion"));
+
+                                if (HardwareAttestation.verifyAppleAppAttestAssertion(pubKey, assertionBytes, clientDataHash, counter)) {
+                                    long newCounter = counter + 1;
+                                    if (assertionBytes.length >= 37) {
+                                        newCounter = ByteBuffer.wrap(assertionBytes, 33, 4).getInt() & 0xFFFFFFFFL;
+                                    }
+                                    record.put("counter", newCounter);
+                                    store.set("app-attest:" + keyId, record, 86400 * 30);
+
+                                    Map<String, Object> res = new HashMap<>();
+                                    res.put("action", "next");
+                                    res.put("score", 0.0);
+                                    Map<String, Double> vec = new HashMap<>();
+                                    vec.put("hardware_attestation_verified", 100.0);
+                                    vec.put("hw_apple_secure_enclave", 100.0);
+                                    res.put("vector", vec);
+                                    return res;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // Google Play Integrity (Titan M / Keystore TEE)
+        String playIntegrityToken = context.getHeader("x-play-integrity-token");
+        if (playIntegrityToken == null) {
+            playIntegrityToken = context.getHeader("x-play-integrity");
+        }
+        if (playIntegrityToken != null && !playIntegrityToken.isEmpty()) {
+            String expectedPkg = (String) config.get("androidPackageName");
+            String expectedNonce = (String) store.get("play-integrity-nonce:" + context.clientIp);
+            HardwareAttestation.AttestationResult playRes = HardwareAttestation.verifyPlayIntegrityJws(
+                    playIntegrityToken, expectedPkg, expectedNonce, 180000L
+            );
+            if (playRes.isVerified()) {
+                if (expectedNonce != null) {
+                    store.delete("play-integrity-nonce:" + context.clientIp);
+                }
+                Map<String, Object> res = new HashMap<>();
+                res.put("action", "next");
+                res.put("score", 0.0);
+                Map<String, Double> vec = new HashMap<>();
+                vec.put("hardware_attestation_verified", 100.0);
+                vec.put("hw_google_play_integrity_strong", 100.0);
+                res.put("vector", vec);
+                return res;
             }
         }
 

@@ -110,8 +110,15 @@ $applyInertialUpdate = function (array &$current, array $target) use ($maxChange
 };
 
 $applyInertialUpdate($config['thresholds'], $newConfig['thresholds']);
-$applyInertialUpdate($config['weights'], $newConfig['weights']);
 $applyInertialUpdate($config['patterns'], $newConfig['patterns']);
+if (isset($newConfig['pow']) && is_array($newConfig['pow'])) {
+    $config['challengeTtl'] = (int)round($newConfig['pow']['challengeTtl'] ?? 300);
+    if (!isset($config['cpu']) || !is_array($config['cpu'])) {
+        $config['cpu'] = [];
+    }
+    $config['cpu']['minDifficultyBits'] = (int)round($newConfig['pow']['minDifficultyBits'] ?? 8);
+    $config['cpu']['maxDifficultyBits'] = (int)round($newConfig['pow']['maxDifficultyBits'] ?? 22);
+}
 
 // 6. Write back optimized parameters to configuration file
 file_put_contents($configPath, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));

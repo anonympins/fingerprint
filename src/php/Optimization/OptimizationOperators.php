@@ -224,7 +224,25 @@ class OptimizationOperators
             $marginOverlap = max(0.0, $maxHumanScore - $minBotScore);
             $marginPenalty = $marginOverlap / 100.0;
 
-            $obj1 = $weightedFpr + ($regularizationPenalty * 0.05);
+            // Pénalité sur les configurations PoW disproportionnées ou incohérentes
+            $powPenalty = 0.0;
+            if (isset($config['pow']) && is_array($config['pow'])) {
+                $minBits = (float)($config['pow']['minDifficultyBits'] ?? 8);
+                $maxBits = (float)($config['pow']['maxDifficultyBits'] ?? 22);
+                $ttl = (float)($config['pow']['challengeTtl'] ?? 300);
+
+                if ($minBits > 14) {
+                    $powPenalty += ($minBits - 14) * 0.015;
+                }
+                if ($ttl < 90) {
+                    $powPenalty += 0.02;
+                }
+                if ($maxBits < $minBits) {
+                    $powPenalty += 0.10;
+                }
+            }
+
+            $obj1 = $weightedFpr + ($regularizationPenalty * 0.05) + $powPenalty;
             $obj2 = $weightedFnr + $marginPenalty;
 
             return [$obj1, $obj2];
@@ -243,22 +261,28 @@ class OptimizationOperators
         $fitnessFunction = self::createFullSecurityConfigEvaluator($context);
 
         $crossover = function (array $c1, array $c2): array {
-            $child = $c1;
-            foreach (['thresholds', 'weights', 'patterns'] as $section) {
-                foreach ($child[$section] as $key => $value) {
-                    $child[$section][$key] = ($c1[$section][$key] + $c2[$section][$key]) / 2;
+            $child = $c1; // Les poids restent strictement invariants
+            foreach (['thresholds', 'patterns', 'pow'] as $section) {
+                if (isset($child[$section], $c2[$section]) && is_array($child[$section])) {
+                    foreach ($child[$section] as $key => $value) {
+                        if (isset($c2[$section][$key]) && is_numeric($value)) {
+                            $child[$section][$key] = ($c1[$section][$key] + $c2[$section][$key]) / 2;
+                        }
+                    }
                 }
             }
             return $child;
         };
+
         $createIndividual = function () use ($currentConfig): array {
             $config = $currentConfig ?: \Anonympins\Fingerprint\Config\SecurityProfiles::createSecurityProfile('balanced');
             $ind = [
                 'thresholds' => [],
-                'weights' => [],
-                'patterns' => []
+                'weights' => $config['weights'] ?? [], // Poids invariants issus de la baseline
+                'patterns' => [],
+                'pow' => []
             ];
-            foreach (['thresholds', 'weights', 'patterns'] as $section) {
+            foreach (['thresholds', 'patterns'] as $section) {
                 if (isset($config[$section]) && is_array($config[$section])) {
                     foreach ($config[$section] as $k => $v) {
                         if (is_numeric($v)) {
@@ -270,6 +294,17 @@ class OptimizationOperators
                     }
                 }
             }
+            $cpuCfg = $config['cpu'] ?? [];
+            $baseTtl = (float)($config['challengeTtl'] ?? 300);
+            $baseMin = (float)($cpuCfg['minDifficultyBits'] ?? 8);
+            $baseMax = (float)($cpuCfg['maxDifficultyBits'] ?? 22);
+
+            $ind['pow'] = [
+                'challengeTtl' => max(60, min(900, (int)round($baseTtl * (1.0 + (self::secureRandom() - 0.5) * 0.4)))),
+                'minDifficultyBits' => max(4, min(16, (int)round($baseMin + random_int(-1, 1)))),
+                'maxDifficultyBits' => max(16, min(28, (int)round($baseMax + random_int(-1, 1)))),
+            ];
+
             if (isset($ind['thresholds']['low'], $ind['thresholds']['medium'], $ind['thresholds']['high'])) {
                 $ind['thresholds']['low'] = max(10.0, min(35.0, (float)$ind['thresholds']['low']));
                 $ind['thresholds']['medium'] = max($ind['thresholds']['low'] + 5.0, min(70.0, (float)$ind['thresholds']['medium']));
@@ -280,14 +315,15 @@ class OptimizationOperators
 
         $mutate = function (array $c, ?array $currentConfigRef = null) use ($currentConfig): array {
             $newConfig = $c;
+            // Mutation ciblée sur les seuils d'action, le PoW et les patterns (poids préservés)
             $sections = [
-                ['name' => 'patterns', 'weight' => 0.50],
-                ['name' => 'thresholds', 'weight' => 0.25],
-                ['name' => 'weights', 'weight' => 0.25]
+                ['name' => 'thresholds', 'weight' => 0.45],
+                ['name' => 'pow', 'weight' => 0.35],
+                ['name' => 'patterns', 'weight' => 0.20]
             ];
             $rand = self::secureRandom();
             $cumulativeWeight = 0;
-            $sectionToMutate = 'patterns';
+            $sectionToMutate = 'thresholds';
             foreach ($sections as $section) {
                 $cumulativeWeight += $section['weight'];
                 if ($rand < $cumulativeWeight) {
@@ -296,11 +332,25 @@ class OptimizationOperators
                 }
             }
 
+            if (!isset($newConfig[$sectionToMutate]) || empty($newConfig[$sectionToMutate])) {
+                return $newConfig;
+            }
+
             $keys = array_keys($newConfig[$sectionToMutate]);
             $keyToMutate = $keys[random_int(0, count($keys) - 1)];
 
-            if ($sectionToMutate === 'weights') {
-                $newConfig[$sectionToMutate][$keyToMutate] = max(0.05, min(1.5, $newConfig[$sectionToMutate][$keyToMutate] + (self::secureRandom() - 0.5) * 0.1));
+            if ($sectionToMutate === 'pow') {
+                if ($keyToMutate === 'challengeTtl') {
+                    $factor = 1.0 + (self::secureRandom() - 0.5) * 0.4;
+                    $newConfig['pow']['challengeTtl'] = max(60, min(900, (int)round(((float)$newConfig['pow']['challengeTtl']) * $factor)));
+                } elseif ($keyToMutate === 'minDifficultyBits') {
+                    $newConfig['pow']['minDifficultyBits'] = max(4, min(16, (int)$newConfig['pow']['minDifficultyBits'] + (self::secureRandom() < 0.5 ? -1 : 1)));
+                } elseif ($keyToMutate === 'maxDifficultyBits') {
+                    $newConfig['pow']['maxDifficultyBits'] = max(16, min(28, (int)$newConfig['pow']['maxDifficultyBits'] + (self::secureRandom() < 0.5 ? -1 : 1)));
+                }
+                if ($newConfig['pow']['minDifficultyBits'] > $newConfig['pow']['maxDifficultyBits']) {
+                    $newConfig['pow']['minDifficultyBits'] = max(4, $newConfig['pow']['maxDifficultyBits'] - 2);
+                }
             } elseif ($sectionToMutate === 'thresholds') {
                 $newConfig[$sectionToMutate][$keyToMutate] = (int)round($newConfig[$sectionToMutate][$keyToMutate] + (self::secureRandom() - 0.5) * 5.0);
             } else {

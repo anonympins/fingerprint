@@ -3,7 +3,7 @@
  * Plugin Name: Anonympins Bot Mitigation with Proof-of-Work
  * Plugin URI: https://github.com/anonympins/fingerprint
  * Description: High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress.
- * Version: 0.8.3
+ * Version: 0.8.4
  * Author: anonympins
  * Requires at least: 5.9
  * Requires PHP: 8.0
@@ -25,11 +25,19 @@ if (!defined('ABSPATH')) {
 }
 
 if (!defined('ANONYMPINS_BOT_MITIGATION_VERSION')) {
-    define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.8.3');
+    define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.8.4');
+}
+
+if (!defined('ANONYMPINS_BOT_MITIGATION_FILE')) {
+    define('ANONYMPINS_BOT_MITIGATION_FILE', __FILE__);
 }
 
 if (!defined('ANONYMPINS_BOT_MITIGATION_DIR')) {
-    define('ANONYMPINS_BOT_MITIGATION_DIR', plugin_dir_path(__FILE__));
+    define('ANONYMPINS_BOT_MITIGATION_DIR', plugin_dir_path(ANONYMPINS_BOT_MITIGATION_FILE));
+}
+
+if (!defined('ANONYMPINS_BOT_MITIGATION_URL')) {
+    define('ANONYMPINS_BOT_MITIGATION_URL', plugin_dir_url(ANONYMPINS_BOT_MITIGATION_FILE));
 }
 
 // =============================================================================
@@ -171,52 +179,54 @@ function fingerprint_get_default_challenge_template(): string {
 }
 
 // 1. PSR-4 autoloader for the Fingerprint engine.
-if (!class_exists(DirectFingerprint::class)) {
-    $fingerprint_composer_paths = [
-        __DIR__ . '/vendor/autoload.php',
-        (defined('ABSPATH') ? ABSPATH . 'vendor/autoload.php' : ''),
-    ];
-    foreach ($fingerprint_composer_paths as $fingerprint_composer_path) {
-        if (!empty($fingerprint_composer_path) && file_exists($fingerprint_composer_path)) {
-            require_once $fingerprint_composer_path;
-            break;
+$fingerprint_composer_paths = [
+    __DIR__ . '/vendor/autoload.php',
+    (defined('ABSPATH') ? ABSPATH . 'vendor/autoload.php' : ''),
+];
+foreach ($fingerprint_composer_paths as $fingerprint_composer_path) {
+    if (!empty($fingerprint_composer_path) && file_exists($fingerprint_composer_path)) {
+        require_once $fingerprint_composer_path;
+        break;
+    }
+}
+
+spl_autoload_register(function (string $class): void {
+    $prefix = 'Anonympins\\Fingerprint\\';
+    $len = strlen($prefix);
+    if (strncmp($prefix, $class, $len) !== 0) {
+        return;
+    }
+
+    $relativeClass = substr($class, $len);
+
+    if (str_starts_with($relativeClass, 'WordPress\\')) {
+        $localClass = substr($relativeClass, strlen('WordPress\\'));
+        $localFile = __DIR__ . '/' . str_replace('\\', '/', $localClass) . '.php';
+        if (file_exists($localFile)) {
+            require_once $localFile;
+            return;
         }
     }
 
-    spl_autoload_register(function (string $class): void {
-        $prefix = 'Anonympins\\Fingerprint\\';
-        $len = strlen($prefix);
-        if (strncmp($prefix, $class, $len) !== 0) {
+    $candidateDirs = [
+        __DIR__ . '/src/',
+        __DIR__ . '/includes/',
+        __DIR__ . '/',
+        dirname(__DIR__) . '/',
+    ];
+
+    $fileRelative = str_replace('\\', '/', $relativeClass) . '.php';
+    foreach ($candidateDirs as $dir) {
+        $fullPath = $dir . $fileRelative;
+        if (file_exists($fullPath)) {
+            require_once $fullPath;
             return;
         }
+    }
+});
 
-        $relativeClass = substr($class, $len);
-
-        if (str_starts_with($relativeClass, 'WordPress\\')) {
-            $localClass = substr($relativeClass, strlen('WordPress\\'));
-            $localFile = __DIR__ . '/' . str_replace('\\', '/', $localClass) . '.php';
-            if (file_exists($localFile)) {
-                require_once $localFile;
-                return;
-            }
-        }
-
-        $candidateDirs = [
-            __DIR__ . '/src/',
-            __DIR__ . '/includes/',
-            __DIR__ . '/',
-            dirname(__DIR__) . '/',
-        ];
-
-        $fileRelative = str_replace('\\', '/', $relativeClass) . '.php';
-        foreach ($candidateDirs as $dir) {
-            $fullPath = $dir . $fileRelative;
-            if (file_exists($fullPath)) {
-                require_once $fullPath;
-                return;
-            }
-        }
-    });
+if (file_exists(__DIR__ . '/WpDbStore.php')) {
+    require_once __DIR__ . '/WpDbStore.php';
 }
 
 // 2. Plugin activation: Create the SQL cache table.
@@ -433,14 +443,22 @@ add_action('wp_enqueue_scripts', 'fingerprint_enqueue_client_telemetry');
 add_action('login_enqueue_scripts', 'fingerprint_enqueue_client_telemetry');
 
 function fingerprint_enqueue_client_telemetry(): void {
-    global $fingerprint_foreign_env_honeypot_fields, $fingerprint_foreign_env_trap_urls;
+    global $fingerprint_foreign_env_honeypot_fields, $fingerprint_foreign_env_trap_urls, $fingerprint_security_profiles;
 
-    $scriptUrl = plugin_dir_url(__FILE__) . 'assets/fingerprint.client.js';
-    $scriptPath = plugin_dir_path(__FILE__) . 'assets/fingerprint.client.js';
+    $scriptUrl = ANONYMPINS_BOT_MITIGATION_URL . 'assets/fingerprint.client.js';
+    $scriptPath = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fingerprint.client.js';
 
     if (!file_exists($scriptPath)) {
         return;
     }
+
+    $effective = fingerprint_get_effective_profiles($fingerprint_security_profiles);
+    $frontendConfig = SecurityProfiles::createSecurityProfile($effective['frontend']['profile'], $effective['frontend']['overrides'] ?? []);
+
+    $wasmFile = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fp.wasm';
+    $wasmInstalled = file_exists($wasmFile);
+    $wasmConfigured = !empty($frontendConfig['wasm']);
+    $isWasmActive = $wasmInstalled && $wasmConfigured;
 
     $version = filemtime($scriptPath) ?: ANONYMPINS_BOT_MITIGATION_VERSION;
     wp_enqueue_script('fingerprint-client-telemetry', $scriptUrl, [], (string)$version, false);
@@ -458,6 +476,8 @@ function fingerprint_enqueue_client_telemetry(): void {
         'fetch'        => [
             'handleChallenges' => true,
         ],
+        'wasm'         => $isWasmActive,
+        'wasmPath'     => $isWasmActive ? ANONYMPINS_BOT_MITIGATION_URL . 'assets/fp.wasm' : '',
     ];
 
     $inlineInit = 'if (window.ClientLibrary && typeof window.ClientLibrary.initializeClient === "function") {'
@@ -884,6 +904,7 @@ function fingerprint_render_admin_page(): void {
         $saved['frontend']['overrides']['challengeNewDevices'] = !empty($_POST['frontend_challenge_new']);
         $saved['frontend']['overrides']['verbose']             = !empty($_POST['frontend_verbose']);
         $saved['frontend']['overrides']['honeypot']['detectInjections'] = !empty($_POST['detect_injections']);
+        $saved['frontend']['overrides']['wasm']                = !empty($_POST['frontend_wasm']);
 
         foreach ($_POST as $postKey => $postVal) {
             if (str_starts_with((string)$postKey, 'weight_')) {
@@ -966,6 +987,11 @@ function fingerprint_render_admin_page(): void {
         ? (string)$savedOptions['challenge_template']
         : fingerprint_get_default_challenge_template();
 
+    $wasmPath = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fp.wasm';
+    $isWasmInstalled = file_exists($wasmPath);
+    $isWasmActive = $isWasmInstalled && !empty($frontendConfig['wasm']);
+    $wasmFileSize = $isWasmInstalled ? round((float)filesize($wasmPath) / 1024, 1) : 0.0;
+
     $store = new WpDbStore();
     $totalRows = $store->getTotalCount();
     $expiredRows = $store->getExpiredCount();
@@ -1004,6 +1030,25 @@ function fingerprint_render_admin_page(): void {
                     <p style="color:#d63638;font-weight:bold;font-size:16px;">
                         <span class="dashicons dashicons-warning"></span> <?php esc_html_e('Insecure (Unencrypted HTTP)', 'anonympins-bot-mitigation-pow'); ?>
                     </p>
+                <?php endif; ?>
+            </div>
+            <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
+                <h3 style="margin-top:0;"><?php esc_html_e('WebAssembly (WASM) status', 'anonympins-bot-mitigation-pow'); ?></h3>
+                <?php if ($isWasmActive): ?>
+                    <p style="color:#007017;font-weight:bold;font-size:16px;margin:0;">
+                        <span class="dashicons dashicons-yes-alt"></span> <?php esc_html_e('Active (SIMD128)', 'anonympins-bot-mitigation-pow'); ?>
+                    </p>
+                    <small style="color:#646970;"><?php echo esc_html(sprintf(__('Binary installed (%s KB) & enabled.', 'anonympins-bot-mitigation-pow'), (string)$wasmFileSize)); ?></small>
+                <?php elseif ($isWasmInstalled): ?>
+                    <p style="color:#dba617;font-weight:bold;font-size:16px;margin:0;">
+                        <span class="dashicons dashicons-warning"></span> <?php esc_html_e('Installed (Disabled)', 'anonympins-bot-mitigation-pow'); ?>
+                    </p>
+                    <small style="color:#646970;"><?php esc_html_e('fp.wasm found but disabled in settings.', 'anonympins-bot-mitigation-pow'); ?></small>
+                <?php else: ?>
+                    <p style="color:#d63638;font-weight:bold;font-size:16px;margin:0;">
+                        <span class="dashicons dashicons-no-alt"></span> <?php esc_html_e('Not installed', 'anonympins-bot-mitigation-pow'); ?>
+                    </p>
+                    <small style="color:#646970;"><?php esc_html_e('fp.wasm missing (run node build-wasm.js).', 'anonympins-bot-mitigation-pow'); ?></small>
                 <?php endif; ?>
             </div>
             <div style="background:#fff;padding:16px;border-radius:4px;border:1px solid #ccd0d4;">
@@ -1112,6 +1157,10 @@ function fingerprint_render_admin_page(): void {
                             <label>
                                 <input type="checkbox" name="detect_injections" value="1" <?php checked(!empty($frontendConfig['honeypot']['detectInjections'])); ?>>
                                 <?php esc_html_e('Enable recursive WAF inspection (SQL, NoSQL, Log4j, Traversal in GET/POST)', 'anonympins-bot-mitigation-pow'); ?>
+                            </label><br>
+                            <label>
+                                <input type="checkbox" name="frontend_wasm" value="1" <?php checked(!empty($frontendConfig['wasm'])); ?>>
+                                <?php esc_html_e('Enable WebAssembly (WASM) cryptographic acceleration', 'anonympins-bot-mitigation-pow'); ?>
                             </label><br>
                             <label>
                                 <input type="checkbox" name="frontend_verbose" value="1" <?php checked(!empty($frontendConfig['verbose'])); ?>>

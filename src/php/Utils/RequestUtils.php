@@ -2829,4 +2829,63 @@ class RequestUtils
 
         return min($asymptote, round($normalized, 1));
     }
+
+    /**
+     * Safely reads content from a local file path or remote URL.
+     * Uses the WordPress HTTP API (wp_remote_get) for remote endpoints and WP_Filesystem for local files.
+     *
+     * @param string $path File path or remote URL.
+     * @return string|null Content of the file/URL, or null on failure.
+     */
+    public static function readFileContent(string $path): ?string
+    {
+        if (empty($path)) {
+            return null;
+        }
+
+        // 1. Remote HTTP/HTTPS URL handling via the WordPress HTTP API
+        if (preg_match('#^https?://#i', $path)) {
+            if (function_exists('wp_remote_get')) {
+                $response = wp_remote_get($path, ['timeout' => 10]);
+                if (!is_wp_error($response) && (int)wp_remote_retrieve_response_code($response) === 200) {
+                    return wp_remote_retrieve_body($response);
+                }
+            }
+            return null;
+        }
+
+        // 2. Local file handling via the WordPress Filesystem API when available
+        if (!file_exists($path) || !is_readable($path)) {
+            return null;
+        }
+
+        global $wp_filesystem;
+        if (empty($wp_filesystem) && defined('ABSPATH')) {
+            $fileInclude = ABSPATH . 'wp-admin/includes/file.php';
+            if (file_exists($fileInclude)) {
+                require_once $fileInclude;
+                WP_Filesystem();
+            }
+        }
+
+        if (!empty($wp_filesystem) && is_object($wp_filesystem) && method_exists($wp_filesystem, 'get_contents')) {
+            $content = $wp_filesystem->get_contents($path);
+            if ($content !== false && is_string($content)) {
+                return $content;
+            }
+        }
+
+        // 3. Fallback for standalone PHP environments outside WordPress
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Fallback for non-WordPress environments
+        $handle = @fopen($path, 'rb');
+        if ($handle !== false) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread -- Stream reading fallback outside WordPress
+            $content = @stream_get_contents($handle);
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Stream close fallback outside WordPress
+            fclose($handle);
+            return $content !== false ? $content : null;
+        }
+
+        return null;
+    }
 }

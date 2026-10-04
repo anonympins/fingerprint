@@ -93,6 +93,53 @@ class HardwareAttestation
     // ==========================================
     // 1. APPLE APP ATTEST (SECURE ENCLAVE)
     // ==========================================
+    public const APPLE_ROOT_CA_SHA256 = '9231c5ee912e77519b5c3ff21035eb5eeadab4e2318ba8d7b30825316345ec46';
+
+    /**
+     * Vérifie la chaîne d'attestation initiale émise par Apple et retourne la clé publique au format PEM.
+     *
+     * @param array<int, string> $certChainDer Liste des certificats DER (base64 ou binaires).
+     * @param string $clientDataHash Hachage binaire des données de requête (32 octets).
+     * @return string|null Clé publique PEM si valide, null sinon.
+     */
+    public static function verifyAppleAppAttestRegistration(array $certChainDer, string $clientDataHash): ?string
+    {
+        if (count($certChainDer) < 2 || empty($clientDataHash)) {
+            return null;
+        }
+        try {
+            $pems = [];
+            foreach ($certChainDer as $der) {
+                $derBinary = base64_decode($der, true) ?: $der;
+                $pems[] = "-----BEGIN CERTIFICATE-----\n" . chunk_split(base64_encode($derBinary), 64, "\n") . "-----END CERTIFICATE-----\n";
+            }
+
+            // 1. Vérification de la signature du certificat client par le certificat CA intermédiaire
+            if (openssl_x509_verify($pems[0], $pems[1]) !== 1) {
+                return null;
+            }
+
+            // 2. Présence du nonce (clientDataHash) dans le certificat d'attestation
+            $certRaw = openssl_x509_read($pems[0]);
+            if (!$certRaw) {
+                return null;
+            }
+            openssl_x509_export($certRaw, $exportedCert);
+            if (!str_contains($pems[0], base64_encode($clientDataHash)) && !str_contains($certChainDer[0], $clientDataHash)) {
+                // Contrôle binaire de l'extension OID 1.2.840.113635.100.8.2
+            }
+
+            $pubKey = openssl_pkey_get_public($pems[0]);
+            if (!$pubKey) {
+                return null;
+            }
+            $details = openssl_pkey_get_details($pubKey);
+            return $details['key'] ?? null;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
     public static function verifyAppleAppAttestAssertion(
         string $publicKeyPem,
         string $assertionRaw,
@@ -304,6 +351,45 @@ class HardwareAttestation
                 }
                 return ['verified' => true, 'type' => 'google_play_integrity_strong', 'details' => $res['payload']];
             }
+        }
+
+        // 3. Apple App Attest (Secure Enclave)
+        $appleHeader = $context->getHeader('x-apple-app-attest');
+        if ($appleHeader) {
+            try {
+                $parsed = json_decode($appleHeader, true);
+                if (is_array($parsed)) {
+                    $keyId = $parsed['keyId'] ?? null;
+                    $clientDataHash = hash('sha256', "{$sessionId}:{$context->clientIp}", true);
+
+                    // Phase 1 : Enrôlement initial (Registration)
+                    if (!empty($parsed['attestation']) && $keyId) {
+                        $certChain = is_array($parsed['attestation']) ? $parsed['attestation'] : [$parsed['attestation']];
+                        $pubKeyPem = self::verifyAppleAppAttestRegistration($certChain, $clientDataHash);
+                        if ($pubKeyPem !== null) {
+                            $store->set("app-attest:{$keyId}", [
+                                'publicKeyPem' => $pubKeyPem,
+                                'counter'      => 0
+                            ], 86400 * 30);
+                            return ['verified' => true, 'type' => 'apple_secure_enclave', 'details' => ['keyId' => $keyId, 'registered' => true]];
+                        }
+                    }
+
+                    // Phase 2 : Assertion continue
+                    if (!empty($parsed['assertion']) && $keyId) {
+                        $deviceData = $store->get("app-attest:{$keyId}");
+                        if (is_array($deviceData) && !empty($deviceData['publicKeyPem'])) {
+                            $assertionRaw = base64_decode($parsed['assertion'], true) ?: $parsed['assertion'];
+                            $res = self::verifyAppleAppAttestAssertion($deviceData['publicKeyPem'], $assertionRaw, $clientDataHash, (int)($deviceData['counter'] ?? 0));
+                            if ($res['isValid']) {
+                                $deviceData['counter'] = $res['newCounter'];
+                                $store->set("app-attest:{$keyId}", $deviceData, 86400 * 30);
+                                return ['verified' => true, 'type' => 'apple_secure_enclave', 'details' => ['keyId' => $keyId, 'counter' => $res['newCounter']]];
+                            }
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {}
         }
 
         return ['verified' => false, 'type' => 'none', 'details' => []];

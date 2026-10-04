@@ -1453,12 +1453,7 @@ class ChallengeUtils
         if (defined('ANONYMPINS_BOT_MITIGATION_DIR')) {
             $wpPluginSolver = rtrim(ANONYMPINS_BOT_MITIGATION_DIR, '/\\') . '/assets/pow.solver.inline.js';
             if (file_exists($wpPluginSolver)) {
-                return (string)file_get_contents($wpPluginSolver);
-            }
-        } elseif (defined('WP_PLUGIN_DIR')) {
-            $wpPluginSolver = WP_PLUGIN_DIR . '/anonympins-bot-mitigation-pow/assets/pow.solver.inline.js';
-            if (file_exists($wpPluginSolver)) {
-                return (string)file_get_contents($wpPluginSolver);
+                return (string)RequestUtils::readFileContent($wpPluginSolver);
             }
         }
 
@@ -1471,11 +1466,27 @@ class ChallengeUtils
         ];
         foreach ($candidates as $solverPath) {
             if (file_exists($solverPath)) {
-                return file_get_contents($solverPath) ?: '';
+                return RequestUtils::readFileContent($solverPath) ?: '';
             }
         }
         self::logError("[ChallengeUtils] Error: The pow.solver.inline.js file was not found at the expected location.");
         return '';
+    }
+
+    /**
+     * Safely renders an inline script tag, using WordPress native function if available.
+     *
+     * @param string $code
+     * @param array<string, mixed> $attributes
+     * @return string
+     */
+    public static function renderScriptTag(string $code, array $attributes = []): string
+    {
+        if (function_exists('wp_get_inline_script_tag')) {
+            return wp_get_inline_script_tag($code, $attributes);
+        }
+        $tag = 'script';
+        return "<{$tag}>{$code}</{$tag}>";
     }
 
     /**
@@ -1529,7 +1540,10 @@ class ChallengeUtils
             . '}' . "\n"
             . 'solve();';
 
-        return "<html><head><title>Security check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\"><h1>Security check (level 2)</h1><p>We are verifying your storage allocation. This may take a few seconds on first load.</p><div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing storage space...</div><script>{$solverCode}</script><script>{$challengeScript}</script></body></html>";
+        return "<html><head><title>Security check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\"><h1>Security check (level 2)</h1><p>We are verifying your storage allocation. This may take a few seconds on first load.</p><div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing storage space...</div>"
+            . self::renderScriptTag($solverCode)
+            . self::renderScriptTag($challengeScript)
+            . "</body></html>";
     }
 
     /**
@@ -1628,16 +1642,18 @@ class ChallengeUtils
             . '}' . "\n"
             . 'solve();';
 
-        $htmlTemplate = '<html><head><title>Advanced security check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced verification... (level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><script><!-- FINGERPRINT_SOLVER_SCRIPT --></script><script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script><!-- FINGERPRINT_TRAPS --></body></html>';
+        $solverTag = self::renderScriptTag($solverCode);
+        $challengeTag = self::renderScriptTag($challengeScript);
+        $htmlTemplate = '<html><head><title>Advanced security check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced verification... (level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><!-- FINGERPRINT_SOLVER_SCRIPT --><!-- FINGERPRINT_CHALLENGE_SCRIPT --><!-- FINGERPRINT_TRAPS --></body></html>';
         $customTemplatePath = $securityConfig['challengePagePath'] ?? null;
 
         if ($customTemplatePath && file_exists($customTemplatePath)) {
-            $htmlTemplate = file_get_contents($customTemplatePath) ?: $htmlTemplate;
+            $htmlTemplate = RequestUtils::readFileContent($customTemplatePath) ?: $htmlTemplate;
         }
 
         return str_replace(
-            ['<!-- FINGERPRINT_SOLVER_SCRIPT -->', '<!-- FINGERPRINT_CHALLENGE_SCRIPT -->', '<!-- FINGERPRINT_TRAPS -->'],
-            [$solverCode, $challengeScript, $trapContainerHtml],
+            ['<!-- FINGERPRINT_SOLVER_SCRIPT -->', '<!-- FINGERPRINT_CHALLENGE_SCRIPT -->', '<!-- FINGERPRINT_TRAPS -->', '<script><!-- FINGERPRINT_SOLVER_SCRIPT --></script>', '<script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script>'],
+            [$solverTag, $challengeTag, $trapContainerHtml, $solverTag, $challengeTag],
             $htmlTemplate
         );
     }

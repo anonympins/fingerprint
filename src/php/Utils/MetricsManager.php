@@ -189,8 +189,9 @@ class MetricsManager
         // 3. Auto-load latest auto-tuning solution from cache/file if not provided
         if ($lastBestSolution === null && isset($securityConfig['autotuning']['savePath'])) {
             $savePath = $securityConfig['autotuning']['savePath'];
-            if (file_exists($savePath)) {
-                $savedData = json_decode(file_get_contents($savePath), true);
+            $savedContent = RequestUtils::readFileContent($savePath);
+            if ($savedContent !== null) {
+                $savedData = json_decode($savedContent, true);
                 if (is_array($savedData) && isset($savedData['objectives'])) {
                     $lastBestSolution = $savedData;
                 }

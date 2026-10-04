@@ -618,6 +618,10 @@ class FingerprintEngine:
                 self.thresholds.update(best["thresholds"])
             if "weights" in best and isinstance(best["weights"], dict):
                 self.weights.update(best["weights"])
+            if "challengeTtl" in best:
+                self.config["challengeTtl"] = best["challengeTtl"]
+            if "cpu" in best and isinstance(best["cpu"], dict):
+                self.config.setdefault("cpu", {}).update(best["cpu"])
         return res
 
     def _build_allowlist(self) -> BlockList:

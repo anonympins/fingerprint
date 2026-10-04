@@ -91,11 +91,18 @@ def sanitize_traffic_data(traffic_data: List[Dict[str, Any]]) -> List[Dict[str, 
 
 
 class Individual:
-    def __init__(self, thresholds: Optional[Dict[str, float]] = None, weights: Optional[Dict[str, float]] = None, patterns: Optional[Dict[str, float]] = None):
+    def __init__(
+        self,
+        thresholds: Optional[Dict[str, float]] = None,
+        weights: Optional[Dict[str, float]] = None,
+        patterns: Optional[Dict[str, float]] = None,
+        pow_config: Optional[Dict[str, Any]] = None,
+    ):
         self.thresholds = thresholds or {}
         self.weights = weights or {}
         self.objectives = [0.0, 0.0]
         self.patterns = patterns or {}
+        self.pow_config = pow_config or {}
         self.rank = 0
         self.domination_count = 0
         self.dominated_solutions = []
@@ -337,14 +344,26 @@ class OptimizationOperators:
 
         def create_individual() -> Dict[str, Any]:
             if current_config:
-                ind = {"thresholds": {}, "weights": {}, "patterns": {}}
-                for section in ("thresholds", "weights", "patterns"):
+                ind = {
+                    "thresholds": {},
+                    "weights": copy.deepcopy(current_config.get("weights", {})),
+                    "patterns": {},
+                    "pow": {},
+                }
+                for section in ("thresholds", "patterns"):
                     if section in current_config:
                         for k, v in current_config[section].items():
-                            if isinstance(v, (int, float)) and k != "honeypotScore":
+                            if isinstance(v, (int, float)):
                                 ind[section][k] = v * (1.0 + random.uniform(-0.25, 0.25))
                             else:
                                 ind[section][k] = v
+                cpu_cfg = current_config.get("cpu", {})
+                base_ttl = current_config.get("challengeTtl", 300)
+                ind["pow"] = {
+                    "challengeTtl": max(60, min(900, int(base_ttl * (1.0 + random.uniform(-0.2, 0.2))))),
+                    "minDifficultyBits": max(4, min(16, int(cpu_cfg.get("minDifficultyBits", 8) + random.choice([-1, 0, 1])))),
+                    "maxDifficultyBits": max(16, min(28, int(cpu_cfg.get("maxDifficultyBits", 22) + random.choice([-1, 0, 1])))),
+                }
                 if "low" in ind["thresholds"] and "medium" in ind["thresholds"] and "high" in ind["thresholds"]:
                     ind["thresholds"]["low"] = max(10.0, min(35.0, ind["thresholds"]["low"]))
                     ind["thresholds"]["medium"] = max(ind["thresholds"]["low"] + 5.0, min(70.0, ind["thresholds"]["medium"]))
@@ -352,51 +371,56 @@ class OptimizationOperators:
                 return ind
             return {
                 "thresholds": {"low": 15 + random.random() * 20, "medium": 40 + random.random() * 25, "high": 70 + random.random() * 20},
-                "weights": {
-                    "historyScore": random.random(), "rotationScore": random.random(), "headerAnomalyScore": random.random(),
-                    "requestPatternScore": 0.5 + random.random(), "inconsistencyScore": random.random(), "honeypotScore": 1.0,
-                    "behaviorScore": random.random(), "crossLayerInconsistencyScore": random.random(), "timeInconsistencyScore": random.random(),
-                    "tlsSpoofingScore": random.random(), "botScore": random.random(), "cookieDroppingScore": random.random(),
-                    "threatIntelScore": random.random(), "clientHintsInconsistencyScore": random.random(), "clickVarianceScore": random.random(),
-                    "subnetScore": random.random(), "ipReputationScore": random.random(), "botnetClusterScore": random.random(),
-                    "tcpAnomalyScore": random.random(), "protocolAnomalyScore": random.random(), "quicAnomalyScore": random.random(),
-                    "renderingAnomalyScore": random.random(), "virtualizationScore": random.random(),
-                    "mtuAnomalyScore": random.random(), "graphTopologyScore": random.random()
-                },
+                "weights": {},
                 "patterns": {
                     "velocityThreshold": 100 + random.random() * 400, "burstThreshold": 300 + random.random() * 700,
                     "scrapeThreshold": 500 + random.random() * 1000, "regularityThreshold": 50 + random.random() * 200,
                     "decayFactor": 0.85 + random.random() * 0.14, "inactivityReset": 15000 + random.random() * 45000
-                }
+                },
+                "pow": {
+                    "challengeTtl": random.randint(180, 420),
+                    "minDifficultyBits": random.randint(6, 12),
+                    "maxDifficultyBits": random.randint(18, 24),
+                },
             }
 
         def crossover(c1: Dict[str, Any], c2: Dict[str, Any]) -> Dict[str, Any]:
             child = copy.deepcopy(c1)
-            for section in ("thresholds", "weights", "patterns"):
-                for k in child[section]:
-                    if k != "honeypotScore":
-                        child[section][k] = (c1[section][k] + c2[section][k]) / 2.0
+            for section in ("thresholds", "patterns", "pow"):
+                if section in child and section in c2:
+                    for k in child[section]:
+                        if k in c2[section] and isinstance(child[section][k], (int, float)):
+                            child[section][k] = (c1[section][k] + c2[section][k]) / 2.0
             return child
 
         def mutate(c: Dict[str, Any]) -> Dict[str, Any]:
             new_config = copy.deepcopy(c)
-            sections = [{"name": "patterns", "weight": 0.5}, {"name": "weights", "weight": 0.35}, {"name": "thresholds", "weight": 0.15}]
+            # Les poids restent invariants pour préserver la baseline multi-couches
+            sections = [
+                {"name": "thresholds", "weight": 0.45},
+                {"name": "pow", "weight": 0.35},
+                {"name": "patterns", "weight": 0.20},
+            ]
             rand = random.random()
             cumulative = 0.0
-            section_to_mutate = "patterns"
+            section_to_mutate = "thresholds"
             for section in sections:
                 cumulative += section["weight"]
                 if rand < cumulative:
                     section_to_mutate = section["name"]
                     break
-            keys = list(new_config[section_to_mutate].keys())
-            key_to_mutate = random.choice(keys)
-            if key_to_mutate == "honeypotScore":
+            keys = list(new_config.get(section_to_mutate, {}).keys())
+            if not keys:
                 return new_config
+            key_to_mutate = random.choice(keys)
             mutation_amount = (random.random() - 0.5) * 0.4
-            new_config[section_to_mutate][key_to_mutate] *= (1.0 + mutation_amount)
-            if section_to_mutate == "weights":
-                new_config[section_to_mutate][key_to_mutate] = max(0.0, min(1.5, new_config[section_to_mutate][key_to_mutate]))
+            if section_to_mutate == "pow":
+                if key_to_mutate == "challengeTtl":
+                    new_config["pow"][key_to_mutate] = max(60, min(900, int(new_config["pow"][key_to_mutate] * (1.0 + mutation_amount))))
+                elif key_to_mutate in ("minDifficultyBits", "maxDifficultyBits"):
+                    new_config["pow"][key_to_mutate] = max(4, min(28, int(new_config["pow"][key_to_mutate] + random.choice([-1, 1]))))
+            else:
+                new_config[section_to_mutate][key_to_mutate] *= (1.0 + mutation_amount)
             return new_config
 
         return Optimization.genetic_algorithm_multi_objective(create_individual, fitness_fn, crossover, mutate, options)
@@ -502,32 +526,48 @@ class AutoTuner:
 
         pareto_front = self.solve_full_security_tuning(sanitized_data)
         if not pareto_front: return
-        filtered_front = [ind for ind in pareto_front if self.is_valid_security_config(ind.thresholds, ind.weights)] or pareto_front
+        filtered_front = [
+            ind for ind in pareto_front
+            if self.is_valid_security_config(ind.thresholds, ind.weights) and self.is_valid_pow_config(ind.pow_config)
+        ] or pareto_front
         best_solution = min(filtered_front, key=lambda ind: math.sqrt(ind.objectives[0]**2 + ind.objectives[1]**2))
         traffic_confidence = min(1.5, max(0.3, high_confidence_ratio * 4.0))
 
         temp_thresholds = dict(self.security_config.get("thresholds", {}))
-        temp_weights = dict(self.security_config.get("weights", {}))
         temp_patterns = dict(self.security_config.get("patterns", {}))
+        temp_pow = {
+            "challengeTtl": self.security_config.get("challengeTtl", 300),
+            "minDifficultyBits": self.security_config.get("cpu", {}).get("minDifficultyBits", 8),
+            "maxDifficultyBits": self.security_config.get("cpu", {}).get("maxDifficultyBits", 22),
+        }
         self.apply_inertial_update(temp_thresholds, best_solution.thresholds, "thresholds", traffic_confidence)
-        self.apply_inertial_update(temp_weights, best_solution.weights, "weights", traffic_confidence)
         self.apply_inertial_update(temp_patterns, best_solution.patterns, "patterns", traffic_confidence)
+        self.apply_inertial_update(temp_pow, best_solution.pow_config, "pow", traffic_confidence)
 
-        current_obj = self.evaluate_fitness(self.security_config.get("thresholds", {}), self.security_config.get("weights", {}), sanitized_data)
-        proposed_obj = self.evaluate_fitness(temp_thresholds, temp_weights, sanitized_data)
+        current_weights = self.security_config.get("weights", {})
+        current_obj = self.evaluate_fitness(self.security_config.get("thresholds", {}), current_weights, sanitized_data, temp_pow)
+        proposed_obj = self.evaluate_fitness(temp_thresholds, current_weights, sanitized_data, temp_pow)
         if proposed_obj[0] > current_obj[0] + self.validation_tolerance or proposed_obj[1] > current_obj[1] + self.validation_tolerance:
             return
 
         self.security_config.setdefault("thresholds", {})
-        self.security_config.setdefault("weights", {})
         self.security_config.setdefault("patterns", {})
+        self.security_config.setdefault("cpu", {})
         self.apply_inertial_update(self.security_config["thresholds"], best_solution.thresholds, "thresholds", traffic_confidence)
-        self.apply_inertial_update(self.security_config["weights"], best_solution.weights, "weights", traffic_confidence)
         self.apply_inertial_update(self.security_config["patterns"], best_solution.patterns, "patterns", traffic_confidence)
+        self.apply_inertial_update(temp_pow, best_solution.pow_config, "pow", traffic_confidence)
+        self.security_config["challengeTtl"] = temp_pow["challengeTtl"]
+        self.security_config["cpu"]["minDifficultyBits"] = temp_pow["minDifficultyBits"]
+        self.security_config["cpu"]["maxDifficultyBits"] = temp_pow["maxDifficultyBits"]
 
         self.last_best_solution = {
-            "thresholds": self.security_config["thresholds"], "weights": self.security_config["weights"],
-            "patterns": self.security_config["patterns"], "objectives": best_solution.objectives
+            "thresholds": self.security_config["thresholds"],
+            "weights": self.security_config.get("weights", {}),
+            "patterns": self.security_config.get("patterns", {}),
+            "challengeTtl": self.security_config["challengeTtl"],
+            "cpu": self.security_config["cpu"],
+            "pow": temp_pow,
+            "objectives": best_solution.objectives,
         }
         AutoTuner._last_best_solution = self.last_best_solution
         if self.save_path:
@@ -571,7 +611,15 @@ class AutoTuner:
         block = thresholds.get("block", 0.0)
         return 10 <= low <= 35 and low + 5 <= medium <= 70 and medium + 5 <= high <= 90 and high + 5 <= block <= 99
 
-    def apply_inertial_update(self, current: Dict[str, Any], target: Dict[str, float], type_: str, confidence: float) -> None:
+    def is_valid_pow_config(self, pow_config: Optional[Dict[str, Any]]) -> bool:
+        if not pow_config:
+            return True
+        ttl = pow_config.get("challengeTtl", 300)
+        min_b = pow_config.get("minDifficultyBits", 8)
+        max_b = pow_config.get("maxDifficultyBits", 22)
+        return 60 <= ttl <= 900 and 4 <= min_b <= 16 and min_b <= max_b <= 28
+
+    def apply_inertial_update(self, current: Dict[str, Any], target: Dict[str, Any], type_: str, confidence: float) -> None:
         learning_rate = max(0.02, min(0.40, 0.15 * confidence))
         for key in current.keys():
             if key in target:
@@ -579,19 +627,27 @@ class AutoTuner:
                 tar_val = float(target[key])
                 updated = cur_val + (tar_val - cur_val) * learning_rate
                 if type_ == "weights":
-                    current[key] = max(0.05, min(1.8, updated))
+                    pass  # Poids strictement invariants sur trafic hétérogène
                 elif type_ == "thresholds":
                     current[key] = int(round(updated))
                 elif type_ == "patterns":
                     current[key] = updated
+                elif type_ == "pow":
+                    if key == "challengeTtl":
+                        current[key] = max(60, min(900, int(round(updated))))
+                    elif key in ("minDifficultyBits", "maxDifficultyBits"):
+                        current[key] = max(4, min(28, int(round(updated))))
         if type_ == "thresholds":
             low = max(10, min(35, int(current.get("low", 20))))
             medium = max(low + 8, min(65, int(current.get("medium", 45))))
             high = max(medium + 8, min(85, int(current.get("high", 75))))
             block = max(high + 8, min(98, int(current.get("block", 95))))
             current.update({"low": low, "medium": medium, "high": high, "block": block})
+        elif type_ == "pow":
+            if current.get("minDifficultyBits", 8) > current.get("maxDifficultyBits", 22):
+                current["minDifficultyBits"] = max(4, current.get("maxDifficultyBits", 22) - 2)
 
-    def evaluate_fitness(self, thresholds: Dict[str, Any], weights: Dict[str, Any], traffic_data: List[Dict[str, Any]]) -> List[float]:
+    def evaluate_fitness(self, thresholds: Dict[str, Any], weights: Dict[str, Any], traffic_data: List[Dict[str, Any]], pow_config: Optional[Dict[str, Any]] = None) -> List[float]:
         threat_profiles = {
             "account_takeover": {"importance": 10.0, "ux_ratio": 0.1, "indicators": ["requestPatternScore", "behaviorScore", "timeInconsistencyScore", "clickVarianceScore"]},
             "active_exploitation": {"importance": 8.0, "ux_ratio": 0.2, "indicators": ["honeypotScore", "headerAnomalyScore"]},
@@ -636,7 +692,18 @@ class AutoTuner:
             weighted_fnr += fnr * weight * (1.0 - profile["ux_ratio"])
 
         margin_penalty = max(0.0, max_human_score - min_bot_score) / 100.0
-        return [weighted_fpr, weighted_fnr + margin_penalty]
+        pow_penalty = 0.0
+        if pow_config:
+            min_bits = pow_config.get("minDifficultyBits", 8)
+            max_bits = pow_config.get("maxDifficultyBits", 22)
+            ttl = pow_config.get("challengeTtl", 300)
+            if min_bits > 14:
+                pow_penalty += (min_bits - 14) * 0.015
+            if ttl < 90:
+                pow_penalty += 0.02
+            if max_bits < min_bits:
+                pow_penalty += 0.1
+        return [weighted_fpr + pow_penalty, weighted_fnr + margin_penalty]
 
     def solve_full_security_tuning(self, traffic_data: List[Dict[str, Any]]) -> List[Individual]:
         population = [self.random_individual() for _ in range(50)]
@@ -649,7 +716,7 @@ class AutoTuner:
                 child = self.crossover(random.choice(population), random.choice(population))
                 if random.random() < 0.1:
                     self.mutate(child)
-                child.objectives = self.evaluate_fitness(child.thresholds, child.weights, traffic_data)
+                child.objectives = self.evaluate_fitness(child.thresholds, child.weights, traffic_data, child.pow_config)
                 offspring.append(child)
 
             combined = population + offspring
@@ -671,21 +738,44 @@ class AutoTuner:
         high = medium + 10 + random.randint(0, 20)
         block = high + 8 + random.randint(0, 10)
         ind.thresholds = {"low": low, "medium": medium, "high": high, "block": block}
-        ind.weights = {k: float(v) for k, v in self.security_config.get("weights", {}).items()}
+        # Maintien strict de l'invariance des poids
+        ind.weights = copy.deepcopy(self.security_config.get("weights", {}))
         ind.patterns = {k: v * (0.5 + random.random()) if isinstance(v, (int, float)) else v for k, v in self.security_config.get("patterns", {}).items()}
+        cpu_cfg = self.security_config.get("cpu", {})
+        base_ttl = self.security_config.get("challengeTtl", 300)
+        base_min = cpu_cfg.get("minDifficultyBits", 8)
+        base_max = cpu_cfg.get("maxDifficultyBits", 22)
+        ind.pow_config = {
+            "challengeTtl": max(60, min(900, int(base_ttl + random.randint(-60, 60)))),
+            "minDifficultyBits": max(4, min(16, int(base_min + random.randint(-2, 2)))),
+            "maxDifficultyBits": max(16, min(28, int(base_max + random.randint(-2, 2)))),
+        }
         return ind
 
     def crossover(self, p1: Individual, p2: Individual) -> Individual:
         child = Individual()
         child.thresholds = {k: int(round((p1.thresholds[k] + p2.thresholds[k]) / 2.0)) for k in p1.thresholds}
-        child.weights = copy.deepcopy(p1.weights)
+        child.weights = copy.deepcopy(self.security_config.get("weights", {}))
         child.patterns = copy.deepcopy(p1.patterns)
+        child.pow_config = {
+            k: int(round((p1.pow_config.get(k, 0) + p2.pow_config.get(k, 0)) / 2.0))
+            for k in p1.pow_config
+        }
         return child
 
     def mutate(self, ind: Individual) -> None:
-        if random.random() < 0.5:
+        target = random.choice(["thresholds", "pow_config"])
+        if target == "thresholds" and ind.thresholds:
             k = random.choice(list(ind.thresholds.keys()))
             ind.thresholds[k] = max(10, ind.thresholds[k] + random.choice([2, -2]))
+        elif target == "pow_config" and ind.pow_config:
+            k = random.choice(list(ind.pow_config.keys()))
+            if k == "challengeTtl":
+                ind.pow_config[k] = max(60, min(900, ind.pow_config[k] + random.choice([30, -30])))
+            elif k in ("minDifficultyBits", "maxDifficultyBits"):
+                ind.pow_config[k] = max(4, min(28, ind.pow_config[k] + random.choice([1, -1])))
+                if ind.pow_config.get("minDifficultyBits", 8) > ind.pow_config.get("maxDifficultyBits", 22):
+                    ind.pow_config["minDifficultyBits"] = ind.pow_config["maxDifficultyBits"] - 2
 
     def non_dominated_sort(self, population: List[Individual]) -> List[List[Individual]]:
         fronts = [[]]
