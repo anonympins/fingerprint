@@ -49,6 +49,8 @@ if (file_exists($zipFile)) {
 // 2. Copy main WordPress plugin files
 copy($wpDir . '/anonympins-bot-mitigation-pow.php', $buildDir . '/anonympins-bot-mitigation-pow.php');
 copy($wpDir . '/WpDbStore.php', $buildDir . '/WpDbStore.php');
+@mkdir($buildDir . '/src/WordPress', 0777, true);
+copy($wpDir . '/WpDbStore.php', $buildDir . '/src/WordPress/WpDbStore.php');
 if (file_exists($wpDir . '/readme.txt')) {
     copy($wpDir . '/readme.txt', $buildDir . '/readme.txt');
 }
@@ -143,6 +145,7 @@ if (is_dir($configSourceDir)) {
 
 // 4. Recursively copy PHP library (src/php -> build/src), excluding dev folders
 $excludeDirs = ['WordPress', 'Tests', 'bin'];
+$excludeFiles = ['FingerprintClient.php'];
 $phpIterator = new RecursiveIteratorIterator(
     new RecursiveDirectoryIterator($phpSrcDir, FilesystemIterator::SKIP_DOTS),
     RecursiveIteratorIterator::SELF_FIRST
@@ -153,6 +156,10 @@ foreach ($phpIterator as $item) {
     $topDir = explode(DIRECTORY_SEPARATOR, str_replace('/', DIRECTORY_SEPARATOR, $relativePath))[0];
 
     if (in_array($topDir, $excludeDirs, true)) {
+        continue;
+    }
+
+    if (in_array($item->getFilename(), $excludeFiles, true)) {
         continue;
     }
 

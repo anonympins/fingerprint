@@ -28,8 +28,16 @@ if (!defined('ANONYMPINS_BOT_MITIGATION_VERSION')) {
     define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.8.3');
 }
 
+if (!defined('ANONYMPINS_BOT_MITIGATION_FILE')) {
+    define('ANONYMPINS_BOT_MITIGATION_FILE', __FILE__);
+}
+
 if (!defined('ANONYMPINS_BOT_MITIGATION_DIR')) {
-    define('ANONYMPINS_BOT_MITIGATION_DIR', plugin_dir_path(__FILE__));
+    define('ANONYMPINS_BOT_MITIGATION_DIR', plugin_dir_path(ANONYMPINS_BOT_MITIGATION_FILE));
+}
+
+if (!defined('ANONYMPINS_BOT_MITIGATION_URL')) {
+    define('ANONYMPINS_BOT_MITIGATION_URL', plugin_dir_url(ANONYMPINS_BOT_MITIGATION_FILE));
 }
 
 // =============================================================================
@@ -171,52 +179,54 @@ function fingerprint_get_default_challenge_template(): string {
 }
 
 // 1. PSR-4 autoloader for the Fingerprint engine.
-if (!class_exists(DirectFingerprint::class)) {
-    $fingerprint_composer_paths = [
-        __DIR__ . '/vendor/autoload.php',
-        (defined('ABSPATH') ? ABSPATH . 'vendor/autoload.php' : ''),
-    ];
-    foreach ($fingerprint_composer_paths as $fingerprint_composer_path) {
-        if (!empty($fingerprint_composer_path) && file_exists($fingerprint_composer_path)) {
-            require_once $fingerprint_composer_path;
-            break;
+$fingerprint_composer_paths = [
+    __DIR__ . '/vendor/autoload.php',
+    (defined('ABSPATH') ? ABSPATH . 'vendor/autoload.php' : ''),
+];
+foreach ($fingerprint_composer_paths as $fingerprint_composer_path) {
+    if (!empty($fingerprint_composer_path) && file_exists($fingerprint_composer_path)) {
+        require_once $fingerprint_composer_path;
+        break;
+    }
+}
+
+spl_autoload_register(function (string $class): void {
+    $prefix = 'Anonympins\\Fingerprint\\';
+    $len = strlen($prefix);
+    if (strncmp($prefix, $class, $len) !== 0) {
+        return;
+    }
+
+    $relativeClass = substr($class, $len);
+
+    if (str_starts_with($relativeClass, 'WordPress\\')) {
+        $localClass = substr($relativeClass, strlen('WordPress\\'));
+        $localFile = __DIR__ . '/' . str_replace('\\', '/', $localClass) . '.php';
+        if (file_exists($localFile)) {
+            require_once $localFile;
+            return;
         }
     }
 
-    spl_autoload_register(function (string $class): void {
-        $prefix = 'Anonympins\\Fingerprint\\';
-        $len = strlen($prefix);
-        if (strncmp($prefix, $class, $len) !== 0) {
+    $candidateDirs = [
+        __DIR__ . '/src/',
+        __DIR__ . '/includes/',
+        __DIR__ . '/',
+        dirname(__DIR__) . '/',
+    ];
+
+    $fileRelative = str_replace('\\', '/', $relativeClass) . '.php';
+    foreach ($candidateDirs as $dir) {
+        $fullPath = $dir . $fileRelative;
+        if (file_exists($fullPath)) {
+            require_once $fullPath;
             return;
         }
+    }
+});
 
-        $relativeClass = substr($class, $len);
-
-        if (str_starts_with($relativeClass, 'WordPress\\')) {
-            $localClass = substr($relativeClass, strlen('WordPress\\'));
-            $localFile = __DIR__ . '/' . str_replace('\\', '/', $localClass) . '.php';
-            if (file_exists($localFile)) {
-                require_once $localFile;
-                return;
-            }
-        }
-
-        $candidateDirs = [
-            __DIR__ . '/src/',
-            __DIR__ . '/includes/',
-            __DIR__ . '/',
-            dirname(__DIR__) . '/',
-        ];
-
-        $fileRelative = str_replace('\\', '/', $relativeClass) . '.php';
-        foreach ($candidateDirs as $dir) {
-            $fullPath = $dir . $fileRelative;
-            if (file_exists($fullPath)) {
-                require_once $fullPath;
-                return;
-            }
-        }
-    });
+if (file_exists(__DIR__ . '/WpDbStore.php')) {
+    require_once __DIR__ . '/WpDbStore.php';
 }
 
 // 2. Plugin activation: Create the SQL cache table.
@@ -435,8 +445,8 @@ add_action('login_enqueue_scripts', 'fingerprint_enqueue_client_telemetry');
 function fingerprint_enqueue_client_telemetry(): void {
     global $fingerprint_foreign_env_honeypot_fields, $fingerprint_foreign_env_trap_urls;
 
-    $scriptUrl = plugin_dir_url(__FILE__) . 'assets/fingerprint.client.js';
-    $scriptPath = plugin_dir_path(__FILE__) . 'assets/fingerprint.client.js';
+    $scriptUrl = ANONYMPINS_BOT_MITIGATION_URL . 'assets/fingerprint.client.js';
+    $scriptPath = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fingerprint.client.js';
 
     if (!file_exists($scriptPath)) {
         return;

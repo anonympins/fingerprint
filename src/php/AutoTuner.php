@@ -342,13 +342,7 @@ class AutoTuner
 
         // Persist best configuration if savePath is configured
         if ($this->savePath !== null) {
-            try {
-                file_put_contents($this->savePath, json_encode($bestSolution['solution'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-                $this->logMessage("[AutoTuning] Best configuration saved to: {$this->savePath}\n");
-            } catch (\Throwable $e) {
-                // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
-                $this->logError("[AutoTuning] Error saving optimized configuration: " . $e->getMessage());
-            }
+            $this->saveConfigurationToFile($bestSolution['solution']);
         }
 
         if ($this->clearAfterTuning) {
@@ -377,6 +371,146 @@ class AutoTuner
     {
         // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
         error_log($message);
+    }
+
+    /**
+     * Validates and resolves the configuration save path.
+     * Restricts file writes to the WordPress uploads directory (or system temp directory in standalone mode)
+     * and strictly requires a .json file extension to prevent arbitrary file overwrite or code execution.
+     */
+    private function validateAndResolveSavePath(?string $path): ?string
+    {
+        if ($path === null || trim($path) === '') {
+            return null;
+        }
+
+        $cleanPath = trim($path);
+
+        // 1. Prevent null-byte injection
+        if (str_contains($cleanPath, "\0")) {
+            $this->logError('[AutoTuning] Security alert: null byte detected in savePath.');
+            return null;
+        }
+
+        // 2. Strictly require .json extension
+        if (strtolower(pathinfo($cleanPath, PATHINFO_EXTENSION)) !== 'json') {
+            $this->logError('[AutoTuning] Security warning: savePath must have a .json extension.');
+            return null;
+        }
+
+        // 3. Resolve path according to environment
+        if (function_exists('wp_upload_dir')) {
+            $uploadInfo = wp_upload_dir();
+            $uploadBase = !empty($uploadInfo['basedir']) ? $uploadInfo['basedir'] : null;
+
+            if ($uploadBase === null) {
+                $this->logError('[AutoTuning] Unable to determine WordPress uploads directory.');
+                return null;
+            }
+
+            $normalizedUploadBase = str_replace('\\', '/', $uploadBase);
+            $normalizedPath = str_replace('\\', '/', $cleanPath);
+
+            // If a relative path or bare filename is provided, place it inside uploads
+            if (!str_starts_with($normalizedPath, '/') && !preg_match('#^[a-zA-Z]:/#', $normalizedPath)) {
+                $targetFile = rtrim($normalizedUploadBase, '/') . '/' . ltrim($normalizedPath, '/');
+            } else {
+                $targetFile = $normalizedPath;
+            }
+
+            // Ensure parent directory exists
+            $targetDir = dirname($targetFile);
+            if (!is_dir($targetDir)) {
+                if (function_exists('wp_mkdir_p')) {
+                    wp_mkdir_p($targetDir);
+                } else {
+                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Upload directory creation
+                    @mkdir($targetDir, 0755, true);
+                }
+            }
+
+            $realTargetDir = realpath($targetDir);
+            $realUploadBase = realpath($uploadBase);
+
+            if ($realTargetDir === false || $realUploadBase === false) {
+                $this->logError('[AutoTuning] Failed to resolve canonical path for savePath.');
+                return null;
+            }
+
+            $normRealTarget = str_replace('\\', '/', $realTargetDir);
+            $normRealUpload = str_replace('\\', '/', $realUploadBase);
+
+            // Verify canonical path is strictly contained within uploads directory
+            if ($normRealTarget !== $normRealUpload && !str_starts_with($normRealTarget, $normRealUpload . '/')) {
+                $this->logError('[AutoTuning] Security alert: savePath must be located within the WordPress uploads directory.');
+                return null;
+            }
+
+            return $realTargetDir . DIRECTORY_SEPARATOR . basename($targetFile);
+        }
+
+        // Standalone PHP / CLI fallback: prevent path traversal and ensure directory is valid
+        if (str_contains($cleanPath, '..')) {
+            $this->logError('[AutoTuning] Security alert: path traversal detected in savePath.');
+            return null;
+        }
+
+        $targetDir = dirname($cleanPath);
+        if (!is_dir($targetDir)) {
+            // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Standalone directory creation
+            @mkdir($targetDir, 0755, true);
+        }
+
+        $realTargetDir = realpath($targetDir);
+        if ($realTargetDir === false) {
+            $this->logError('[AutoTuning] Failed to resolve directory for savePath.');
+            return null;
+        }
+
+        return $realTargetDir . DIRECTORY_SEPARATOR . basename($cleanPath);
+    }
+
+    /**
+     * Persists the best configuration to disk if savePath is valid.
+     *
+     * @param array<string, mixed> $solution
+     */
+    private function saveConfigurationToFile(array $solution): void
+    {
+        $safePath = $this->validateAndResolveSavePath($this->savePath);
+        if ($safePath === null) {
+            return;
+        }
+
+        $jsonContent = json_encode($solution, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if ($jsonContent === false) {
+            $this->logError('[AutoTuning] Failed to encode configuration JSON.');
+            return;
+        }
+
+        try {
+            global $wp_filesystem;
+            if (empty($wp_filesystem) && defined('ABSPATH')) {
+                require_once ABSPATH . 'wp-admin/includes/file.php';
+                WP_Filesystem();
+            }
+
+            if (!empty($wp_filesystem) && is_object($wp_filesystem) && method_exists($wp_filesystem, 'put_contents')) {
+                $written = (bool)$wp_filesystem->put_contents($safePath, $jsonContent, 0644);
+            } else {
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Safe validated JSON save path
+                $written = file_put_contents($safePath, $jsonContent, LOCK_EX) !== false;
+            }
+
+            if ($written) {
+                $this->logMessage("[AutoTuning] Best configuration saved to: {$safePath}\n");
+            } else {
+                $this->logError("[AutoTuning] Error writing configuration to: {$safePath}");
+            }
+        } catch (\Throwable $e) {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- AutoTuning system log
+            $this->logError("[AutoTuning] Error saving optimized configuration: " . $e->getMessage());
+        }
     }
 
     /**

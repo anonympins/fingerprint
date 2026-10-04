@@ -194,7 +194,8 @@ class FingerprintEngine
             $savePath = $securityConfig['autotuning']['savePath'];
             if (file_exists($savePath)) {
                 try {
-                    $savedConfig = json_decode(file_get_contents($savePath), true);
+                    $rawConfig = RequestUtils::readFileContent($savePath);
+                    $savedConfig = !empty($rawConfig) ? json_decode($rawConfig, true) : null;
                     if (json_last_error() === JSON_ERROR_NONE && is_array($savedConfig)) {
                         $securityConfig = SecurityProfiles::deepMerge($securityConfig, $savedConfig);
                     }
@@ -245,7 +246,7 @@ class FingerprintEngine
 
         if (file_exists($persistentKeyPath)) {
             try {
-                $raw = (string)file_get_contents($persistentKeyPath);
+                $raw = (string)RequestUtils::readFileContent($persistentKeyPath);
                 $keys = json_decode($raw, true);
                 if (isset($keys['privateKey'], $keys['publicKey'])) {
                     Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
@@ -370,7 +371,7 @@ class FingerprintEngine
         $filePath = $configDir . '/' . $filename;
         if (file_exists($filePath)) {
             try {
-                $content = file_get_contents($filePath);
+                $content = RequestUtils::readFileContent($filePath);
                 if ($content !== false) {
                     $decoded = json_decode($content, true);
                     if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
@@ -543,7 +544,7 @@ class FingerprintEngine
         $baseWeights = $this->securityConfig['weights'] ?? [];
 
         $score = 0.0;
-        // NEW: Weight amplification logic
+        // Amplification dynamique des poids
         // If a tunnel is detected, increase the weight of other suspicious signals.
         $dynamicWeights = $baseWeights;
         if (($suspicionVector['mtuAnomalyScore'] ?? 0.0) > 50.0) {
@@ -804,7 +805,7 @@ class FingerprintEngine
         $pendingKey = "pending_cookie:" . md5($context->clientIp . '|' . $ua);
 
         if ($deviceData === null) {
-            // New user or lost/invalid cookie
+            // Nouvel utilisateur ou cookie supprimé
             $pendingDeviceId = $store->get($pendingKey);
             if ($pendingDeviceId && !$existingDeviceId) {
                 // The penalty is now added directly to the suspicion vector.
@@ -854,7 +855,7 @@ class FingerprintEngine
             $store->delete($pendingKey);
         }
 
-        // WebAuthn hardware anchor (Secure Enclave / TPM) validation
+        // Validation de l'ancrage matériel WebAuthn (Secure Enclave / TPM)
         $behaviorHeader = $context->getHeader('x-behavior-metrics');
         if (!empty($behaviorHeader) && is_string($behaviorHeader) && str_starts_with($behaviorHeader, '{')) {
             try {
@@ -918,9 +919,9 @@ class FingerprintEngine
         }
         $deviceData['lastUpdate'] = time() * 1000;
 
-        // --- Computation of the various suspicion scores ---
+        // --- Calcul des différents scores de suspicion ---
 
-        // Fingerprint inconsistency score (moved here to be with the others)
+        // Score d'incohérence d'empreinte
         $netProfile = AsnLookupEngine::getInstance()->lookup($context->clientIp);
         $currentDeviceHash = RequestUtils::getCompositeDeviceHash($context);
         $consistencyScore = FingerprintBuilder::compare($deviceData['initialDeviceHash'] ?? '', $currentDeviceHash);
@@ -937,7 +938,7 @@ class FingerprintEngine
         $tlsSpoofingScore = (float)($tlsSpoofing['tlsSpoofingScore'] ?? 0.0);
         $virtualizationScore = RequestUtils::getVirtualizationAnomalyScore($context);
 
-        // Advanced JA4 TLS Inconsistency checks
+        // Vérifications avancées d'incohérence TLS JA4
         $ja4 = $context->getHeader('x-ja4-hash');
         if ($ja4) {
             $spoofedJa4s = [
@@ -998,51 +999,51 @@ class FingerprintEngine
             }
         }
 
-        // Time inconsistency score (replay attack)
+        // Score d'incohérence temporelle (attaque par rejeu)
         $timeInconsistency = RequestUtils::getTimeInconsistencyScore($context);
 
-        // Cross-layer inconsistency score (client vs server)
+        // Score d'incohérence inter-couches (client vs serveur)
         $crossLayerInconsistency = RequestUtils::getCrossLayerInconsistency($context);
 
-        // Request pattern score (scraping, velocity)
+        // Score de cinématique des requêtes (scraping, vélocité)
         $requestPattern = RequestUtils::getRequestPatternScore($context, $deviceData, $this->securityConfig['patterns'] ?? []);
 
-        // Honeypot score
+        // Score de piège honeypot
         $honeypot = RequestUtils::getHoneypotScore($context, $this->securityConfig['honeypot'] ?? []);
 
-        // Client behavioral metrics score (mouse, keyboard)
+        // Score comportemental client (souris, clavier, tactile)
         $behavior = RequestUtils::getBehaviorScore($context);
 
-        // Explicit bot detection score (automation markers)
+        // Score de détection explicite de bot (indicateurs d'automatisation)
         $bot = RequestUtils::getBotScore($context);
 
-        // Click variance score
+        // Score de variance des clics
         $clickVariance = RequestUtils::getClickVarianceScore($context);
 
-        // Threat Intelligence score
+        // Score de threat intelligence
         $threatIntel = RequestUtils::getThreatIntelScore($context, $this->securityConfig['threatIntel'] ?? []);
 
-        // Client-Hints inconsistency score
+        // Score d'incohérence des client hints
         $clientHintsInconsistency = RequestUtils::getClientHintsInconsistencyScore($context);
 
-        // Global fingerprint similarity score (Botnet Clustering)
+        // Score de similarité globale d'empreinte (clustering de botnet)
         $stableFp = RequestUtils::extractStablePart($currentDeviceHash);
         $stableFpHash = FingerprintBuilder::cyrb53($stableFp);
 
-        // Graph Topological Session Stream scoring
+        // Score topologique de graphe de sessions en flux
         $graphTopology = RequestUtils::getGraphTopologyScore($context, $deviceId, (string)$stableFpHash);
         $botnetCluster = RequestUtils::getBotnetClusterScore($context, $stableFpHash);
 
-        // NEW: IP subnet reputation score
+        // Score de réputation du sous-réseau IP
         $subnetScore = RequestUtils::getSubnetScore($context, $deviceId, $this->securityConfig);
 
-        // TCP/IP stack anomaly score
+        // Score d'anomalie de la pile TCP/IP
         $tcpAnomaly = RequestUtils::getTcpAnomalyScore($context);
 
-        // Protocol anomaly score (HTTP/2 and QUIC)
+        // Score d'anomalie protocolaire (HTTP/2 et QUIC)
         $protocolAnomaly = RequestUtils::getProtocolAnomalyScore($context);
 
-        // Display rendering anomaly score (V-Sync)
+        // Score d'anomalie de rendu d'affichage (V-Sync)
         $renderingAnomaly = RequestUtils::getRenderingAnomalyScore($context);
 
         $mtuAnomaly = RequestUtils::getMtuAnomalyScore($context);
@@ -1327,14 +1328,14 @@ class FingerprintEngine
             return $decision;
         }
 
-        // --- ATTESTATION MATÉRIELLE CRYPTOGRAPHIQUE SOUVERAINE (DBSC / Play Integrity) ---
+        // --- Attestation matérielle cryptographique souveraine (DBSC / Play Integrity) ---
         $hwAttestation = HardwareAttestation::process($context, $deviceId, $store, $this->securityConfig);
         $hasValidHwAttestation = !empty($hwAttestation['verified']);
         if ($hasValidHwAttestation) {
             $this->log('Hardware cryptographic attestation verified', ['type'=> $hwAttestation['type']]);
         }
 
-        // --- PRIVATE ACCESS TOKENS (PAT / RFC 9578 & Privacy Pass) ZERO-FRICTION CHALLENGE EXEMPTION ---
+        // --- Jetons d'accès privés (PAT / RFC 9578 & Privacy Pass) sans friction ---
         $rawPatTokens = RequestUtils::extractPrivateAccessTokens($context);
         $hasValidPat = false;
         if (!empty($rawPatTokens)) {
@@ -1360,16 +1361,16 @@ class FingerprintEngine
             }
         }
 
-        // 1. Check allowlists
+        // 1. Vérification des listes blanches
         if ($this->checkAllowlists($context)) {
             MetricsManager::incrementCounter('requests_total', ['status' => 'whitelisted']);
             return ['action' => 'next', 'score' => 0.0, 'vector' => ['whitelisted' => 100.0]];
         }
 
-        // Initialize the suspicion vector
+        // Initialisation des seuils
         $thresholds = $this->securityConfig['thresholds'];
 
-        // 2. Handle challenge solution submission (HIGH PRIORITY)
+        // 2. Traitement des soumissions de solution de challenge (priorité haute)
         $powNonce = $context->query['pow_nonce'] ?? null;
         $isChallengeSubmission = $powNonce && (
                 isset($context->query['pow_solution']) ||
@@ -1541,7 +1542,7 @@ class FingerprintEngine
             $suspicionVector['honeypotScore'] = 100.0;
         }
 
-        // 3. Check an existing ticket
+        // 3. Vérification d'un ticket existant
         $hasValidTicket = false;
         $powCookie = $context->cookies['pow_clearance'] ?? null;
         $zkpProof = $context->getHeader('x-zkp-proof') ?? $context->query['pow_zkp'] ?? '';
@@ -1556,7 +1557,7 @@ class FingerprintEngine
             // return ['action' => 'next', 'score' => 0.0, 'vector' => ['ticket_valid' => 100]];
         }
 
-        // 4. Compute the suspicion vector and score
+        // 4. Calcul du vecteur de suspicion et du score
         // Resolve identity and check "condemned" status
         $store = StoreManager::getStore();
         $identity = $this->resolveRequestIdentity($context, $suspicionVector);
@@ -1623,7 +1624,7 @@ class FingerprintEngine
             return $decision;
         }
 
-        // 5. Decide based on the score - Check blocking first.
+        // 5. Décision selon le score - Vérification du blocage en priorité
         $blockThreshold = $thresholds['block'] ?? 95;
         $isBlocked = $finalScore >= $blockThreshold;
         if ($isBlocked) {
@@ -1703,7 +1704,7 @@ class FingerprintEngine
                     $this->log('High suspicion score detected - overriding valid ticket to re-issue challenge', ['finalScore' => $finalScore, 'deviceId' => $deviceId]);
                 }
 
-                // --- ADDED: Rate limiter (Token Bucket) ---
+                // Limiteur de débit (Token Bucket)
                 $rateLimitPassed = ChallengeUtils::checkChallengeRateLimit($context->clientIp);
                 if (!$rateLimitPassed) {
                     $this->log('Challenge rate limit exceeded - blocking with 429', ['clientIp' => $context->clientIp]);
@@ -1744,7 +1745,7 @@ class FingerprintEngine
                 $suspicionFactor = ($finalScore - $lowThreshold) / (($thresholds['high'] ?? 75) - $lowThreshold);
                 $suspicionFactor = max(0, min(1.5, $suspicionFactor));
 
-                // --- NEW uPoW LOGIC ---
+                // --- Logique uPoW (Useful Proof of Work) ---
                 $shouldUseUsefulWork = ($this->securityConfig['enableUsefulWork'] ?? false) && (
                         ($this->securityConfig['forceUsefulWork'] ?? false) || (random_int(0, 255) / 255) > 0.5
                     );
@@ -1781,11 +1782,18 @@ class FingerprintEngine
                             $decision['body'] = $challengePayload;
                             return $decision;
                         } else {
-                            $html = '<html><body><script>';
-                            $html .= 'window.location.href = "' . $context->path . '?pow_type=useful_work_task&pow_nonce=' . $nonce . '&pow_problem_id=' . $work['problemId'] . '&pow_solution_work_result=" + encodeURIComponent(JSON.stringify({"solution": [], "energy": 0}));';
-                            $html .= '</script></body></html>';
-                            $decision['body'] = $html;
-                            return $decision;
+                            $redirectUrl = $context->path . (str_contains($context->path, '?') ? '&' : '?') . http_build_query([
+                                'pow_type' => 'useful_work_task',
+                                'pow_nonce' => $nonce,
+                                'pow_problem_id' => $work['problemId'],
+                                'pow_solution_work_result' => json_encode(['solution' => [], 'energy' => 0]),
+                            ]);
+                            return [
+                                'action' => 'redirect',
+                                'path' => $redirectUrl,
+                                'score' => $finalScore,
+                                'vector' => $suspicionVector,
+                            ];
                         }
                     } else {
                         // This case handles when uPoW is enabled but dispatching a task fails (e.g., config not found).
@@ -1795,7 +1803,7 @@ class FingerprintEngine
                     }
                 }
 
-                // --- END OF uPoW LOGIC (the rest is the fallback) ---
+                // --- Fin de la logique uPoW ---
 
                 if ($this->securityConfig['enableProofOfSpace'] ?? false) {
                     $spaceChallenge = ChallengeUtils::generateSpaceChallenge($context->clientIp, $nonce, $suspicionFactor, $context->path, $this->securityConfig);
