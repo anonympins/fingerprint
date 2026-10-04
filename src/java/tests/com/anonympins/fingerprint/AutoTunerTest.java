@@ -65,16 +65,15 @@ public class AutoTunerTest {
         // On lance la boucle d'optimisation
         tuner.runOptimizationCycle();
 
-        // Vérification que les poids ou les seuils ont été évalués et modifiés
+        // Vérification que les seuils ont été évalués et modifiés, tandis que les poids restent constants
         Map<String, Object> currentThresholds = engine.getThresholds();
         Map<String, Object> currentWeights = engine.getWeights();
 
         assertNotNull(currentThresholds);
         assertNotNull(currentWeights);
-        
+        assertEquals(0.5, ((Number) currentWeights.get("botScore")).doubleValue(), "Les poids doivent demeurer invariants en trafic hétérogène");
         // L'ajustement adaptatif par inertie (Inertial Smooth Update) doit être fonctionnel
         assertTrue(currentThresholds.containsKey("low"));
-        assertTrue(currentWeights.containsKey("botScore"));
     }
 
     @Test

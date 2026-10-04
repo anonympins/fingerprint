@@ -1174,6 +1174,50 @@ def test_auto_tuner_cycle():
     best_sol = tuner.get_best_tuning_solution()
     assert best_sol is not None or tuner.traffic_data is not None
 
+def test_auto_tuner_preserves_weights_and_tunes_pow():
+    """Vérifie l'invariance stricte des 25 poids et le calibrage des seuils / paramètres PoW."""
+    initial_weights = {
+        "inconsistencyScore": 0.8,
+        "tlsSpoofingScore": 0.8,
+        "requestPatternScore": 0.6,
+        "behaviorScore": 0.7,
+        "botScore": 1.0,
+        "honeypotScore": 1.0,
+    }
+    security_config = {
+        "thresholds": {"low": 20, "medium": 45, "high": 75, "block": 95},
+        "weights": dict(initial_weights),
+        "challengeTtl": 300,
+        "cpu": {"minDifficultyBits": 8, "maxDifficultyBits": 22},
+        "patterns": {"velocityThreshold": 800, "decayFactor": 0.9}
+    }
+
+    traffic_data = []
+    for i in range(120):
+        traffic_data.append({
+            "type": "challenge_solved",
+            "deviceId": f"dev-{i}",
+            "vector": {"honeypotScore": 10.0, "inconsistencyScore": 5.0, "botScore": 0.0}
+        })
+    for i in range(120):
+        traffic_data.append({
+            "type": "request_passed",
+            "deviceId": f"dev-pass-{i}",
+            "vector": {"honeypotScore": 0.0, "inconsistencyScore": 0.0, "botScore": 0.0}
+        })
+
+    tuner = AutoTuner(security_config, traffic_data, {"minDataPoints": 100})
+    tuner.run_optimization_cycle()
+
+    # 1. Vérification que les 25 poids demeurent parfaitement invariants
+    for key, expected_val in initial_weights.items():
+        assert security_config["weights"][key] == expected_val, f"Le poids {key} ne doit pas être modifié"
+
+    # 2. Vérification que les seuils et paramètres PoW ont bien été calibrés
+    assert "low" in security_config["thresholds"]
+    assert 60 <= security_config["challengeTtl"] <= 900
+    assert 4 <= security_config["cpu"]["minDifficultyBits"] <= security_config["cpu"]["maxDifficultyBits"]
+
 @pytest.mark.asyncio
 async def test_challenge_rate_limiting():
     """Vérifie le fonctionnement du limiteur de débit pour les challenges (Token Bucket)."""

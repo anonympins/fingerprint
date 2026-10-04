@@ -157,18 +157,16 @@ public class AutoTuner {
         // Inertial smooth update
         double trafficConfidence = Math.min(1.5, Math.max(0.3, highConfidenceRatio * 4.0));
         
-        // Simulate a temporary update for cross-validation (anti-poisoning)
+        // Simulate a temporary update for cross-validation (anti-poisoning), weights kept immutable
         Map<String, Object> tempThresholds = new HashMap<>(engine.getThresholds());
-        Map<String, Object> tempWeights = new HashMap<>(engine.getWeights());
         Map<String, Object> tempPatterns = new HashMap<>(engine.getPatterns());
 
         applyInertialUpdate(tempThresholds, bestSolution.thresholds, "thresholds", trafficConfidence);
-        applyInertialUpdate(tempWeights, bestSolution.weights, "weights", trafficConfidence);
         applyInertialUpdate(tempPatterns, bestSolution.patterns, "patterns", trafficConfidence);
 
-        // Cross-validation (anti-poisoning)
+        // Cross-validation (anti-poisoning) using stable engine weights
         double[] currentObj = evaluateFitness(engine.getThresholds(), engine.getWeights(), sanitizedData);
-        double[] proposedObj = evaluateFitness(tempThresholds, tempWeights, sanitizedData);
+        double[] proposedObj = evaluateFitness(tempThresholds, engine.getWeights(), sanitizedData);
 
         if (proposedObj[0] > currentObj[0] + validationTolerance || proposedObj[1] > currentObj[1] + validationTolerance) {
             // Reject due to detected instability/poisoning
@@ -177,12 +175,10 @@ public class AutoTuner {
 
         // Definitive hot application
         applyInertialUpdate(engine.getThresholds(), bestSolution.thresholds, "thresholds", trafficConfidence);
-        applyInertialUpdate(engine.getWeights(), bestSolution.weights, "weights", trafficConfidence);
         applyInertialUpdate(engine.getPatterns(), bestSolution.patterns, "patterns", trafficConfidence);
 
         lastBestSolution = new HashMap<>();
         lastBestSolution.put("thresholds", engine.getThresholds());
-        lastBestSolution.put("weights", engine.getWeights());
         lastBestSolution.put("patterns", engine.getPatterns());
         lastBestSolution.put("objectives", bestSolution.objectives);
 
@@ -191,7 +187,6 @@ public class AutoTuner {
             try {
                 Map<String, Object> solutionToSave = new HashMap<>();
                 solutionToSave.put("thresholds", bestSolution.thresholds);
-                solutionToSave.put("weights", bestSolution.weights);
                 solutionToSave.put("patterns", bestSolution.patterns);
 
                 ObjectMapper mapper = new ObjectMapper();
@@ -330,10 +325,7 @@ public class AutoTuner {
                 double tarVal = target.get(key).doubleValue();
                 double updated = curVal + (tarVal - curVal) * learningRate;
 
-                if ("weights".equals(type)) {
-                    updated = Math.max(0.05, Math.min(1.8, updated));
-                    current.put(key, updated);
-                } else if ("thresholds".equals(type)) {
+                if ("thresholds".equals(type)) {
                     current.put(key, (int) Math.round(updated));
                 } else if ("patterns".equals(type)) {
                     if (key.equals("benfordThreshold")) {
@@ -344,6 +336,10 @@ public class AutoTuner {
                         updated = Math.max(3, Math.min(30, (int) Math.round(updated)));
                     } else if (key.endsWith("Threshold")) {
                         updated = Math.max(50, Math.min(3000, (int) Math.round(updated)));
+                    } else if (key.equals("challengeTtl")) {
+                        updated = Math.max(60, Math.min(1800, (int) Math.round(updated)));
+                    } else if (key.equals("maxCpuDifficultyBits")) {
+                        updated = Math.max(12, Math.min(26, (int) Math.round(updated)));
                     }
                     current.put(key, updated);
                 }
@@ -376,7 +372,7 @@ public class AutoTuner {
         }
 
         for (Individual ind : population) {
-            ind.objectives = evaluateFitness(ind.thresholds, ind.weights, trafficData);
+            ind.objectives = evaluateFitness(ind.thresholds, engine.getWeights(), trafficData);
         }
 
         for (int gen = 0; gen < generations; gen++) {
@@ -388,7 +384,7 @@ public class AutoTuner {
                 if (rand.nextDouble() < mutationRate) {
                     mutate(child, rand);
                 }
-                child.objectives = evaluateFitness(child.thresholds, child.weights, trafficData);
+                child.objectives = evaluateFitness(child.thresholds, engine.getWeights(), trafficData);
                 offspring.add(child);
             }
 
@@ -421,10 +417,8 @@ public class AutoTuner {
         ind.thresholds.put("high", ind.thresholds.get("medium") + 10 + rand.nextInt(20));
         ind.thresholds.put("block", ind.thresholds.get("high") + 8 + rand.nextInt(10));
 
-        for (Map.Entry<String, Object> entry : engine.getWeights().entrySet()) {
-            double baseW = ((Number) entry.getValue()).doubleValue();
-            ind.weights.put(entry.getKey(), baseW * (0.75 + rand.nextDouble() * 0.5)); // +/- 25%
-        }
+        ind.patterns.put("challengeTtl", 120.0 + rand.nextInt(480));
+        ind.patterns.put("maxCpuDifficultyBits", 16.0 + rand.nextInt(8));
         for (Map.Entry<String, Object> entry : engine.getPatterns().entrySet()) {
             if (entry.getValue() instanceof Number) {
                 ind.patterns.put(entry.getKey(), ((Number) entry.getValue()).doubleValue() * (0.75 + rand.nextDouble() * 0.5));
@@ -438,9 +432,6 @@ public class AutoTuner {
         for (String key : p1.thresholds.keySet()) {
             child.thresholds.put(key, (int) Math.round((p1.thresholds.get(key) + p2.thresholds.get(key)) / 2.0));
         }
-        for (String key : p1.weights.keySet()) {
-            child.weights.put(key, (p1.weights.get(key) + p2.weights.get(key)) / 2.0);
-        }
         for (String key : p1.patterns.keySet()) {
             child.patterns.put(key, (((Number)p1.patterns.get(key)).doubleValue() + ((Number)p2.patterns.get(key)).doubleValue()) / 2.0);
         }
@@ -449,30 +440,21 @@ public class AutoTuner {
 
     private void mutate(Individual ind, Random rand) {
         double rVal = rand.nextDouble();
-        String sectionToMutate = "patterns";
-        if (rVal < 0.50) {
+        String sectionToMutate;
+        if (rVal < 0.55) {
             sectionToMutate = "patterns";
-        } else if (rVal < 0.75) {
+        } else{
             sectionToMutate = "thresholds";
-        } else {
-            sectionToMutate = "weights";
         }
 
-        if ("weights".equals(sectionToMutate)) {
-            String[] wKeys = ind.weights.keySet().toArray(new String[0]);
-            if (wKeys.length > 0) {
-                String k = wKeys[rand.nextInt(wKeys.length)];
-                double mutatedWeight = ind.weights.get(k) + (rand.nextDouble() - 0.5) * 0.1;
-                ind.weights.put(k, Math.max(0.05, Math.min(1.5, mutatedWeight)));
-            }
-        } else if ("thresholds".equals(sectionToMutate)) {
+        if ("thresholds".equals(sectionToMutate)) {
             String[] tKeys = ind.thresholds.keySet().toArray(new String[0]);
             if (tKeys.length > 0) {
                 String k = tKeys[rand.nextInt(tKeys.length)];
                 int mutatedThreshold = (int) Math.round(ind.thresholds.get(k) + (rand.nextDouble() - 0.5) * 5.0);
                 ind.thresholds.put(k, Math.max(10, mutatedThreshold));
             }
-        } else if ("patterns".equals(sectionToMutate)) {
+        } else{
             String[] pKeys = ind.patterns.keySet().stream().filter(k -> ind.patterns.get(k) instanceof Number).toArray(String[]::new);
             if (pKeys.length > 0) {
                 String k = pKeys[rand.nextInt(pKeys.length)];

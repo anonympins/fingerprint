@@ -188,6 +188,13 @@ class AutoTuner
             if ($t['medium'] < $t['low'] + 5 || $t['medium'] > 70) return false;
             if ($t['high'] < $t['medium'] + 5 || $t['high'] > 90) return false;
             if ($t['block'] < $t['high'] + 5 || $t['block'] > 99) return false;
+            if (isset($config['pow']) && is_array($config['pow'])) {
+                $pow = $config['pow'];
+                $ttl = $pow['challengeTtl'] ?? 300;
+                $minB = $pow['minDifficultyBits'] ?? 8;
+                $maxB = $pow['maxDifficultyBits'] ?? 22;
+                if ($ttl < 60 || $ttl > 900 || $minB < 4 || $minB > 16 || $maxB < $minB || $maxB > 28) return false;
+            }
             return true;
         };
 
@@ -229,18 +236,23 @@ class AutoTuner
                     $updatedVal = $currentVal + ($targetVal - $currentVal) * $learningRate;
 
                     if ($type === 'weights') {
-                        $updatedVal = max(0.05, min(1.8, $updatedVal));
+                        continue; // Poids strictement invariants sur trafic hétérogène
                     } elseif ($type === 'patterns') {
                         if ($key === 'benfordThreshold') $updatedVal = max(0.05, min(0.30, $updatedVal));
                         elseif ($key === 'decayFactor') $updatedVal = max(0.70, min(0.98, $updatedVal));
                         elseif ($key === 'minSamples') $updatedVal = max(3, min(15, (int)round($updatedVal)));
                         elseif ($key === 'historySize') $updatedVal = max(5, min(30, (int)round($updatedVal)));
                         elseif (str_ends_with($key, 'Threshold')) $updatedVal = max(50, min(3000, (int)round($updatedVal)));
+                    } elseif ($type === 'pow') {
+                        if ($key === 'challengeTtl') $updatedVal = max(60, min(900, (int)round($updatedVal)));
+                        elseif ($key === 'minDifficultyBits') $updatedVal = max(4, min(16, (int)round($updatedVal)));
+                        elseif ($key === 'maxDifficultyBits') $updatedVal = max(16, min(28, (int)round($updatedVal)));
                     }
 
                     $value = $updatedVal;
                 }
             }
+            unset($value);
 
             if ($type === 'thresholds') {
                 $low = max(10, min(35, $currentConfig['low']));
@@ -252,19 +264,29 @@ class AutoTuner
                 $currentConfig['medium'] = (int)round($medium);
                 $currentConfig['high'] = (int)round($high);
                 $currentConfig['block'] = (int)round($block);
+            } elseif ($type === 'pow') {
+                if (($currentConfig['minDifficultyBits'] ?? 8) > ($currentConfig['maxDifficultyBits'] ?? 22)) {
+                    $currentConfig['minDifficultyBits'] = max(4, ($currentConfig['maxDifficultyBits'] ?? 22) - 2);
+                }
             }
         };
 
         // --- POST-COMPUTATION VALIDATION (Rollback guard & tolerance threshold) ---
+        $tempPow = [
+            'challengeTtl' => $this->securityConfig['challengeTtl'] ?? 300,
+            'minDifficultyBits' => $this->securityConfig['cpu']['minDifficultyBits'] ?? 8,
+            'maxDifficultyBits' => $this->securityConfig['cpu']['maxDifficultyBits'] ?? 22,
+        ];
         $tempConfig = [
             'thresholds' => $this->securityConfig['thresholds'],
             'weights' => $this->securityConfig['weights'],
             'patterns' => $this->securityConfig['patterns'],
+            'pow' => $tempPow,
         ];
 
         $applyInertialUpdate($tempConfig['thresholds'], $newConfig['thresholds'], 'thresholds', $trafficConfidence);
-        $applyInertialUpdate($tempConfig['weights'], $newConfig['weights'], 'weights', $trafficConfidence);
         $applyInertialUpdate($tempConfig['patterns'], $newConfig['patterns'], 'patterns', $trafficConfidence);
+        $applyInertialUpdate($tempConfig['pow'], $newConfig['pow'] ?? [], 'pow', $trafficConfidence);
 
         $evaluator = OptimizationOperators::createFullSecurityConfigEvaluator(['trafficData' => $sanitizedData]);
         $currentObjectives = $evaluator($this->securityConfig);
@@ -297,8 +319,15 @@ class AutoTuner
         }
 
         $applyInertialUpdate($this->securityConfig['thresholds'], $newConfig['thresholds'], 'thresholds', $trafficConfidence);
-        $applyInertialUpdate($this->securityConfig['weights'], $newConfig['weights'], 'weights', $trafficConfidence);
         $applyInertialUpdate($this->securityConfig['patterns'], $newConfig['patterns'], 'patterns', $trafficConfidence);
+        $applyInertialUpdate($tempPow, $newConfig['pow'] ?? [], 'pow', $trafficConfidence);
+
+        $this->securityConfig['challengeTtl'] = (int)$tempPow['challengeTtl'];
+        if (!isset($this->securityConfig['cpu']) || !is_array($this->securityConfig['cpu'])) {
+            $this->securityConfig['cpu'] = [];
+        }
+        $this->securityConfig['cpu']['minDifficultyBits'] = (int)$tempPow['minDifficultyBits'];
+        $this->securityConfig['cpu']['maxDifficultyBits'] = (int)$tempPow['maxDifficultyBits'];
 
         self::$lastBestSolution = $bestSolution;
 
@@ -308,7 +337,7 @@ class AutoTuner
             'falseNegativeRate' => round($bestSolution['objectives'][1], 4)
         ]) . "\n");
         $this->logMessage("[AutoTuning] New thresholds: " . json_encode($this->securityConfig['thresholds']) . "\n");
-        $this->logMessage("[AutoTuning] New weights: " . json_encode($this->securityConfig['weights']) . "\n");
+        $this->logMessage("[AutoTuning] PoW parameters: " . json_encode($tempPow) . "\n");
         $this->logMessage("[AutoTuning] New patterns: " . json_encode($this->securityConfig['patterns']) . "\n");
 
         // Persist best configuration if savePath is configured
