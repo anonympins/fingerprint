@@ -1,2 +1,153 @@
-var createFingerprintModule=(()=>{var _scriptName=globalThis.document?.currentScript?.src;return async function(moduleArg={}){var Module=moduleArg;var ENVIRONMENT_IS_WEB=!!globalThis.window;var ENVIRONMENT_IS_WORKER=!!globalThis.WorkerGlobalScope;var ENVIRONMENT_IS_NODE=globalThis.process?.versions?.node&&globalThis.process?.type!="renderer";var programArgs=[];var thisProgram="./this.program";var quit_=(status,toThrow)=>{throw toThrow};if(typeof __filename!="undefined"){_scriptName=__filename}else if(ENVIRONMENT_IS_WORKER){_scriptName=self.location.href}var scriptDirectory="";function locateFile(path){if(Module["locateFile"]){return Module["locateFile"](path,scriptDirectory)}return scriptDirectory+path}var readAsync,readBinary;if(ENVIRONMENT_IS_NODE){var fs=require("node:fs");scriptDirectory=__dirname+"/";readBinary=filename=>{filename=isFileURI(filename)?new URL(filename):filename;var ret=fs.readFileSync(filename);return ret};readAsync=async(filename,binary=true)=>{filename=isFileURI(filename)?new URL(filename):filename;var ret=fs.readFileSync(filename,binary?undefined:"utf8");return ret};if(process.argv.length>1){thisProgram=process.argv[1].replace(/\\/g,"/")}programArgs=process.argv.slice(2);quit_=(status,toThrow)=>{process.exitCode=status;throw toThrow}}else if(ENVIRONMENT_IS_WEB||ENVIRONMENT_IS_WORKER){try{scriptDirectory=new URL(".",_scriptName).href}catch{}{if(ENVIRONMENT_IS_WORKER){readBinary=url=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,false);xhr.responseType="arraybuffer";xhr.send(null);return new Uint8Array(xhr.response)}}readAsync=async url=>{if(isFileURI(url)){return new Promise((resolve,reject)=>{var xhr=new XMLHttpRequest;xhr.open("GET",url,true);xhr.responseType="arraybuffer";xhr.onload=()=>{if(xhr.status==200||xhr.status==0&&xhr.response){resolve(xhr.response);return}reject(xhr.status)};xhr.onerror=reject;xhr.send(null)})}var response=await fetch(url,{credentials:"same-origin"});if(response.ok){return response.arrayBuffer()}throw new Error(response.status+" : "+response.url)}}}else{}var out=console.log.bind(console);var err=console.error.bind(console);var wasmBinary;var ABORT=false;var isFileURI=filename=>filename.startsWith("file://");class EmscriptenEH{}class EmscriptenSjLj extends EmscriptenEH{}var runtimeInitialized=false;function updateMemoryViews(){var b=wasmMemory.buffer;HEAP8=new Int8Array(b);HEAPU8=new Uint8Array(b);HEAPU32=new Uint32Array(b)}function preRun(){var preRun=Module["preRun"];if(preRun){if(typeof preRun=="function")preRun=[preRun];onPreRuns.push(...preRun)}callRuntimeCallbacks(onPreRuns)}function initRuntime(){runtimeInitialized=true;wasmExports["e"]()}function postRun(){var postRun=Module["postRun"];if(postRun){if(typeof postRun=="function")postRun=[postRun];onPostRuns.push(...postRun)}callRuntimeCallbacks(onPostRuns)}function abort(what){Module["onAbort"]?.(what);what=`Aborted(${what})`;err(what);ABORT=true;what+=". Build with -sASSERTIONS for more info.";var e=new WebAssembly.RuntimeError(what);throw e}var wasmBinaryFile;function findWasmBinary(){return locateFile("fp.wasm")}function getBinarySync(file){if(readBinary){return readBinary(file)}throw"both async and sync fetching of the wasm failed"}async function getWasmBinary(binaryFile){if(!wasmBinary){try{var response=await readAsync(binaryFile);return new Uint8Array(response)}catch{}}return getBinarySync(binaryFile)}async function instantiateArrayBuffer(binaryFile,imports){try{var binary=await getWasmBinary(binaryFile);var instance=await WebAssembly.instantiate(binary,imports);return instance}catch(reason){err(`failed to asynchronously prepare wasm: ${reason}`);abort(reason)}}async function instantiateAsync(binary,binaryFile,imports){if(!binary&&!isFileURI(binaryFile)&&!ENVIRONMENT_IS_NODE){try{var response=fetch(binaryFile,{credentials:"same-origin"});var instantiationResult=await WebAssembly.instantiateStreaming(response,imports);return instantiationResult}catch(reason){err(`wasm streaming compile failed: ${reason}`);err("falling back to ArrayBuffer instantiation")}}return instantiateArrayBuffer(binaryFile,imports)}function getWasmImports(){var imports={a:wasmImports};return imports}async function createWasm(){function receiveInstance(instance){wasmExports=instance.exports;assignWasmExports(wasmExports);updateMemoryViews();return wasmExports}function receiveInstantiationResult(result){return receiveInstance(result["instance"])}var info=getWasmImports();var instantiateWasm=Module["instantiateWasm"];if(instantiateWasm){return new Promise(resolve=>{instantiateWasm(info,inst=>resolve(receiveInstance(inst)))})}wasmBinaryFile??=findWasmBinary();var result=await instantiateAsync(wasmBinary,wasmBinaryFile,info);var exports=receiveInstantiationResult(result);return exports}class ExitStatus{name="ExitStatus";constructor(status){this.message=`Program terminated with exit(${status})`;this.status=status}}var callRuntimeCallbacks=callbacks=>{while(callbacks.length>0){callbacks.shift()(Module)}};var onPostRuns=[];var onPreRuns=[];var noExitRuntime=true;var HEAP8;var HEAPU32;class ExceptionInfo{constructor(excPtr){this.excPtr=excPtr;this.ptr=excPtr-24}set_type(type){HEAPU32[this.ptr+4>>2]=type}get_type(){return HEAPU32[this.ptr+4>>2]}set_destructor(destructor){HEAPU32[this.ptr+8>>2]=destructor}get_destructor(){return HEAPU32[this.ptr+8>>2]}set_caught(caught){caught=caught?1:0;HEAP8[this.ptr+12]=caught}get_caught(){return HEAP8[this.ptr+12]!=0}set_rethrown(rethrown){rethrown=rethrown?1:0;HEAP8[this.ptr+13]=rethrown}get_rethrown(){return HEAP8[this.ptr+13]!=0}init(type,destructor){this.set_adjusted_ptr(0);this.set_type(type);this.set_destructor(destructor)}set_adjusted_ptr(adjustedPtr){HEAPU32[this.ptr+16>>2]=adjustedPtr}get_adjusted_ptr(){return HEAPU32[this.ptr+16>>2]}}var uncaughtExceptionCount=0;var __Unwind_RaiseException=ex=>{abort()};var ___cxa_throw=(ptr,type,destructor)=>{var info=new ExceptionInfo(ptr);info.init(type,destructor);uncaughtExceptionCount++;__Unwind_RaiseException(ptr)};var __abort_js=()=>abort("");var abortOnCannotGrowMemory=requestedSize=>{abort("OOM")};var HEAPU8;var _emscripten_resize_heap=requestedSize=>{var oldSize=HEAPU8.length;requestedSize>>>=0;abortOnCannotGrowMemory(requestedSize)};{if(Module["noExitRuntime"])noExitRuntime=Module["noExitRuntime"];if(Module["print"])out=Module["print"];if(Module["printErr"])err=Module["printErr"];if(Module["arguments"])programArgs=Module["arguments"];if(Module["thisProgram"])thisProgram=Module["thisProgram"];var preInit=Module["preInit"];if(preInit){if(typeof preInit=="function")Module["preInit"]=preInit=[preInit];while(preInit.length>0){preInit.shift()()}}}var _hash_string,_solve_cpu_target,_solve_memory_challenge,_generate_gpu_pow_trajectory,_malloc,_free,memory,__indirect_function_table,wasmMemory;function assignWasmExports(wasmExports){_hash_string=Module["_hash_string"]=wasmExports["f"];_solve_cpu_target=Module["_solve_cpu_target"]=wasmExports["g"];_solve_memory_challenge=Module["_solve_memory_challenge"]=wasmExports["h"];_generate_gpu_pow_trajectory=Module["_generate_gpu_pow_trajectory"]=wasmExports["i"];_malloc=Module["_malloc"]=wasmExports["j"];_free=Module["_free"]=wasmExports["k"];memory=wasmMemory=wasmExports["d"];__indirect_function_table=wasmExports["__indirect_function_table"]}var wasmImports={c:___cxa_throw,a:__abort_js,b:_emscripten_resize_heap};async function run(){preRun();var setStatus=Module["setStatus"];if(setStatus){setStatus("Running...");await new Promise(resolve=>setTimeout(resolve,1));setTimeout(setStatus,1,"")}if(ABORT)return;initRuntime();Module["onRuntimeInitialized"]?.();postRun()}var wasmExports;wasmExports=await createWasm();await run();
-;return Module}})();if(typeof exports==="object"&&typeof module==="object"){module.exports=createFingerprintModule;module.exports.default=createFingerprintModule}else if(typeof define==="function"&&define["amd"])define([],()=>createFingerprintModule);
+var createFingerprintModule = (() => {
+    var _scriptName = globalThis.document?.currentScript?.src;
+    return async function (moduleArg = {}) {
+        var Module = Object.assign({}, moduleArg);
+        var ENVIRONMENT_IS_NODE = typeof process === "object" && Boolean(process?.versions?.node);
+        var scriptDirectory = "";
+
+        if (typeof __filename !== "undefined") {
+            scriptDirectory = __dirname + "/";
+        } else if (_scriptName) {
+            try {
+                scriptDirectory = new URL(".", _scriptName).href;
+            } catch {}
+        }
+
+        function locateFile(path) {
+            if (Module["locateFile"]) {
+                return Module"locateFile";
+            }
+            return scriptDirectory + path;
+        }
+
+        async function getBinary(path) {
+            if (Module["wasmBinary"]) {
+                return Module["wasmBinary"];
+            }
+            if (ENVIRONMENT_IS_NODE) {
+                var fs = await import("node:fs");
+                return fs.readFileSync(path);
+            }
+            var response = await fetch(path, { credentials: "same-origin" });
+            if (!response.ok) {
+                throw new Error("Failed to fetch wasm binary at: " + path);
+            }
+            return response.arrayBuffer();
+        }
+
+        var wasmPath = locateFile("fp.wasm");
+        var wasmBinary = await getBinary(wasmPath);
+        var instantiated = await WebAssembly.instantiate(wasmBinary, {});
+        var wasmExports = instantiated.instance.exports;
+        var wasmMemory = wasmExports.memory;
+
+        function updateMemoryViews() {
+            var b = wasmMemory.buffer;
+            Module.HEAP8 = new Int8Array(b);
+            Module.HEAPU8 = new Uint8Array(b);
+            Module.HEAPU32 = new Uint32Array(b);
+            Module.HEAPF32 = new Float32Array(b);
+            Module.buffer = b;
+        }
+        updateMemoryViews();
+
+        var textEncoder = new TextEncoder();
+        var textDecoder = new TextDecoder();
+
+        Module["_malloc"] = Module["malloc"] = function (size) {
+            var ptr = wasmExports.malloc(size);
+            updateMemoryViews();
+            return ptr;
+        };
+
+        Module["_free"] = Module["free"] = function (ptr) {
+            wasmExports.free(ptr);
+            updateMemoryViews();
+        };
+
+        Module["stringToUTF8"] = function (str, outPtr, maxBytes) {
+            var encoded = textEncoder.encode(str);
+            var len = maxBytes !== undefined ? Math.min(encoded.length, maxBytes - 1) : encoded.length;
+            updateMemoryViews();
+            Module.HEAPU8.set(encoded.subarray(0, len), outPtr);
+            Module.HEAPU8[outPtr + len] = 0;
+            return len;
+        };
+
+        Module["UTF8ToString"] = function (ptr) {
+            updateMemoryViews();
+            var end = ptr;
+            while (Module.HEAPU8[end] !== 0) end++;
+            return textDecoder.decode(Module.HEAPU8.subarray(ptr, end));
+        };
+
+        Module["_hash_string"] = function (strOrPtr) {
+            updateMemoryViews();
+            var ptr = strOrPtr;
+            var mustFree = false;
+            if (typeof strOrPtr === "string") {
+                var encoded = textEncoder.encode(strOrPtr);
+                ptr = Module"_malloc";
+                Module.HEAPU8.set(encoded, ptr);
+                Module.HEAPU8[ptr + encoded.length] = 0;
+                mustFree = true;
+            }
+            var res = wasmExports.hash_string(ptr);
+            if (mustFree) Module"_free";
+            return typeof res === "bigint" ? Number(res) : res;
+        };
+
+        Module["_solve_cpu_target"] = function (baseBlockPtr, baseBlockLen, targetHexPtr) {
+            updateMemoryViews();
+            return wasmExports.solve_cpu_target(baseBlockPtr, baseBlockLen, targetHexPtr);
+        };
+
+        Module["_solve_memory_challenge"] = function (seedPtr, difficultyMb) {
+            updateMemoryViews();
+            var ptr = seedPtr;
+            var mustFree = false;
+            if (typeof seedPtr === "string") {
+                var encoded = textEncoder.encode(seedPtr);
+                ptr = Module"_malloc";
+                Module.HEAPU8.set(encoded, ptr);
+                Module.HEAPU8[ptr + encoded.length] = 0;
+                mustFree = true;
+            }
+            var res = wasmExports.solve_memory_challenge(ptr, difficultyMb);
+            if (mustFree) Module"_free";
+            return res;
+        };
+
+        Module["_generate_gpu_pow_trajectory"] = function (seedPtr, iterations, outputPtr) {
+            updateMemoryViews();
+            var ptr = seedPtr;
+            var mustFree = false;
+            if (typeof seedPtr === "string") {
+                var encoded = textEncoder.encode(seedPtr);
+                ptr = Module"_malloc";
+                Module.HEAPU8.set(encoded, ptr);
+                Module.HEAPU8[ptr + encoded.length] = 0;
+                mustFree = true;
+            }
+            wasmExports.generate_gpu_pow_trajectory(ptr, iterations, outputPtr);
+            if (mustFree) Module"_free";
+            updateMemoryViews();
+        };
+
+        Module["memory"] = wasmMemory;
+        Module["wasmExports"] = wasmExports;
+
+        if (typeof Module["onRuntimeInitialized"] === "function") {
+            Module"onRuntimeInitialized";
+        }
+
+        return Module;
+    };
+})();
+
+if (typeof exports === "object" && typeof module === "object") {
+    module.exports = createFingerprintModule;
+    module.exports.default = createFingerprintModule;
+} else if (typeof define === "function" && define["amd"]) {
+    define([], () => createFingerprintModule);
+}

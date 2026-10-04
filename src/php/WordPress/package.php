@@ -134,6 +134,18 @@ if (file_exists($clientSource)) {
     copy($clientSource, $buildDir . '/assets/fingerprint.client.js');
 }
 
+// 3.c Copy compiled WebAssembly binary if present
+$wasmSources = [
+    $distDir . '/fp.wasm',
+    $rootDir . '/src/rust/target/wasm32-unknown-unknown/release/fingerprint_wasm.wasm',
+];
+foreach ($wasmSources as $wasmSource) {
+    if (file_exists($wasmSource)) {
+        copy($wasmSource, $buildDir . '/assets/fp.wasm');
+        break;
+    }
+}
+
 // 3.b Copy problem/bot configuration assets
 $configSourceDir = $rootDir . '/config';
 if (is_dir($configSourceDir)) {

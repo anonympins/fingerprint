@@ -16,3 +16,4 @@ fingerprint-engine.iml
 *.pem
 /src/python/anonympins_fingerprint.egg-info
 /src/python/build
+/src/rust/target
