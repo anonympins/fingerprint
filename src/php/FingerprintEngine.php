@@ -30,6 +30,8 @@ class FingerprintEngine
     private static ?array $yandexEntries = null;
     private static ?array $bingbotEntries = null;
     private static ?array $facebookEntries = null;
+    private static ?array $duckduckbotEntries = null;
+    private static ?array $applebotEntries = null;
 
     private static array $dnsCircuitBreaker = [
         'state' => 'CLOSED',
@@ -469,6 +471,44 @@ class FingerprintEngine
     }
 
     /**
+     * Returns the DuckDuckBot allowlist definition (type + entries).
+     * The entries are lazily loaded and cached in a static property.
+     *
+     * @return array The DuckDuckBot allowlist rule.
+     */
+    public static function duckduckbot_whitelist(): array
+    {
+        if (self::$duckduckbotEntries === null) {
+            self::$duckduckbotEntries = self::loadBotWhitelist('duckduckbot.json', [
+                "4.144.148.23/32"
+            ]);
+        }
+        return [
+            'type' => 'allowlist',
+            'entries' => self::$duckduckbotEntries
+        ];
+    }
+
+    /**
+     * Returns the Applebot allowlist definition (type + entries).
+     * The entries are lazily loaded and cached in a static property.
+     *
+     * @return array The Applebot allowlist rule.
+     */
+    public static function applebot_whitelist(): array
+    {
+        if (self::$applebotEntries === null) {
+            self::$applebotEntries = self::loadBotWhitelist('applebot.json', [
+                "17.166.20.0/24"
+            ]);
+        }
+        return [
+            'type' => 'allowlist',
+            'entries' => self::$applebotEntries
+        ];
+    }
+
+    /**
      * Returns the complete default whitelist, combining IP allowlists for major
      * bots (Googlebot, Bingbot, Yandex, Facebook) with hostname-suffix rules
      * for many known crawlers.
@@ -482,6 +522,8 @@ class FingerprintEngine
             self::bingbot_whitelist(),
             self::yandex_whitelist(),
             self::facebook_whitelist(),
+            self::duckduckbot_whitelist(),
+            self::applebot_whitelist(),
             ['userAgent' => 'Googlebot', 'hostnameSuffix' => '.googlebot.com'],
             ['userAgent' => 'Google-Extended', 'hostnameSuffix' => '.google.com'],
             ['userAgent' => 'AdsBot-Google', 'hostnameSuffix' => '.googlebot.com'],

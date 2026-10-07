@@ -33,6 +33,9 @@ from engine import (
     sanitize_traffic_data,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
+    duckduckbot_whitelist,
+    applebot_whitelist,
+    default_whitelist,
 )
 
 def test_parse_tcp_syn_binary():
@@ -248,6 +251,29 @@ def test_cpu_pow_target_generation_and_verification():
     assert len(target_neg) == 64
 
     # Résolution d'un challenge trivial (cible très haute)
+
+def test_duckduckbot_whitelist():
+    """Vérifie le chargement de la whitelist DuckDuckBot et sa présence dans default_whitelist."""
+    ddg_rule = duckduckbot_whitelist()
+    assert ddg_rule["type"] == "allowlist"
+    assert isinstance(ddg_rule["entries"], list)
+    assert len(ddg_rule["entries"]) > 0
+
+    all_rules = default_whitelist()
+    allowlists = [r for r in all_rules if r.get("type") == "allowlist"]
+    assert any("4.144.148.23/32" in r.get("entries", []) for r in allowlists)
+
+def test_applebot_whitelist():
+    """Vérifie le chargement de la whitelist Applebot et sa présence dans default_whitelist."""
+    apple_rule = applebot_whitelist()
+    assert apple_rule["type"] == "allowlist"
+    assert isinstance(apple_rule["entries"], list)
+    assert len(apple_rule["entries"]) > 0
+
+    all_rules = default_whitelist()
+    allowlists = [r for r in all_rules if r.get("type") == "allowlist"]
+    assert any("17.166.20.0/24" in r.get("entries", []) for r in allowlists)
+
     base_block = b"test-nonce-challenge:"
     target_trivial = "f" * 64
     

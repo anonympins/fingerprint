@@ -157,17 +157,19 @@ function fingerprint_get_metrics_endpoint(): string {
  * Returns the built-in default HTML challenge template (derived from fingerprint.js).
  */
 function fingerprint_get_default_challenge_template(): string {
+    $defaultCss = "body { font-family: sans-serif; text-align: center; padding-top: 50px; background: #fff; color: #222; }\n\t\t#loader { margin: 20px; font-size: 15px; color: #2271b1; }";
+    $styleTag = function_exists('wp_get_inline_style_tag')
+        ? wp_get_inline_style_tag($defaultCss)
+        : '<' . 'style>' . $defaultCss . '</' . 'style>';
+
     return "<!DOCTYPE html>\n" .
         "<html>\n" .
         "<head>\n" .
         "\t<meta charset=\"utf-8\">\n" .
         "\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n" .
         "\t<title>{{TITLE}}</title>\n" .
-        "\t<style>\n" .
-        "\t\t{{CUSTOM_CSS}}\n" .
-        "\t\tbody { font-family: sans-serif; text-align: center; padding-top: 50px; background: #fff; color: #222; }\n" .
-        "\t\t#loader { margin: 20px; font-size: 15px; color: #2271b1; }\n" .
-        "\t</style>\n" .
+        "\t{{CUSTOM_CSS}}\n" .
+        "\t" . $styleTag . "\n" .
         "</head>\n" .
         "<body>\n" .
         "\t<h1>{{TITLE}}</h1>\n" .
@@ -1038,7 +1040,10 @@ function fingerprint_render_admin_page(): void {
                     <p style="color:#007017;font-weight:bold;font-size:16px;margin:0;">
                         <span class="dashicons dashicons-yes-alt"></span> <?php esc_html_e('Active (SIMD128)', 'anonympins-bot-mitigation-pow'); ?>
                     </p>
-                    <small style="color:#646970;"><?php echo esc_html(sprintf(__('Binary installed (%s KB) & enabled.', 'anonympins-bot-mitigation-pow'), (string)$wasmFileSize)); ?></small>
+                    <small style="color:#646970;"><?php
+                        /* translators: %s: WebAssembly binary file size in kilobytes */
+                        echo esc_html(sprintf(__('Binary installed (%s KB) & enabled.', 'anonympins-bot-mitigation-pow'), (string)$wasmFileSize));
+                    ?></small>
                 <?php elseif ($isWasmInstalled): ?>
                     <p style="color:#dba617;font-weight:bold;font-size:16px;margin:0;">
                         <span class="dashicons dashicons-warning"></span> <?php esc_html_e('Installed (Disabled)', 'anonympins-bot-mitigation-pow'); ?>
