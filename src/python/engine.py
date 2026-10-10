@@ -72,6 +72,12 @@ __all__ = [
     "record_dns_failure",
     "can_attempt_dns",
     "default_whitelist",
+    "duckduckbot_whitelist",
+    "applebot_whitelist",
+    "googlebot_whitelist",
+    "bingbot_whitelist",
+    "yandex_whitelist",
+    "facebook_whitelist",
     "generate_issuer_pem_keys",
     "DEFAULT_WEIGHTS",
     "parse_tcp_syn",
@@ -169,6 +175,8 @@ _googlebot_entries = None
 _bingbot_entries = None
 _yandex_entries = None
 _facebook_entries = None
+_duckduckbot_entries = None
+_applebot_entries = None
 
 def load_bot_whitelist(filename: str, fallback_entries: list) -> list:
  config_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config"))
@@ -232,12 +240,36 @@ def facebook_whitelist() -> dict:
      "entries": _facebook_entries
  }
 
+def duckduckbot_whitelist() -> dict:
+ global _duckduckbot_entries
+ if _duckduckbot_entries is None:
+     _duckduckbot_entries = load_bot_whitelist("duckduckbot.json", [
+         "4.144.148.23/32"
+     ])
+ return {
+     "type": "allowlist",
+     "entries": _duckduckbot_entries
+ }
+
+def applebot_whitelist() -> dict:
+ global _applebot_entries
+ if _applebot_entries is None:
+     _applebot_entries = load_bot_whitelist("applebot.json", [
+         "17.166.20.0/24"
+     ])
+ return {
+     "type": "allowlist",
+     "entries": _applebot_entries
+ }
+
 def default_whitelist() -> list:
  return [
      googlebot_whitelist(),
      bingbot_whitelist(),
      yandex_whitelist(),
      facebook_whitelist(),
+     duckduckbot_whitelist(),
+     applebot_whitelist(),
      {"userAgent": "Googlebot", "hostnameSuffix": ".googlebot.com"},
      {"userAgent": "Google-Extended", "hostnameSuffix": ".google.com"},
      {"userAgent": "AdsBot-Google", "hostnameSuffix": ".googlebot.com"},

@@ -340,7 +340,13 @@ class AutoTuner
         $this->logMessage("[AutoTuning] PoW parameters: " . json_encode($tempPow) . "\n");
         $this->logMessage("[AutoTuning] New patterns: " . json_encode($this->securityConfig['patterns']) . "\n");
 
-        // Persist best configuration if savePath is configured
+        // Persist to WordPress options if running in a WordPress environment
+        if (function_exists('update_option')) {
+            update_option('anonympins_autotuning_best_config', $bestSolution['solution'], false);
+            $this->logMessage("[AutoTuning] Best configuration saved to WordPress options.\n");
+        }
+
+        // Persist best configuration to disk if savePath is explicitly configured
         if ($this->savePath !== null) {
             $this->saveConfigurationToFile($bestSolution['solution']);
         }
@@ -409,27 +415,30 @@ class AutoTuner
             }
 
             $normalizedUploadBase = str_replace('\\', '/', $uploadBase);
-            $normalizedPath = str_replace('\\', '/', $cleanPath);
+            $pluginUploadDir = rtrim($normalizedUploadBase, '/') . '/anonympins-bot-mitigation-pow';
+            $fileName = basename($cleanPath);
 
-            // If a relative path or bare filename is provided, place it inside uploads
-            if (!str_starts_with($normalizedPath, '/') && !preg_match('#^[a-zA-Z]:/#', $normalizedPath)) {
-                $targetFile = rtrim($normalizedUploadBase, '/') . '/' . ltrim($normalizedPath, '/');
-            } else {
-                $targetFile = $normalizedPath;
-            }
-
-            // Ensure parent directory exists
-            $targetDir = dirname($targetFile);
-            if (!is_dir($targetDir)) {
+            // Ensure plugin-specific directory exists within uploads
+            if (!is_dir($pluginUploadDir)) {
                 if (function_exists('wp_mkdir_p')) {
-                    wp_mkdir_p($targetDir);
+                    wp_mkdir_p($pluginUploadDir);
                 } else {
                     // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Upload directory creation
-                    @mkdir($targetDir, 0755, true);
+                    @mkdir($pluginUploadDir, 0755, true);
                 }
             }
 
-            $realTargetDir = realpath($targetDir);
+            // Protect plugin directory against direct web access
+            $htaccessFile = $pluginUploadDir . '/.htaccess';
+            if (!file_exists($htaccessFile)) {
+                @file_put_contents($htaccessFile, "Deny from all\n");
+            }
+            $indexFile = $pluginUploadDir . '/index.php';
+            if (!file_exists($indexFile)) {
+                @file_put_contents($indexFile, "<?php // Silence is golden\n");
+            }
+
+            $realTargetDir = realpath($pluginUploadDir);
             $realUploadBase = realpath($uploadBase);
 
             if ($realTargetDir === false || $realUploadBase === false) {
@@ -439,14 +448,15 @@ class AutoTuner
 
             $normRealTarget = str_replace('\\', '/', $realTargetDir);
             $normRealUpload = str_replace('\\', '/', $realUploadBase);
+            $expectedTarget = $normRealUpload . '/anonympins-bot-mitigation-pow';
 
-            // Verify canonical path is strictly contained within uploads directory
-            if ($normRealTarget !== $normRealUpload && !str_starts_with($normRealTarget, $normRealUpload . '/')) {
-                $this->logError('[AutoTuning] Security alert: savePath must be located within the WordPress uploads directory.');
+            // Verify canonical path is strictly contained within the plugin-specific uploads directory
+            if ($normRealTarget !== $expectedTarget && !str_starts_with($normRealTarget, $expectedTarget . '/')) {
+                $this->logError('[AutoTuning] Security alert: savePath must be located within the WordPress uploads/anonympins-bot-mitigation-pow directory.');
                 return null;
             }
 
-            return $realTargetDir . DIRECTORY_SEPARATOR . basename($targetFile);
+            return $realTargetDir . DIRECTORY_SEPARATOR . $fileName;
         }
 
         // Standalone PHP / CLI fallback: prevent path traversal and ensure directory is valid

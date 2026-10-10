@@ -234,6 +234,26 @@ public class FingerprintEngine {
         return map;
     }
 
+    public static Map<String, Object> duckduckbotWhitelist() {
+        List<String> entries = loadBotWhitelist("duckduckbot.json", Arrays.asList(
+            "4.144.148.23/32"
+        ));
+        Map<String, Object> map = new HashMap<>();
+        map.put("type", "allowlist");
+        map.put("entries", entries);
+        return map;
+    }
+
+    public static Map<String, Object> applebotWhitelist() {
+        List<String> entries = loadBotWhitelist("applebot.json", Arrays.asList(
+            "17.166.20.0/24"
+        ));
+        Map<String, Object> map = new HashMap<>();
+        map.put("type", "allowlist");
+        map.put("entries", entries);
+        return map;
+    }
+
     /**
      * Provides a default list of whitelisting rules for common and legitimate web crawlers.
      * @return A list of rule maps.
@@ -242,6 +262,8 @@ public class FingerprintEngine {
         List<Map<String, Object>> whitelist = new ArrayList<>();
 
         whitelist.add(facebookWhitelist());
+        whitelist.add(duckduckbotWhitelist());
+        whitelist.add(applebotWhitelist());
         // Major search engines with DNS verification
         whitelist.add(Map.of("userAgent", "Googlebot", "hostnameSuffix", ".googlebot.com"));
         whitelist.add(Map.of("userAgent", "AdsBot-Google", "hostnameSuffix", ".googlebot.com"));

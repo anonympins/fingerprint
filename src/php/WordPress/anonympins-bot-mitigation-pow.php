@@ -154,28 +154,49 @@ function fingerprint_get_metrics_endpoint(): string {
 }
 
 /**
- * Returns the built-in default HTML challenge template (derived from fingerprint.js).
+ * Builds the HTML challenge template programmatically from safe settings.
+ * Prevents arbitrary HTML, JS, or CSS injection.
  */
-function fingerprint_get_default_challenge_template(): string {
+function fingerprint_get_challenge_template(): string {
+    $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+    $appearance = is_array($saved) && isset($saved['challenge_appearance']) && is_array($saved['challenge_appearance'])
+        ? $saved['challenge_appearance']
+        : [];
+
+    $title = !empty($appearance['title']) ? esc_html($appearance['title']) : '{{TITLE}}';
+    $message = !empty($appearance['message']) ? esc_html($appearance['message']) : '{{MESSAGE}}';
+    $accentColor = !empty($appearance['accent_color']) && preg_match('/^#[a-fA-F0-9]{3,6}$/', (string)$appearance['accent_color'])
+        ? $appearance['accent_color']
+        : '#2271b1';
+
+    $safeCss = "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif; text-align: center; padding-top: 50px; background: #fff; color: #222; }\n\t\th1 { font-size: 24px; color: #1d2327; margin-bottom: 12px; }\n\t\tp { font-size: 15px; color: #50575e; margin: 8px 0; }\n\t\t#loader { margin: 20px; font-size: 15px; color: " . esc_attr($accentColor) . "; }";
+    $styleTag = function_exists('wp_get_inline_style_tag')
+        ? wp_get_inline_style_tag($safeCss)
+        : '<' . 'style>' . $safeCss . '</' . 'style>';
+
     return "<!DOCTYPE html>\n" .
         "<html>\n" .
         "<head>\n" .
         "\t<meta charset=\"utf-8\">\n" .
         "\t<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n" .
-        "\t<title>{{TITLE}}</title>\n" .
-        "\t<style>\n" .
-        "\t\t{{CUSTOM_CSS}}\n" .
-        "\t\tbody { font-family: sans-serif; text-align: center; padding-top: 50px; background: #fff; color: #222; }\n" .
-        "\t\t#loader { margin: 20px; font-size: 15px; color: #2271b1; }\n" .
-        "\t</style>\n" .
+        "\t<title>" . $title . "</title>\n" .
+        "\t{{CUSTOM_CSS}}\n" .
+        "\t" . $styleTag . "\n" .
         "</head>\n" .
         "<body>\n" .
-        "\t<h1>{{TITLE}}</h1>\n" .
-        "\t<p>{{MESSAGE}}</p>\n" .
+        "\t<h1>" . $title . "</h1>\n" .
+        "\t<p>" . $message . "</p>\n" .
         "\t<div id=\"loader\">⚙️ Initializing combined verification...</div>\n" .
         "\t{{SOLVER_SCRIPT}}\n" .
         "</body>\n" .
         "</html>";
+}
+
+/**
+ * Backward compatibility wrapper for challenge template generation.
+ */
+function fingerprint_get_default_challenge_template(): string {
+    return fingerprint_get_challenge_template();
 }
 
 // 1. PSR-4 autoloader for the Fingerprint engine.
@@ -331,10 +352,18 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
         $contextConfig = $configs['frontend'] ?? $fingerprint_security_profiles['frontend'];
     }
 
-    $savedOptions = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
-    $contextConfig['overrides']['challengeTemplate'] = (is_array($savedOptions) && isset($savedOptions['challenge_template']))
-        ? (string)$savedOptions['challenge_template']
-        : fingerprint_get_default_challenge_template();
+    $contextConfig['overrides']['challengeTemplate'] = fingerprint_get_challenge_template();
+    $contextConfig['overrides']['threatReportHandler'] = function (string $endpoint, array $payload): void {
+        if (function_exists('wp_remote_post')) {
+            wp_remote_post($endpoint, [
+                'timeout'     => 2,
+                'blocking'    => false,
+                'headers'     => ['Content-Type' => 'application/json'],
+                'body'        => wp_json_encode($payload),
+                'data_format' => 'body',
+            ]);
+        }
+    };
 
     $sandboxConfig = fingerprint_get_sandbox_config();
     $isSandboxActive = false;
@@ -455,13 +484,17 @@ function fingerprint_enqueue_client_telemetry(): void {
     $effective = fingerprint_get_effective_profiles($fingerprint_security_profiles);
     $frontendConfig = SecurityProfiles::createSecurityProfile($effective['frontend']['profile'], $effective['frontend']['overrides'] ?? []);
 
-    $wasmFile = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fp.wasm';
-    $wasmInstalled = file_exists($wasmFile);
+    $wasmJsFile = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fp.wasm.js';
+    $wasmInstalled = file_exists($wasmJsFile);
     $wasmConfigured = !empty($frontendConfig['wasm']);
     $isWasmActive = $wasmInstalled && $wasmConfigured;
 
     $version = filemtime($scriptPath) ?: ANONYMPINS_BOT_MITIGATION_VERSION;
     wp_enqueue_script('fingerprint-client-telemetry', $scriptUrl, [], (string)$version, false);
+
+    if ($isWasmActive && file_exists($wasmJsFile)) {
+        wp_enqueue_script('fingerprint-wasm-payload', ANONYMPINS_BOT_MITIGATION_URL . 'assets/fp.wasm.js', [], (string)(filemtime($wasmJsFile) ?: ANONYMPINS_BOT_MITIGATION_VERSION), false);
+    }
 
     $clientConfig = [
         'mouse'        => true,
@@ -477,7 +510,7 @@ function fingerprint_enqueue_client_telemetry(): void {
             'handleChallenges' => true,
         ],
         'wasm'         => $isWasmActive,
-        'wasmPath'     => $isWasmActive ? ANONYMPINS_BOT_MITIGATION_URL . 'assets/fp.wasm' : '',
+        'wasmPath'     => '',
     ];
 
     $inlineInit = 'if (window.ClientLibrary && typeof window.ClientLibrary.initializeClient === "function") {'
@@ -669,9 +702,6 @@ add_action('admin_enqueue_scripts', function (string $hook) {
         return;
     }
 
-    // Enqueue native WordPress CodeMirror editor for HTML template editing
-    $editorSettings = wp_enqueue_code_editor(['type' => 'text/html']);
-
     wp_register_script('anonympins-admin-settings', false, [], ANONYMPINS_BOT_MITIGATION_VERSION, true);
     wp_enqueue_script('anonympins-admin-settings');
 
@@ -684,9 +714,6 @@ add_action('admin_enqueue_scripts', function (string $hook) {
         if (target) { target.style.display = "block"; }
         evt.currentTarget.classList.add("nav-tab-active");
 
-        if (tabId === "tab-template" && window.fingerprintCodeMirrorInstance) {
-            window.fingerprintCodeMirrorInstance.codemirror.refresh();
-        }
         if (window.location.hash !== "#" + tabId && history.pushState) {
             history.pushState(null, null, "#" + tabId);
         }
@@ -703,16 +730,6 @@ add_action('admin_enqueue_scripts', function (string $hook) {
                 document.querySelectorAll(".nav-tab-wrapper a").forEach(function(n) { n.classList.remove("nav-tab-active"); });
                 targetContent.style.display = "block";
                 targetLink.classList.add("nav-tab-active");
-                if (targetId === "tab-template" && window.fingerprintCodeMirrorInstance) {
-                    setTimeout(function() { window.fingerprintCodeMirrorInstance.codemirror.refresh(); }, 50);
-                }
-            }
-        }
-
-        if (window.wp && wp.codeEditor && document.getElementById("challenge_template")) {
-            var editorConfig = ' . wp_json_encode($editorSettings) . ';
-            if (editorConfig) {
-                window.fingerprintCodeMirrorInstance = wp.codeEditor.initialize(document.getElementById("challenge_template"), editorConfig);
             }
         }
     });
@@ -890,15 +907,23 @@ function fingerprint_render_admin_page(): void {
             $saved = [];
         }
 
-        $saved['frontend']['profile'] = isset($_POST['frontend_profile']) ? sanitize_text_field(wp_unslash($_POST['frontend_profile'])) : 'blog';
-        $saved['admin']['profile']    = isset($_POST['admin_profile']) ? sanitize_text_field(wp_unslash($_POST['admin_profile'])) : 'strict';
-        $saved['api']['profile']      = isset($_POST['api_profile']) ? sanitize_text_field(wp_unslash($_POST['api_profile'])) : 'api';
+        $allowedFrontend = ['blog', 'balanced', 'strict', 'ecommerce'];
+        $rawFrontend = isset($_POST['frontend_profile']) ? sanitize_key(wp_unslash($_POST['frontend_profile'])) : 'blog';
+        $saved['frontend']['profile'] = in_array($rawFrontend, $allowedFrontend, true) ? $rawFrontend : 'blog';
+
+        $allowedAdmin = ['strict', 'balanced'];
+        $rawAdmin = isset($_POST['admin_profile']) ? sanitize_key(wp_unslash($_POST['admin_profile'])) : 'strict';
+        $saved['admin']['profile'] = in_array($rawAdmin, $allowedAdmin, true) ? $rawAdmin : 'strict';
+
+        $allowedApi = ['api', 'strict'];
+        $rawApi = isset($_POST['api_profile']) ? sanitize_key(wp_unslash($_POST['api_profile'])) : 'api';
+        $saved['api']['profile'] = in_array($rawApi, $allowedApi, true) ? $rawApi : 'api';
 
         $saved['frontend']['overrides']['thresholds'] = [
-            'low'    => max(1, isset($_POST['frontend_threshold_low']) ? (int)sanitize_text_field(wp_unslash($_POST['frontend_threshold_low'])) : 20),
-            'medium' => max(5, isset($_POST['frontend_threshold_medium']) ? (int)sanitize_text_field(wp_unslash($_POST['frontend_threshold_medium'])) : 45),
-            'high'   => max(10, isset($_POST['frontend_threshold_high']) ? (int)sanitize_text_field(wp_unslash($_POST['frontend_threshold_high'])) : 75),
-            'block'  => max(20, isset($_POST['frontend_threshold_block']) ? (int)sanitize_text_field(wp_unslash($_POST['frontend_threshold_block'])) : 95),
+            'low'    => isset($_POST['frontend_threshold_low']) ? max(1, min(50, (int)$_POST['frontend_threshold_low'])) : 20,
+            'medium' => isset($_POST['frontend_threshold_medium']) ? max(5, min(75, (int)$_POST['frontend_threshold_medium'])) : 45,
+            'high'   => isset($_POST['frontend_threshold_high']) ? max(10, min(95, (int)$_POST['frontend_threshold_high'])) : 75,
+            'block'  => isset($_POST['frontend_threshold_block']) ? max(20, min(100, (int)$_POST['frontend_threshold_block'])) : 95,
         ];
 
         $saved['frontend']['overrides']['challengeNewDevices'] = !empty($_POST['frontend_challenge_new']);
@@ -909,8 +934,10 @@ function fingerprint_render_admin_page(): void {
         foreach ($_POST as $postKey => $postVal) {
             if (str_starts_with((string)$postKey, 'weight_')) {
                 $wKey = sanitize_key(substr((string)$postKey, 7));
-                $val = (float)sanitize_text_field(wp_unslash($postVal));
-                $saved['frontend']['overrides']['weights'][$wKey] = max(0.0, min(2.0, $val));
+                if (is_numeric($postVal)) {
+                    $val = (float)$postVal;
+                    $saved['frontend']['overrides']['weights'][$wKey] = max(0.0, min(2.0, $val));
+                }
             }
         }
 
@@ -924,12 +951,25 @@ function fingerprint_render_admin_page(): void {
             $saved = [];
         }
 
+        $ipFilter = '';
+        if (isset($_POST['sandbox_ip_filter'])) {
+            $rawIps = sanitize_text_field(wp_unslash($_POST['sandbox_ip_filter']));
+            $splitIps = array_filter(array_map('trim', explode(',', $rawIps)));
+            $validIps = [];
+            foreach ($splitIps as $ip) {
+                if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                    $validIps[] = $ip;
+                }
+            }
+            $ipFilter = implode(', ', $validIps);
+        }
+
         $saved['sandbox'] = [
             'enabled'      => !empty($_POST['sandbox_enabled']),
             'audit_only'   => !empty($_POST['sandbox_audit_only']),
             'log_requests' => !empty($_POST['sandbox_log_requests']),
             'add_headers'  => !empty($_POST['sandbox_add_headers']),
-            'ip_filter'    => isset($_POST['sandbox_ip_filter']) ? sanitize_text_field(wp_unslash($_POST['sandbox_ip_filter'])) : '',
+            'ip_filter'    => $ipFilter,
         ];
 
         update_option('anonympins_security_options', $saved);
@@ -944,31 +984,36 @@ function fingerprint_render_admin_page(): void {
 
         $rawEndpoint = isset($_POST['metrics_endpoint']) ? sanitize_text_field(wp_unslash($_POST['metrics_endpoint'])) : '/metrics';
         $rawEndpoint = trim($rawEndpoint);
-        if ($rawEndpoint !== '' && !str_starts_with($rawEndpoint, '/')) {
-            $rawEndpoint = '/' . $rawEndpoint;
+        if ($rawEndpoint !== '') {
+            if (!str_starts_with($rawEndpoint, '/')) {
+                $rawEndpoint = '/' . $rawEndpoint;
+            }
+            if (!preg_match('/^\/[a-zA-Z0-9_\-\/]*$/', $rawEndpoint)) {
+                $rawEndpoint = '/metrics';
+            }
         }
         $saved['metrics_endpoint'] = $rawEndpoint;
         update_option('anonympins_security_options', $saved);
         echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Prometheus settings updated successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
     }
 
-    if ((isset($_POST['fingerprint_save_template']) || isset($_POST['fingerprint_reset_template'])) && check_admin_referer('fingerprint_template_nonce', 'fingerprint_nonce_template')) {
+    if ((isset($_POST['fingerprint_save_appearance']) || isset($_POST['fingerprint_reset_appearance'])) && check_admin_referer('fingerprint_appearance_nonce', 'fingerprint_nonce_appearance')) {
         $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
         if (!is_array($saved)) {
             $saved = [];
         }
-        if (isset($_POST['fingerprint_reset_template'])) {
-            unset($saved['challenge_template']);
-            echo '<div class="notice notice-info is-dismissible"><p><strong>' . esc_html__('Template reset to default successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
+        unset($saved['challenge_template']);
+        if (isset($_POST['fingerprint_reset_appearance'])) {
+            unset($saved['challenge_appearance']);
+            echo '<div class="notice notice-info is-dismissible"><p><strong>' . esc_html__('Challenge appearance reset to default successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
         } else {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Administrator code template editor with script/style placeholders.
-            $rawTemplate = isset($_POST['challenge_template']) ? wp_unslash($_POST['challenge_template']) : '';
-            if (!current_user_can('unfiltered_html')) {
-                $saved['challenge_template'] = wp_kses_post($rawTemplate);
-            } else {
-                $saved['challenge_template'] = (string)$rawTemplate;
-            }
-            echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Challenge template updated successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
+            $accentColor = isset($_POST['challenge_accent_color']) ? sanitize_hex_color(wp_unslash($_POST['challenge_accent_color'])) : '#2271b1';
+            $saved['challenge_appearance'] = [
+                'title'        => isset($_POST['challenge_title']) ? sanitize_text_field(wp_unslash($_POST['challenge_title'])) : '',
+                'message'      => isset($_POST['challenge_message']) ? sanitize_textarea_field(wp_unslash($_POST['challenge_message'])) : '',
+                'accent_color' => !empty($accentColor) ? $accentColor : '#2271b1',
+            ];
+            echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Challenge appearance updated successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
         }
         update_option('anonympins_security_options', $saved);
     }
@@ -983,14 +1028,16 @@ function fingerprint_render_admin_page(): void {
     $effective = fingerprint_get_effective_profiles($fingerprint_security_profiles);
     $frontendConfig = SecurityProfiles::createSecurityProfile($effective['frontend']['profile'], $effective['frontend']['overrides'] ?? []);
     $savedOptions = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
-    $currentTemplate = (is_array($savedOptions) && !empty($savedOptions['challenge_template']))
-        ? (string)$savedOptions['challenge_template']
-        : fingerprint_get_default_challenge_template();
+    $appearance = (is_array($savedOptions) && isset($savedOptions['challenge_appearance']) && is_array($savedOptions['challenge_appearance']))
+        ? $savedOptions['challenge_appearance']
+        : [];
 
-    $wasmPath = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fp.wasm';
-    $isWasmInstalled = file_exists($wasmPath);
+    $wasmJsPath = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fp.wasm.js';
+    $wasmBinPath = ANONYMPINS_BOT_MITIGATION_DIR . 'assets/fp.wasm';
+    $isWasmInstalled = file_exists($wasmJsPath) || file_exists($wasmBinPath);
     $isWasmActive = $isWasmInstalled && !empty($frontendConfig['wasm']);
-    $wasmFileSize = $isWasmInstalled ? round((float)filesize($wasmPath) / 1024, 1) : 0.0;
+    $resolvedWasmPath = file_exists($wasmJsPath) ? $wasmJsPath : $wasmBinPath;
+    $wasmFileSize = $isWasmInstalled ? round((float)filesize($resolvedWasmPath) / 1024, 1) : 0.0;
 
     $store = new WpDbStore();
     $totalRows = $store->getTotalCount();
@@ -1038,7 +1085,10 @@ function fingerprint_render_admin_page(): void {
                     <p style="color:#007017;font-weight:bold;font-size:16px;margin:0;">
                         <span class="dashicons dashicons-yes-alt"></span> <?php esc_html_e('Active (SIMD128)', 'anonympins-bot-mitigation-pow'); ?>
                     </p>
-                    <small style="color:#646970;"><?php echo esc_html(sprintf(__('Binary installed (%s KB) & enabled.', 'anonympins-bot-mitigation-pow'), (string)$wasmFileSize)); ?></small>
+                    <small style="color:#646970;"><?php
+                        /* translators: %s: WebAssembly binary file size in kilobytes */
+                        echo esc_html(sprintf(__('Binary installed (%s KB) & enabled.', 'anonympins-bot-mitigation-pow'), (string)$wasmFileSize));
+                    ?></small>
                 <?php elseif ($isWasmInstalled): ?>
                     <p style="color:#dba617;font-weight:bold;font-size:16px;margin:0;">
                         <span class="dashicons dashicons-warning"></span> <?php esc_html_e('Installed (Disabled)', 'anonympins-bot-mitigation-pow'); ?>
@@ -1086,7 +1136,7 @@ function fingerprint_render_admin_page(): void {
         <!-- NAVIGATION TABS -->
         <h2 class="nav-tab-wrapper">
             <a href="#tab-settings" class="nav-tab nav-tab-active" onclick="fingerprintSwitchTab(event, 'tab-settings')"><?php esc_html_e('Settings & profiles', 'anonympins-bot-mitigation-pow'); ?></a>
-            <a href="#tab-template" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-template')"><?php esc_html_e('Challenge HTML template', 'anonympins-bot-mitigation-pow'); ?></a>
+            <a href="#tab-appearance" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-appearance')"><?php esc_html_e('Challenge appearance', 'anonympins-bot-mitigation-pow'); ?></a>
             <a href="#tab-sandbox" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-sandbox')"><?php esc_html_e('Sandbox / test mode', 'anonympins-bot-mitigation-pow'); ?></a>
             <a href="#tab-metrics" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-metrics')"><?php esc_html_e('Metrics & weights view', 'anonympins-bot-mitigation-pow'); ?></a>
             <a href="#tab-prometheus" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-prometheus')"><?php esc_html_e('Prometheus stream', 'anonympins-bot-mitigation-pow'); ?></a>
@@ -1183,66 +1233,38 @@ function fingerprint_render_admin_page(): void {
             </form>
         </div>
 
-        <div id="tab-template" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
-            <h3><?php esc_html_e('Challenge HTML template editor', 'anonympins-bot-mitigation-pow'); ?></h3>
+        <div id="tab-appearance" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
             <p class="description">
-                <?php esc_html_e('Customize the HTML markup presented to challenged visitors. Leave empty or reset to use the built-in responsive default template.', 'anonympins-bot-mitigation-pow'); ?>
             </p>
 
-            <div style="background:#f0f6fc;border-left:4px solid #2271b1;padding:12px 16px;margin:16px 0;">
-                <h4 style="margin:0 0 8px 0;"><?php esc_html_e('Available template placeholders', 'anonympins-bot-mitigation-pow'); ?></h4>
-                <table class="widefat striped" style="background:#fff;font-size:12px;">
-                    <thead>
-                        <tr>
-                            <th style="width:200px;"><?php esc_html_e('Placeholder', 'anonympins-bot-mitigation-pow'); ?></th>
-                            <th><?php esc_html_e('Description & content injected', 'anonympins-bot-mitigation-pow'); ?></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td><code>{{TITLE}}</code></td>
-                            <td><?php esc_html_e('Challenge page title (e.g., "Security verification")', 'anonympins-bot-mitigation-pow'); ?></td>
-                        </tr>
-                        <tr>
-                            <td><code>{{MESSAGE}}</code></td>
-                            <td><?php esc_html_e('Human-readable instruction or explanation message', 'anonympins-bot-mitigation-pow'); ?></td>
-                        </tr>
-                        <tr>
-                            <td><code>{{NONCE}}</code></td>
-                            <td><?php esc_html_e('Unique cryptographic challenge nonce generated by the server', 'anonympins-bot-mitigation-pow'); ?></td>
-                        </tr>
-                        <tr>
-                            <td><code>{{DIFFICULTY}}</code></td>
-                            <td><?php esc_html_e('Target computational difficulty complexity number', 'anonympins-bot-mitigation-pow'); ?></td>
-                        </tr>
-                        <tr>
-                            <td><code>{{ALGORITHM}}</code></td>
-                            <td><?php esc_html_e('Selected hashing algorithm (e.g., "SHA-256")', 'anonympins-bot-mitigation-pow'); ?></td>
-                        </tr>
-                        <tr>
-                            <td><code>{{FORM_ACTION}}</code></td>
-                            <td><?php esc_html_e('Target POST URI destination where the PoW result must be submitted', 'anonympins-bot-mitigation-pow'); ?></td>
-                        </tr>
-                        <tr>
-                            <td><code>{{SOLVER_SCRIPT}}</code></td>
-                            <td><?php esc_html_e('Mandatory: inlined WebAssembly/WebWorker solver script block required for verification', 'anonympins-bot-mitigation-pow'); ?></td>
-                        </tr>
-                        <tr>
-                            <td><code>{{CUSTOM_CSS}}</code></td>
-                            <td><?php esc_html_e('Optional: default reset styling and challenge animations', 'anonympins-bot-mitigation-pow'); ?></td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-
             <form method="post" action="">
-                <?php wp_nonce_field('fingerprint_template_nonce', 'fingerprint_nonce_template'); ?>
-                <p>
-                    <textarea name="challenge_template" id="challenge_template" rows="18" style="width:100%;font-family:monospace;"><?php echo esc_textarea($currentTemplate); ?></textarea>
-                </p>
+                <?php wp_nonce_field('fingerprint_appearance_nonce', 'fingerprint_nonce_appearance'); ?>
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><label for="challenge_title"><?php esc_html_e('Challenge page heading', 'anonympins-bot-mitigation-pow'); ?></label></th>
+                        <td>
+                            <input type="text" name="challenge_title" id="challenge_title" value="<?php echo esc_attr($appearance['title'] ?? ''); ?>" class="regular-text" placeholder="<?php esc_attr_e('Security verification (default)', 'anonympins-bot-mitigation-pow'); ?>">
+                            <p class="description"><?php esc_html_e('Custom title and heading displayed on the challenge page. Leave blank for default.', 'anonympins-bot-mitigation-pow'); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="challenge_message"><?php esc_html_e('Challenge message', 'anonympins-bot-mitigation-pow'); ?></label></th>
+                        <td>
+                            <textarea name="challenge_message" id="challenge_message" rows="3" class="large-text" placeholder="<?php esc_attr_e('Please wait while we verify your browser security...', 'anonympins-bot-mitigation-pow'); ?>"><?php echo esc_textarea($appearance['message'] ?? ''); ?></textarea>
+                            <p class="description"><?php esc_html_e('Human-readable instruction presented to visitors during challenge verification.', 'anonympins-bot-mitigation-pow'); ?></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="challenge_accent_color"><?php esc_html_e('Accent color', 'anonympins-bot-mitigation-pow'); ?></label></th>
+                        <td>
+                            <input type="color" name="challenge_accent_color" id="challenge_accent_color" value="<?php echo esc_attr($appearance['accent_color'] ?? '#2271b1'); ?>">
+                            <p class="description"><?php esc_html_e('Primary accent color applied to the verification loader and highlights.', 'anonympins-bot-mitigation-pow'); ?></p>
+                        </td>
+                    </tr>
+                </table>
                 <p style="display:flex;gap:10px;">
-                    <?php submit_button(esc_html__('Save template', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_template', false); ?>
-                    <?php submit_button(esc_html__('Reset to default template', 'anonympins-bot-mitigation-pow'), 'secondary', 'fingerprint_reset_template', false, ['onclick' => "return confirm('" . esc_js(__('Reset challenge template to default?', 'anonympins-bot-mitigation-pow')) . "');"]); ?>
+                    <?php submit_button(esc_html__('Save appearance settings', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_save_appearance', false); ?>
+                    <?php submit_button(esc_html__('Reset to default', 'anonympins-bot-mitigation-pow'), 'secondary', 'fingerprint_reset_appearance', false, ['onclick' => "return confirm('" . esc_js(__('Reset challenge appearance to defaults?', 'anonympins-bot-mitigation-pow')) . "');"]); ?>
                 </p>
             </form>
         </div>
