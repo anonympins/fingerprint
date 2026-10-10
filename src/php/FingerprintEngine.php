@@ -1623,7 +1623,7 @@ class FingerprintEngine
         }
         if( $hasValidHwAttestation){
             $suspicionVector['hardware_attestation_verified'] = 100;
-            $suspicionVector["hw_${$hwAttestation['type']}"] = 100;
+            $suspicionVector['hw_' . $hwAttestation['type']] = 100;
         }
         $finalScore = $context->preCalculatedScore ?? $this->calculateFinalScore($suspicionVector);
         $this->log('Suspicion vector and final score calculated', [
@@ -2075,12 +2075,41 @@ class FingerprintEngine
             }
 
             foreach ($peers as $peerUrl) {
-                $this->asyncPost($peerUrl . '?coop_op=share_threat_intel', [
-                    'zkpY' => $targetZkpY,
-                    'signature' => $isAsymmetric ? '' : $signature,
+                $targetUrl = $peerUrl . '?coop_op=share_threat_intel';
+                $reportPayload = [
+                    'zkpY'              => $targetZkpY,
+                    'signature'         => $isAsymmetric ? '' : $signature,
                     'signature_ed25519' => $isAsymmetric ? $signature : '',
-                    'timestamp' => $ts
-                ]);
+                    'timestamp'         => $ts,
+                ];
+
+                // 1. Déléguer à un gestionnaire personnalisé (injecté par le plugin WordPress)
+                if (isset($this->securityConfig['threatReportHandler']) && is_callable($this->securityConfig['threatReportHandler'])) {
+                    ($this->securityConfig['threatReportHandler'])($targetUrl, $reportPayload);
+                    continue;
+                }
+
+                // 2. Utiliser l'API HTTP native de WordPress de manière asynchrone si disponible
+                if (function_exists('wp_remote_post')) {
+                    wp_remote_post($targetUrl, [
+                        'timeout'     => 2,
+                        'blocking'    => false,
+                        'headers'     => [
+                            'Content-Type'                   => 'application/json',
+                            'X-Federation-Signature'         => $reportPayload['signature'],
+                            'X-Federation-Signature-Ed25519' => $reportPayload['signature_ed25519'],
+                            'X-Federation-Timestamp'         => (string)$ts,
+                        ],
+                        'body'        => function_exists('wp_json_encode')
+                            ? wp_json_encode($reportPayload)
+                            : json_encode($reportPayload),
+                        'data_format' => 'body',
+                    ]);
+                    continue;
+                }
+
+                // 3. Repli socket natif en environnement autonome hors WordPress
+                $this->asyncPost($targetUrl, $reportPayload);
             }
         };
 
@@ -2183,6 +2212,31 @@ class FingerprintEngine
      */
     protected function asyncPost(string $url, array $params): void
     {
+        // 1. Déléguer à un gestionnaire personnalisé si injecté
+        if (isset($this->securityConfig['threatReportHandler']) && is_callable($this->securityConfig['threatReportHandler'])) {
+            ($this->securityConfig['threatReportHandler'])($url, $params);
+            return;
+        }
+
+        // 2. Utiliser l'API HTTP native de WordPress si disponible
+        if (function_exists('wp_remote_post')) {
+            wp_remote_post($url, [
+                'timeout'     => 2,
+                'blocking'    => false,
+                'headers'     => [
+                    'Content-Type'                   => 'application/json',
+                    'X-Federation-Signature'         => $params['signature'] ?? '',
+                    'X-Federation-Signature-Ed25519' => $params['signature_ed25519'] ?? '',
+                    'X-Federation-Timestamp'         => (string)($params['timestamp'] ?? ''),
+                ],
+                'body'        => function_exists('wp_json_encode')
+                    ? wp_json_encode($params)
+                    : json_encode($params),
+                'data_format' => 'body',
+            ]);
+            return;
+        }
+
         // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- wp_parse_url used if available
         $parts = function_exists('wp_parse_url') ? wp_parse_url($url) : parse_url($url);
         if ($parts === false) return;
