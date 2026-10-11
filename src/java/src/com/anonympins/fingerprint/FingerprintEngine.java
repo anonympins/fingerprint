@@ -234,6 +234,26 @@ public class FingerprintEngine {
         return map;
     }
 
+    public static Map<String, Object> duckduckbotWhitelist() {
+        List<String> entries = loadBotWhitelist("duckduckbot.json", Arrays.asList(
+            "4.144.148.23/32"
+        ));
+        Map<String, Object> map = new HashMap<>();
+        map.put("type", "allowlist");
+        map.put("entries", entries);
+        return map;
+    }
+
+    public static Map<String, Object> applebotWhitelist() {
+        List<String> entries = loadBotWhitelist("applebot.json", Arrays.asList(
+            "17.166.20.0/24"
+        ));
+        Map<String, Object> map = new HashMap<>();
+        map.put("type", "allowlist");
+        map.put("entries", entries);
+        return map;
+    }
+
     /**
      * Provides a default list of whitelisting rules for common and legitimate web crawlers.
      * @return A list of rule maps.
@@ -242,6 +262,8 @@ public class FingerprintEngine {
         List<Map<String, Object>> whitelist = new ArrayList<>();
 
         whitelist.add(facebookWhitelist());
+        whitelist.add(duckduckbotWhitelist());
+        whitelist.add(applebotWhitelist());
         // Major search engines with DNS verification
         whitelist.add(Map.of("userAgent", "Googlebot", "hostnameSuffix", ".googlebot.com"));
         whitelist.add(Map.of("userAgent", "AdsBot-Google", "hostnameSuffix", ".googlebot.com"));
@@ -427,6 +449,72 @@ public class FingerprintEngine {
             }
         }
         return bl;
+    }
+
+    @SuppressWarnings("unchecked")
+    public void translatePolymorphicHeaders(RequestContext context) {
+        if (context == null || context.headersTranslated) {
+            return;
+        }
+        context.headersTranslated = true;
+        if (store == null) {
+            return;
+        }
+        Object mappingsObj = store.get("active-polymorphic-mappings");
+        if (!(mappingsObj instanceof List)) {
+            return;
+        }
+        List<?> activeMappings = (List<?>) mappingsObj;
+        for (Object mObj : activeMappings) {
+            if (!(mObj instanceof Map)) continue;
+            Map<String, Object> mapping = (Map<String, Object>) mObj;
+            Map<String, String> headersMap = (Map<String, String>) mapping.get("headers");
+            if (headersMap == null) continue;
+
+            String devFpHeader = headersMap.get("x-device-fingerprint");
+            String behaviorHeader = headersMap.get("x-behavior-metrics");
+
+            String devFpHeaderLower = devFpHeader != null ? devFpHeader.toLowerCase() : "";
+            String behaviorHeaderLower = behaviorHeader != null ? behaviorHeader.toLowerCase() : "";
+
+            if (!devFpHeaderLower.isEmpty() && context.headers.containsKey(devFpHeaderLower)) {
+                context.headers.put("x-device-fingerprint", context.headers.get(devFpHeaderLower));
+                if (!behaviorHeaderLower.isEmpty() && context.headers.containsKey(behaviorHeaderLower)) {
+                    context.headers.put("x-behavior-metrics", context.headers.get(behaviorHeaderLower));
+                }
+
+                String clientFp = context.headers.get("x-device-fingerprint");
+                if (clientFp != null) {
+                    context.headers.put("x-device-fingerprint", decodePolymorphicFingerprint(clientFp, mapping));
+                }
+                break;
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    public static String decodePolymorphicFingerprint(String fpString, Map<String, Object> mapping) {
+        if (fpString == null || mapping == null) return fpString;
+        Map<String, String> keysMap = (Map<String, String>) mapping.get("keys");
+        if (keysMap == null || keysMap.isEmpty()) return fpString;
+
+        Map<String, String> reverseKeys = new HashMap<>();
+        for (Map.Entry<String, String> entry : keysMap.entrySet()) {
+            reverseKeys.put(entry.getValue(), entry.getKey());
+        }
+
+        String[] parts = fpString.split("\\|");
+        List<String> mappedParts = new ArrayList<>();
+        for (String part : parts) {
+            String[] pair = part.split(":", 2);
+            if (pair.length == 2) {
+                String origKey = reverseKeys.getOrDefault(pair[0], pair[0]);
+                mappedParts.add(origKey + ":" + pair[1]);
+            } else {
+                mappedParts.add(part);
+            }
+        }
+        return String.join("|", mappedParts);
     }
 
     @SuppressWarnings("unchecked")
@@ -634,6 +722,7 @@ public class FingerprintEngine {
 
     @SuppressWarnings("unchecked")
     public Map<String, Object> processRequest(RequestContext context) {
+        translatePolymorphicHeaders(context);
         Map<String, Double> suspicionVector = new HashMap<>();
 
         // Check blocklist
@@ -1322,6 +1411,7 @@ public class FingerprintEngine {
     
     @SuppressWarnings("unchecked")
     private double calculateScoreAndVector(RequestContext context, Map<String, Double> suspicionVector) {
+        translatePolymorphicHeaders(context);
         if (context.preCalculatedScore != null) {
             if (context.preCalculatedVector != null) {
                 suspicionVector.putAll(context.preCalculatedVector);
@@ -1335,18 +1425,31 @@ public class FingerprintEngine {
         String currentDeviceHash = (String) identity.get("currentDeviceHash");
 
         // --- VALIDATION DE L'ANCRAGE MATÉRIEL WEBAUTHN ---
+        String webauthnHeader = context.getHeader("x-webauthn-anchor");
         String behaviorHeader = context.getHeader("x-behavior-metrics");
-        if (behaviorHeader != null && behaviorHeader.startsWith("{") && deviceData != null) {
+        Map<String, Object> anchorObj = null;
+
+        if (webauthnHeader != null && !webauthnHeader.isEmpty()) {
+            try {
+                if (webauthnHeader.trim().startsWith("{")) {
+                    anchorObj = ChallengeUtils.simpleJsonParse(webauthnHeader);
+                } else {
+                    String decoded = new String(Base64.getDecoder().decode(webauthnHeader), StandardCharsets.UTF_8);
+                    anchorObj = ChallengeUtils.simpleJsonParse(decoded);
+                }
+            } catch (Exception ignored) {}
+        } else if (behaviorHeader != null && behaviorHeader.trim().startsWith("{") && deviceData != null) {
             try {
                 Map<String, Object> metrics = ChallengeUtils.simpleJsonParse(behaviorHeader);
                 if (metrics != null && metrics.containsKey("webauthnAnchor")) {
-                    Map<String, Object> anchor = (Map<String, Object>) metrics.get("webauthnAnchor");
-                    if (ChallengeUtils.verifyWebAuthnHardwareAnchor(anchor, deviceData)) {
-                        deviceData.put("webauthnVerified", true);
-                    }
+                    anchorObj = (Map<String, Object>) metrics.get("webauthnAnchor");
                 }
-            } catch (Exception e) {
-                // ignore
+            } catch (Exception ignored) {}
+        }
+
+        if (anchorObj != null && deviceData != null) {
+            if (ChallengeUtils.verifyWebAuthnHardwareAnchor(anchorObj, deviceData)) {
+                deviceData.put("webauthnVerified", true);
             }
         }
 

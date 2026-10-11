@@ -134,16 +134,27 @@ if (file_exists($clientSource)) {
     copy($clientSource, $buildDir . '/assets/fingerprint.client.js');
 }
 
-// 3.c Copy compiled WebAssembly binary if present
+// 3.c Bundle WebAssembly binary as standard JavaScript asset (Base64) to comply with WordPress.org file type rules
 $wasmSources = [
     $distDir . '/fp.wasm',
     $rootDir . '/src/rust/target/wasm32-unknown-unknown/release/fingerprint_wasm.wasm',
 ];
 foreach ($wasmSources as $wasmSource) {
     if (file_exists($wasmSource)) {
-        copy($wasmSource, $buildDir . '/assets/fp.wasm');
+        $wasmBinary = (string)file_get_contents($wasmSource);
+        $base64 = base64_encode($wasmBinary);
+        $wasmJsContent = "/* WebAssembly module compiled from open source Rust code (wasm32-unknown-unknown) */\n"
+            . "window.__FP_WASM_BASE64__ = " . json_encode($base64) . ";\n";
+        file_put_contents($buildDir . '/assets/fp.wasm.js', $wasmJsContent);
+        if (!is_dir($wpDir . '/assets')) {
+            @mkdir($wpDir . '/assets', 0777, true);
+        }
+        file_put_contents($wpDir . '/assets/fp.wasm.js', $wasmJsContent);
         break;
     }
+}
+if (!file_exists($buildDir . '/assets/fp.wasm.js') && file_exists($wpDir . '/assets/fp.wasm.js')) {
+    copy($wpDir . '/assets/fp.wasm.js', $buildDir . '/assets/fp.wasm.js');
 }
 
 // 3.b Copy problem/bot configuration assets

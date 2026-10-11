@@ -288,6 +288,17 @@ class FingerprintEngineTest extends TestCase
         $this->assertEquals(0, $decision['score']);
     }
 
+    public function testApplebotWhitelist(): void
+    {
+        $rule = FingerprintEngine::applebot_whitelist();
+        $this->assertSame('allowlist', $rule['type']);
+        $this->assertIsArray($rule['entries']);
+        $this->assertContains('17.166.20.0/24', $rule['entries']);
+
+        $defaultWhitelist = FingerprintEngine::default_whitelist();
+        $this->assertContains($rule, $defaultWhitelist);
+    }
+
     public function testEd25519KeyAutoGenerationAndPersistence(): void
     {
         if (!extension_loaded('openssl')) {

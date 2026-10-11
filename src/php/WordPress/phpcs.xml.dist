@@ -1,0 +1,74 @@
+<?xml version="1.0"?>
+<ruleset name="WordPress Plugin Coding Standards">
+    <description>Règles WPCS pour le plugin Anonympins avec conformité PSR-4 et PSR-12.</description>
+
+    <!-- Analyser uniquement les fichiers PHP -->
+    <arg name="extensions" value="php"/>
+    <arg value="ps"/>
+
+    <!-- Compatibilité PHP ciblée -->
+    <config name="testVersion" value="8.0-8.4"/>
+
+    <!-- Exclusions des dépendances, assets et scripts de build -->
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <exclude-pattern>*/assets/*</exclude-pattern>
+    <exclude-pattern>*/package.php</exclude-pattern>
+
+    <!-- Standard WordPress-Extra (Sécurité, DB, Bonnes pratiques WP) -->
+    <rule ref="WordPress-Extra">
+        <!-- Autorise le nommage de classe PSR-4 (ex: WpDbStore.php au lieu de class-wpdbstore.php) -->
+        <exclude name="WordPress.Files.FileName"/>
+
+        <!-- Autorise les espaces et styles de parenthèses/indentation modernes -->
+        <exclude name="Generic.WhiteSpace"/>
+        <exclude name="Squiz.WhiteSpace"/>
+        <exclude name="WordPress.WhiteSpace"/>
+
+        <!-- Autorise la syntaxe moderne des tableaux courts [] -->
+        <exclude name="Universal.Arrays.DisallowShortArraySyntax"/>
+
+        <!-- Autorise les conditions standards non-Yoda -->
+        <exclude name="WordPress.PHP.YodaConditions"/>
+
+        <!-- Autorise les variables camelCase (PSR-12) -->
+        <exclude name="WordPress.NamingConventions.ValidVariableName"/>
+
+        <!-- Autorise l'opérateur ternaire court ?: (Elvis) -->
+        <exclude name="Universal.Operators.DisallowShortTernary"/>
+
+        <!-- Autorise les paramètres non utilisés dans les callbacks de routes REST WP -->
+        <exclude name="Generic.CodeAnalysis.UnusedFunctionParameter"/>
+
+        <!-- Autorise la gestion de fin de fichier standard -->
+        <exclude name="PSR2.Files.EndFileNewline"/>
+
+        <!-- Désactive les contraintes cosmétiques sur les guillemets et concaténations simples -->
+        <exclude name="Squiz.Strings.DoubleQuoteUsage"/>
+        <exclude name="Generic.Strings.UnnecessaryStringConcat"/>
+
+        <!-- Désactive les contraintes de syntaxe alternative PHP dans les vues HTML de l'admin -->
+        <exclude name="Squiz.ControlStructures.ControlSignature"/>
+        <exclude name="Squiz.PHP.EmbeddedPhp"/>
+
+        <!-- Autorise apache_setenv pour le streaming non bufférisé Server-Sent Events (SSE) -->
+        <exclude name="WordPress.PHP.DiscouragedPHPFunctions.runtime_configuration_apache_setenv"/>
+
+        <!-- Désactive les contraintes cosmétiques d'espacement des parenthèses/accolades -->
+        <exclude name="Generic.Classes.OpeningBraceSameLine"/>
+        <exclude name="Generic.Functions.OpeningFunctionBraceKernighanRitchie"/>
+        <exclude name="Generic.Formatting.MultipleStatementAlignment"/>
+        <exclude name="Generic.Formatting.SpaceAfterCast"/>
+        <exclude name="NormalizedArrays.Arrays"/>
+        <exclude name="PEAR.Functions.FunctionCallSignature"/>
+        <exclude name="Squiz.Functions.FunctionDeclarationArgumentSpacing"/>
+        <exclude name="WordPress.Arrays"/>
+    </rule>
+
+    <!-- Analyse de compatibilité PHP 8.0 - 8.4 -->
+    <rule ref="PHPCompatibilityWP"/>
+
+    <!-- Ignore les avertissements sur les fichiers PHP vides ou d'amorçage -->
+    <rule ref="Internal.NoCodeFound">
+        <severity>0</severity>
+    </rule>
+</ruleset>

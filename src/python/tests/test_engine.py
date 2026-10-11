@@ -33,6 +33,9 @@ from engine import (
     sanitize_traffic_data,
     ASGIFingerprintMiddleware,
     WSGIFingerprintMiddleware,
+    duckduckbot_whitelist,
+    applebot_whitelist,
+    default_whitelist,
 )
 
 def test_parse_tcp_syn_binary():
@@ -248,6 +251,29 @@ def test_cpu_pow_target_generation_and_verification():
     assert len(target_neg) == 64
 
     # Résolution d'un challenge trivial (cible très haute)
+
+def test_duckduckbot_whitelist():
+    """Vérifie le chargement de la whitelist DuckDuckBot et sa présence dans default_whitelist."""
+    ddg_rule = duckduckbot_whitelist()
+    assert ddg_rule["type"] == "allowlist"
+    assert isinstance(ddg_rule["entries"], list)
+    assert len(ddg_rule["entries"]) > 0
+
+    all_rules = default_whitelist()
+    allowlists = [r for r in all_rules if r.get("type") == "allowlist"]
+    assert any("4.144.148.23/32" in r.get("entries", []) for r in allowlists)
+
+def test_applebot_whitelist():
+    """Vérifie le chargement de la whitelist Applebot et sa présence dans default_whitelist."""
+    apple_rule = applebot_whitelist()
+    assert apple_rule["type"] == "allowlist"
+    assert isinstance(apple_rule["entries"], list)
+    assert len(apple_rule["entries"]) > 0
+
+    all_rules = default_whitelist()
+    allowlists = [r for r in all_rules if r.get("type") == "allowlist"]
+    assert any("17.166.20.0/24" in r.get("entries", []) for r in allowlists)
+
     base_block = b"test-nonce-challenge:"
     target_trivial = "f" * 64
     
@@ -1806,3 +1832,22 @@ async def test_streaming_graph_topology_score_detects_low_and_slow():
 
     assert score_data is not None
     assert score_data["graphTopologyScore"] > 50.0
+
+
+def test_behavior_score_normalized_float():
+    """Vérifie la mise à l'échelle automatique du score x-behavior-metrics entre 0.0 et 1.0 vers 0..100."""
+    # 0.75 -> 75.0
+    ctx1 = RequestContext("127.0.0.1", "/", {"user-agent": "Mozilla/5.0", "x-behavior-metrics": "0.75"}, {}, {})
+    assert RequestUtils.get_behavior_score(ctx1) == pytest.approx(75.0)
+
+    # 0.20 -> 20.0
+    ctx2 = RequestContext("127.0.0.1", "/", {"user-agent": "Mozilla/5.0", "x-behavior-metrics": "0.20"}, {}, {})
+    assert RequestUtils.get_behavior_score(ctx2) == pytest.approx(20.0)
+
+    # 1.0 -> 100.0
+    ctx3 = RequestContext("127.0.0.1", "/", {"user-agent": "Mozilla/5.0", "x-behavior-metrics": "1.0"}, {}, {})
+    assert RequestUtils.get_behavior_score(ctx3) == pytest.approx(100.0)
+
+    # 0.0 -> 0.0
+    ctx4 = RequestContext("127.0.0.1", "/", {"user-agent": "Mozilla/5.0", "x-behavior-metrics": "0.0"}, {}, {})
+    assert RequestUtils.get_behavior_score(ctx4) == pytest.approx(0.0)

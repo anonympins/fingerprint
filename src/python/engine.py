@@ -72,6 +72,12 @@ __all__ = [
     "record_dns_failure",
     "can_attempt_dns",
     "default_whitelist",
+    "duckduckbot_whitelist",
+    "applebot_whitelist",
+    "googlebot_whitelist",
+    "bingbot_whitelist",
+    "yandex_whitelist",
+    "facebook_whitelist",
     "generate_issuer_pem_keys",
     "DEFAULT_WEIGHTS",
     "parse_tcp_syn",
@@ -169,6 +175,8 @@ _googlebot_entries = None
 _bingbot_entries = None
 _yandex_entries = None
 _facebook_entries = None
+_duckduckbot_entries = None
+_applebot_entries = None
 
 def load_bot_whitelist(filename: str, fallback_entries: list) -> list:
  config_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../config"))
@@ -232,12 +240,36 @@ def facebook_whitelist() -> dict:
      "entries": _facebook_entries
  }
 
+def duckduckbot_whitelist() -> dict:
+ global _duckduckbot_entries
+ if _duckduckbot_entries is None:
+     _duckduckbot_entries = load_bot_whitelist("duckduckbot.json", [
+         "4.144.148.23/32"
+     ])
+ return {
+     "type": "allowlist",
+     "entries": _duckduckbot_entries
+ }
+
+def applebot_whitelist() -> dict:
+ global _applebot_entries
+ if _applebot_entries is None:
+     _applebot_entries = load_bot_whitelist("applebot.json", [
+         "17.166.20.0/24"
+     ])
+ return {
+     "type": "allowlist",
+     "entries": _applebot_entries
+ }
+
 def default_whitelist() -> list:
  return [
      googlebot_whitelist(),
      bingbot_whitelist(),
      yandex_whitelist(),
      facebook_whitelist(),
+     duckduckbot_whitelist(),
+     applebot_whitelist(),
      {"userAgent": "Googlebot", "hostnameSuffix": ".googlebot.com"},
      {"userAgent": "Google-Extended", "hostnameSuffix": ".google.com"},
      {"userAgent": "AdsBot-Google", "hostnameSuffix": ".googlebot.com"},
@@ -1646,6 +1678,39 @@ class FingerprintEngine:
         # Garde-fous : Si le terminal est condamné ou qu'une attaque applicative certaine est détectée, le token PAT ne protège pas
         is_condemned = bool(device_data and device_data.get("condemned"))
         is_certain_attack = self._has_certain_attack(context)
+
+        # Validation immédiate de l'attestation matérielle WebAuthn si présente dans la requête
+        webauthn_header = context.get_header("x-webauthn-anchor")
+        behavior_header = context.get_header("x-behavior-metrics")
+        anchor_obj = None
+        if webauthn_header:
+            try:
+                if isinstance(webauthn_header, str) and webauthn_header.strip().startswith("{"):
+                    anchor_obj = json.loads(webauthn_header)
+                else:
+                    anchor_obj = json.loads(base64.b64decode(webauthn_header).decode("utf-8"))
+            except Exception:
+                pass
+        elif behavior_header and isinstance(behavior_header, str) and behavior_header.strip().startswith("{"):
+            try:
+                parsed_metrics = json.loads(behavior_header)
+                if isinstance(parsed_metrics, dict):
+                    anchor_obj = parsed_metrics.get("webauthnAnchor")
+            except Exception:
+                pass
+
+        if anchor_obj and device_data:
+            if ChallengeUtils.verify_webauthn_hardware_anchor(anchor_obj, device_data):
+                device_data["webauthnVerified"] = True
+                await self.store.set(f"device:{device_id}", device_data)
+
+        if device_data and device_data.get("webauthnVerified") and not is_condemned and not is_certain_attack:
+            MetricsManager.increment_counter("requests_total", {"status": "passed"})
+            return {
+                "action": "next",
+                "score": 0.0,
+                "vector": {"webauthn_verified": 100.0}
+            }
 
         if is_condemned or is_certain_attack:
             if device_data:

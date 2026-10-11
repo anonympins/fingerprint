@@ -222,6 +222,12 @@ const yandexEntries = loadBotWhitelist('yandex.json', [
 const facebookEntries = loadBotWhitelist('facebook.json', [
 ]);
 
+const duckduckbotEntries = loadBotWhitelist('duckduckbot.json', [
+]);
+
+const applebotEntries = loadBotWhitelist('applebot.json', [
+]);
+
 function generateSessionMapping() {
     const randomStr = (len = 6) => Array.from({ length: len }, () => String.fromCharCode(crypto.randomInt(97, 123))).join('');
     const randomHeader = () => `X-Sess-${crypto.randomBytes(4).toString('hex')}`;
@@ -7423,6 +7429,8 @@ export const default_whitelist = () => [
     bingbot_whitelist(),
     yandex_whitelist(),
     facebook_whitelist(),
+    duckduckbot_whitelist(),
+    applebot_whitelist(),
     // === Moteurs de recherche majeurs ===
     { userAgent: 'Googlebot', hostnameSuffix: '.googlebot.com' },
     { userAgent: 'Google-Extended', hostnameSuffix: '.google.com' },
@@ -7543,6 +7551,16 @@ export const bingbot_whitelist = () => ({
 export const facebook_whitelist = () => ({
     type: 'allowlist',
     entries: facebookEntries
+});
+
+export const duckduckbot_whitelist = () => ({
+    type: 'allowlist',
+    entries: duckduckbotEntries
+});
+
+export const applebot_whitelist = () => ({
+    type: 'allowlist',
+    entries: applebotEntries
 });
 
 

@@ -1,10 +1,10 @@
-=== Anonympins Bot Mitigation with Proof-of-Work ===
+=== Anonympins bot mitigation with proof-of-work ===
 Contributors: anonympins
 Tags: bot protection, security, proof of work, firewall, anti scraping
 Requires at least: 5.9
 Tested up to: 7.1
 Requires PHP: 8.0
-Stable tag: 0.8.4
+Stable tag: 0.8.5
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -29,7 +29,7 @@ Anonympins Bot Mitigation with Proof-of-Work is a high-performance, privacy-frie
 2. Activate the plugin through the 'Plugins' screen in WordPress.
 3. Navigate to **Settings -> Anonympins Bot Mitigation** to review security profiles, threshold adjustments, and Prometheus metrics.
 
-== Frequently Asked Questions ==
+== Frequently asked questions ==
 
 = Does this plugin require an external cloud service? =
 No. All evaluations, challenges, and validations occur directly on your WordPress server and client browser.

@@ -11,11 +11,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.*;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -639,6 +636,18 @@ public class FingerprintEngineTest {
     @Test
     @DisplayName("Should parse x-behavior-metrics direct score")
     void testDirectBehaviorScore() {
+        // Cas 1: Score normalisé entre 0 et 1 (ex: "0.85" -> 85.0)
+        Map<String, String> headersNormalized = new HashMap<>();
+        headersNormalized.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        headersNormalized.put("accept", "text/html");
+        headersNormalized.put("accept-encoding", "gzip");
+        headersNormalized.put("x-behavior-metrics", "0.85");
+
+        RequestContext contextNorm = new RequestContext("127.0.0.1", "/", headersNormalized, null, null, null, "1.1");
+        Map<String, Double> resultNorm = RequestUtils.getBehaviorScore(contextNorm);
+        assertEquals(85.0, resultNorm.get("behaviorScore"), 0.01);
+
+        // Cas 2: Score direct sur échelle 0..100 (ex: "65.5" -> 65.5)
         Map<String, String> headers = new HashMap<>();
         headers.put("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
         headers.put("accept", "text/html");
@@ -811,5 +820,50 @@ public class FingerprintEngineTest {
 
         // Assert that the memSeed is constructed with the correct leading colon
         assertTrue(htmlBody.contains("const memSeed = \":\" + nonce + \":\" + clientSecret;"), "The generated HTML should contain the correct memSeed prefix.");
+    }
+
+    @Test
+    @DisplayName("Should translate polymorphic incoming headers and decode randomized fingerprint keys")
+    void testTranslatePolymorphicHeaders() {
+        IStore store = new InMemoryStore();
+        FingerprintEngine engine = new FingerprintEngine(new HashMap<>(), store);
+
+        String randFpHeader = "x-sess-a1b2c3d4";
+        String randMetricsHeader = "x-sess-e5f6g7h8";
+
+        Map<String, String> headerMap = new HashMap<>();
+        headerMap.put("x-device-fingerprint", randFpHeader);
+        headerMap.put("x-behavior-metrics", randMetricsHeader);
+
+        Map<String, String> keysMap = new HashMap<>();
+        keysMap.put("ua", "w7x9");
+        keysMap.put("gpu", "k2m4");
+        keysMap.put("scr", "p5q1");
+
+        Map<String, Object> mapping = new HashMap<>();
+        mapping.put("headers", headerMap);
+        mapping.put("keys", keysMap);
+
+        store.set("active-polymorphic-mappings", Collections.singletonList(mapping), 300);
+
+        // Requête cliente avec les en-têtes polymorphes X-Sess-* et les clés obfusquées
+        Map<String, String> incomingHeaders = new HashMap<>();
+        incomingHeaders.put(randFpHeader, "w7x9:chrome-hash|k2m4:gpu-hash|p5q1:scr-hash");
+        incomingHeaders.put(randMetricsHeader, "{\"historyLength\":3}");
+
+        RequestContext context = new RequestContext("1.2.3.4", "/", incomingHeaders, null, null, null, "1.1");
+
+        engine.translatePolymorphicHeaders(context);
+
+        // Vérification de la restauration de l'en-tête standard et du décodage inverse des clés
+        String translatedFp = context.getHeader("x-device-fingerprint");
+        assertNotNull(translatedFp);
+        assertTrue(translatedFp.contains("ua:chrome-hash"));
+        assertTrue(translatedFp.contains("gpu:gpu-hash"));
+        assertTrue(translatedFp.contains("scr:scr-hash"));
+
+        String translatedMetrics = context.getHeader("x-behavior-metrics");
+        assertNotNull(translatedMetrics);
+        assertEquals("{\"historyLength\":3}", translatedMetrics);
     }
 }

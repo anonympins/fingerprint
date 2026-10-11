@@ -864,6 +864,9 @@ public class RequestUtils {
             String trimmed = behaviorHeader.trim();
             try {
                 double directScore = Double.parseDouble(trimmed);
+                if (directScore > 0.0 && directScore <= 1.0) {
+                    directScore *= 100.0;
+                }
                 result.put("behaviorScore", Math.max(0.0, Math.min(100.0, directScore)));
                 return result;
             } catch (NumberFormatException ignored) {

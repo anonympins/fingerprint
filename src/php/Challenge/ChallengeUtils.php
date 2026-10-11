@@ -1490,6 +1490,22 @@ class ChallengeUtils
     }
 
     /**
+     * Safely renders an inline style tag, using WordPress native function if available.
+     *
+     * @param string $css
+     * @param array<string, mixed> $attributes
+     * @return string
+     */
+    public static function renderStyleTag(string $css, array $attributes = []): string
+    {
+        if (function_exists('wp_get_inline_style_tag')) {
+            return wp_get_inline_style_tag($css, $attributes);
+        }
+        $tag = 'style';
+        return "<{$tag}>{$css}</{$tag}>";
+    }
+
+    /**
      * Generates the HTML page for a proof-of-space challenge, embedding the
      * solver code and the challenge script. The page initializes local storage,
      * runs the proof-of-space solver, and redirects with the solution.
@@ -1540,7 +1556,10 @@ class ChallengeUtils
             . '}' . "\n"
             . 'solve();';
 
-        return "<html><head><title>Security check</title></head><body style=\"font-family:sans-serif; text-align:center; padding-top:50px;\"><h1>Security check (level 2)</h1><p>We are verifying your storage allocation. This may take a few seconds on first load.</p><div id=\"loader\" style=\"margin:20px;\">⚙️ Initializing storage space...</div>"
+        $defaultStyles = 'body { font-family:sans-serif; text-align:center; padding-top:50px; } #loader { margin:20px; }';
+        $styleTag = self::renderStyleTag($defaultStyles);
+
+        return "<html><head><title>Security check</title>" . $styleTag . "</head><body><h1>Security check (level 2)</h1><p>We are verifying your storage allocation. This may take a few seconds on first load.</p><div id=\"loader\">⚙️ Initializing storage space...</div>"
             . self::renderScriptTag($solverCode)
             . self::renderScriptTag($challengeScript)
             . "</body></html>";
@@ -1644,16 +1663,32 @@ class ChallengeUtils
 
         $solverTag = self::renderScriptTag($solverCode);
         $challengeTag = self::renderScriptTag($challengeScript);
-        $htmlTemplate = '<html><head><title>Advanced security check</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h1>Enhanced verification... (level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader" style="margin:20px;">⚙️ Initializing combined verification...</div><!-- FINGERPRINT_SOLVER_SCRIPT --><!-- FINGERPRINT_CHALLENGE_SCRIPT --><!-- FINGERPRINT_TRAPS --></body></html>';
+        $defaultStyles = 'body { font-family:sans-serif; text-align:center; padding-top:50px; } #loader { margin:20px; }';
+        $styleTag = self::renderStyleTag($defaultStyles);
+        $combinedScripts = $solverTag . "\n" . $challengeTag;
+        $htmlTemplate = '<html><head><title>Advanced security check</title>' . $styleTag . '</head><body><h1>Enhanced verification... (level 2)</h1><p>Your activity requires an additional security check. This may take a few moments.</p><div id="loader">⚙️ Initializing combined verification...</div>{{SOLVER_SCRIPT}}<!-- FINGERPRINT_TRAPS --></body></html>';
         $customTemplatePath = $securityConfig['challengePagePath'] ?? null;
 
-        if ($customTemplatePath && file_exists($customTemplatePath)) {
+        if (!empty($securityConfig['challengeTemplate']) && is_string($securityConfig['challengeTemplate'])) {
+            $htmlTemplate = $securityConfig['challengeTemplate'];
+        } elseif ($customTemplatePath && file_exists($customTemplatePath)) {
             $htmlTemplate = RequestUtils::readFileContent($customTemplatePath) ?: $htmlTemplate;
         }
 
+        $replacements = [
+            '{{TITLE}}'                             => 'Advanced security check',
+            '{{MESSAGE}}'                           => 'Your activity requires an additional security check. This may take a few moments.',
+            '{{SOLVER_SCRIPT}}'                     => $combinedScripts,
+            '{{CHALLENGE_SCRIPT}}'                  => $challengeTag,
+            '{{CUSTOM_CSS}}'                        => $styleTag,
+            '<!-- FINGERPRINT_SOLVER_SCRIPT -->'    => $solverTag,
+            '<!-- FINGERPRINT_CHALLENGE_SCRIPT -->' => $challengeTag,
+            '<!-- FINGERPRINT_TRAPS -->'            => $trapContainerHtml,
+        ];
+
         return str_replace(
-            ['<!-- FINGERPRINT_SOLVER_SCRIPT -->', '<!-- FINGERPRINT_CHALLENGE_SCRIPT -->', '<!-- FINGERPRINT_TRAPS -->', '<script><!-- FINGERPRINT_SOLVER_SCRIPT --></script>', '<script><!-- FINGERPRINT_CHALLENGE_SCRIPT --></script>'],
-            [$solverTag, $challengeTag, $trapContainerHtml, $solverTag, $challengeTag],
+            array_keys($replacements),
+            array_values($replacements),
             $htmlTemplate
         );
     }

@@ -1,0 +1,88 @@
+name: WordPress Plugin CI & Quality
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'src/php/**'
+      - 'src/js/**'
+      - 'config/**'
+      - '.github/workflows/ci-wordpress.yml'
+  pull_request:
+    branches: [ "main", "develop", "feature/*" ]
+    paths:
+      - 'src/php/**'
+      - 'src/js/**'
+      - 'config/**'
+      - '.github/workflows/ci-wordpress.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  wordpress-lint:
+    name: WPCS & Security Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP and Tools
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: zip
+          tools: composer:v2, phpcs
+          coverage: none
+
+      - name: Install WordPress Coding Standards (WPCS)
+        run: |
+          composer global config allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
+          composer global require --dev \
+            dealerdirect/phpcodesniffer-composer-installer \
+            wp-coding-standards/wpcs \
+            phpcompatibility/phpcompatibility-wp
+
+      - name: Run WordPress Coding Standards (WPCS)
+        run: |
+          ~/.composer/vendor/bin/phpcs --standard=src/php/WordPress/phpcs.xml.dist src/php/WordPress/
+        continue-on-error: false
+
+      - name: Validate WordPress readme.txt
+        run: |
+          # Vérification de conformité des en-têtes du readme.txt WordPress
+          test -f src/php/WordPress/readme.txt
+          grep -q "^=== " src/php/WordPress/readme.txt
+          grep -q "^Requires at least:" src/php/WordPress/readme.txt
+          grep -q "^Tested up to:" src/php/WordPress/readme.txt
+          grep -q "^Stable tag:" src/php/WordPress/readme.txt
+          grep -q "^License:" src/php/WordPress/readme.txt
+          echo "readme.txt headers are valid!"
+
+  build-package:
+    name: Package & Artifact Generation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: zip
+          coverage: none
+
+      - name: Package WordPress Plugin
+        run: |
+          php src/php/WordPress/package.php
+          test -f public/anonympins-bot-mitigation-pow.zip
+          unzip -l public/anonympins-bot-mitigation-pow.zip
+
+      - name: Upload Plugin ZIP Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anonympins-bot-mitigation-pow
+          path: public/anonympins-bot-mitigation-pow.zip
+          if-no-files-found: error
