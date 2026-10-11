@@ -10,7 +10,7 @@ on:
       - 'src/php/WordPress/**'
       - '.github/workflows/ci-wordpress.yml'
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "feature/*", "develop"]
     paths:
       - 'src/php/**'
       - 'src/js/**'
