@@ -1,3 +1,27 @@
+## Version 0.8.5
+
+- ☕ **Java: Polymorphic headers translation & key decoding**:
+  - **Dynamic polymorphic mapping**: added runtime translation for randomized session and behavioral headers (`x-device-fingerprint`, `x-behavior-metrics`).
+  - **De-obfuscation**: automatic decoding of polymorphic fingerprint component keys (`translatePolymorphicHeaders`, `decodePolymorphicFingerprint`) using active store mappings.
+
+- 🐍 **Python: WebAuthn hardware anchor verification**:
+  - **Hardware attestation parity**: implemented full verification for WebAuthn hardware anchors (`verify_webauthn_hardware_anchor`), including CBOR payload parsing and X.509 certificate chain validation against trusted hardware roots (FIDO Alliance, YubiKey).
+  - **Direct hardware clearance**: authentic WebAuthn assertions grant immediate zero-friction clearance (`webauthn_verified: 100.0`, score `0.0`) while maintaining fail-safe blocks on condemned devices.
+
+- 🤖 **Bot allowlists & network definitions (DuckDuckBot & Applebot)**:
+  - Added dedicated CIDR subnets and JSON definitions for DuckDuckBot (`config/duckduckbot.json`) and Applebot (`config/applebot.json`).
+  - Integrated `duckduckbot_whitelist()` and `applebot_whitelist()` into `default_whitelist()` across Python, PHP, and Java engines.
+
+- 🔌 **WordPress plugin integration & hardening**:
+  - **Plugin compliance & styling**: refreshed challenge template generator, safe CSS customizer, and clean settings tabs.
+  - **Offline WASM bundling**: embedded compiled WebAssembly binary as an inline JavaScript base64 module (`fp.wasm.js`) to strictly comply with WordPress.org asset delivery guidelines.
+  - **Packaging automation**: added automated gettext compiler (`compilePoToMo`) in `package.php` to generate native binary `.mo` catalogs.
+
+- 🚀 **CI/CD workflows**:
+  - Hardened GitHub Actions workflows (`ci-wordpress.yml`, `ci-python.yml`, `ci-java.yml`, `ci-php.yml`) for automated linting, test suite execution, and artifact packaging.
+
+---
+
 ## Version 0.8.4
 
 - 🧬 **Autotuner: no more weight changes**:
