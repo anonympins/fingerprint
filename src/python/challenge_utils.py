@@ -10,8 +10,11 @@ import base64
 import struct
 import ctypes
 from typing import Dict, Any, List, Optional
+from cryptography import x509
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives import padding, hashes
+from cryptography.hazmat.primitives.asymmetric import ec, rsa, ed25519, padding as asym_padding
+from cryptography.hazmat.primitives.serialization import load_pem_public_key, load_der_public_key
 from cryptography.hazmat.backends import default_backend
 
 from crdt import LwwElementSet, BloomFilterSync
@@ -22,7 +25,244 @@ threat_intel_crdt = LwwElementSet()
 whitelist_crdt = LwwElementSet()
 
 
+TRUSTED_HARDWARE_ROOTS = [
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIDHzCCAfegAwIBAgIJANCvWjvF+2O6MA0GCSqGSIb3DQEBCwUAMC0xKzApBgNV\n"
+    "BAMTIll1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMB4XDTE0MDgwNDAwMDAwMFox\n"
+    "TSUxSDBGBgNVBAMMT1l1YmljbyBBdHRlc3RhdGlvbiBSb290IENBMSowKAYDVQQK\n"
+    "EyFZdWJpY28gQUIxDzANBgNVBAcTBVN0b2NraG9sbTELMAkGA1UEBhMCU0UwggEi\n"
+    "MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC6XW0d87g+N6kGgSgC/H9UfA2p\n"
+    "-----END CERTIFICATE-----",
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIB1DCCAXWgAwIBAgIEUI70WjAKBggqhkjOPQQDAjArMSkwJwYDVQQDEyBGSURP\n"
+    "IEFsbGlhbmNlIFJvb3QgQ0EgKFRlc3QpMB4XDTE0MDgxODA4MzA0NVoXDTM5MDgx\n"
+    "ODA4MzA0NVowKzEpMCcGA1UEAxMgRklETyBBbGxpYW5jZSBSb290IENBIChUZXN0\n"
+    "KTB2MBAGByqGSM49AgEGBSuBBAAiA2IABFv81Jm9M7AehfOIdpCH567gP0yqS40m\n"
+    "aN0j1a8n152G7n/nUf7J0j9F4pL9J2w1X8hN1N8f9Y3G9w8L29/m7/zX3O3n2e7/\n"
+    "g==\n"
+    "-----END CERTIFICATE-----"
+]
+
+
+def decode_cbor(buffer: bytes) -> Any:
+    offset = 0
+
+    def read_byte() -> int:
+        nonlocal offset
+        if offset >= len(buffer):
+            raise ValueError("Unexpected end of CBOR data")
+        b = buffer[offset]
+        offset += 1
+        return b
+
+    def read_bytes(length: int) -> bytes:
+        nonlocal offset
+        if offset + length > len(buffer):
+            raise ValueError("Unexpected end of CBOR bytes")
+        res = buffer[offset:offset + length]
+        offset += length
+        return res
+
+    def read_int(val: int) -> int:
+        if val < 24:
+            return val
+        if val == 24:
+            return read_byte()
+        if val == 25:
+            b1 = read_byte()
+            b2 = read_byte()
+            return (b1 << 8) | b2
+        if val == 26:
+            b1 = read_byte()
+            b2 = read_byte()
+            b3 = read_byte()
+            b4 = read_byte()
+            return (b1 << 24) | (b2 << 16) | (b3 << 8) | b4
+        raise ValueError(f"Unsupported integer size: {val}")
+
+    def decode_type() -> Any:
+        initial = read_byte()
+        major = initial >> 5
+        val = initial & 0x1F
+        if major == 0:
+            return read_int(val)
+        elif major == 1:
+            return -1 - read_int(val)
+        elif major == 2:
+            length = read_int(val)
+            return read_bytes(length)
+        elif major == 3:
+            length = read_int(val)
+            return read_bytes(length).decode("utf-8", errors="replace")
+        elif major == 4:
+            length = read_int(val)
+            return [decode_type() for _ in range(length)]
+        elif major == 5:
+            length = read_int(val)
+            obj = {}
+            for _ in range(length):
+                k = decode_type()
+                v = decode_type()
+                obj[k] = v
+            return obj
+        return None
+
+    return decode_type()
+
+
+def verify_certificate_chain(x5c: List[bytes]) -> bool:
+    if not x5c or not isinstance(x5c, list):
+        return False
+    try:
+        certs = [x509.load_der_x509_certificate(der, default_backend()) for der in x5c]
+        for i in range(len(certs) - 1):
+            child = certs[i]
+            parent = certs[i + 1]
+            parent_pub = parent.public_key()
+            if isinstance(parent_pub, rsa.RSAPublicKey):
+                parent_pub.verify(
+                    child.signature,
+                    child.tbs_certificate_bytes,
+                    asym_padding.PKCS1v15(),
+                    child.signature_hash_algorithm
+                )
+            elif isinstance(parent_pub, ec.EllipticCurvePublicKey):
+                parent_pub.verify(
+                    child.signature,
+                    child.tbs_certificate_bytes,
+                    ec.ECDSA(child.signature_hash_algorithm)
+                )
+            elif isinstance(parent_pub, ed25519.Ed25519PublicKey):
+                parent_pub.verify(child.signature, child.tbs_certificate_bytes)
+            else:
+                return False
+
+        root_cert = certs[-1]
+        for trusted_pem in TRUSTED_HARDWARE_ROOTS:
+            trusted_cert = x509.load_pem_x509_certificate(trusted_pem.encode("utf-8"), default_backend())
+            if root_cert.subject == trusted_cert.subject:
+                return True
+            try:
+                trusted_pub = trusted_cert.public_key()
+                if isinstance(trusted_pub, rsa.RSAPublicKey):
+                    trusted_pub.verify(
+                        root_cert.signature,
+                        root_cert.tbs_certificate_bytes,
+                        asym_padding.PKCS1v15(),
+                        root_cert.signature_hash_algorithm
+                    )
+                    return True
+                elif isinstance(trusted_pub, ec.EllipticCurvePublicKey):
+                    trusted_pub.verify(
+                        root_cert.signature,
+                        root_cert.tbs_certificate_bytes,
+                        ec.ECDSA(root_cert.signature_hash_algorithm)
+                    )
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
+def verify_webauthn_hardware_anchor(anchor: Optional[Dict[str, Any]], device_data: Optional[Dict[str, Any]]) -> bool:
+    if not anchor or not isinstance(anchor, dict) or not anchor.get("type"):
+        return False
+
+    anchor_type = anchor.get("type")
+    client_data_raw = anchor.get("clientDataJSON")
+    if not client_data_raw:
+        return False
+
+    try:
+        client_data_bytes = base64.b64decode(client_data_raw)
+        client_data_hash = hashlib.sha256(client_data_bytes).digest()
+
+        if anchor_type == "registration":
+            public_key_pem = anchor.get("publicKey")
+            credential_id = anchor.get("credentialId")
+            attestation_object_b64 = anchor.get("attestationObject")
+
+            if not public_key_pem or not credential_id or not attestation_object_b64:
+                return False
+
+            attestation_bytes = base64.b64decode(attestation_object_b64)
+            decoded = decode_cbor(attestation_bytes)
+
+            if not decoded or not isinstance(decoded, dict):
+                return False
+            fmt = decoded.get("fmt")
+            att_stmt = decoded.get("attStmt")
+            if not fmt or not isinstance(att_stmt, dict):
+                return False
+
+            if fmt != "none":
+                x5c = att_stmt.get("x5c")
+                if not x5c or not isinstance(x5c, list):
+                    return False
+                if not verify_certificate_chain(x5c):
+                    return False
+
+            if device_data is not None:
+                device_data["webauthnPublicKey"] = public_key_pem
+                device_data["webauthnCredentialId"] = credential_id
+            return True
+
+        elif anchor_type == "assertion":
+            if device_data is None:
+                return False
+            stored_pubkey = device_data.get("webauthnPublicKey")
+            stored_cred_id = device_data.get("webauthnCredentialId")
+
+            if not stored_pubkey or stored_cred_id != anchor.get("credentialId"):
+                return False
+
+            auth_data_b64 = anchor.get("authenticatorData")
+            sig_b64 = anchor.get("signature")
+            if not auth_data_b64 or not sig_b64:
+                return False
+
+            auth_data = base64.b64decode(auth_data_b64)
+            sig_bytes = base64.b64decode(sig_b64)
+            verify_buffer = auth_data + client_data_hash
+
+            if isinstance(stored_pubkey, str):
+                if "-----BEGIN" in stored_pubkey:
+                    pub_key_obj = load_pem_public_key(stored_pubkey.encode("utf-8"), default_backend())
+                else:
+                    der_bytes = base64.b64decode(stored_pubkey)
+                    pub_key_obj = load_der_public_key(der_bytes, default_backend())
+            else:
+                return False
+
+            if isinstance(pub_key_obj, ec.EllipticCurvePublicKey):
+                pub_key_obj.verify(sig_bytes, verify_buffer, ec.ECDSA(hashes.SHA256()))
+                return True
+            elif isinstance(pub_key_obj, rsa.RSAPublicKey):
+                pub_key_obj.verify(sig_bytes, verify_buffer, asym_padding.PKCS1v15(), hashes.SHA256())
+                return True
+            elif isinstance(pub_key_obj, ed25519.Ed25519PublicKey):
+                pub_key_obj.verify(sig_bytes, verify_buffer)
+                return True
+    except Exception:
+        return False
+
+    return False
+
+
 class ChallengeUtils:
+    @staticmethod
+    def decode_cbor(buffer: bytes) -> Any:
+        return decode_cbor(buffer)
+
+    @staticmethod
+    def verify_certificate_chain(x5c: List[bytes]) -> bool:
+        return verify_certificate_chain(x5c)
+
+    @staticmethod
+    def verify_webauthn_hardware_anchor(anchor: Optional[Dict[str, Any]], device_data: Optional[Dict[str, Any]]) -> bool:
+        return verify_webauthn_hardware_anchor(anchor, device_data)
     @staticmethod
     def fround(val: float) -> float:
         try:
@@ -523,6 +763,9 @@ class ChallengeUtils:
             
             if not expiry or int(time.time() * 1000) > int(expiry):
                 return False
+            if ticket_data.get("greenlist") or (stored_device_hash and stored_device_hash.startswith("webauthn:greenlist:")):
+                if not device_id or device_id == stored_device_id:
+                    return True
             if stored_device_hash and stored_device_hash.startswith("zkp:"):
                 expected_y = stored_device_hash.split(":")[1]
                 if zkp_proof:
@@ -551,6 +794,9 @@ class ChallengeUtils:
                 if expiry and int(time.time() * 1000) > int(expiry):
                     await store.delete(f"ticket:{ticket}")
                     return False
+                if db_data.get("greenlist") or (stored_device_hash and stored_device_hash.startswith("webauthn:greenlist:")):
+                    if not device_id or device_id == stored_device_id:
+                        return True
                 if stored_device_hash and stored_device_hash.startswith("zkp:"):
                     expected_y = stored_device_hash.split(":")[1]
                     if zkp_proof:
@@ -775,4 +1021,11 @@ def get_pow_secret():
 async def handle_cooperative_request(store, params, client_ip='127.0.0.1', headers=None, config=None):
     return await ChallengeUtils.handle_cooperative_request(store, params, client_ip, headers, config)
 
-__all__ = ["ChallengeUtils", "verify_zkp_proof", "get_pow_secret", "handle_cooperative_request"]
+__all__ = [
+    "ChallengeUtils",
+    "verify_zkp_proof",
+    "get_pow_secret",
+    "handle_cooperative_request",
+    "decode_cbor",
+    "verify_webauthn_hardware_anchor",
+]

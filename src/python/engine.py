@@ -1679,6 +1679,39 @@ class FingerprintEngine:
         is_condemned = bool(device_data and device_data.get("condemned"))
         is_certain_attack = self._has_certain_attack(context)
 
+        # Validation immédiate de l'attestation matérielle WebAuthn si présente dans la requête
+        webauthn_header = context.get_header("x-webauthn-anchor")
+        behavior_header = context.get_header("x-behavior-metrics")
+        anchor_obj = None
+        if webauthn_header:
+            try:
+                if isinstance(webauthn_header, str) and webauthn_header.strip().startswith("{"):
+                    anchor_obj = json.loads(webauthn_header)
+                else:
+                    anchor_obj = json.loads(base64.b64decode(webauthn_header).decode("utf-8"))
+            except Exception:
+                pass
+        elif behavior_header and isinstance(behavior_header, str) and behavior_header.strip().startswith("{"):
+            try:
+                parsed_metrics = json.loads(behavior_header)
+                if isinstance(parsed_metrics, dict):
+                    anchor_obj = parsed_metrics.get("webauthnAnchor")
+            except Exception:
+                pass
+
+        if anchor_obj and device_data:
+            if ChallengeUtils.verify_webauthn_hardware_anchor(anchor_obj, device_data):
+                device_data["webauthnVerified"] = True
+                await self.store.set(f"device:{device_id}", device_data)
+
+        if device_data and device_data.get("webauthnVerified") and not is_condemned and not is_certain_attack:
+            MetricsManager.increment_counter("requests_total", {"status": "passed"})
+            return {
+                "action": "next",
+                "score": 0.0,
+                "vector": {"webauthn_verified": 100.0}
+            }
+
         if is_condemned or is_certain_attack:
             if device_data:
                 device_data["condemned"] = True

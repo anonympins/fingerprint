@@ -1832,3 +1832,22 @@ async def test_streaming_graph_topology_score_detects_low_and_slow():
 
     assert score_data is not None
     assert score_data["graphTopologyScore"] > 50.0
+
+
+def test_behavior_score_normalized_float():
+    """Vérifie la mise à l'échelle automatique du score x-behavior-metrics entre 0.0 et 1.0 vers 0..100."""
+    # 0.75 -> 75.0
+    ctx1 = RequestContext("127.0.0.1", "/", {"user-agent": "Mozilla/5.0", "x-behavior-metrics": "0.75"}, {}, {})
+    assert RequestUtils.get_behavior_score(ctx1) == pytest.approx(75.0)
+
+    # 0.20 -> 20.0
+    ctx2 = RequestContext("127.0.0.1", "/", {"user-agent": "Mozilla/5.0", "x-behavior-metrics": "0.20"}, {}, {})
+    assert RequestUtils.get_behavior_score(ctx2) == pytest.approx(20.0)
+
+    # 1.0 -> 100.0
+    ctx3 = RequestContext("127.0.0.1", "/", {"user-agent": "Mozilla/5.0", "x-behavior-metrics": "1.0"}, {}, {})
+    assert RequestUtils.get_behavior_score(ctx3) == pytest.approx(100.0)
+
+    # 0.0 -> 0.0
+    ctx4 = RequestContext("127.0.0.1", "/", {"user-agent": "Mozilla/5.0", "x-behavior-metrics": "0.0"}, {}, {})
+    assert RequestUtils.get_behavior_score(ctx4) == pytest.approx(0.0)

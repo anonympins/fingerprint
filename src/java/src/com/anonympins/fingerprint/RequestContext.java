@@ -24,6 +24,7 @@ public class RequestContext {
     public Map<String, Object> resolvedIdentity = null;
     public Double preCalculatedScore = null;
     public Map<String, Double> preCalculatedVector = null;
+    public boolean headersTranslated = false;
 
     public RequestContext(String clientIp, String path, Map<String, String> headers,
                           Map<String, Object> queryParams, Map<String, Object> body,

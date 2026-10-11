@@ -827,11 +827,16 @@ class RequestUtils:
             return 0.0
 
         if isinstance(header, (int, float)):
-            return max(0.0, min(100.0, float(header)))
+            val = float(header)
+            if 0.0 < val <= 1.0:
+                val *= 100.0
+            return max(0.0, min(100.0, val))
 
         if isinstance(header, str):
             try:
                 num = float(header.strip())
+                if 0.0 < num <= 1.0:
+                    num *= 100.0
                 return max(0.0, min(100.0, num))
             except ValueError:
                 pass
@@ -842,7 +847,10 @@ class RequestUtils:
             return 10.0
 
         if isinstance(metrics, (int, float)):
-            return max(0.0, min(100.0, float(metrics)))
+            val = float(metrics)
+            if 0.0 < val <= 1.0:
+                val *= 100.0
+            return max(0.0, min(100.0, val))
 
         if not isinstance(metrics, dict):
             return 0.0
