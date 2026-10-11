@@ -4,11 +4,17 @@ on:
   push:
     branches: [ "main" ]
     paths:
+      - 'src/php/**'
+      - 'src/js/**'
+      - 'config/**'
       - 'src/php/WordPress/**'
       - '.github/workflows/ci-wordpress.yml'
   pull_request:
     branches: [ "main" ]
     paths:
+      - 'src/php/**'
+      - 'src/js/**'
+      - 'config/**'
       - 'src/php/WordPress/**'
       - '.github/workflows/ci-wordpress.yml'
 
@@ -24,10 +30,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: zip
+          coverage: none
+
+      - name: Package WordPress Plugin
+        run: |
+          php src/php/WordPress/package.php
+          mkdir -p /tmp/dist
+          unzip -q public/anonympins-bot-mitigation-pow.zip -d /tmp/dist
+          # Nettoie le workspace pour placer les fichiers du plugin à la racine
+          find . -maxdepth 1 ! -name '.git' ! -name '.github' ! -name '.' -exec rm -rf {} +
+          cp -r /tmp/dist/anonympins-bot-mitigation-pow/* .
+
       - name: Run Plugin Check
         uses: WordPress/plugin-check-action@v1
         with:
-          plugin-path: 'src/php/WordPress'
-          # Options supplémentaires utiles si besoin :
-          # wp-version: 'latest'
-          # exclude-checks: 'check_slug'
+          wp-version: 'latest'
+          exclude-checks: 'plugin_slug'

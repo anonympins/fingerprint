@@ -153,6 +153,9 @@ foreach ($wasmSources as $wasmSource) {
         break;
     }
 }
+if (!file_exists($buildDir . '/assets/fp.wasm.js') && file_exists($wpDir . '/assets/fp.wasm.js')) {
+    copy($wpDir . '/assets/fp.wasm.js', $buildDir . '/assets/fp.wasm.js');
+}
 
 // 3.b Copy problem/bot configuration assets
 $configSourceDir = $rootDir . '/config';
