@@ -180,11 +180,11 @@ class FingerprintEngine
                         $publicKeyPem = $details['key'] ?? '';
                         Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
                         Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                        update_option('fingerprint_ed25519_keys', [
+                            'privateKey' => $privateKeyPem,
+                            'publicKey'  => $publicKeyPem,
+                        ], false);
                     }
-                    update_option('fingerprint_ed25519_keys', [
-                        'privateKey' => $privateKeyPem,
-                        'publicKey'  => $publicKeyPem,
-                    ], false);
                 }
             } else {
                 self::initStandaloneEd25519Keys();
@@ -225,7 +225,7 @@ class FingerprintEngine
 
     /**
      * Initializes and persists Ed25519 keys for standalone PHP environments outside WordPress.
-     * Loads from a persistent JSON file if it exists, otherwise generates a new key pair.
+     * Uses the configured persistence store (StoreManager), avoiding writing private keys to disk files.
      *
      * @return void
      */
@@ -235,55 +235,30 @@ class FingerprintEngine
             return; // Managed exclusively via WordPress options in WP runtime
         }
 
-        if (function_exists('wp_upload_dir') && function_exists('wp_mkdir_p')) {
-            $uploadDir = wp_upload_dir();
-            $configDir = (!empty($uploadDir['basedir']) && is_dir($uploadDir['basedir']))
-                ? $uploadDir['basedir'] . '/anonympins-bot-mitigation-pow'
-                : sys_get_temp_dir();
-        } else {
-            $envKeyDir = Env::get('FINGERPRINT_KEY_DIR');
-            $configDir = !empty($envKeyDir) ? (string)$envKeyDir : sys_get_temp_dir();
+        $store = StoreManager::getStore();
+        $keys = $store->get('fingerprint_ed25519_keys');
+        if (is_array($keys) && isset($keys['privateKey'], $keys['publicKey'])) {
+            Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
+            Env::set('ED25519_PUBLIC_KEY', $keys['publicKey']);
+            return;
         }
-        $persistentKeyPath = rtrim($configDir, '/\\') . '/ed25519_key.json';
 
-        if (file_exists($persistentKeyPath)) {
-            try {
-                $raw = (string)RequestUtils::readFileContent($persistentKeyPath);
-                $keys = json_decode($raw, true);
-                if (isset($keys['privateKey'], $keys['publicKey'])) {
-                    Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
-                    Env::set('ED25519_PUBLIC_KEY', $keys['publicKey']);
+        try {
+            if (defined('OPENSSL_KEYTYPE_ED25519')) {
+                $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
+                if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
+                    $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
+                    $publicKeyPem = $details['key'] ?? ''; // @phpstan-ignore-line
+                    Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
+                    Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                    $store->set('fingerprint_ed25519_keys', [
+                        'privateKey' => $privateKeyPem,
+                        'publicKey'  => $publicKeyPem,
+                    ]);
                 }
-            } catch (\Throwable $e) {
-                self::logError('[Fingerprint] Failed to load persistent Ed25519 keys: ' . $e->getMessage());
             }
-        } else {
-            try {
-                if (defined('OPENSSL_KEYTYPE_ED25519')) {
-                    $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
-                    if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
-                        $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
-                        $publicKeyPem = $details['key'] ?? ''; // @phpstan-ignore-line
-                        Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
-                        Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
-                        if (!is_dir($configDir)) {
-                            if (function_exists('wp_mkdir_p')) {
-                                wp_mkdir_p($configDir);
-                            } else {
-                                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Standalone filesystem fallback
-                                @mkdir($configDir, 0700, true);
-                            }
-                        }
-                        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-                        file_put_contents($persistentKeyPath, json_encode([
-                            'privateKey' => $privateKeyPem,
-                            'publicKey' => $publicKeyPem
-                        ], JSON_PRETTY_PRINT));
-                    }
-                }
-            } catch (\Throwable $e) {
-                self::logError('[Fingerprint] Native Ed25519 key generation failed: ' . $e->getMessage());
-            }
+        } catch (\Throwable $e) {
+            self::logError('[Fingerprint] Native Ed25519 key generation failed: ' . $e->getMessage());
         }
     }
 

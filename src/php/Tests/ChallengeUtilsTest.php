@@ -274,24 +274,9 @@ class ChallengeUtilsTest extends TestCase
             $this->markTestSkipped('Ed25519 key generation or export is not supported in this PHP/OpenSSL environment.');
         }
 
-        $tempDir = sys_get_temp_dir() . '/fp-issuer-keys-' . time();
-        try {
-            $result = ChallengeUtils::generateIssuerPemKeys($tempDir);
-            $this->assertFileExists($result['privateKeyPath']);
-            $this->assertFileExists($result['publicKeyPath']);
-            $this->assertStringContainsString('-----BEGIN PRIVATE KEY-----', $result['privateKey']);
-            $this->assertStringContainsString('-----BEGIN PUBLIC KEY-----', $result['publicKey']);
-        } finally {
-            if (file_exists($tempDir . '/issuer-private.pem')) {
-                unlink($tempDir . '/issuer-private.pem');
-            }
-            if (file_exists($tempDir . '/issuer-public.pem')) {
-                unlink($tempDir . '/issuer-public.pem');
-            }
-            if (is_dir($tempDir)) {
-                rmdir($tempDir);
-            }
-        }
+        $result = ChallengeUtils::generateIssuerPemKeys();
+        $this->assertStringContainsString('-----BEGIN PRIVATE KEY-----', $result['privateKey']);
+        $this->assertStringContainsString('-----BEGIN PUBLIC KEY-----', $result['publicKey']);
     }
 
     public function testCooperativePoSpaceWorkflow(): void
