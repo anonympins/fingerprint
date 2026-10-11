@@ -50,6 +50,9 @@
         <exclude name="Squiz.ControlStructures.ControlSignature"/>
         <exclude name="Squiz.PHP.EmbeddedPhp"/>
 
+        <!-- Autorise apache_setenv pour le streaming non bufférisé Server-Sent Events (SSE) -->
+        <exclude name="WordPress.PHP.DiscouragedPHPFunctions.runtime_configuration_apache_setenv"/>
+
         <!-- Désactive les contraintes cosmétiques d'espacement des parenthèses/accolades -->
         <exclude name="Generic.Classes.OpeningBraceSameLine"/>
         <exclude name="Generic.Functions.OpeningFunctionBraceKernighanRitchie"/>
@@ -63,4 +66,9 @@
 
     <!-- Analyse de compatibilité PHP 8.0 - 8.4 -->
     <rule ref="PHPCompatibilityWP"/>
+
+    <!-- Ignore les avertissements sur les fichiers PHP vides ou d'amorçage -->
+    <rule ref="Internal.NoCodeFound">
+        <severity>0</severity>
+    </rule>
 </ruleset>

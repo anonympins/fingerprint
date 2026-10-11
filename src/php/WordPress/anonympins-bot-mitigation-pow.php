@@ -629,8 +629,8 @@ function fingerprint_rest_sandbox_sse(): void {
         wp_die(esc_html__('Unauthorized access.', 'anonympins-bot-mitigation-pow'), '', ['response' => 403]);
     }
 
-    // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.runtime_configuration_apache_setenv -- Required for SSE unbuffered streaming
     if (function_exists('apache_setenv')) {
+        // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.runtime_configuration_apache_setenv -- Required for unbuffered SSE streaming
         apache_setenv('no-gzip', '1');
     }
     // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.ob_end_clean_ob_end_clean
