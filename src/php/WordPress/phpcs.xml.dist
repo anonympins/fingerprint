@@ -20,10 +20,10 @@
         <exclude name="WordPress.Files.FileName"/>
 
         <!-- Autorise les espaces et styles de parenthèses/indentation modernes -->
-         <exclude name="Generic.WhiteSpace"/>
-         <exclude name="Squiz.WhiteSpace"/>
-         <exclude name="WordPress.WhiteSpace"/>
-         
+        <exclude name="Generic.WhiteSpace"/>
+        <exclude name="Squiz.WhiteSpace"/>
+        <exclude name="WordPress.WhiteSpace"/>
+
         <!-- Autorise la syntaxe moderne des tableaux courts [] -->
         <exclude name="Universal.Arrays.DisallowShortArraySyntax"/>
 
@@ -33,8 +33,24 @@
         <!-- Autorise les variables camelCase (PSR-12) -->
         <exclude name="WordPress.NamingConventions.ValidVariableName"/>
 
+        <!-- Autorise l'opérateur ternaire court ?: (Elvis) -->
+        <exclude name="Universal.Operators.DisallowShortTernary"/>
+
+        <!-- Autorise les paramètres non utilisés dans les callbacks de routes REST WP -->
+        <exclude name="Generic.CodeAnalysis.UnusedFunctionParameter"/>
+
+        <!-- Autorise la gestion de fin de fichier standard -->
+        <exclude name="PSR2.Files.EndFileNewline"/>
+
+        <!-- Désactive les contraintes cosmétiques sur les guillemets et concaténations simples -->
+        <exclude name="Squiz.Strings.DoubleQuoteUsage"/>
+        <exclude name="Generic.Strings.UnnecessaryStringConcat"/>
+
+        <!-- Désactive les contraintes de syntaxe alternative PHP dans les vues HTML de l'admin -->
+        <exclude name="Squiz.ControlStructures.ControlSignature"/>
+        <exclude name="Squiz.PHP.EmbeddedPhp"/>
+
         <!-- Désactive les contraintes cosmétiques d'espacement des parenthèses/accolades -->
-        <exclude name="WordPress.WhiteSpace"/>
         <exclude name="Generic.Classes.OpeningBraceSameLine"/>
         <exclude name="Generic.Functions.OpeningFunctionBraceKernighanRitchie"/>
         <exclude name="Generic.Formatting.MultipleStatementAlignment"/>
