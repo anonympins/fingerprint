@@ -318,11 +318,17 @@ $GLOBALS['fingerprint_current_evaluation'] = null;
 
 // 6. Security interception at the earliest point in the WordPress lifecycle.
 add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
-    if ((defined('WP_CLI') && WP_CLI) || (defined('DOING_CRON') && DOING_CRON)) {
+    if ((defined('WP_CLI') && WP_CLI) || (defined('DOING_CRON') && DOING_CRON) || defined('WP_PLUGIN_CHECK')) {
         return;
     }
 
     // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+    $clientIp = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
+    $userAgent = isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])) : '';
+    if (str_starts_with($userAgent, 'WordPress/') && in_array($clientIp, ['127.0.0.1', '::1'], true)) {
+        return;
+    }
+
     $rawUri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
     $requestUri = !empty($rawUri) ? $rawUri : '/';
     $isRestApi = defined('REST_REQUEST') && REST_REQUEST;
@@ -367,9 +373,6 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
 
     $sandboxConfig = fingerprint_get_sandbox_config();
     $isSandboxActive = false;
-
-    // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-    $clientIp = isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '';
 
     if ($sandboxConfig['enabled']) {
         if (!empty($sandboxConfig['ip_filter'])) {
@@ -589,7 +592,7 @@ add_action('rest_api_init', function () {
     ]);
 });
 
-function fingerprint_rest_sandbox_telemetry(\WP_REST_Request $request): \WP_REST_Response {
+function fingerprint_rest_sandbox_telemetry(?\WP_REST_Request $request = null): \WP_REST_Response {
     $store = new WpDbStore();
     $history = $store->get('fingerprint_challenges_log');
     if (!is_array($history)) {
@@ -611,7 +614,7 @@ function fingerprint_rest_sandbox_clear_challenges(): \WP_REST_Response {
     return new \WP_REST_Response(['cleared' => true], 200);
 }
 
-function fingerprint_rest_prometheus_metrics(\WP_REST_Request $request): \WP_REST_Response {
+function fingerprint_rest_prometheus_metrics(?\WP_REST_Request $request = null): \WP_REST_Response {
     $effectiveProfiles = fingerprint_get_effective_profiles($GLOBALS['fingerprint_security_profiles'] ?? []);
     $securityConfig = SecurityProfiles::createSecurityProfile($effectiveProfiles['frontend']['profile'] ?? 'blog', $effectiveProfiles['frontend']['overrides'] ?? []);
     $metricsOutput = MetricsManager::getPrometheusMetrics($securityConfig);
@@ -697,8 +700,9 @@ add_action('admin_menu', function () {
 /**
  * Registers the admin page JS script via admin_enqueue_scripts (required by WP).
  */
-add_action('admin_enqueue_scripts', function (string $hook) {
-    if (strpos($hook, 'anonympins-bot-mitigation') === false) {
+add_action('admin_enqueue_scripts', function ($hook = '') {
+    $hookStr = is_string($hook) ? $hook : '';
+    if ($hookStr === '' || strpos($hookStr, 'anonympins-bot-mitigation') === false) {
         return;
     }
 
@@ -1042,10 +1046,6 @@ function fingerprint_render_admin_page(): void {
     $store = new WpDbStore();
     $totalRows = $store->getTotalCount();
     $expiredRows = $store->getExpiredCount();
-    $tableName = esc_sql($wpdb->prefix . 'fingerprint_store');
-    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter
-    $now = time();
-    // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared,PluginCheck.Security.DirectDB.UnescapedDBParameter
 
     $prometheusRaw = MetricsManager::getPrometheusMetrics($frontendConfig);
     ?>

@@ -45,6 +45,16 @@ jobs:
           # Nettoie le workspace pour placer les fichiers du plugin à la racine
           find . -maxdepth 1 ! -name '.git' ! -name '.github' ! -name '.' -exec rm -rf {} +
           cp -r /tmp/dist/anonympins-bot-mitigation-pow/* .
+          cat << 'EOF' > .wp-env.json
+          {
+            "core": null,
+            "config": {
+              "WP_DEBUG": true,
+              "WP_DEBUG_LOG": true,
+              "WP_DEBUG_DISPLAY": true
+            }
+          }
+          EOF
 
       - name: Run Plugin Check
         uses: WordPress/plugin-check-action@v1
