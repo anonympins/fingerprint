@@ -211,14 +211,14 @@ foreach ($fingerprint_composer_paths as $fingerprint_composer_path) {
     }
 }
 
-spl_autoload_register(function (string $class): void {
+spl_autoload_register(function (string $className): void {
     $prefix = 'Anonympins\\Fingerprint\\';
     $len = strlen($prefix);
-    if (strncmp($prefix, $class, $len) !== 0) {
+    if (strncmp($prefix, $className, $len) !== 0) {
         return;
     }
 
-    $relativeClass = substr($class, $len);
+    $relativeClass = substr($className, $len);
 
     if (str_starts_with($relativeClass, 'WordPress\\')) {
         $localClass = substr($relativeClass, strlen('WordPress\\'));
@@ -459,7 +459,7 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
         $isAuth = current_user_can('manage_options') || apply_filters('fingerprint_metrics_authorization', false, $context);
         if (!$isAuth) {
             status_header(403);
-            echo "Access to metrics denied.";
+            echo 'Access to metrics denied.';
             exit;
         }
         $guard->handleMetricsRequest($context);
@@ -629,6 +629,7 @@ function fingerprint_rest_sandbox_sse(): void {
         wp_die(esc_html__('Unauthorized access.', 'anonympins-bot-mitigation-pow'), '', ['response' => 403]);
     }
 
+    // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.runtime_configuration_apache_setenv -- Required for SSE unbuffered streaming
     if (function_exists('apache_setenv')) {
         apache_setenv('no-gzip', '1');
     }
@@ -665,7 +666,7 @@ function fingerprint_rest_sandbox_sse(): void {
                 $newEvents = array_reverse($newEvents);
                 foreach ($newEvents as $ev) {
                     $lastSeenId = (string)$ev['id'];
-                    echo "id: " . esc_attr($lastSeenId) . "\n";
+                    echo 'id: ' . esc_attr($lastSeenId) . "\n";
                     echo "event: challenge\n";
                     echo 'data: ' . wp_json_encode($ev) . "\n\n";
                 }

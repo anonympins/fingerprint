@@ -19,9 +19,11 @@
         <!-- Autorise le nommage de classe PSR-4 (ex: WpDbStore.php au lieu de class-wpdbstore.php) -->
         <exclude name="WordPress.Files.FileName"/>
 
-        <!-- Autorise l'indentation standard PSR-12 (espaces) -->
-        <exclude name="Generic.WhiteSpace.DisallowSpaceIndent"/>
-
+        <!-- Autorise les espaces et styles de parenthèses/indentation modernes -->
+         <exclude name="Generic.WhiteSpace"/>
+         <exclude name="Squiz.WhiteSpace"/>
+         <exclude name="WordPress.WhiteSpace"/>
+         
         <!-- Autorise la syntaxe moderne des tableaux courts [] -->
         <exclude name="Universal.Arrays.DisallowShortArraySyntax"/>
 
