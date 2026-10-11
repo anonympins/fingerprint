@@ -1,4 +1,4 @@
-name: WordPress Plugin Check
+name: WordPress Plugin CI & Quality
 
 on:
   push:
@@ -7,25 +7,62 @@ on:
       - 'src/php/**'
       - 'src/js/**'
       - 'config/**'
-      - 'src/php/WordPress/**'
       - '.github/workflows/ci-wordpress.yml'
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop", "feature/*" ]
     paths:
       - 'src/php/**'
       - 'src/js/**'
       - 'config/**'
-      - 'src/php/WordPress/**'
       - '.github/workflows/ci-wordpress.yml'
 
 permissions:
   contents: read
 
 jobs:
-  plugin-check:
-    name: WordPress Plugin Check (PCP)
+  wordpress-lint:
+    name: WPCS & Security Analysis
     runs-on: ubuntu-latest
 
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP and Tools
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: zip
+          tools: composer:v2, phpcs
+          coverage: none
+
+      - name: Install WordPress Coding Standards (WPCS)
+        run: |
+          composer global config allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
+          composer global require --dev \
+            dealerdirect/phpcodesniffer-composer-installer \
+            wp-coding-standards/wpcs \
+            phpcompatibility/phpcompatibility-wp
+
+      - name: Run WordPress Coding Standards (WPCS)
+        run: |
+          ~/.composer/vendor/bin/phpcs --standard=src/php/WordPress/phpcs.xml.dist src/php/WordPress/
+        continue-on-error: false
+
+      - name: Validate WordPress readme.txt
+        run: |
+          # Vérification de conformité des en-têtes du readme.txt WordPress
+          test -f src/php/WordPress/readme.txt
+          grep -q "^=== " src/php/WordPress/readme.txt
+          grep -q "^Requires at least:" src/php/WordPress/readme.txt
+          grep -q "^Tested up to:" src/php/WordPress/readme.txt
+          grep -q "^Stable tag:" src/php/WordPress/readme.txt
+          grep -q "^License:" src/php/WordPress/readme.txt
+          echo "readme.txt headers are valid!"
+
+  build-package:
+    name: Package & Artifact Generation
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -40,14 +77,12 @@ jobs:
       - name: Package WordPress Plugin
         run: |
           php src/php/WordPress/package.php
-          mkdir -p /tmp/dist
-          unzip -q public/anonympins-bot-mitigation-pow.zip -d /tmp/dist
-          # Nettoie le workspace pour placer les fichiers du plugin à la racine
-          find . -maxdepth 1 ! -name '.git' ! -name '.github' ! -name '.' -exec rm -rf {} +
-          cp -r /tmp/dist/anonympins-bot-mitigation-pow/* .
+          test -f public/anonympins-bot-mitigation-pow.zip
+          unzip -l public/anonympins-bot-mitigation-pow.zip
 
-      - name: Run Plugin Check
-        uses: WordPress/plugin-check-action@v1
+      - name: Upload Plugin ZIP Artifact
+        uses: actions/upload-artifact@v4
         with:
-          wp-version: 'latest'
-          exclude-checks: 'plugin_slug'
+          name: anonympins-bot-mitigation-pow
+          path: public/anonympins-bot-mitigation-pow.zip
+          if-no-files-found: error
