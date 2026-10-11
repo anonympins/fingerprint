@@ -1,4 +1,4 @@
-=== Anonympins bot mitigation with proof-of-work ===
+=== Anonympins Bot Mitigation with Proof-of-Work ===
 Contributors: anonympins
 Tags: bot protection, security, proof of work, firewall, anti scraping
 Requires at least: 5.9
