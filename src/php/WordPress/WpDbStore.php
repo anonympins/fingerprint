@@ -102,7 +102,7 @@ class WpDbStore implements IStore
         $expiresAt = ($ttl !== null && $ttl > 0) ? (time() + $ttl) : null;
         $serialized = is_scalar($value) && !is_bool($value)
             ? (string)$value
-            : json_encode($value, JSON_UNESCAPED_SLASHES);
+            : (function_exists('wp_json_encode') ? wp_json_encode($value, JSON_UNESCAPED_SLASHES) : json_encode($value, JSON_UNESCAPED_SLASHES));
 
         $this->db->replace(
             $this->table,

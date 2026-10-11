@@ -46,12 +46,7 @@ jobs:
 
       - name: Run WordPress Coding Standards (WPCS)
         run: |
-          ~/.composer/vendor/bin/phpcs -p -s \
-            --standard=WordPress-Extra \
-            --extensions=php \
-            --ignore=*/vendor/*,*/assets/*,*/package.php \
-            --runtime-set testVersion 8.0-8.4 \
-            src/php/WordPress/
+          ~/.composer/vendor/bin/phpcs --standard=src/php/WordPress/phpcs.xml.dist src/php/WordPress/
         continue-on-error: false
 
       - name: Validate WordPress readme.txt
