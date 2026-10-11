@@ -1,0 +1,33 @@
+name: WordPress Plugin Check
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'src/php/WordPress/**'
+      - '.github/workflows/ci-wordpress.yml'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'src/php/WordPress/**'
+      - '.github/workflows/ci-wordpress.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-check:
+    name: WordPress Plugin Check (PCP)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Plugin Check
+        uses: WordPress/plugin-check-action@v1
+        with:
+          plugin-path: 'src/php/WordPress'
+          # Options supplémentaires utiles si besoin :
+          # wp-version: 'latest'
+          # exclude-checks: 'check_slug'
