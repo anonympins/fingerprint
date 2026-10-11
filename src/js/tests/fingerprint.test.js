@@ -3225,4 +3225,61 @@ describe('IP Registration and Filtering', () => {
             expect(__internal.generateClosedShadowTraps(null)).toBe('');
         });
     });
+
+    describe('Streaming Session Graph Topology (Feature Anti-False-Positive)', () => {
+        const { getGraphTopologyScore } = __internal;
+
+        it('should return 0.0 for initial entry routes (ROOT->path) even with many distinct subnets', async () => {
+            for (let i = 1; i <= 10; i++) {
+                const context = {
+                    clientIp: `198.51.10${i}.${i}`,
+                    path: '/index.html'
+                };
+                const res = await getGraphTopologyScore(context, `session-${i}`, `fp-${i}`);
+                expect(res.graphTopologyScore).toBe(0.0);
+            }
+        });
+
+        it('should return 0.0 for normal human-paced browsing across multiple subnets', async () => {
+            // Simule 5 utilisateurs normaux allant de / à /about avec un temps de lecture humain (5s à 25s)
+            for (let i = 1; i <= 5; i++) {
+                const ip = `203.0.11${i}.${i}`;
+                const sess = `user-sess-${i}`;
+                const fp = `user-fp-${i}`;
+
+                // Requête 1 sur /
+                await getGraphTopologyScore({ clientIp: ip, path: '/' }, sess, fp);
+
+                // Simule le délai de lecture humain
+                const prevKey = `graph-prev-path:${sess}`;
+                const rec = await __internal.store.get(prevKey);
+                rec.time = Date.now() - (5000 + i * 3000);
+                await __internal.store.set(prevKey, rec);
+
+                // Requête 2 sur /about
+                const res = await getGraphTopologyScore({ clientIp: ip, path: '/about' }, sess, fp);
+                expect(res.graphTopologyScore).toBe(0.0);
+            }
+        });
+
+        it('should detect superhuman fast coordinated transitions (<300ms) across multiple subnets', async () => {
+            let lastScore = 0.0;
+            for (let i = 1; i <= 4; i++) {
+                const ip = `198.51.10${i}.${i * 10}`;
+                const sess = `bot-sess-${i}`;
+                const fp = `bot-fp-${i}`;
+
+                await getGraphTopologyScore({ clientIp: ip, path: '/catalog' }, sess, fp);
+
+                const prevKey = `graph-prev-path:${sess}`;
+                const rec = await __internal.store.get(prevKey);
+                rec.time = Date.now() - 150; // Inhumain : 150ms
+                await __internal.store.set(prevKey, rec);
+
+                const res = await getGraphTopologyScore({ clientIp: ip, path: '/product/123' }, sess, fp);
+                lastScore = res.graphTopologyScore;
+            }
+            expect(lastScore).toBeGreaterThanOrEqual(60.0);
+        });
+    });
 });

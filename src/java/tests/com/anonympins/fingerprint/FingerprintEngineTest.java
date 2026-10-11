@@ -451,6 +451,43 @@ public class FingerprintEngineTest {
     }
 
     @Test
+    @DisplayName("Should detect superhuman fast coordinated transitions (<300ms) across multiple subnets in Graph Topology")
+    void testGraphTopologySuperhumanFastDetection() {
+        IStore store = new InMemoryStore();
+        String targetPath = "/product/view-details";
+        double lastScore = 0.0;
+
+        for (int i = 1; i <= 4; i++) {
+            String ip = "198.51.10" + i + "." + (i * 10);
+            String sess = "bot-session-" + i;
+            String fp = "fp-" + i;
+
+            // Page 1
+            RequestContext ctx1 = new RequestContext(ip, "/catalog", new HashMap<>(), null, null, null, "1.1");
+            RequestUtils.getGraphTopologyScore(store, ctx1, sess, fp);
+
+            // Simuler transition ultra-rapide (<300ms)
+            String prevKey = "graph-prev-path:" + sess;
+            Map<String, Object> rec = (Map<String, Object>) store.get(prevKey);
+            assertNotNull(rec);
+            rec.put("time", System.currentTimeMillis() - 150L);
+            store.set(prevKey, rec, 1800);
+
+            // Page 2
+            RequestContext ctx2 = new RequestContext(ip, targetPath, new HashMap<>(), null, null, null, "1.1");
+            Map<String, Double> res = RequestUtils.getGraphTopologyScore(store, ctx2, sess, fp);
+            lastScore = res.getOrDefault("graphTopologyScore", 0.0);
+        }
+
+        assertTrue(lastScore >= 60.0, "La coordination multi-IP ultra-rapide doit déclencher un score >= 60.0");
+
+        // Accès initial (ROOT->path) doit rester à 0.0
+        RequestContext freshCtx = new RequestContext("203.0.113.88", "/catalog", new HashMap<>(), null, null, null, "1.1");
+        Map<String, Double> freshScore = RequestUtils.getGraphTopologyScore(store, freshCtx, "fresh-user", "fresh-fp");
+        assertEquals(0.0, freshScore.get("graphTopologyScore"), "L'arrivée initiale ne doit pas être pénalisée");
+    }
+
+    @Test
     @DisplayName("Should detect Coordinated Botnet IP rotation behavior")
     void testCoordinatedBotnetClustering() {
         IStore store = new InMemoryStore();

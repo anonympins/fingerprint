@@ -1819,19 +1819,36 @@ def test_sanitize_traffic_data_hardware_clustering():
 @pytest.mark.asyncio
 async def test_streaming_graph_topology_score_detects_low_and_slow():
     store = InMemoryStore()
-    transition_path = "/api/v1/products/item-492"
+    target_path = "/product/view-details"
+    last_score = 0.0
 
-    context1 = RequestContext(client_ip="198.51.100.12", path=transition_path, headers={}, query_params={}, cookies={})
-    res1 = await RequestUtils.get_graph_topology_score(store, context1, "sess-1", "fp-hash-1")
-    assert res1["graphTopologyScore"] == 0.0
+    for i in range(1, 5):
+        ip = f"198.51.10{i}.{i * 10}"
+        sess = f"bot-session-{i}"
+        fp = f"fp-{i}"
 
-    score_data = None
-    for i in range(2, 8):
-        context = RequestContext(client_ip=f"203.0.11{i}.45", path=transition_path, headers={}, query_params={}, cookies={})
-        score_data = await RequestUtils.get_graph_topology_score(store, context, f"sess-{i}", f"fp-hash-{i}")
+        # Page 1
+        ctx1 = RequestContext(client_ip=ip, path="/catalog", headers={}, query_params={}, cookies={})
+        await RequestUtils.get_graph_topology_score(store, ctx1, sess, fp)
 
-    assert score_data is not None
-    assert score_data["graphTopologyScore"] > 50.0
+        # Simuler transition ultra-rapide (<300ms)
+        prev_key = f"graph-prev-path:{sess}"
+        rec = await store.get(prev_key)
+        assert rec is not None
+        rec["time"] = int(time.time() * 1000) - 150
+        await store.set(prev_key, rec, 1800)
+
+        # Page 2
+        ctx2 = RequestContext(client_ip=ip, path=target_path, headers={}, query_params={}, cookies={})
+        res = await RequestUtils.get_graph_topology_score(store, ctx2, sess, fp)
+        last_score = res.get("graphTopologyScore", 0.0)
+
+    assert last_score >= 60.0
+
+    # Accès initial (ROOT->path) doit rester à 0.0
+    fresh_ctx = RequestContext(client_ip="203.0.113.88", path="/catalog", headers={}, query_params={}, cookies={})
+    fresh_score = await RequestUtils.get_graph_topology_score(store, fresh_ctx, "fresh-user", "fresh-fp")
+    assert fresh_score["graphTopologyScore"] == 0.0
 
 
 def test_behavior_score_normalized_float():

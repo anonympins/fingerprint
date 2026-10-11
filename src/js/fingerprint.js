@@ -3659,86 +3659,117 @@ async function getGraphTopologyScore(context, deviceId, stableFpHash) {
         return { graphTopologyScore: 0.0 };
     }
 
-    const subnet = getIpSubnet(clientIp) || clientIp;
-    const path = context.path || '/';
-    const now = Date.now();
-    const timeWindowMs = 3600 * 1000; // Fenêtre d'agrégation glissante de 60 minutes
-    const decayConstant = 0.0003; // Facteur d'amortissement temporel continu
-
-    // 1. Clé de transition cinématique (Edge topologique)
-    const lastPathKey = `graph-prev-path:${deviceId || stableFpHash}`;
-    const previousPath = (await store.get(lastPathKey)) || null;
-    await store.set(lastPathKey, path, 3600);
-
-    const transitionEdge = previousPath ? `${previousPath}->${path}` : `ROOT->${path}`;
-    const transitionHash = cyrb53(transitionEdge).toString(16);
-
-    // 2. Mise à jour de la topologie de graphe partagée pour ce motif de navigation
-    const graphNodeKey = `graph-edge:${transitionHash}`;
-    let graphNode = (await store.get(graphNodeKey)) || {
-        sessions: {},
-        subnets: {},
-        firstSeen: now,
-        lastSeen: now,
-        totalHits: 0
-    };
-
-    // Amortissement des poids existants
-    const elapsed = Math.max(0, now - graphNode.lastSeen);
-    const timeDecayFactor = Math.exp(-decayConstant * (elapsed / 1000));
-
-    graphNode.totalHits = (graphNode.totalHits * timeDecayFactor) + 1;
-    graphNode.subnets[subnet] = ((graphNode.subnets[subnet] || 0) * timeDecayFactor) + 1;
-    const sessionKey = deviceId || stableFpHash || 'anon';
-    graphNode.sessions[sessionKey] = ((graphNode.sessions[sessionKey] || 0) * timeDecayFactor) + 1;
-    graphNode.lastSeen = now;
-
-    // Purge des nœuds inactifs du sous-graphe
-    for (const s of Object.keys(graphNode.subnets)) {
-        if (graphNode.subnets[s] < 0.05) delete graphNode.subnets[s];
-    }
-    for (const k of Object.keys(graphNode.sessions)) {
-        if (graphNode.sessions[k] < 0.05) delete graphNode.sessions[k];
-    }
-
-    await store.set(graphNodeKey, graphNode, 3600);
-
-    // 3. Message passing local : calcul du ratio de centralité et dispersion topologique
-    const distinctSubnets = Object.keys(graphNode.subnets).length;
-    const distinctSessions = Object.keys(graphNode.sessions).length;
-
-    if (distinctSubnets <= 1 || graphNode.totalHits < 4) {
+    const sessionKey = deviceId || stableFpHash;
+    if (!sessionKey) {
         return { graphTopologyScore: 0.0 };
     }
 
-    // Distribution d'entropie de dispersion des sous-réseaux BGP pour cette même transition
+    const subnet = getIpSubnet(clientIp) || clientIp;
+    const path = context.path || '/';
+    const now = Date.now();
+
+    // 1. Clé de transition cinématique (Edge topologique)
+    const lastPathKey = `graph-prev-path:${sessionKey}`;
+    const previousRecord = await store.get(lastPathKey);
+    const previousPath = typeof previousRecord === 'object' && previousRecord !== null
+        ? previousRecord.path
+        : (typeof previousRecord === 'string' ? previousRecord : null);
+    const previousTime = typeof previousRecord === 'object' && previousRecord !== null
+        ? (previousRecord.time || 0)
+        : 0;
+
+    await store.set(lastPathKey, { path, time: now }, 1800);
+
+    // Les requêtes initiales (ROOT->...) ou les rafraîchissements de page ne constituent pas
+    // un chemin cinématique inter-routes suspect : ils représentent l'accès normal à tout site web.
+    if (!previousPath || previousPath === path) {
+        return { graphTopologyScore: 0.0 };
+    }
+
+    const transitionDelta = previousTime > 0 ? Math.max(0, now - previousTime) : 0;
+    // Si la transition entre deux pages a pris plus de 5 minutes, ce n'est pas une séquence automatisée
+    if (transitionDelta > 300000) {
+        return { graphTopologyScore: 0.0 };
+    }
+
+    const transitionEdge = `${previousPath}->${path}`;
+    const transitionHash = cyrb53(transitionEdge).toString(16);
+
+    // 2. Mise à jour de la topologie de graphe partagée pour ce motif de navigation (fenêtre glissante de 120s)
+    const graphNodeKey = `graph-edge:${transitionHash}`;
+    const windowMs = 120 * 1000;
+    const cutoff = now - windowMs;
+
+    let graphNode = (await store.get(graphNodeKey)) || {
+        events: []
+    };
+
+    let recentEvents = Array.isArray(graphNode.events) ? graphNode.events : [];
+    recentEvents = recentEvents.filter(ev => ev && ev.time > cutoff);
+
+    recentEvents.push({
+        subnet,
+        session: sessionKey,
+        time: now,
+        delta: transitionDelta
+    });
+
+    if (recentEvents.length > 50) {
+        recentEvents.shift();
+    }
+
+    await store.set(graphNodeKey, { events: recentEvents }, 180);
+
+    // 3. Analyse de l'anomalie : coordination multi-sous-réseaux en temps réel
+    const distinctSubnets = new Set(recentEvents.map(e => e.subnet)).size;
+    const distinctSessions = new Set(recentEvents.map(e => e.session)).size;
+    const totalHits = recentEvents.length;
+
+    if (distinctSubnets < 3 || totalHits < 4) {
+        return { graphTopologyScore: 0.0 };
+    }
+
+    const subnetCounts = {};
+    for (const ev of recentEvents) {
+        subnetCounts[ev.subnet] = (subnetCounts[ev.subnet] || 0) + 1;
+    }
     let subnetEntropy = 0.0;
-    const subnetHitValues = Object.values(graphNode.subnets);
-    const sumHits = subnetHitValues.reduce((a, b) => a + b, 0);
-    for (const count of subnetHitValues) {
-        const p = count / sumHits;
+    for (const count of Object.values(subnetCounts)) {
+        const p = count / totalHits;
         if (p > 0) {
             subnetEntropy -= p * Math.log2(p);
         }
     }
-
-    // 4. Modélisation de l'anomalie Low & Slow :
-    // Si de nombreuses sessions et sous-réseaux IP distincts exécutent la même séquence
-    // cinématique avec une entropie de réseau élevée mais une faible vélocité locale
-    const maxExpectedEntropy = Math.log2(Math.max(2, distinctSubnets));
+    const maxExpectedEntropy = Math.log2(distinctSubnets);
     const normalizedEntropy = maxExpectedEntropy > 0 ? (subnetEntropy / maxExpectedEntropy) : 0.0;
-    const crossSubnetConvergence = Math.min(1.0, distinctSubnets / 8.0);
+
+    // 4. Critères discriminants d'une attaque automatisée distribuée :
+    // A) Vélocité inhumaine : plusieurs sous-réseaux distincts enchaînent les pages en < 300ms
+    const fastTransitions = recentEvents.filter(e => e.delta > 0 && e.delta < 300).length;
+    const isSuperhumanFast = fastTransitions >= 3;
+
+    // B) Régularité temporelle robotique (pacing fixe entre sous-réseaux distincts)
+    const deltas = recentEvents.map(e => e.delta).filter(d => d > 0);
+    let isRoboticPacing = false;
+    if (deltas.length >= 4) {
+        const avgDelta = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+        const variance = deltas.reduce((a, b) => a + Math.pow(b - avgDelta, 2), 0) / deltas.length;
+        const stdDev = Math.sqrt(variance);
+        if (stdDev < 80.0 && avgDelta < 2000) {
+            isRoboticPacing = true;
+        }
+    }
+
+    const coordinationFactor = distinctSessions / Math.max(1, distinctSubnets);
 
     let graphScore = 0.0;
-    if (distinctSubnets >= 3 && normalizedEntropy > 0.70) {
-        // Convergence anormale de multiples pools d'IP vers un chemin cinématique synchrone
-        const coordinationFactor = (distinctSessions / Math.max(1, distinctSubnets));
-        const baseAnomaly = 45.0 * crossSubnetConvergence * normalizedEntropy;
-        const structuralCohesionBoost = Math.min(50.0, graphNode.totalHits * 2.5);
-
-        graphScore = baseAnomaly + structuralCohesionBoost;
-        if (coordinationFactor >= 0.8 && distinctSubnets >= 5) {
-            graphScore += 25.0; // Collusion inter-réseaux à haute certitude
+    if (normalizedEntropy > 0.75 && coordinationFactor >= 0.8) {
+        if (isSuperhumanFast) {
+            graphScore += 60.0 + Math.min(35.0, fastTransitions * 8.0);
+        } else if (isRoboticPacing) {
+            graphScore += 50.0 + Math.min(30.0, distinctSubnets * 5.0);
+        } else if (distinctSubnets >= 6 && totalHits >= 12) {
+            graphScore += 40.0 + Math.min(30.0, (distinctSubnets - 5) * 6.0);
         }
     }
 
