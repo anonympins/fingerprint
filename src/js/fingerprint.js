@@ -3659,7 +3659,9 @@ async function getGraphTopologyScore(context, deviceId, stableFpHash) {
         return { graphTopologyScore: 0.0 };
     }
 
-    const sessionKey = deviceId || stableFpHash;
+    // Ne pas utiliser stableFpHash seul pour la cinématique inter-pages :
+    // des milliers d'utilisateurs légitimes partagent la même empreinte matérielle/TLS.
+    const sessionKey = deviceId;
     if (!sessionKey) {
         return { graphTopologyScore: 0.0 };
     }
@@ -3725,7 +3727,8 @@ async function getGraphTopologyScore(context, deviceId, stableFpHash) {
     const distinctSessions = new Set(recentEvents.map(e => e.session)).size;
     const totalHits = recentEvents.length;
 
-    if (distinctSubnets < 3 || totalHits < 4) {
+    // Échantillon statistique minimal renforcé pour éviter les faux positifs sur faible volume
+    if (distinctSubnets < 4 || totalHits < 6) {
         return { graphTopologyScore: 0.0 };
     }
 
@@ -3743,19 +3746,22 @@ async function getGraphTopologyScore(context, deviceId, stableFpHash) {
     const maxExpectedEntropy = Math.log2(distinctSubnets);
     const normalizedEntropy = maxExpectedEntropy > 0 ? (subnetEntropy / maxExpectedEntropy) : 0.0;
 
-    // 4. Critères discriminants d'une attaque automatisée distribuée :
-    // A) Vélocité inhumaine : plusieurs sous-réseaux distincts enchaînent les pages en < 300ms
-    const fastTransitions = recentEvents.filter(e => e.delta > 0 && e.delta < 300).length;
-    const isSuperhumanFast = fastTransitions >= 3;
-
-    // B) Régularité temporelle robotique (pacing fixe entre sous-réseaux distincts)
+    // 4. Critères discriminants avec vérification de la participation de la requête courante
     const deltas = recentEvents.map(e => e.delta).filter(d => d > 0);
+    const fastTransitions = recentEvents.filter(e => e.delta > 0 && e.delta < 300).length;
+    
+    // L'anomalie de vitesse ne s'applique que si la requête courante EST elle-même ultra-rapide
+    const currentIsFast = transitionDelta > 0 && transitionDelta < 300;
+    const isSuperhumanFast = fastTransitions >= 4 && currentIsFast;
+
+    // Régularité temporelle robotique (pacing fixe entre sous-réseaux distincts)
     let isRoboticPacing = false;
-    if (deltas.length >= 4) {
+    if (deltas.length >= 5) {
         const avgDelta = deltas.reduce((a, b) => a + b, 0) / deltas.length;
         const variance = deltas.reduce((a, b) => a + Math.pow(b - avgDelta, 2), 0) / deltas.length;
         const stdDev = Math.sqrt(variance);
-        if (stdDev < 80.0 && avgDelta < 2000) {
+        // Le pacing robotique n'incrimine le client que si son propre delta correspond à la cadence moyenne
+        if (stdDev < 60.0 && avgDelta < 2500 && Math.abs(transitionDelta - avgDelta) < 120.0) {
             isRoboticPacing = true;
         }
     }
@@ -3763,14 +3769,19 @@ async function getGraphTopologyScore(context, deviceId, stableFpHash) {
     const coordinationFactor = distinctSessions / Math.max(1, distinctSubnets);
 
     let graphScore = 0.0;
-    if (normalizedEntropy > 0.75 && coordinationFactor >= 0.8) {
+    // L'entropie et la dispersion ne sont évaluées que si une signature cinématique anormale est prouvée
+    if (normalizedEntropy > 0.85 && coordinationFactor >= 0.85) {
         if (isSuperhumanFast) {
-            graphScore += 60.0 + Math.min(35.0, fastTransitions * 8.0);
+            graphScore = 45.0 + Math.min(35.0, fastTransitions * 6.0);
         } else if (isRoboticPacing) {
-            graphScore += 50.0 + Math.min(30.0, distinctSubnets * 5.0);
-        } else if (distinctSubnets >= 6 && totalHits >= 12) {
-            graphScore += 40.0 + Math.min(30.0, (distinctSubnets - 5) * 6.0);
+            graphScore = 40.0 + Math.min(30.0, distinctSubnets * 4.0);
         }
+    }
+
+    // Amortissement si le client présente une télémétrie comportementale active (mouvements souris/tactile)
+    const behaviorHeader = context.headers?.['x-behavior-metrics'];
+    if (behaviorHeader && typeof behaviorHeader === 'string' && behaviorHeader.includes('mouseMovementsHistory')) {
+        graphScore = Math.max(0.0, graphScore - 30.0);
     }
 
     return {
