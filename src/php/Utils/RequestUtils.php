@@ -1877,7 +1877,9 @@ class RequestUtils
             return ['graphTopologyScore' => 0.0];
         }
 
-        $sessionKey = !empty($deviceId) ? $deviceId : (!empty($stableFpHash) ? $stableFpHash : '');
+        // Ne pas utiliser stableFpHash seul pour la cinématique inter-pages :
+        // des milliers d'utilisateurs légitimes partagent la même empreinte matérielle/TLS.
+        $sessionKey = !empty($deviceId) ? $deviceId : '';
         if ($sessionKey === '') {
             return ['graphTopologyScore' => 0.0];
         }
@@ -1947,7 +1949,8 @@ class RequestUtils
         $distinctSessions = count(array_unique($sessionsList));
         $totalHits = count($recentEvents);
 
-        if ($distinctSubnets < 3 || $totalHits < 4) {
+        // Échantillon statistique minimal renforcé pour éviter les faux positifs sur faible volume
+        if ($distinctSubnets < 4 || $totalHits < 6) {
             return ['graphTopologyScore' => 0.0];
         }
 
@@ -1963,22 +1966,22 @@ class RequestUtils
         $maxExpectedEntropy = log($distinctSubnets, 2);
         $normalizedEntropy = $maxExpectedEntropy > 0 ? ($subnetEntropy / $maxExpectedEntropy) : 0.0;
 
-        // 4. Critères discriminants d'une attaque automatisée distribuée :
-        // A) Vélocité inhumaine : plusieurs sous-réseaux distincts enchaînent les pages en < 300ms
+        // 4. Critères discriminants avec vérification de la participation de la requête courante
         $fastTransitions = count(array_filter($recentEvents, fn($e) => ($e['delta'] ?? 0) > 0 && ($e['delta'] ?? 0) < 300));
-        $isSuperhumanFast = $fastTransitions >= 3;
-
-        // B) Régularité temporelle robotique (pacing fixe entre sous-réseaux distincts)
         $deltas = array_values(array_filter(array_column($recentEvents, 'delta'), fn($d) => $d > 0));
+        $currentIsFast = $transitionDelta > 0 && $transitionDelta < 300;
+        $isSuperhumanFast = $fastTransitions >= 4 && $currentIsFast;
+
+        // Régularité temporelle robotique (pacing fixe entre sous-réseaux distincts)
         $isRoboticPacing = false;
-        if (count($deltas) >= 4) {
+        if (count($deltas) >= 5) {
             $avgDelta = array_sum($deltas) / count($deltas);
             $variance = 0.0;
             foreach ($deltas as $d) {
                 $variance += pow($d - $avgDelta, 2);
             }
             $stdDev = sqrt($variance / count($deltas));
-            if ($stdDev < 80.0 && $avgDelta < 2000) {
+            if ($stdDev < 60.0 && $avgDelta < 2500 && abs($transitionDelta - $avgDelta) < 120.0) {
                 $isRoboticPacing = true;
             }
         }
@@ -1986,14 +1989,17 @@ class RequestUtils
         $coordinationFactor = $distinctSessions / max(1, $distinctSubnets);
 
         $graphScore = 0.0;
-        if ($normalizedEntropy > 0.75 && $coordinationFactor >= 0.8) {
+        if ($normalizedEntropy > 0.85 && $coordinationFactor >= 0.85) {
             if ($isSuperhumanFast) {
-                $graphScore += 60.0 + min(35.0, $fastTransitions * 8.0);
+                $graphScore = 45.0 + min(35.0, $fastTransitions * 6.0);
             } elseif ($isRoboticPacing) {
-                $graphScore += 50.0 + min(30.0, $distinctSubnets * 5.0);
-            } elseif ($distinctSubnets >= 6 && $totalHits >= 12) {
-                $graphScore += 40.0 + min(30.0, ($distinctSubnets - 5) * 6.0);
+                $graphScore = 40.0 + min(30.0, $distinctSubnets * 4.0);
             }
+        }
+
+        $behaviorHeader = $context->getHeader('x-behavior-metrics');
+        if (!empty($behaviorHeader) && is_string($behaviorHeader) && str_contains($behaviorHeader, 'mouseMovementsHistory')) {
+            $graphScore = max(0.0, $graphScore - 30.0);
         }
 
         return ['graphTopologyScore' => min(100.0, round($graphScore, 1))];

@@ -32,8 +32,9 @@ public class RequestUtils {
             return result;
         }
 
-        String sessionKey = (deviceId != null && !deviceId.isEmpty()) ? deviceId :
-                ((stableFpHash != null && !stableFpHash.isEmpty()) ? stableFpHash : "");
+        // Ne pas utiliser stableFpHash seul pour la cinématique inter-pages :
+        // des milliers d'utilisateurs légitimes partagent la même empreinte matérielle/TLS.
+        String sessionKey = (deviceId != null && !deviceId.isEmpty()) ? deviceId : "";
         if (sessionKey.isEmpty()) {
             result.put("graphTopologyScore", 0.0);
             return result;
@@ -147,7 +148,8 @@ public class RequestUtils {
         }
 
         int totalHits = recentEvents.size();
-        if (distinctSubnets.size() < 3 || totalHits < 4) {
+        // Échantillon statistique minimal renforcé pour éviter les faux positifs sur faible volume
+        if (distinctSubnets.size() < 4 || totalHits < 6) {
             result.put("graphTopologyScore", 0.0);
             return result;
         }
@@ -163,16 +165,18 @@ public class RequestUtils {
         double maxExpectedEntropy = Math.log(distinctSubnets.size()) / Math.log(2);
         double normalizedEntropy = maxExpectedEntropy > 0.0 ? (subnetEntropy / maxExpectedEntropy) : 0.0;
 
-        boolean isSuperhumanFast = fastTransitions >= 3;
+        // 4. Critères discriminants avec vérification de la participation de la requête courante
+        boolean currentIsFast = transitionDelta > 0 && transitionDelta < 300;
+        boolean isSuperhumanFast = fastTransitions >= 4 && currentIsFast;
         boolean isRoboticPacing = false;
-        if (deltas.size() >= 4) {
+        if (deltas.size() >= 5) {
             double avgDelta = deltas.stream().mapToLong(Long::longValue).average().orElse(0.0);
             double variance = deltas.stream()
                     .mapToDouble(d -> Math.pow(d - avgDelta, 2))
                     .average()
                     .orElse(0.0);
             double stdDev = Math.sqrt(variance);
-            if (stdDev < 80.0 && avgDelta < 2000.0) {
+            if (stdDev < 60.0 && avgDelta < 2500.0 && Math.abs(transitionDelta - avgDelta) < 120.0) {
                 isRoboticPacing = true;
             }
         }
@@ -180,14 +184,17 @@ public class RequestUtils {
         double coordinationFactor = (double) distinctSessions.size() / Math.max(1, distinctSubnets.size());
 
         double graphScore = 0.0;
-        if (normalizedEntropy > 0.75 && coordinationFactor >= 0.8) {
+        if (normalizedEntropy > 0.85 && coordinationFactor >= 0.85) {
             if (isSuperhumanFast) {
-                graphScore += 60.0 + Math.min(35.0, fastTransitions * 8.0);
+                graphScore = 45.0 + Math.min(35.0, fastTransitions * 6.0);
             } else if (isRoboticPacing) {
-                graphScore += 50.0 + Math.min(30.0, distinctSubnets.size() * 5.0);
-            } else if (distinctSubnets.size() >= 6 && totalHits >= 12) {
-                graphScore += 40.0 + Math.min(30.0, (distinctSubnets.size() - 5) * 6.0);
+                graphScore = 40.0 + Math.min(30.0, distinctSubnets.size() * 4.0);
             }
+        }
+
+        String behaviorHeader = context.getHeader("x-behavior-metrics");
+        if (behaviorHeader != null && behaviorHeader.contains("mouseMovementsHistory")) {
+            graphScore = Math.max(0.0, graphScore - 30.0);
         }
 
         result.put("graphTopologyScore", Math.min(100.0, Math.round(graphScore * 10.0) / 10.0));
