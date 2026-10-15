@@ -1156,10 +1156,8 @@ function fingerprint_render_admin_page(): void {
                         } elseif ($isV6 && ($maskInt < 0 || $maskInt > 128)) {
                             $errorMsg = __('Invalid IPv6 CIDR mask (must be between 0 and 128).', 'anonympins-bot-mitigation-pow');
                         }
-                    } else {
-                        if (filter_var($value, FILTER_VALIDATE_IP) === false) {
-                            $errorMsg = __('Invalid IPv4 or IPv6 address.', 'anonympins-bot-mitigation-pow');
-                        }
+                    } elseif (filter_var($value, FILTER_VALIDATE_IP) === false) {
+                        $errorMsg = __('Invalid IPv4 or IPv6 address.', 'anonympins-bot-mitigation-pow');
                     }
                     break;
                 case 'path':
