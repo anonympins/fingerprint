@@ -288,6 +288,39 @@ class FingerprintEngineTest extends TestCase
         $this->assertEquals(0, $decision['score']);
     }
 
+    public function testAllowsMultipleAllowlistRules(): void
+    {
+        $config = SecurityProfiles::createSecurityProfile('strict', [
+            'whitelist' => [
+                ['type' => 'allowlist', 'entries' => ['10.0.0.1']],
+                ['type' => 'allowlist', 'entries' => ['192.168.1.0/24']],
+                ['type' => 'path_allowlist', 'entries' => ['/webhooks/*']],
+                ['type' => 'path_allowlist', 'entries' => ['/status']],
+                ['type' => 'host_path_allowlist', 'entries' => ['api.example.com/v1/*']],
+                ['type' => 'graphql_operation_allowlist', 'entries' => ['query:PublicQuery']]
+            ]
+        ]);
+        $engine = new FingerprintEngine($config);
+
+        // 1. IP dans le deuxième bloc allowlist
+        $resIp = $engine->processRequest($this->createRequestContext(['clientIp' => '192.168.1.42']));
+        $this->assertEquals('next', $resIp['action']);
+        $this->assertEquals(100.0, $resIp['vector']['whitelisted']);
+
+        // 2. Path dans la seconde règle path_allowlist
+        $resPath = $engine->processRequest($this->createRequestContext(['path' => '/status']));
+        $this->assertEquals('next', $resPath['action']);
+        $this->assertEquals(100.0, $resPath['vector']['whitelisted']);
+
+        // 3. Host + Path
+        $resHostPath = $engine->processRequest($this->createRequestContext([
+            'path' => '/v1/users',
+            'headers' => ['host' => 'api.example.com']
+        ]));
+        $this->assertEquals('next', $resHostPath['action']);
+        $this->assertEquals(100.0, $resHostPath['vector']['whitelisted']);
+    }
+
     public function testApplebotWhitelist(): void
     {
         $rule = FingerprintEngine::applebot_whitelist();
@@ -314,18 +347,10 @@ class FingerprintEngineTest extends TestCase
             $this->markTestSkipped('Ed25519 is not supported in this PHP/OpenSSL environment.');
         }
 
-        $configDir = sys_get_temp_dir() . '/anonympins-test-keys-' . time();
-        if (!is_dir($configDir)) {
-            mkdir($configDir, 0777, true);
-        }
-        $keyPath = $configDir . '/ed25519_key.json';
-        Env::set('FINGERPRINT_KEY_DIR', $configDir);
-
         Env::clear('ED25519_PRIVATE_KEY');
         Env::clear('ED25519_PUBLIC_KEY');
-        if (file_exists($keyPath)) {
-            unlink($keyPath);
-        }
+        $store = StoreManager::getStore();
+        $store->delete('fingerprint_ed25519_keys');
 
         $config = SecurityProfiles::createSecurityProfile('balanced', [
             'ed25519' => 'auto',
@@ -337,31 +362,21 @@ class FingerprintEngineTest extends TestCase
 
         $this->assertNotEmpty(Env::get('ED25519_PRIVATE_KEY') ?? '');
         $this->assertNotEmpty(Env::get('ED25519_PUBLIC_KEY') ?? '');
-        $this->assertFileExists($keyPath);
 
-        $stored = json_decode(file_get_contents($keyPath), true);
+        $stored = $store->get('fingerprint_ed25519_keys');
+        $this->assertIsArray($stored);
         $this->assertEquals(Env::get('ED25519_PRIVATE_KEY'), $stored['privateKey']);
         $this->assertEquals(Env::get('ED25519_PUBLIC_KEY'), $stored['publicKey']);
-
-        if (file_exists($keyPath)) {
-            unlink($keyPath);
-        }
     }
 
-    public function testEd25519KeyLoadingFromDisk(): void
+    public function testEd25519KeyLoadingFromStore(): void
     {
-        $configDir = sys_get_temp_dir() . '/anonympins-test-keys-' . time();
-        if (!is_dir($configDir)) {
-            mkdir($configDir, 0777, true);
-        }
-        $keyPath = $configDir . '/ed25519_key.json';
-        Env::set('FINGERPRINT_KEY_DIR', $configDir);
-
         $dummyKeys = [
             'privateKey' => '-----BEGIN PRIVATE KEY-----\ndummy-php-private\n-----END PRIVATE KEY-----',
             'publicKey' => '-----BEGIN PUBLIC KEY-----\ndummy-php-public\n-----END PUBLIC KEY-----'
         ];
-        file_put_contents($keyPath, json_encode($dummyKeys, JSON_PRETTY_PRINT));
+        $store = StoreManager::getStore();
+        $store->set('fingerprint_ed25519_keys', $dummyKeys);
 
         Env::clear('ED25519_PRIVATE_KEY');
         Env::clear('ED25519_PUBLIC_KEY');
@@ -376,8 +391,6 @@ class FingerprintEngineTest extends TestCase
 
         $this->assertEquals($dummyKeys['privateKey'], Env::get('ED25519_PRIVATE_KEY'));
         $this->assertEquals($dummyKeys['publicKey'], Env::get('ED25519_PUBLIC_KEY'));
-
-        unlink($keyPath);
     }
     public function testFingerprintBuilderCompareLogic(): void
     {

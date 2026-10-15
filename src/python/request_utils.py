@@ -12,7 +12,7 @@ from asn_lookup import default_asn_lookup, NetworkProfile
 from builder import cyrb53
 from optimization import Optimization
 from tls_parser import TLSClientHelloParser
-from utils import get_ip_subnet, get_ip_common_prefix_length
+from utils import get_ip_subnet, get_ip_common_prefix_length, is_loopback_ip
 from waf import MaliciousPatterns
 
 
@@ -1392,76 +1392,119 @@ class RequestUtils:
     @staticmethod
     async def get_graph_topology_score(store: Any, context: RequestContext, device_id: str, stable_fp_hash: str) -> Dict[str, float]:
         client_ip = context.client_ip
-        if not client_ip or client_ip in ("127.0.0.1", "::1", "localhost"):
+        if not client_ip or is_loopback_ip(client_ip):
+            return {"graphTopologyScore": 0.0}
+
+        # Ne pas utiliser stable_fp_hash seul pour la cinématique inter-pages :
+        # des milliers d'utilisateurs légitimes partagent la même empreinte matérielle/TLS.
+        session_key = device_id or ""
+        if not session_key:
             return {"graphTopologyScore": 0.0}
 
         subnet = get_ip_subnet(client_ip) or client_ip
         path = context.path or "/"
-        now = time.time()
-        decay_constant = 0.0003
+        now = int(time.time() * 1000)
 
-        session_ident = device_id or stable_fp_hash or "anon"
-        last_path_key = f"graph-prev-path:{session_ident}"
-        previous_path = await store.get(last_path_key)
-        await store.set(last_path_key, path, 3600)
+        # 1. Clé de transition cinématique (Edge topologique)
+        last_path_key = f"graph-prev-path:{session_key}"
+        previous_record = await store.get(last_path_key)
+        previous_path = None
+        previous_time = 0
 
-        transition_edge = f"{previous_path}->{path}" if (previous_path and isinstance(previous_path, str)) else f"ROOT->{path}"
-        transition_hash = hex(cyrb53(transition_edge))[2:]
+        if isinstance(previous_record, dict):
+            previous_path = previous_record.get("path")
+            previous_time = int(previous_record.get("time") or 0)
+        elif isinstance(previous_record, str):
+            previous_path = previous_record
 
-        graph_node_key = f"graph-edge:{transition_hash}"
-        graph_node = await store.get(graph_node_key)
-        if not isinstance(graph_node, dict):
-            graph_node = {
-                "sessions": {},
-                "subnets": {},
-                "lastSeen": now,
-                "totalHits": 0.0
-            }
+        await store.set(last_path_key, {"path": path, "time": now}, 1800)
 
-        elapsed_sec = max(0.0, now - float(graph_node.get("lastSeen", now)))
-        decay_factor = math.exp(-decay_constant * elapsed_sec)
-
-        graph_node["totalHits"] = (float(graph_node.get("totalHits", 0.0)) * decay_factor) + 1.0
-        subnets = graph_node.setdefault("subnets", {})
-        sessions = graph_node.setdefault("sessions", {})
-
-        subnets[subnet] = (float(subnets.get(subnet, 0.0)) * decay_factor) + 1.0
-        sessions[session_ident] = (float(sessions.get(session_ident, 0.0)) * decay_factor) + 1.0
-        graph_node["lastSeen"] = now
-
-        graph_node["subnets"] = {s: w for s, w in subnets.items() if w >= 0.05}
-        graph_node["sessions"] = {k: w for k, w in sessions.items() if w >= 0.05}
-
-        await store.set(graph_node_key, graph_node, 3600)
-
-        distinct_subnets = len(graph_node["subnets"])
-        distinct_sessions = len(graph_node["sessions"])
-
-        if distinct_subnets <= 1 or graph_node["totalHits"] < 4.0:
+        # Les requêtes initiales (ROOT->...) ou les rafraîchissements de page ne constituent pas
+        # un chemin cinématique inter-routes suspect : ils représentent l'accès normal à tout site web.
+        if not previous_path or previous_path == path:
             return {"graphTopologyScore": 0.0}
 
+        transition_delta = max(0, now - previous_time) if previous_time > 0 else 0
+        # Si la transition entre deux pages a pris plus de 5 minutes, ce n'est pas une séquence automatisée
+        if transition_delta > 300000:
+            return {"graphTopologyScore": 0.0}
+
+        transition_edge = f"{previous_path}->{path}"
+        transition_hash = hex(cyrb53(transition_edge))[2:]
+
+        # 2. Mise à jour de la topologie de graphe partagée pour ce motif de navigation (fenêtre glissante de 120s)
+        graph_node_key = f"graph-edge:{transition_hash}"
+        window_ms = 120000
+        cutoff = now - window_ms
+
+        graph_node = await store.get(graph_node_key)
+        if not isinstance(graph_node, dict):
+            graph_node = {"events": []}
+
+        recent_events = graph_node.get("events") if isinstance(graph_node.get("events"), list) else []
+        recent_events = [ev for ev in recent_events if isinstance(ev, dict) and ev.get("time", 0) > cutoff]
+
+        recent_events.append({
+            "subnet": subnet,
+            "session": session_key,
+            "time": now,
+            "delta": transition_delta
+        })
+
+        if len(recent_events) > 50:
+            recent_events.pop(0)
+
+        await store.set(graph_node_key, {"events": recent_events}, 180)
+
+        # 3. Analyse de l'anomalie : coordination multi-sous-réseaux en temps réel
+        subnets_list = [ev["subnet"] for ev in recent_events if "subnet" in ev]
+        sessions_list = [ev["session"] for ev in recent_events if "session" in ev]
+        distinct_subnets = len(set(subnets_list))
+        distinct_sessions = len(set(sessions_list))
+        total_hits = len(recent_events)
+
+        # Échantillon statistique minimal renforcé pour éviter les faux positifs sur faible volume
+        if distinct_subnets < 4 or total_hits < 6:
+            return {"graphTopologyScore": 0.0}
+
+        subnet_counts = collections.Counter(subnets_list)
         subnet_entropy = 0.0
-        total_subnet_hits = sum(graph_node["subnets"].values())
-        if total_subnet_hits > 0.0:
-            for w in graph_node["subnets"].values():
-                p = w / total_subnet_hits
-                if p > 0.0:
-                    subnet_entropy -= p * math.log2(p)
+        for count in subnet_counts.values():
+            p = count / total_hits
+            if p > 0:
+                subnet_entropy -= p * math.log2(p)
 
-        max_expected_entropy = math.log2(max(2, distinct_subnets))
+        max_expected_entropy = math.log2(distinct_subnets)
         normalized_entropy = (subnet_entropy / max_expected_entropy) if max_expected_entropy > 0.0 else 0.0
-        cross_subnet_convergence = min(1.0, distinct_subnets / 8.0)
 
-        score = 0.0
-        if distinct_subnets >= 3 and normalized_entropy > 0.70:
-            coordination_factor = distinct_sessions / max(1, distinct_subnets)
-            base_anomaly = 45.0 * cross_subnet_convergence * normalized_entropy
-            structural_cohesion = min(50.0, float(graph_node["totalHits"]) * 2.5)
-            score = base_anomaly + structural_cohesion
-            if coordination_factor >= 0.8 and distinct_subnets >= 5:
-                score += 25.0
+        # 4. Critères discriminants avec vérification de la participation de la requête courante
+        deltas = [e["delta"] for e in recent_events if e.get("delta", 0) > 0]
+        fast_transitions = sum(1 for e in recent_events if 0 < e.get("delta", 0) < 300)
+        current_is_fast = 0 < transition_delta < 300
+        is_superhuman_fast = fast_transitions >= 4 and current_is_fast
 
-        return {"graphTopologyScore": min(100.0, round(score, 1))}
+        is_robotic_pacing = False
+        if len(deltas) >= 5:
+            avg_delta = sum(deltas) / len(deltas)
+            variance = sum((d - avg_delta) ** 2 for d in deltas) / len(deltas)
+            std_dev = math.sqrt(variance)
+            if std_dev < 60.0 and avg_delta < 2500.0 and abs(transition_delta - avg_delta) < 120.0:
+                is_robotic_pacing = True
+
+        coordination_factor = distinct_sessions / max(1, distinct_subnets)
+
+        graph_score = 0.0
+        if normalized_entropy > 0.85 and coordination_factor >= 0.85:
+            if is_superhuman_fast:
+                graph_score = 45.0 + min(35.0, fast_transitions * 6.0)
+            elif is_robotic_pacing:
+                graph_score = 40.0 + min(30.0, distinct_subnets * 4.0)
+
+        behavior_header = context.headers.get("x-behavior-metrics")
+        if behavior_header and isinstance(behavior_header, str) and "mouseMovementsHistory" in behavior_header:
+            graph_score = max(0.0, graph_score - 30.0)
+
+        return {"graphTopologyScore": min(100.0, round(graph_score, 1))}
 
     @staticmethod
     def get_mtu_anomaly_score(context: RequestContext) -> float:

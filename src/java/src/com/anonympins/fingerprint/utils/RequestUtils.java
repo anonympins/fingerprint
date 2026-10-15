@@ -32,103 +32,172 @@ public class RequestUtils {
             return result;
         }
 
+        // Ne pas utiliser stableFpHash seul pour la cinématique inter-pages :
+        // des milliers d'utilisateurs légitimes partagent la même empreinte matérielle/TLS.
+        String sessionKey = (deviceId != null && !deviceId.isEmpty()) ? deviceId : "";
+        if (sessionKey.isEmpty()) {
+            result.put("graphTopologyScore", 0.0);
+            return result;
+        }
+
         String subnet = getIpSubnet(clientIp, 24, 48);
         if (subnet == null) subnet = clientIp;
         String path = context.path != null && !context.path.isEmpty() ? context.path : "/";
-        long now = System.currentTimeMillis() / 1000L;
+        long now = System.currentTimeMillis();
 
-        String sessionIdent = (deviceId != null && !deviceId.isEmpty()) ? deviceId :
-                ((stableFpHash != null && !stableFpHash.isEmpty()) ? stableFpHash : "anon");
-        String lastPathKey = "graph-prev-path:" + sessionIdent;
-        Object prevPathObj = store.get(lastPathKey);
-        String previousPath = prevPathObj instanceof String ? (String) prevPathObj : null;
-        store.set(lastPathKey, path, 3600);
+        // 1. Clé de transition cinématique (Edge topologique)
+        String lastPathKey = "graph-prev-path:" + sessionKey;
+        Object prevRecordObj = store.get(lastPathKey);
+        String previousPath = null;
+        long previousTime = 0L;
 
-        String transitionEdge = previousPath != null ? (previousPath + "->" + path) : ("ROOT->" + path);
-        String transitionHash = Long.toHexString(FingerprintBuilder.cyrb53(transitionEdge, 0) != null ? Long.parseUnsignedLong(FingerprintBuilder.cyrb53(transitionEdge, 0)) : 0L);
+        if (prevRecordObj instanceof Map) {
+            Map<String, Object> prevMap = (Map<String, Object>) prevRecordObj;
+            previousPath = (String) prevMap.get("path");
+            if (prevMap.get("time") instanceof Number) {
+                previousTime = ((Number) prevMap.get("time")).longValue();
+            }
+        } else if (prevRecordObj instanceof String) {
+            previousPath = (String) prevRecordObj;
+        }
 
+        Map<String, Object> currentRecord = new HashMap<>();
+        currentRecord.put("path", path);
+        currentRecord.put("time", now);
+        store.set(lastPathKey, currentRecord, 1800);
+
+        // Les requêtes initiales (ROOT->...) ou les rafraîchissements ne constituent pas
+        // un chemin cinématique inter-routes suspect
+        if (previousPath == null || previousPath.equals(path)) {
+            result.put("graphTopologyScore", 0.0);
+            return result;
+        }
+
+        long transitionDelta = previousTime > 0 ? Math.max(0L, now - previousTime) : 0L;
+        if (transitionDelta > 300000L) { // Plus de 5 minutes
+            result.put("graphTopologyScore", 0.0);
+            return result;
+        }
+
+        String transitionEdge = previousPath + "->" + path;
+        String transitionHash = Long.toHexString(Long.parseUnsignedLong(FingerprintBuilder.cyrb53(transitionEdge, 0)));
+
+        // 2. Mise à jour de la topologie de graphe partagée (fenêtre glissante 120s)
         String graphNodeKey = "graph-edge:" + transitionHash;
+        long windowMs = 120000L;
+        long cutoff = now - windowMs;
+
         Object nodeObj = store.get(graphNodeKey);
-        Map<String, Object> graphNode;
+        List<Map<String, Object>> recentEvents = new ArrayList<>();
         if (nodeObj instanceof Map) {
-            graphNode = (Map<String, Object>) nodeObj;
-        } else {
-            graphNode = new HashMap<>();
-            graphNode.put("sessions", new HashMap<String, Double>());
-            graphNode.put("subnets", new HashMap<String, Double>());
-            graphNode.put("lastSeen", now);
-            graphNode.put("totalHits", 0.0);
+            Map<String, Object> nodeMap = (Map<String, Object>) nodeObj;
+            Object eventsObj = nodeMap.get("events");
+            if (eventsObj instanceof List) {
+                for (Object ev : (List<?>) eventsObj) {
+                    if (ev instanceof Map) {
+                        Map<String, Object> evMap = (Map<String, Object>) ev;
+                        long evTime = evMap.get("time") instanceof Number ? ((Number) evMap.get("time")).longValue() : 0L;
+                        if (evTime > cutoff) {
+                            recentEvents.add(evMap);
+                        }
+                    }
+                }
+            }
         }
 
-        long lastSeen = graphNode.get("lastSeen") instanceof Number ? ((Number) graphNode.get("lastSeen")).longValue() : now;
-        long elapsedSec = Math.max(0L, now - lastSeen);
-        double decayFactor = Math.exp(-0.0003 * elapsedSec);
+        Map<String, Object> newEvent = new HashMap<>();
+        newEvent.put("subnet", subnet);
+        newEvent.put("session", sessionKey);
+        newEvent.put("time", now);
+        newEvent.put("delta", transitionDelta);
+        recentEvents.add(newEvent);
 
-        double totalHits = (graphNode.get("totalHits") instanceof Number ? ((Number) graphNode.get("totalHits")).doubleValue() : 0.0) * decayFactor + 1.0;
-        graphNode.put("totalHits", totalHits);
-
-        Map<String, Double> subnets = (Map<String, Double>) graphNode.get("subnets");
-        if (subnets == null) {
-            subnets = new HashMap<>();
-            graphNode.put("subnets", subnets);
-        }
-        Map<String, Double> sessions = (Map<String, Double>) graphNode.get("sessions");
-        if (sessions == null) {
-            sessions = new HashMap<>();
-            graphNode.put("sessions", sessions);
+        if (recentEvents.size() > 50) {
+            recentEvents.remove(0);
         }
 
-        double curSubnetHits = subnets.getOrDefault(subnet, 0.0) * decayFactor + 1.0;
-        subnets.put(subnet, curSubnetHits);
+        Map<String, Object> updatedNode = new HashMap<>();
+        updatedNode.put("events", recentEvents);
+        store.set(graphNodeKey, updatedNode, 180);
 
-        double curSessionHits = sessions.getOrDefault(sessionIdent, 0.0) * decayFactor + 1.0;
-        sessions.put(sessionIdent, curSessionHits);
+        // 3. Analyse de l'anomalie : coordination multi-sous-réseaux en temps réel
+        Set<String> distinctSubnets = new HashSet<>();
+        Set<String> distinctSessions = new HashSet<>();
+        Map<String, Integer> subnetCounts = new HashMap<>();
+        int fastTransitions = 0;
+        List<Long> deltas = new ArrayList<>();
 
-        graphNode.put("lastSeen", now);
+        for (Map<String, Object> ev : recentEvents) {
+            String s = (String) ev.get("subnet");
+            String sess = (String) ev.get("session");
+            long delta = ev.get("delta") instanceof Number ? ((Number) ev.get("delta")).longValue() : 0L;
 
-        subnets.entrySet().removeIf(e -> e.getValue() < 0.05);
-        sessions.entrySet().removeIf(e -> e.getValue() < 0.05);
+            if (s != null) {
+                distinctSubnets.add(s);
+                subnetCounts.put(s, subnetCounts.getOrDefault(s, 0) + 1);
+            }
+            if (sess != null) {
+                distinctSessions.add(sess);
+            }
+            if (delta > 0) {
+                deltas.add(delta);
+                if (delta < 300) {
+                    fastTransitions++;
+                }
+            }
+        }
 
-        store.set(graphNodeKey, graphNode, 3600);
-
-        int distinctSubnets = subnets.size();
-        int distinctSessions = sessions.size();
-
-        if (distinctSubnets <= 1 || totalHits < 4.0) {
+        int totalHits = recentEvents.size();
+        // Échantillon statistique minimal renforcé pour éviter les faux positifs sur faible volume
+        if (distinctSubnets.size() < 4 || totalHits < 6) {
             result.put("graphTopologyScore", 0.0);
             return result;
         }
 
         double subnetEntropy = 0.0;
-        double totalSubnetHits = 0.0;
-        for (double w : subnets.values()) {
-            totalSubnetHits += w;
-        }
-        if (totalSubnetHits > 0.0) {
-            for (double w : subnets.values()) {
-                double p = w / totalSubnetHits;
-                if (p > 0.0) {
-                    subnetEntropy -= p * (Math.log(p) / Math.log(2));
-                }
+        for (int count : subnetCounts.values()) {
+            double p = (double) count / totalHits;
+            if (p > 0) {
+                subnetEntropy -= p * (Math.log(p) / Math.log(2));
             }
         }
 
-        double maxExpectedEntropy = Math.log(Math.max(2, distinctSubnets)) / Math.log(2);
+        double maxExpectedEntropy = Math.log(distinctSubnets.size()) / Math.log(2);
         double normalizedEntropy = maxExpectedEntropy > 0.0 ? (subnetEntropy / maxExpectedEntropy) : 0.0;
-        double crossSubnetConvergence = Math.min(1.0, distinctSubnets / 8.0);
 
-        double score = 0.0;
-        if (distinctSubnets >= 3 && normalizedEntropy > 0.70) {
-            double coordinationFactor = (double) distinctSessions / Math.max(1, distinctSubnets);
-            double baseAnomaly = 45.0 * crossSubnetConvergence * normalizedEntropy;
-            double structuralCohesion = Math.min(50.0, totalHits * 2.5);
-            score = baseAnomaly + structuralCohesion;
-            if (coordinationFactor >= 0.8 && distinctSubnets >= 5) {
-                score += 25.0;
+        // 4. Critères discriminants avec vérification de la participation de la requête courante
+        boolean currentIsFast = transitionDelta > 0 && transitionDelta < 300;
+        boolean isSuperhumanFast = fastTransitions >= 4 && currentIsFast;
+        boolean isRoboticPacing = false;
+        if (deltas.size() >= 5) {
+            double avgDelta = deltas.stream().mapToLong(Long::longValue).average().orElse(0.0);
+            double variance = deltas.stream()
+                    .mapToDouble(d -> Math.pow(d - avgDelta, 2))
+                    .average()
+                    .orElse(0.0);
+            double stdDev = Math.sqrt(variance);
+            if (stdDev < 60.0 && avgDelta < 2500.0 && Math.abs(transitionDelta - avgDelta) < 120.0) {
+                isRoboticPacing = true;
             }
         }
 
-        result.put("graphTopologyScore", Math.min(100.0, Math.round(score * 10.0) / 10.0));
+        double coordinationFactor = (double) distinctSessions.size() / Math.max(1, distinctSubnets.size());
+
+        double graphScore = 0.0;
+        if (normalizedEntropy > 0.85 && coordinationFactor >= 0.85) {
+            if (isSuperhumanFast) {
+                graphScore = 45.0 + Math.min(35.0, fastTransitions * 6.0);
+            } else if (isRoboticPacing) {
+                graphScore = 40.0 + Math.min(30.0, distinctSubnets.size() * 4.0);
+            }
+        }
+
+        String behaviorHeader = context.getHeader("x-behavior-metrics");
+        if (behaviorHeader != null && behaviorHeader.contains("mouseMovementsHistory")) {
+            graphScore = Math.max(0.0, graphScore - 30.0);
+        }
+
+        result.put("graphTopologyScore", Math.min(100.0, Math.round(graphScore * 10.0) / 10.0));
         return result;
     }
 

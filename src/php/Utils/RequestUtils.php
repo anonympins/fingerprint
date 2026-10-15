@@ -1877,84 +1877,132 @@ class RequestUtils
             return ['graphTopologyScore' => 0.0];
         }
 
-        $subnet = self::getIpSubnet($clientIp) ?? $clientIp;
-        $path = !empty($context->path) ? $context->path : '/';
-        $now = time();
-        $store = StoreManager::getStore();
-
-        // 1. Suivi cinématique de la transition de route
-        $sessionIdent = !empty($deviceId) ? $deviceId : (!empty($stableFpHash) ? $stableFpHash : 'anon');
-        $lastPathKey = "graph-prev-path:{$sessionIdent}";
-        $previousPath = $store->get($lastPathKey);
-        $store->set($lastPathKey, $path, 3600);
-
-        $transitionEdge = ($previousPath !== null && is_string($previousPath)) ? "{$previousPath}->{$path}" : "ROOT->{$path}";
-        $transitionHash = dechex(self::cyrb53($transitionEdge));
-
-        // 2. Récupération et amortissement temporel de l'état du sous-graphe
-        $graphNodeKey = "graph-edge:{$transitionHash}";
-        $graphNode = $store->get($graphNodeKey);
-        if (!is_array($graphNode)) {
-            $graphNode = [
-                'sessions' => [],
-                'subnets' => [],
-                'lastSeen' => $now,
-                'totalHits' => 0.0
-            ];
-        }
-
-        $elapsedSec = max(0, $now - ($graphNode['lastSeen'] ?? $now));
-        $decayFactor = exp(-0.0003 * $elapsedSec); // Demi-vie ~40 minutes
-
-        $graphNode['totalHits'] = ((float)($graphNode['totalHits'] ?? 0.0) * $decayFactor) + 1.0;
-        $graphNode['subnets'][$subnet] = ((float)($graphNode['subnets'][$subnet] ?? 0.0) * $decayFactor) + 1.0;
-        $graphNode['sessions'][$sessionIdent] = ((float)($graphNode['sessions'][$sessionIdent] ?? 0.0) * $decayFactor) + 1.0;
-        $graphNode['lastSeen'] = $now;
-
-        // Élagage des arêtes affaiblies
-        foreach ($graphNode['subnets'] as $s => $w) {
-            if ($w < 0.05) unset($graphNode['subnets'][$s]);
-        }
-        foreach ($graphNode['sessions'] as $s => $w) {
-            if ($w < 0.05) unset($graphNode['sessions'][$s]);
-        }
-        $store->set($graphNodeKey, $graphNode, 3600);
-
-        $distinctSubnets = count($graphNode['subnets']);
-        $distinctSessions = count($graphNode['sessions']);
-
-        if ($distinctSubnets <= 1 || $graphNode['totalHits'] < 4.0) {
+        // Ne pas utiliser stableFpHash seul pour la cinématique inter-pages :
+        // des milliers d'utilisateurs légitimes partagent la même empreinte matérielle/TLS.
+        $sessionKey = !empty($deviceId) ? $deviceId : '';
+        if ($sessionKey === '') {
             return ['graphTopologyScore' => 0.0];
         }
 
-        // 3. Calcul de l'entropie de Shannon de dispersion BGP sur cette transition cinématique
+        $subnet = self::getIpSubnet($clientIp) ?? $clientIp;
+        $path = !empty($context->path) ? $context->path : '/';
+        $now = (int)(microtime(true) * 1000);
+        $store = StoreManager::getStore();
+
+        // 1. Clé de transition cinématique (Edge topologique)
+        $lastPathKey = "graph-prev-path:{$sessionKey}";
+        $previousRecord = $store->get($lastPathKey);
+        $previousPath = is_array($previousRecord) && isset($previousRecord['path'])
+            ? (string)$previousRecord['path']
+            : (is_string($previousRecord) ? $previousRecord : null);
+        $previousTime = is_array($previousRecord) && isset($previousRecord['time'])
+            ? (int)$previousRecord['time']
+            : 0;
+
+        $store->set($lastPathKey, ['path' => $path, 'time' => $now], 1800);
+
+        // Les requêtes initiales (ROOT->...) ou les rafraîchissements de page ne constituent pas
+        // un chemin cinématique inter-routes suspect : ils représentent l'accès normal à tout site web.
+        if ($previousPath === null || $previousPath === $path) {
+            return ['graphTopologyScore' => 0.0];
+        }
+
+        $transitionDelta = $previousTime > 0 ? max(0, $now - $previousTime) : 0;
+        // Si la transition entre deux pages a pris plus de 5 minutes, ce n'est pas une séquence automatisée
+        if ($transitionDelta > 300000) {
+            return ['graphTopologyScore' => 0.0];
+        }
+
+        $transitionEdge = "{$previousPath}->{$path}";
+        $transitionHash = dechex(self::cyrb53($transitionEdge));
+
+        // 2. Mise à jour de la topologie de graphe partagée pour ce motif de navigation (fenêtre glissante de 120s)
+        $graphNodeKey = "graph-edge:{$transitionHash}";
+        $windowMs = 120000;
+        $cutoff = $now - $windowMs;
+
+        $graphNode = $store->get($graphNodeKey);
+        if (!is_array($graphNode)) {
+            $graphNode = ['events' => []];
+        }
+
+        $recentEvents = isset($graphNode['events']) && is_array($graphNode['events']) ? $graphNode['events'] : [];
+        $recentEvents = array_values(array_filter($recentEvents, fn($ev) => is_array($ev) && isset($ev['time']) && $ev['time'] > $cutoff));
+
+        $recentEvents[] = [
+            'subnet' => $subnet,
+            'session' => $sessionKey,
+            'time' => $now,
+            'delta' => $transitionDelta
+        ];
+
+        if (count($recentEvents) > 50) {
+            array_shift($recentEvents);
+        }
+
+        $store->set($graphNodeKey, ['events' => $recentEvents], 180);
+
+        // 3. Analyse de l'anomalie : coordination multi-sous-réseaux en temps réel
+        $subnetsList = array_column($recentEvents, 'subnet');
+        $sessionsList = array_column($recentEvents, 'session');
+        $distinctSubnets = count(array_unique($subnetsList));
+        $distinctSessions = count(array_unique($sessionsList));
+        $totalHits = count($recentEvents);
+
+        // Échantillon statistique minimal renforcé pour éviter les faux positifs sur faible volume
+        if ($distinctSubnets < 4 || $totalHits < 6) {
+            return ['graphTopologyScore' => 0.0];
+        }
+
+        $subnetCounts = array_count_values($subnetsList);
         $subnetEntropy = 0.0;
-        $totalSubnetHits = array_sum($graphNode['subnets']);
-        if ($totalSubnetHits > 0) {
-            foreach ($graphNode['subnets'] as $w) {
-                $p = $w / $totalSubnetHits;
-                if ($p > 0) {
-                    $subnetEntropy -= $p * log($p, 2);
-                }
+        foreach ($subnetCounts as $count) {
+            $p = $count / $totalHits;
+            if ($p > 0) {
+                $subnetEntropy -= $p * log($p, 2);
             }
         }
 
-        $maxExpectedEntropy = log(max(2, $distinctSubnets), 2);
+        $maxExpectedEntropy = log($distinctSubnets, 2);
         $normalizedEntropy = $maxExpectedEntropy > 0 ? ($subnetEntropy / $maxExpectedEntropy) : 0.0;
-        $crossSubnetConvergence = min(1.0, $distinctSubnets / 8.0);
 
-        $score = 0.0;
-        if ($distinctSubnets >= 3 && $normalizedEntropy > 0.70) {
-            $coordinationFactor = $distinctSessions / max(1, $distinctSubnets);
-            $baseAnomaly = 45.0 * $crossSubnetConvergence * $normalizedEntropy;
-            $structuralCohesion = min(50.0, (float)$graphNode['totalHits'] * 2.5);
-            $score = $baseAnomaly + $structuralCohesion;
-            if ($coordinationFactor >= 0.8 && $distinctSubnets >= 5) {
-                $score += 25.0;
+        // 4. Critères discriminants avec vérification de la participation de la requête courante
+        $fastTransitions = count(array_filter($recentEvents, fn($e) => ($e['delta'] ?? 0) > 0 && ($e['delta'] ?? 0) < 300));
+        $deltas = array_values(array_filter(array_column($recentEvents, 'delta'), fn($d) => $d > 0));
+        $currentIsFast = $transitionDelta > 0 && $transitionDelta < 300;
+        $isSuperhumanFast = $fastTransitions >= 4 && $currentIsFast;
+
+        // Régularité temporelle robotique (pacing fixe entre sous-réseaux distincts)
+        $isRoboticPacing = false;
+        if (count($deltas) >= 5) {
+            $avgDelta = array_sum($deltas) / count($deltas);
+            $variance = 0.0;
+            foreach ($deltas as $d) {
+                $variance += pow($d - $avgDelta, 2);
+            }
+            $stdDev = sqrt($variance / count($deltas));
+            if ($stdDev < 60.0 && $avgDelta < 2500 && abs($transitionDelta - $avgDelta) < 120.0) {
+                $isRoboticPacing = true;
             }
         }
 
-        return ['graphTopologyScore' => min(100.0, round($score, 1))];
+        $coordinationFactor = $distinctSessions / max(1, $distinctSubnets);
+
+        $graphScore = 0.0;
+        if ($normalizedEntropy > 0.85 && $coordinationFactor >= 0.85) {
+            if ($isSuperhumanFast) {
+                $graphScore = 45.0 + min(35.0, $fastTransitions * 6.0);
+            } elseif ($isRoboticPacing) {
+                $graphScore = 40.0 + min(30.0, $distinctSubnets * 4.0);
+            }
+        }
+
+        $behaviorHeader = $context->getHeader('x-behavior-metrics');
+        if (!empty($behaviorHeader) && is_string($behaviorHeader) && str_contains($behaviorHeader, 'mouseMovementsHistory')) {
+            $graphScore = max(0.0, $graphScore - 30.0);
+        }
+
+        return ['graphTopologyScore' => min(100.0, round($graphScore, 1))];
     }
 
     /**

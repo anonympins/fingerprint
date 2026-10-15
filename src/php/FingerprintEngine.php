@@ -180,11 +180,11 @@ class FingerprintEngine
                         $publicKeyPem = $details['key'] ?? '';
                         Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
                         Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                        update_option('fingerprint_ed25519_keys', [
+                            'privateKey' => $privateKeyPem,
+                            'publicKey'  => $publicKeyPem,
+                        ], false);
                     }
-                    update_option('fingerprint_ed25519_keys', [
-                        'privateKey' => $privateKeyPem,
-                        'publicKey'  => $publicKeyPem,
-                    ], false);
                 }
             } else {
                 self::initStandaloneEd25519Keys();
@@ -225,7 +225,7 @@ class FingerprintEngine
 
     /**
      * Initializes and persists Ed25519 keys for standalone PHP environments outside WordPress.
-     * Loads from a persistent JSON file if it exists, otherwise generates a new key pair.
+     * Uses the configured persistence store (StoreManager), avoiding writing private keys to disk files.
      *
      * @return void
      */
@@ -235,55 +235,30 @@ class FingerprintEngine
             return; // Managed exclusively via WordPress options in WP runtime
         }
 
-        if (function_exists('wp_upload_dir') && function_exists('wp_mkdir_p')) {
-            $uploadDir = wp_upload_dir();
-            $configDir = (!empty($uploadDir['basedir']) && is_dir($uploadDir['basedir']))
-                ? $uploadDir['basedir'] . '/anonympins-bot-mitigation-pow'
-                : sys_get_temp_dir();
-        } else {
-            $envKeyDir = Env::get('FINGERPRINT_KEY_DIR');
-            $configDir = !empty($envKeyDir) ? (string)$envKeyDir : sys_get_temp_dir();
+        $store = StoreManager::getStore();
+        $keys = $store->get('fingerprint_ed25519_keys');
+        if (is_array($keys) && isset($keys['privateKey'], $keys['publicKey'])) {
+            Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
+            Env::set('ED25519_PUBLIC_KEY', $keys['publicKey']);
+            return;
         }
-        $persistentKeyPath = rtrim($configDir, '/\\') . '/ed25519_key.json';
 
-        if (file_exists($persistentKeyPath)) {
-            try {
-                $raw = (string)RequestUtils::readFileContent($persistentKeyPath);
-                $keys = json_decode($raw, true);
-                if (isset($keys['privateKey'], $keys['publicKey'])) {
-                    Env::set('ED25519_PRIVATE_KEY', $keys['privateKey']);
-                    Env::set('ED25519_PUBLIC_KEY', $keys['publicKey']);
+        try {
+            if (defined('OPENSSL_KEYTYPE_ED25519')) {
+                $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
+                if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
+                    $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
+                    $publicKeyPem = $details['key'] ?? ''; // @phpstan-ignore-line
+                    Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
+                    Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
+                    $store->set('fingerprint_ed25519_keys', [
+                        'privateKey' => $privateKeyPem,
+                        'publicKey'  => $publicKeyPem,
+                    ]);
                 }
-            } catch (\Throwable $e) {
-                self::logError('[Fingerprint] Failed to load persistent Ed25519 keys: ' . $e->getMessage());
             }
-        } else {
-            try {
-                if (defined('OPENSSL_KEYTYPE_ED25519')) {
-                    $pkey = openssl_pkey_new(["private_key_type" => OPENSSL_KEYTYPE_ED25519]);
-                    if ($pkey && openssl_pkey_export($pkey, $privateKeyPem)) {
-                        $details = openssl_pkey_get_details($pkey); // @phpstan-ignore-line
-                        $publicKeyPem = $details['key'] ?? ''; // @phpstan-ignore-line
-                        Env::set('ED25519_PRIVATE_KEY', $privateKeyPem);
-                        Env::set('ED25519_PUBLIC_KEY', $publicKeyPem);
-                        if (!is_dir($configDir)) {
-                            if (function_exists('wp_mkdir_p')) {
-                                wp_mkdir_p($configDir);
-                            } else {
-                                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Standalone filesystem fallback
-                                @mkdir($configDir, 0700, true);
-                            }
-                        }
-                        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-                        file_put_contents($persistentKeyPath, json_encode([
-                            'privateKey' => $privateKeyPem,
-                            'publicKey' => $publicKeyPem
-                        ], JSON_PRETTY_PRINT));
-                    }
-                }
-            } catch (\Throwable $e) {
-                self::logError('[Fingerprint] Native Ed25519 key generation failed: ' . $e->getMessage());
-            }
+        } catch (\Throwable $e) {
+            self::logError('[Fingerprint] Native Ed25519 key generation failed: ' . $e->getMessage());
         }
     }
 
@@ -624,20 +599,12 @@ class FingerprintEngine
         $blockList = new BlockList();
         $whitelistRules = $this->securityConfig['whitelist'] ?? [];
 
-        $allowlistRule = null;
         foreach ($whitelistRules as $rule) {
-            if (($rule['type'] ?? '') === 'allowlist') {
-                $allowlistRule = $rule;
-                break;
+            if (($rule['type'] ?? '') === 'allowlist' && !empty($rule['entries']) && is_array($rule['entries'])) {
+                foreach ($rule['entries'] as $entry) {
+                    $blockList->add((string)$entry);
+                }
             }
-        }
-
-        if (empty($allowlistRule['entries'])) {
-            return $blockList;
-        }
-
-        foreach ($allowlistRule['entries'] as $entry) {
-            $blockList->add($entry);
         }
         return $blockList;
     }
@@ -663,26 +630,18 @@ class FingerprintEngine
     private function isPathInAllowlist(string $requestPath): bool
     {
         $whitelistRules = $this->securityConfig['whitelist'] ?? [];
-        $pathAllowlistRule = null;
         foreach ($whitelistRules as $rule) {
-            if (($rule['type'] ?? '') === 'path_allowlist') {
-                $pathAllowlistRule = $rule;
-                break;
-            }
-        }
-
-        if (empty($pathAllowlistRule['entries'])) {
-            return false;
-        }
-
-        foreach ($pathAllowlistRule['entries'] as $entry) {
-            if (str_ends_with($entry, '*')) {
-                $base = substr($entry, 0, -1);
-                if (str_starts_with($requestPath, $base)) {
-                    return true;
+            if (($rule['type'] ?? '') === 'path_allowlist' && !empty($rule['entries']) && is_array($rule['entries'])) {
+                foreach ($rule['entries'] as $entry) {
+                    if (str_ends_with($entry, '*')) {
+                        $base = substr($entry, 0, -1);
+                        if (str_starts_with($requestPath, $base)) {
+                            return true;
+                        }
+                    } elseif ($requestPath === $entry) {
+                        return true;
+                    }
                 }
-            } elseif ($requestPath === $entry) {
-                return true;
             }
         }
 
@@ -703,21 +662,13 @@ class FingerprintEngine
         }
 
         $whitelistRules = $this->securityConfig['whitelist'] ?? [];
-        $hostPathRule = null;
         foreach ($whitelistRules as $rule) {
-            if (($rule['type'] ?? '') === 'host_path_allowlist') {
-                $hostPathRule = $rule;
-                break;
-            }
-        }
-
-        if (empty($hostPathRule['entries'])) {
-            return false;
-        }
-
-        foreach ($hostPathRule['entries'] as $entry) {
-            if (RequestUtils::hostPathMatches($requestHost, $requestPath, $entry)) {
-                return true;
+            if (($rule['type'] ?? '') === 'host_path_allowlist' && !empty($rule['entries']) && is_array($rule['entries'])) {
+                foreach ($rule['entries'] as $entry) {
+                    if (RequestUtils::hostPathMatches($requestHost, $requestPath, $entry)) {
+                        return true;
+                    }
+                }
             }
         }
         return false;
@@ -2007,25 +1958,19 @@ class FingerprintEngine
         }
 
         $whitelistRules = $this->securityConfig['whitelist'] ?? [];
-        $graphqlRule = null;
         foreach ($whitelistRules as $rule) {
-            if (($rule['type'] ?? '') === 'graphql_operation_allowlist') {
-                $graphqlRule = $rule;
-                break;
+            if (($rule['type'] ?? '') === 'graphql_operation_allowlist' && !empty($rule['entries']) && is_array($rule['entries'])) {
+                foreach ($rule['entries'] as $entry) {
+                    $parts = explode(':', (string)$entry, 2);
+                    if (count($parts) !== 2) continue;
+                    [$entryType, $entryName] = $parts;
+                    if ($entryType !== $operationType) continue;
+
+                    if ($entryName === $operationName || $entryName === '*') return true;
+
+                    if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) return true;
+                }
             }
-        }
-
-        if (empty($graphqlRule['entries'])) {
-            return false;
-        }
-
-        foreach ($graphqlRule['entries'] as $entry) {
-            [$entryType, $entryName] = explode(':', $entry, 2);
-            if ($entryType !== $operationType) continue;
-
-            if ($entryName === $operationName || $entryName === '*') return true;
-
-            if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) return true;
         }
 
         return false;

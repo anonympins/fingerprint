@@ -752,12 +752,11 @@ class ChallengeUtils
      * `openssl genpkey -algorithm ed25519 -out issuer-private.pem`
      * `openssl pkey -in issuer-private.pem -pubout -out issuer-public.pem`
      *
-     * @param string $outDir Target directory to store the PEM files.
      * @param array $options Options including custom file names.
-     * @return array{privateKeyPath: string, publicKeyPath: string, privateKey: string, publicKey: string}
+     * @return array{privateKey: string, publicKey: string}
      * @throws \RuntimeException If OpenSSL or Ed25519 is not supported or key generation fails.
      */
-    public static function generateIssuerPemKeys(string $outDir = '', array $options = []): array
+    public static function generateIssuerPemKeys(array $options = []): array
     {
         if (!defined('OPENSSL_KEYTYPE_ED25519')) {
             throw new \RuntimeException("Ed25519 is not supported in this OpenSSL environment.");
@@ -774,48 +773,7 @@ class ChallengeUtils
             throw new \RuntimeException("Failed to extract Ed25519 public key.");
         }
 
-        $privName = $options['privateKeyName'] ?? 'issuer-private.pem';
-        $pubName = $options['publicKeyName'] ?? 'issuer-public.pem';
-
-        $privateKeyPath = '';
-        $publicKeyPath = '';
-
-        if ($outDir !== '') {
-            if (!is_dir($outDir)) {
-                if (function_exists('wp_mkdir_p')) {
-                    wp_mkdir_p($outDir);
-                } else {
-                    // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Standalone filesystem fallback
-                    mkdir($outDir, 0755, true);
-                }
-            }
-            $privateKeyPath = rtrim($outDir, '/\\') . '/' . $privName;
-            $publicKeyPath = rtrim($outDir, '/\\') . '/' . $pubName;
-
-            global $wp_filesystem;
-            if (empty($wp_filesystem) && defined('ABSPATH')) {
-                require_once ABSPATH . 'wp-admin/includes/file.php';
-                WP_Filesystem();
-            }
-
-            if (!empty($wp_filesystem) && is_object($wp_filesystem)) {
-                $wp_filesystem->put_contents($privateKeyPath, $privateKeyPem, 0600);
-                $wp_filesystem->put_contents($publicKeyPath, $publicKeyPem, 0644);
-            } else {
-                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Standalone filesystem fallback
-                file_put_contents($privateKeyPath, $privateKeyPem);
-                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Standalone filesystem fallback
-                @chmod($privateKeyPath, 0600);
-                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Standalone filesystem fallback
-                file_put_contents($publicKeyPath, $publicKeyPem);
-                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Standalone filesystem fallback
-                @chmod($publicKeyPath, 0644);
-            }
-        }
-
         return [
-            'privateKeyPath' => $privateKeyPath,
-            'publicKeyPath'  => $publicKeyPath,
             'privateKey'     => $privateKeyPem,
             'publicKey'      => $publicKeyPem,
         ];
