@@ -1395,7 +1395,9 @@ class RequestUtils:
         if not client_ip or is_loopback_ip(client_ip):
             return {"graphTopologyScore": 0.0}
 
-        session_key = device_id or stable_fp_hash or ""
+        # Ne pas utiliser stable_fp_hash seul pour la cinématique inter-pages :
+        # des milliers d'utilisateurs légitimes partagent la même empreinte matérielle/TLS.
+        session_key = device_id or ""
         if not session_key:
             return {"graphTopologyScore": 0.0}
 
@@ -1461,7 +1463,8 @@ class RequestUtils:
         distinct_sessions = len(set(sessions_list))
         total_hits = len(recent_events)
 
-        if distinct_subnets < 3 or total_hits < 4:
+        # Échantillon statistique minimal renforcé pour éviter les faux positifs sur faible volume
+        if distinct_subnets < 4 or total_hits < 6:
             return {"graphTopologyScore": 0.0}
 
         subnet_counts = collections.Counter(subnets_list)
@@ -1474,31 +1477,32 @@ class RequestUtils:
         max_expected_entropy = math.log2(distinct_subnets)
         normalized_entropy = (subnet_entropy / max_expected_entropy) if max_expected_entropy > 0.0 else 0.0
 
-        # 4. Critères discriminants d'une attaque automatisée distribuée :
-        # A) Vélocité inhumaine : plusieurs sous-réseaux distincts enchaînent les pages en < 300ms
-        fast_transitions = sum(1 for e in recent_events if 0 < e.get("delta", 0) < 300)
-        is_superhuman_fast = fast_transitions >= 3
-
-        # B) Régularité temporelle robotique (pacing fixe entre sous-réseaux distincts)
+        # 4. Critères discriminants avec vérification de la participation de la requête courante
         deltas = [e["delta"] for e in recent_events if e.get("delta", 0) > 0]
+        fast_transitions = sum(1 for e in recent_events if 0 < e.get("delta", 0) < 300)
+        current_is_fast = 0 < transition_delta < 300
+        is_superhuman_fast = fast_transitions >= 4 and current_is_fast
+
         is_robotic_pacing = False
-        if len(deltas) >= 4:
+        if len(deltas) >= 5:
             avg_delta = sum(deltas) / len(deltas)
             variance = sum((d - avg_delta) ** 2 for d in deltas) / len(deltas)
             std_dev = math.sqrt(variance)
-            if std_dev < 80.0 and avg_delta < 2000.0:
+            if std_dev < 60.0 and avg_delta < 2500.0 and abs(transition_delta - avg_delta) < 120.0:
                 is_robotic_pacing = True
 
         coordination_factor = distinct_sessions / max(1, distinct_subnets)
 
         graph_score = 0.0
-        if normalized_entropy > 0.75 and coordination_factor >= 0.8:
+        if normalized_entropy > 0.85 and coordination_factor >= 0.85:
             if is_superhuman_fast:
-                graph_score += 60.0 + min(35.0, fast_transitions * 8.0)
+                graph_score = 45.0 + min(35.0, fast_transitions * 6.0)
             elif is_robotic_pacing:
-                graph_score += 50.0 + min(30.0, distinct_subnets * 5.0)
-            elif distinct_subnets >= 6 and total_hits >= 12:
-                graph_score += 40.0 + min(30.0, (distinct_subnets - 5) * 6.0)
+                graph_score = 40.0 + min(30.0, distinct_subnets * 4.0)
+
+        behavior_header = context.headers.get("x-behavior-metrics")
+        if behavior_header and isinstance(behavior_header, str) and "mouseMovementsHistory" in behavior_header:
+            graph_score = max(0.0, graph_score - 30.0)
 
         return {"graphTopologyScore": min(100.0, round(graph_score, 1))}
 

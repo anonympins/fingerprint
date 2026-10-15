@@ -1,0 +1,622 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Anonympins Bot Mitigation with Proof-of-Work 0.8.6\n"
+"Report-Msgid-Bugs-To: https://github.com/anonympins/fingerprint/issues\n"
+"POT-Creation-Date: 2026-09-24 12:00+0000\n"
+"PO-Revision-Date: 2026-09-24 12:00+0000\n"
+"Last-Translator: Anonympins\n"
+"Language-Team: Chinese (Simplified)\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+msgid "Anonympins bot mitigation"
+msgstr "Anonympins Bot 缓解与防护"
+
+msgid "High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress."
+msgstr "适用于 WordPress 的高性能客户端反机器人保护和工作量证明（PoW）质询验证。"
+
+msgid "[Anonympins bot mitigation security warning]"
+msgstr "[Anonympins Bot 防护安全警告]"
+
+msgid "Your website is currently running on unencrypted HTTP. In this mode, modern web browsers disable the native Web Cryptography API (crypto.subtle) for security reasons, forcing a JavaScript fallback simulation that is slower and vulnerable to Man-in-the-Middle (MitM) attacks. We strongly recommend deploying a TLS/SSL certificate and enforcing HTTPS to ensure the cryptographic integrity of Proof-of-Work computations and identity protection."
+msgstr "您的网站目前运行在未加密的 HTTP 上。在这种模式下，出于安全考虑，现代网络浏览器会禁用原生 Web Cryptography API (crypto.subtle)，从而强制执行较慢且容易受到中间人攻击 (MitM) 的 JavaScript 回退模拟。我们强烈建议配置 TLS/SSL 证书并强制执行 HTTPS，以确保工作量证明计算的密码学完整性及访客身份保护。"
+
+msgid "Audit-Only dry-run is active: visitors will not be blocked or challenged."
+msgstr "仅审计演练模式已激活：访客不会被阻止或质询。"
+
+msgid "Enforced test mode: suspicion analysis and PoW challenges are actively triggered."
+msgstr "强制测试模式：主动触发可疑性分析和 PoW 质询。"
+
+msgid "[Anonympins bot mitigation sandbox active]"
+msgstr "[Anonympins Bot 防护沙箱已激活]"
+
+msgid "Sandbox mode is currently ENABLED."
+msgstr "沙箱模式当前已启用。"
+
+msgid "Configure sandbox"
+msgstr "配置沙箱"
+
+msgid "Unauthorized access."
+msgstr "未授权访问。"
+
+msgid "You do not have sufficient permissions to access this page."
+msgstr "您没有足够的权限访问此页面。"
+
+msgid "Client-side behavioral and cryptographic anti-bot protection without third-party CAPTCHA for WordPress."
+msgstr "适用于 WordPress 的无第三方验证码（CAPTCHA）客户端行为与密码学反机器人保护。"
+
+msgid "Official documentation reference:"
+msgstr "官方文档参考："
+
+msgid "View full configuration options on GitHub"
+msgstr "在 GitHub 上查看完整配置选项"
+
+msgid "GitHub Repository"
+msgstr "GitHub 仓库"
+
+msgid "HTTPS Status"
+msgstr "HTTPS 状态"
+
+msgid "Active (WebCrypto Subtle available)"
+msgstr "已激活（WebCrypto Subtle 可用）"
+
+msgid "WebAssembly (WASM) status"
+msgstr "WebAssembly (WASM) 状态"
+
+msgid "Active (SIMD128)"
+msgstr "已激活 (SIMD128)"
+
+msgid "Binary installed (%s KB) & enabled."
+msgstr "二进制文件已安装（%s KB）并已启用。"
+
+msgid "Installed (Disabled)"
+msgstr "已安装（已禁用）"
+
+msgid "fp.wasm found but disabled in settings."
+msgstr "检测到 fp.wasm，但在设置中已禁用。"
+
+msgid "Not installed"
+msgstr "未安装"
+
+msgid "fp.wasm missing (run node build-wasm.js)."
+msgstr "fp.wasm 缺失（请运行 node build-wasm.js）。"
+
+msgid "SQL cache ($wpdb)"
+msgstr "SQL 缓存 ($wpdb)"
+
+msgid "Insecure (Unencrypted HTTP)"
+msgstr "不安全（未加密的 HTTP）"
+
+msgid "keys in database"
+msgstr "数据库中的键"
+
+msgid " %d expired keys awaiting cron purge"
+msgstr " %d 个过期键等待定时任务清理"
+
+msgid "Active Profiles"
+msgstr "活动配置方案"
+
+msgid "Active profiles"
+msgstr "活动配置方案"
+
+msgid "Frontend:"
+msgstr "前台："
+
+msgid "Admin:"
+msgstr "管理后台："
+
+msgid "REST API:"
+msgstr "REST API："
+
+msgid "Sandbox Mode"
+msgstr "沙箱模式"
+
+msgid "Sandbox mode"
+msgstr "沙箱模式"
+
+msgid "GitHub repository"
+msgstr "GitHub 仓库"
+
+msgid "Active (Simulation)"
+msgstr "已激活（模拟）"
+
+msgid "Production (Enforced)"
+msgstr "生产环境（强制执行）"
+
+msgid "Audit-Only: non-blocking observation."
+msgstr "仅审计：非阻塞式观察。"
+
+msgid "Testing: challenges & mitigations active."
+msgstr "测试：质询与拦截处于激活状态。"
+
+msgid "Bot protection active across all visitors."
+msgstr "已对所有访客启用 Bot 防护。"
+
+msgid "Settings & profiles"
+msgstr "设置与配置方案"
+
+msgid "Allowlist / Whitelist"
+msgstr "白名单 / 允许列表"
+
+msgid "Challenge appearance"
+msgstr "质询外观"
+
+msgid "Sandbox / test mode"
+msgstr "沙箱 / 测试模式"
+
+msgid "Metrics & weights view"
+msgstr "指标与权重视图"
+
+msgid "Prometheus stream"
+msgstr "Prometheus 数据流"
+
+msgid "Prometheus settings updated successfully."
+msgstr "Prometheus 设置已成功更新。"
+
+msgid "Challenge appearance reset to default successfully."
+msgstr "质询外观已成功重置为默认值。"
+
+msgid "Challenge appearance updated successfully."
+msgstr "质询外观已成功更新。"
+
+msgid "Invalid whitelist type specified."
+msgstr "指定了无效的白名单类型。"
+
+msgid "Whitelist value cannot be empty."
+msgstr "白名单值不能为空。"
+
+msgid "Overly permissive wildcard IP ranges are prohibited."
+msgstr "禁止使用过于宽泛的通配 IP 范围。"
+
+msgid "Invalid IP address in CIDR notation."
+msgstr "CIDR 表示法中的 IP 地址无效。"
+
+msgid "Invalid IPv4 CIDR mask (must be between 0 and 32)."
+msgstr "无效的 IPv4 CIDR 掩码（必须介于 0 到 32 之间）。"
+
+msgid "Invalid IPv6 CIDR mask (must be between 0 and 128)."
+msgstr "无效的 IPv6 CIDR 掩码（必须介于 0 到 128 之间）。"
+
+msgid "Invalid IPv4 or IPv6 address."
+msgstr "无效的 IPv4 或 IPv6 地址。"
+
+msgid "Path must begin with a forward slash (e.g. /my-path or /api/*)."
+msgstr "路径必须以正斜杠开头（例如 /my-path 或 /api/*）。"
+
+msgid "Overly permissive root path wildcard is prohibited."
+msgstr "禁止使用过于宽泛的根路径通配符（/*）。"
+
+msgid "Host+Path must include a hostname and path (e.g. api.example.com/v1/*)."
+msgstr "主机+路径必须包含主机名和路径（例如 api.example.com/v1/*）。"
+
+msgid "GraphQL operation must be in the format type:operationName (e.g. query:GetPosts or mutation:*)."
+msgstr "GraphQL 操作格式必须为 type:operationName（例如 query:GetPosts 或 mutation:*）。"
+
+msgid "GraphQL operation type must be query, mutation, or subscription."
+msgstr "GraphQL 操作类型必须是 query、mutation 或 subscription。"
+
+msgid "This whitelist entry already exists."
+msgstr "该白名单条目已存在。"
+
+msgid "Add an allowlist entry"
+msgstr "添加允许列表条目"
+
+msgid "Allowed entries bypass standard suspicion inspection and challenge requirements."
+msgstr "允许的条目将跳过常规可疑性检查和质询要求。"
+
+msgid "Type of entry:"
+msgstr "条目类型："
+
+msgid "IP or CIDR Block"
+msgstr "IP 或 CIDR 块"
+
+msgid "URL Path"
+msgstr "URL 路径"
+
+msgid "Host + Path"
+msgstr "主机 + 路径"
+
+msgid "GraphQL Operation"
+msgstr "GraphQL 操作"
+
+msgid "Value / pattern:"
+msgstr "值 / 匹配模式："
+
+msgid "Description / note (optional):"
+msgstr "描述 / 备注（可选）："
+
+msgid "e.g. Stripe webhook, office IP"
+msgstr "例如：Stripe webhook、办公室 IP"
+
+msgid "1. Target security profiles"
+msgstr "1. 目标安全配置方案"
+
+msgid "Visitors & frontend"
+msgstr "访客与前台"
+
+msgid "Add to allowlist"
+msgstr "添加到允许列表"
+
+msgid "1. IP & CIDR block allowlist"
+msgstr "1. IP 与 CIDR 块允许列表"
+
+msgid "IP / CIDR pattern"
+msgstr "IP / CIDR 模式"
+
+msgid "Description"
+msgstr "描述"
+
+msgid "Date added"
+msgstr "添加日期"
+
+msgid "Action"
+msgstr "操作"
+
+msgid "No IP entries configured."
+msgstr "未配置 IP 条目。"
+
+msgid "Remove this IP from allowlist?"
+msgstr "确定从允许列表中移除此 IP 吗？"
+
+msgid "Remove this path from allowlist?"
+msgstr "确定从允许列表中移除此路径吗？"
+
+msgid "Remove this host+path from allowlist?"
+msgstr "确定从允许列表中移除此主机+路径吗？"
+
+msgid "Remove"
+msgstr "移除"
+
+msgid "2. URL path allowlist"
+msgstr "2. URL 路径允许列表"
+
+msgid "Path / wildcard pattern"
+msgstr "路径 / 通配模式"
+
+msgid "No path entries configured."
+msgstr "未配置路径条目。"
+
+msgid "3. Host + Path allowlist"
+msgstr "3. 主机 + 路径允许列表"
+
+msgid "Host + Path pattern"
+msgstr "主机 + 路径模式"
+
+msgid "No host+path entries configured."
+msgstr "未配置主机+路径条目。"
+
+msgid "4. GraphQL operations allowlist"
+msgstr "4. GraphQL 操作允许列表"
+
+msgid "Operation pattern (type:name)"
+msgstr "操作模式 (type:name)"
+
+msgid "No GraphQL entries configured."
+msgstr "未配置 GraphQL 条目。"
+
+msgid "Remove this GraphQL operation from allowlist?"
+msgstr "确定从允许列表中移除此 GraphQL 操作吗？"
+
+msgid "Whitelist entry added successfully."
+msgstr "白名单条目添加成功。"
+
+msgid "Whitelist entry removed successfully."
+msgstr "白名单条目移除成功。"
+
+msgid "Sandbox / Test Mode"
+msgstr "沙箱 / 测试模式"
+
+msgid "Administration area (wp-login / wp-admin)"
+msgstr "管理后台区域 (wp-login / wp-admin)"
+
+msgid "1. Target Security Profiles"
+msgstr "1. 目标安全配置方案"
+
+msgid "Visitors & Frontend"
+msgstr "访客与前台"
+
+msgid "Blog (Optimal for content, smooth UX)"
+msgstr "博客（针对内容优化，平滑的用户体验）"
+
+msgid "Balanced (General purpose)"
+msgstr "均衡（通用模式）"
+
+msgid "Strict (Maximum protection)"
+msgstr "严格（最高防护）"
+
+msgid "E-commerce (anti-scraping / scalping)"
+msgstr "电子商务（防爬虫 / 防黄牛刷单）"
+
+msgid "Administration Area (wp-login / wp-admin)"
+msgstr "管理后台区域 (wp-login / wp-admin)"
+
+msgid "Strict (Recommended to secure logins)"
+msgstr "严格（推荐，保障登录安全）"
+
+msgid "Balanced"
+msgstr "均衡"
+
+msgid "REST API (/wp-json/)"
+msgstr "REST API (/wp-json/)"
+
+msgid "API (JSON challenges & machine PoW)"
+msgstr "API（JSON 质询与机器 PoW）"
+
+msgid "Strict"
+msgstr "严格"
+
+msgid "2. Action Thresholds (Frontend)"
+msgstr "2. 动作阈值（前台）"
+
+msgid "2. Action thresholds (frontend)"
+msgstr "2. 动作阈值（前台）"
+
+msgid "Suspicion Score Thresholds (0 - 100)"
+msgstr "可疑度分值阈值 (0 - 100)"
+
+msgid "Suspicion score thresholds (0 - 100)"
+msgstr "可疑度分值阈值 (0 - 100)"
+
+msgid "Low (Initial challenge):"
+msgstr "低（初始质询）："
+
+msgid "Low (initial challenge):"
+msgstr "低（初始质询）："
+
+msgid "Medium (hardened challenge):"
+msgstr "中（加固质询）："
+
+msgid "High (Heavy Proof-of-Work):"
+msgstr "高（高强度工作量证明）："
+
+msgid "Block (Immediate 403 Forbidden):"
+msgstr "拦截（立即返回 403 Forbidden）："
+
+msgid "High (heavy proof-of-work):"
+msgstr "高（高强度工作量证明）："
+
+msgid "Block (immediate 403 forbidden):"
+msgstr "拦截（立即返回 403 Forbidden）："
+
+msgid "Advanced Behaviors"
+msgstr "高级行为"
+
+msgid "Advanced behaviors"
+msgstr "高级行为"
+
+msgid "Automatically challenge unknown new devices (without device_id cookie)"
+msgstr "自动质询未知的全新设备（缺少 device_id cookie）"
+
+msgid "Enable recursive WAF inspection (SQL, NoSQL, Log4j, Traversal in GET/POST)"
+msgstr "启用递归 WAF 检测（GET/POST 中的 SQL、NoSQL、Log4j、路径遍历）"
+
+msgid "Enable WebAssembly (WASM) cryptographic acceleration"
+msgstr "启用 WebAssembly (WASM) 密码学加速"
+
+msgid "Verbose mode in PHP logs (Debugging)"
+msgstr "在 PHP 日志中启用详细模式（调试）"
+
+msgid "Save Changes"
+msgstr "保存更改"
+
+msgid "Save changes"
+msgstr "保存更改"
+
+msgid "SQL cache table ($wpdb) cleared successfully."
+msgstr "SQL 缓存表 ($wpdb) 已成功清空。"
+
+msgid "Store maintenance:"
+msgstr "存储维护："
+
+msgid "Purge all stored sessions and nonces?"
+msgstr "清空所有已保存的会话和随机数 (nonce)？"
+
+msgid "Clear SQL cache table ($wpdb)"
+msgstr "清空 SQL 缓存表 ($wpdb)"
+
+msgid "Sandbox Mode & Dry-Run Configuration"
+msgstr "沙箱模式与演练配置"
+
+msgid "Sandbox mode & dry-run configuration"
+msgstr "沙箱模式与演练配置"
+
+msgid "Sandbox activation"
+msgstr "沙箱激活"
+
+msgid "Sandbox Activation"
+msgstr "沙箱激活"
+
+msgid "Enable sandbox mode"
+msgstr "启用沙箱模式"
+
+msgid "Enable Sandbox Mode"
+msgstr "启用沙箱模式"
+
+msgid "Behavior & Enforcement"
+msgstr "行为与执行"
+
+msgid "Audit Only / Dry-Run (Never block or challenge visitors)"
+msgstr "仅审计 / 演练（绝不阻止或质询访客）"
+
+msgid "Behavior & enforcement"
+msgstr "行为与执行"
+
+msgid "Audit only / dry-run (never block or challenge visitors)"
+msgstr "仅审计 / 演练（绝不阻止或质询访客）"
+
+msgid "Add diagnostic HTTP headers (X-Fingerprint-Sandbox: active)"
+msgstr "添加诊断 HTTP 响应头 (X-Fingerprint-Sandbox: active)"
+
+msgid "Log evaluated scores and suspicious attempts to PHP error_log"
+msgstr "将评估得分及可疑尝试记录到 PHP error_log"
+
+msgid "Test IP whitelist filter"
+msgstr "测试 IP 白名单过滤器"
+
+msgid "Test IP Whitelist Filter"
+msgstr "测试 IP 白名单过滤器"
+
+msgid "Current weight"
+msgstr "当前权重"
+
+msgid "Current Weight"
+msgstr "当前权重"
+
+msgid "Use my IP"
+msgstr "使用我的 IP"
+
+msgid "Save sandbox settings"
+msgstr "保存沙箱设置"
+
+msgid "Save Sandbox Settings"
+msgstr "保存沙箱设置"
+
+msgid "Live challenged visitors & suspicion monitor"
+msgstr "实时质询访客与可疑度监控"
+
+msgid "Live Challenged Visitors & Suspicion Monitor"
+msgstr "实时质询访客与可疑度监控"
+
+msgid "Recent challenges:"
+msgstr "近期质询："
+
+msgid "Start real-time SSE stream"
+msgstr "启动实时 SSE 数据流"
+
+msgid "Poll now (REST)"
+msgstr "立即轮询 (REST)"
+
+msgid "Clear feed"
+msgstr "清空数据流"
+
+msgid "Challenged visitors stream"
+msgstr "受质询访客数据流"
+
+msgid "Time"
+msgstr "时间"
+
+msgid "IP"
+msgstr "IP"
+
+msgid "URI"
+msgstr "URI"
+
+msgid "Score"
+msgstr "得分"
+
+msgid "Awaiting incoming challenges..."
+msgstr "等待接收质询数据..."
+
+msgid "Inspection & suspicion vector"
+msgstr "检测与可疑度特征向量"
+
+msgid "Challenge page heading"
+msgstr "质询页面标题"
+
+msgid "Security verification (default)"
+msgstr "安全验证（默认）"
+
+msgid "Custom title and heading displayed on the challenge page. Leave blank for default."
+msgstr "质询页面上显示的自定义标题及主标题。留空则使用默认值。"
+
+msgid "Challenge message"
+msgstr "质询提示信息"
+
+msgid "Behavioral & Transport Indicator Weights"
+msgstr "行为与传输层指标权重"
+
+msgid "Indicator / Metric"
+msgstr "指标 / 度量"
+
+msgid "Indicator / metric"
+msgstr "指标 / 度量"
+
+msgid "Description & Detection Role"
+msgstr "描述与检测职责"
+
+msgid "Description & detection role"
+msgstr "描述与检测职责"
+
+msgid "Behavioral suspicion indicator."
+msgstr "行为可疑度指标。"
+
+msgid "Update Metric Weights"
+msgstr "更新指标权重"
+
+msgid "Behavioral & transport indicator weights"
+msgstr "行为与传输层指标权重"
+
+msgid "Update metric weights"
+msgstr "保存指标权重"
+
+msgid "Real-Time Prometheus Metrics"
+msgstr "实时 Prometheus 指标"
+
+msgid "Real-time prometheus metrics"
+msgstr "实时 Prometheus 指标"
+
+msgid "Metrics endpoint path"
+msgstr "指标端点路径"
+
+msgid "Custom path for direct Prometheus scraping (default: /metrics). Leave empty to disable direct path scraping."
+msgstr "直接采集 Prometheus 数据的自定义路径（默认：/metrics）。留空则禁用直接路径抓取。"
+
+msgid "Scrape URL:"
+msgstr "抓取 URL："
+
+msgid "Save prometheus settings"
+msgstr "保存 Prometheus 设置"
+
+msgid "Please wait while we verify your browser security..."
+msgstr "正在验证您的浏览器安全性，请稍候..."
+
+msgid "Human-readable instruction presented to visitors during challenge verification."
+msgstr "在执行质询验证时向访客展示的可读说明。"
+
+msgid "Accent color"
+msgstr "强调色"
+
+msgid "Primary accent color applied to the verification loader and highlights."
+msgstr "应用于验证加载器及高亮元素的主要强调色。"
+
+msgid "Save appearance settings"
+msgstr "保存外观设置"
+
+msgid "Reset to default"
+msgstr "恢复默认设置"
+
+msgid "Reset challenge appearance to defaults?"
+msgstr "确定将质询外观恢复为默认设置吗？"
+
+msgid "SSE disconnected"
+msgstr "SSE 已断开"
+
+msgid "Connecting to SSE stream..."
+msgstr "正在连接到 SSE 数据流..."
+
+msgid "SSE live connected"
+msgstr "SSE 实时连接成功"
+
+msgid "Stop stream"
+msgstr "停止数据流"
+
+msgid "SSE reconnecting..."
+msgstr "SSE 正在重新连接..."
+
+msgid "Clear the live challenged visitors feed?"
+msgstr "确定清空受质询访客的实时记录吗？"
+
+msgid "No challenged visitors recorded yet."
+msgstr "尚无受质询访客的记录。"
+
+msgid "Select an entry from the list to inspect its vector."
+msgstr "从列表中选择一条记录以检查其特征向量。"
+
+msgid "No entry selected."
+msgstr "未选择任何条目。"
+
+msgid "No indicators recorded for this entry."
+msgstr "该条目未记录任何指标。"

@@ -1,0 +1,622 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Anonympins Bot Mitigation with Proof-of-Work 0.8.6\n"
+"Report-Msgid-Bugs-To: https://github.com/anonympins/fingerprint/issues\n"
+"POT-Creation-Date: 2026-09-24 12:00+0000\n"
+"PO-Revision-Date: 2026-09-24 12:00+0000\n"
+"Last-Translator: Anonympins\n"
+"Language-Team: Portuguese (Portugal)\n"
+"Language: pt_PT\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "Anonympins bot mitigation"
+msgstr "Mitigação de bots Anonympins"
+
+msgid "High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress."
+msgstr "Proteção anti-bot de alto desempenho no lado do cliente e verificação de desafios Proof-of-Work para WordPress."
+
+msgid "[Anonympins bot mitigation security warning]"
+msgstr "[Aviso de segurança de mitigação de bots Anonympins]"
+
+msgid "Your website is currently running on unencrypted HTTP. In this mode, modern web browsers disable the native Web Cryptography API (crypto.subtle) for security reasons, forcing a JavaScript fallback simulation that is slower and vulnerable to Man-in-the-Middle (MitM) attacks. We strongly recommend deploying a TLS/SSL certificate and enforcing HTTPS to ensure the cryptographic integrity of Proof-of-Work computations and identity protection."
+msgstr "O seu site está a ser executado em HTTP não encriptado. Neste modo, os navegadores web modernos desativam a API nativa Web Cryptography (crypto.subtle) por razões de segurança, forçando uma simulação de contingência em JavaScript mais lenta e vulnerável a ataques Man-in-the-Middle (MitM). Recomendamos vivamente a instalação de um certificado TLS/SSL e a imposição de HTTPS para garantir a integridade criptográfica dos cálculos Proof-of-Work e a proteção da identidade dos visitantes."
+
+msgid "Audit-Only dry-run is active: visitors will not be blocked or challenged."
+msgstr "A simulação em modo apenas auditoria está ativa: os visitantes não serão bloqueados nem desafiados."
+
+msgid "Enforced test mode: suspicion analysis and PoW challenges are actively triggered."
+msgstr "Modo de teste ativo: a análise de suspeita e os desafios PoW são acionados ativamente."
+
+msgid "[Anonympins bot mitigation sandbox active]"
+msgstr "[Sandbox de mitigação de bots Anonympins ativa]"
+
+msgid "Sandbox mode is currently ENABLED."
+msgstr "O modo Sandbox está atualmente ATIVADO."
+
+msgid "Configure sandbox"
+msgstr "Configurar sandbox"
+
+msgid "Unauthorized access."
+msgstr "Acesso não autorizado."
+
+msgid "You do not have sufficient permissions to access this page."
+msgstr "Não tem permissões suficientes para aceder a esta página."
+
+msgid "Client-side behavioral and cryptographic anti-bot protection without third-party CAPTCHA for WordPress."
+msgstr "Proteção anti-bot comportamental e criptográfica do lado do cliente sem CAPTCHA de terceiros para WordPress."
+
+msgid "Official documentation reference:"
+msgstr "Documentação oficial de referência:"
+
+msgid "View full configuration options on GitHub"
+msgstr "Ver documentação completa das opções no GitHub"
+
+msgid "GitHub Repository"
+msgstr "Repositório GitHub"
+
+msgid "HTTPS Status"
+msgstr "Estado HTTPS"
+
+msgid "Active (WebCrypto Subtle available)"
+msgstr "Ativo (WebCrypto Subtle disponível)"
+
+msgid "WebAssembly (WASM) status"
+msgstr "Estado do WebAssembly (WASM)"
+
+msgid "Active (SIMD128)"
+msgstr "Ativo (SIMD128)"
+
+msgid "Binary installed (%s KB) & enabled."
+msgstr "Binário instalado (%s KB) e ativado."
+
+msgid "Installed (Disabled)"
+msgstr "Instalado (Desativado)"
+
+msgid "fp.wasm found but disabled in settings."
+msgstr "fp.wasm encontrado mas desativado nas definições."
+
+msgid "Not installed"
+msgstr "Não instalado"
+
+msgid "fp.wasm missing (run node build-wasm.js)."
+msgstr "fp.wasm em falta (execute node build-wasm.js)."
+
+msgid "SQL cache ($wpdb)"
+msgstr "Cache SQL ($wpdb)"
+
+msgid "Insecure (Unencrypted HTTP)"
+msgstr "Inseguro (HTTP não encriptado)"
+
+msgid "keys in database"
+msgstr "chaves na base de dados"
+
+msgid " %d expired keys awaiting cron purge"
+msgstr " %d chaves expiradas a aguardar limpeza pelo cron"
+
+msgid "Active Profiles"
+msgstr "Perfis ativos"
+
+msgid "Active profiles"
+msgstr "Perfis ativos"
+
+msgid "Frontend:"
+msgstr "Frontend:"
+
+msgid "Admin:"
+msgstr "Administração:"
+
+msgid "REST API:"
+msgstr "API REST:"
+
+msgid "Sandbox Mode"
+msgstr "Modo Sandbox"
+
+msgid "Sandbox mode"
+msgstr "Modo Sandbox"
+
+msgid "GitHub repository"
+msgstr "Repositório GitHub"
+
+msgid "Active (Simulation)"
+msgstr "Ativo (Simulação)"
+
+msgid "Production (Enforced)"
+msgstr "Produção (Ativo)"
+
+msgid "Audit-Only: non-blocking observation."
+msgstr "Apenas auditoria: observação sem bloqueio."
+
+msgid "Testing: challenges & mitigations active."
+msgstr "Teste: desafios e mitigações ativos."
+
+msgid "Bot protection active across all visitors."
+msgstr "Proteção anti-bot ativa para todos os visitantes."
+
+msgid "Settings & profiles"
+msgstr "Definições e perfis"
+
+msgid "Allowlist / Whitelist"
+msgstr "Lista branca / Allowlist"
+
+msgid "Challenge appearance"
+msgstr "Aparência do desafio"
+
+msgid "Sandbox / test mode"
+msgstr "Sandbox / Modo de teste"
+
+msgid "Metrics & weights view"
+msgstr "Visualização de métricas e ponderações"
+
+msgid "Prometheus stream"
+msgstr "Fluxo Prometheus"
+
+msgid "Prometheus settings updated successfully."
+msgstr "Definições do Prometheus atualizadas com sucesso."
+
+msgid "Challenge appearance reset to default successfully."
+msgstr "Aparência do desafio restaurada com sucesso para os valores padrão."
+
+msgid "Challenge appearance updated successfully."
+msgstr "Aparência do desafio atualizada com sucesso."
+
+msgid "Invalid whitelist type specified."
+msgstr "Tipo de lista branca especificado inválido."
+
+msgid "Whitelist value cannot be empty."
+msgstr "O valor da lista branca não pode estar vazio."
+
+msgid "Overly permissive wildcard IP ranges are prohibited."
+msgstr "Intervalos de IP com wildcard excessivamente permissivos são proibidos."
+
+msgid "Invalid IP address in CIDR notation."
+msgstr "Endereço IP inválido na notação CIDR."
+
+msgid "Invalid IPv4 CIDR mask (must be between 0 and 32)."
+msgstr "Máscara CIDR IPv4 inválida (deve situar-se entre 0 e 32)."
+
+msgid "Invalid IPv6 CIDR mask (must be between 0 and 128)."
+msgstr "Máscara CIDR IPv6 inválida (deve situar-se entre 0 e 128)."
+
+msgid "Invalid IPv4 or IPv6 address."
+msgstr "Endereço IPv4 ou IPv6 inválido."
+
+msgid "Path must begin with a forward slash (e.g. /my-path or /api/*)."
+msgstr "O caminho deve começar com uma barra oblíqua (ex.: /meu-caminho ou /api/*)."
+
+msgid "Overly permissive root path wildcard is prohibited."
+msgstr "O wildcard de raiz excessivamente permissivo (/*) é proibido."
+
+msgid "Host+Path must include a hostname and path (e.g. api.example.com/v1/*)."
+msgstr "Anfitrião+Caminho deve incluir um nome de anfitrião e um caminho (ex.: api.example.com/v1/*)."
+
+msgid "GraphQL operation must be in the format type:operationName (e.g. query:GetPosts or mutation:*)."
+msgstr "A operação GraphQL deve respeitar o formato tipo:nomeOperacao (ex.: query:GetPosts ou mutation:*)."
+
+msgid "GraphQL operation type must be query, mutation, or subscription."
+msgstr "O tipo de operação GraphQL deve ser query, mutation ou subscription."
+
+msgid "This whitelist entry already exists."
+msgstr "Esta entrada já existe na lista branca."
+
+msgid "Add an allowlist entry"
+msgstr "Adicionar entrada à lista branca"
+
+msgid "Allowed entries bypass standard suspicion inspection and challenge requirements."
+msgstr "Os elementos autorizados ignoram a inspeção padrão de suspeita e os requisitos de desafio."
+
+msgid "Type of entry:"
+msgstr "Tipo de entrada:"
+
+msgid "IP or CIDR Block"
+msgstr "Endereço IP ou bloco CIDR"
+
+msgid "URL Path"
+msgstr "Caminho de URL"
+
+msgid "Host + Path"
+msgstr "Anfitrião + Caminho"
+
+msgid "GraphQL Operation"
+msgstr "Operação GraphQL"
+
+msgid "Value / pattern:"
+msgstr "Valor / padrão:"
+
+msgid "Description / note (optional):"
+msgstr "Descrição / nota (opcional):"
+
+msgid "e.g. Stripe webhook, office IP"
+msgstr "ex.: Webhook Stripe, IP do escritório"
+
+msgid "1. Target security profiles"
+msgstr "1. Perfis de segurança por destino"
+
+msgid "Visitors & frontend"
+msgstr "Visitantes e frontend"
+
+msgid "Add to allowlist"
+msgstr "Adicionar à lista branca"
+
+msgid "1. IP & CIDR block allowlist"
+msgstr "1. Lista branca de endereços IP e blocos CIDR"
+
+msgid "IP / CIDR pattern"
+msgstr "Padrão IP / CIDR"
+
+msgid "Description"
+msgstr "Descrição"
+
+msgid "Date added"
+msgstr "Data de adição"
+
+msgid "Action"
+msgstr "Ação"
+
+msgid "No IP entries configured."
+msgstr "Nenhum endereço IP configurado."
+
+msgid "Remove this IP from allowlist?"
+msgstr "Remover este endereço IP da lista branca?"
+
+msgid "Remove this path from allowlist?"
+msgstr "Remover este caminho da lista branca?"
+
+msgid "Remove this host+path from allowlist?"
+msgstr "Remover este anfitrião+caminho da lista branca?"
+
+msgid "Remove"
+msgstr "Remover"
+
+msgid "2. URL path allowlist"
+msgstr "2. Lista branca de caminhos de URL"
+
+msgid "Path / wildcard pattern"
+msgstr "Caminho / padrão wildcard"
+
+msgid "No path entries configured."
+msgstr "Nenhum caminho de URL configurado."
+
+msgid "3. Host + Path allowlist"
+msgstr "3. Lista branca de Anfitrião + Caminho"
+
+msgid "Host + Path pattern"
+msgstr "Padrão de Anfitrião + Caminho"
+
+msgid "No host+path entries configured."
+msgstr "Nenhuma entrada de anfitrião+caminho configurada."
+
+msgid "4. GraphQL operations allowlist"
+msgstr "4. Lista branca de operações GraphQL"
+
+msgid "Operation pattern (type:name)"
+msgstr "Padrão de operação (tipo:nome)"
+
+msgid "No GraphQL entries configured."
+msgstr "Nenhuma operação GraphQL configurada."
+
+msgid "Remove this GraphQL operation from allowlist?"
+msgstr "Remover esta operação GraphQL da lista branca?"
+
+msgid "Whitelist entry added successfully."
+msgstr "Entrada adicionada à lista branca com sucesso."
+
+msgid "Whitelist entry removed successfully."
+msgstr "Entrada removida da lista branca com sucesso."
+
+msgid "Sandbox / Test Mode"
+msgstr "Sandbox / Modo de Teste"
+
+msgid "Administration area (wp-login / wp-admin)"
+msgstr "Área de administração (wp-login / wp-admin)"
+
+msgid "1. Target Security Profiles"
+msgstr "1. Perfis de segurança por destino"
+
+msgid "Visitors & Frontend"
+msgstr "Visitantes e Frontend"
+
+msgid "Blog (Optimal for content, smooth UX)"
+msgstr "Blog (Ideal para conteúdos, UX fluida)"
+
+msgid "Balanced (General purpose)"
+msgstr "Equilibrado (Finalidade geral)"
+
+msgid "Strict (Maximum protection)"
+msgstr "Estrito (Proteção máxima)"
+
+msgid "E-commerce (anti-scraping / scalping)"
+msgstr "Comércio eletrónico (anti-scraping / açambarcamento)"
+
+msgid "Administration Area (wp-login / wp-admin)"
+msgstr "Área de administração (wp-login / wp-admin)"
+
+msgid "Strict (Recommended to secure logins)"
+msgstr "Estrito (Recomendado para proteger inícios de sessão)"
+
+msgid "Balanced"
+msgstr "Equilibrado"
+
+msgid "REST API (/wp-json/)"
+msgstr "API REST (/wp-json/)"
+
+msgid "API (JSON challenges & machine PoW)"
+msgstr "API (Desafios JSON e PoW de máquina)"
+
+msgid "Strict"
+msgstr "Estrito"
+
+msgid "2. Action Thresholds (Frontend)"
+msgstr "2. Limiares de ação (Frontend)"
+
+msgid "2. Action thresholds (frontend)"
+msgstr "2. Limiares de ação (Frontend)"
+
+msgid "Suspicion Score Thresholds (0 - 100)"
+msgstr "Limiares de pontuação de suspeita (0 - 100)"
+
+msgid "Suspicion score thresholds (0 - 100)"
+msgstr "Limiares de pontuação de suspeita (0 - 100)"
+
+msgid "Low (Initial challenge):"
+msgstr "Baixo (Desafio inicial):"
+
+msgid "Low (initial challenge):"
+msgstr "Baixo (desafio inicial):"
+
+msgid "Medium (hardened challenge):"
+msgstr "Médio (desafio reforçado):"
+
+msgid "High (Heavy Proof-of-Work):"
+msgstr "Elevado (Prova de trabalho pesada):"
+
+msgid "Block (Immediate 403 Forbidden):"
+msgstr "Bloqueio (403 Forbidden imediato):"
+
+msgid "High (heavy proof-of-work):"
+msgstr "Elevado (prova de trabalho pesada):"
+
+msgid "Block (immediate 403 forbidden):"
+msgstr "Bloqueio (403 Forbidden imediato):"
+
+msgid "Advanced Behaviors"
+msgstr "Comportamentos avançados"
+
+msgid "Advanced behaviors"
+msgstr "Comportamentos avançados"
+
+msgid "Automatically challenge unknown new devices (without device_id cookie)"
+msgstr "Desafiar automaticamente dispositivos desconhecidos (sem cookie device_id)"
+
+msgid "Enable recursive WAF inspection (SQL, NoSQL, Log4j, Traversal in GET/POST)"
+msgstr "Ativar inspeção WAF recursiva (SQL, NoSQL, Log4j, Traversal em GET/POST)"
+
+msgid "Enable WebAssembly (WASM) cryptographic acceleration"
+msgstr "Ativar aceleração criptográfica WebAssembly (WASM)"
+
+msgid "Verbose mode in PHP logs (Debugging)"
+msgstr "Modo detalhado nos registos PHP (Depuração)"
+
+msgid "Save Changes"
+msgstr "Guardar alterações"
+
+msgid "Save changes"
+msgstr "Guardar alterações"
+
+msgid "SQL cache table ($wpdb) cleared successfully."
+msgstr "Tabela de cache SQL ($wpdb) limpa com sucesso."
+
+msgid "Store maintenance:"
+msgstr "Manutenção do armazenamento:"
+
+msgid "Purge all stored sessions and nonces?"
+msgstr "Limpar todas as sessões e nonces armazenados?"
+
+msgid "Clear SQL cache table ($wpdb)"
+msgstr "Limpar tabela de cache SQL ($wpdb)"
+
+msgid "Sandbox Mode & Dry-Run Configuration"
+msgstr "Configuração do modo Sandbox e simulação"
+
+msgid "Sandbox mode & dry-run configuration"
+msgstr "Configuração do modo Sandbox e simulação"
+
+msgid "Sandbox activation"
+msgstr "Ativação da Sandbox"
+
+msgid "Sandbox Activation"
+msgstr "Ativação da Sandbox"
+
+msgid "Enable sandbox mode"
+msgstr "Ativar modo Sandbox"
+
+msgid "Enable Sandbox Mode"
+msgstr "Ativar Modo Sandbox"
+
+msgid "Behavior & Enforcement"
+msgstr "Comportamento e aplicação"
+
+msgid "Audit Only / Dry-Run (Never block or challenge visitors)"
+msgstr "Apenas auditoria / Simulação (Nunca bloquear nem desafiar os visitantes)"
+
+msgid "Behavior & enforcement"
+msgstr "Comportamento e aplicação"
+
+msgid "Audit only / dry-run (never block or challenge visitors)"
+msgstr "Apenas auditoria / simulação (nunca bloquear nem desafiar os visitantes)"
+
+msgid "Add diagnostic HTTP headers (X-Fingerprint-Sandbox: active)"
+msgstr "Adicionar cabeçalhos HTTP de diagnóstico (X-Fingerprint-Sandbox: active)"
+
+msgid "Log evaluated scores and suspicious attempts to PHP error_log"
+msgstr "Registar pontuações avaliadas e tentativas suspeitas no error_log do PHP"
+
+msgid "Test IP whitelist filter"
+msgstr "Filtro de lista branca de IP de teste"
+
+msgid "Test IP Whitelist Filter"
+msgstr "Filtro de lista branca de IP de teste"
+
+msgid "Current weight"
+msgstr "Ponderação atual"
+
+msgid "Current Weight"
+msgstr "Ponderação atual"
+
+msgid "Use my IP"
+msgstr "Usar o meu IP"
+
+msgid "Save sandbox settings"
+msgstr "Guardar definições da sandbox"
+
+msgid "Save Sandbox Settings"
+msgstr "Guardar definições da Sandbox"
+
+msgid "Live challenged visitors & suspicion monitor"
+msgstr "Monitor em direto de visitantes desafiados e suspeita"
+
+msgid "Live Challenged Visitors & Suspicion Monitor"
+msgstr "Monitor em direto de visitantes desafiados e suspeita"
+
+msgid "Recent challenges:"
+msgstr "Desafios recentes:"
+
+msgid "Start real-time SSE stream"
+msgstr "Iniciar fluxo SSE em tempo real"
+
+msgid "Poll now (REST)"
+msgstr "Consultar agora (REST)"
+
+msgid "Clear feed"
+msgstr "Limpar registo"
+
+msgid "Challenged visitors stream"
+msgstr "Fluxo de visitantes desafiados"
+
+msgid "Time"
+msgstr "Hora"
+
+msgid "IP"
+msgstr "IP"
+
+msgid "URI"
+msgstr "URI"
+
+msgid "Score"
+msgstr "Pontuação"
+
+msgid "Awaiting incoming challenges..."
+msgstr "A aguardar desafios recebidos..."
+
+msgid "Inspection & suspicion vector"
+msgstr "Inspeção e vetor de suspeita"
+
+msgid "Challenge page heading"
+msgstr "Título da página de desafio"
+
+msgid "Security verification (default)"
+msgstr "Verificação de segurança (padrão)"
+
+msgid "Custom title and heading displayed on the challenge page. Leave blank for default."
+msgstr "Título e cabeçalho personalizados exibidos na página de desafio. Deixe em branco para usar o padrão."
+
+msgid "Challenge message"
+msgstr "Mensagem do desafio"
+
+msgid "Behavioral & Transport Indicator Weights"
+msgstr "Ponderações de indicadores comportamentais e de transporte"
+
+msgid "Indicator / Metric"
+msgstr "Indicador / Métrica"
+
+msgid "Indicator / metric"
+msgstr "Indicador / métrica"
+
+msgid "Description & Detection Role"
+msgstr "Descrição e função de deteção"
+
+msgid "Description & detection role"
+msgstr "Descrição e função de deteção"
+
+msgid "Behavioral suspicion indicator."
+msgstr "Indicador de suspeita comportamental."
+
+msgid "Update Metric Weights"
+msgstr "Atualizar ponderações de métricas"
+
+msgid "Behavioral & transport indicator weights"
+msgstr "Ponderações de indicadores comportamentais e de transporte"
+
+msgid "Update metric weights"
+msgstr "Guardar ponderações de métricas"
+
+msgid "Real-Time Prometheus Metrics"
+msgstr "Métricas Prometheus em tempo real"
+
+msgid "Real-time prometheus metrics"
+msgstr "Métricas Prometheus em tempo real"
+
+msgid "Metrics endpoint path"
+msgstr "Caminho do ponto de extremidade das métricas"
+
+msgid "Custom path for direct Prometheus scraping (default: /metrics). Leave empty to disable direct path scraping."
+msgstr "Caminho personalizado para recolha direta do Prometheus (padrão: /metrics). Deixe vazio para desativar a recolha direta."
+
+msgid "Scrape URL:"
+msgstr "URL de recolha (Scrape):"
+
+msgid "Save prometheus settings"
+msgstr "Guardar definições do Prometheus"
+
+msgid "Please wait while we verify your browser security..."
+msgstr "Por favor, aguarde enquanto verificamos a segurança do seu navegador..."
+
+msgid "Human-readable instruction presented to visitors during challenge verification."
+msgstr "Instrução legível apresentada aos visitantes durante a verificação do desafio."
+
+msgid "Accent color"
+msgstr "Cor de destaque"
+
+msgid "Primary accent color applied to the verification loader and highlights."
+msgstr "Cor de destaque principal aplicada ao carregador de verificação e aos elementos em foco."
+
+msgid "Save appearance settings"
+msgstr "Guardar definições de aparência"
+
+msgid "Reset to default"
+msgstr "Restaurar valores padrão"
+
+msgid "Reset challenge appearance to defaults?"
+msgstr "Restaurar a aparência do desafio para os valores padrão?"
+
+msgid "SSE disconnected"
+msgstr "Fluxo SSE desligado"
+
+msgid "Connecting to SSE stream..."
+msgstr "A ligar ao fluxo SSE..."
+
+msgid "SSE live connected"
+msgstr "Fluxo SSE ligado em direto"
+
+msgid "Stop stream"
+msgstr "Parar fluxo"
+
+msgid "SSE reconnecting..."
+msgstr "A restabelecer ligação SSE..."
+
+msgid "Clear the live challenged visitors feed?"
+msgstr "Limpar o registo de visitantes desafiados em tempo real?"
+
+msgid "No challenged visitors recorded yet."
+msgstr "Ainda não foram registados visitantes desafiados."
+
+msgid "Select an entry from the list to inspect its vector."
+msgstr "Selecione uma entrada da lista para inspecionar o seu vetor."
+
+msgid "No entry selected."
+msgstr "Nenhuma entrada selecionada."
+
+msgid "No indicators recorded for this entry."
+msgstr "Nenhum indicador registado para esta entrada."

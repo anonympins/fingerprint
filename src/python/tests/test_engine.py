@@ -1822,7 +1822,7 @@ async def test_streaming_graph_topology_score_detects_low_and_slow():
     target_path = "/product/view-details"
     last_score = 0.0
 
-    for i in range(1, 5):
+    for i in range(1, 7):
         ip = f"198.51.10{i}.{i * 10}"
         sess = f"bot-session-{i}"
         fp = f"fp-{i}"

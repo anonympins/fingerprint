@@ -457,7 +457,7 @@ public class FingerprintEngineTest {
         String targetPath = "/product/view-details";
         double lastScore = 0.0;
 
-        for (int i = 1; i <= 4; i++) {
+        for (int i = 1; i <= 6; i++) {
             String ip = "198.51.10" + i + "." + (i * 10);
             String sess = "bot-session-" + i;
             String fp = "fp-" + i;

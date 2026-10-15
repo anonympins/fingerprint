@@ -484,7 +484,7 @@ class RequestUtilsTest extends TestCase
 
         // 2. Simulation de 4 requêtes avec transition inhumainement rapide (<300ms) depuis 4 sous-réseaux IP et sessions différentes
         $store = \Anonympins\Fingerprint\Store\StoreManager::getStore();
-        for ($i = 2; $i <= 5; $i++) {
+        for ($i = 2; $i <= 7; $i++) {
             $sess = "sess-{$i}";
             $ip = "203.0.11{$i}.45";
             RequestUtils::getGraphTopologyScore($this->createRequestContext(['clientIp' => $ip, 'path' => '/catalog']), $sess, "fp-hash-{$i}");

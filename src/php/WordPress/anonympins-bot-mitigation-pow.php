@@ -3,7 +3,7 @@
  * Plugin Name: Anonympins Bot Mitigation with Proof-of-Work
  * Plugin URI: https://github.com/anonympins/fingerprint
  * Description: High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress.
- * Version: 0.8.5
+ * Version: 0.8.6
  * Author: anonympins
  * Requires at least: 5.9
  * Requires PHP: 8.0
@@ -25,7 +25,7 @@ if (!defined('ABSPATH')) {
 }
 
 if (!defined('ANONYMPINS_BOT_MITIGATION_VERSION')) {
-    define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.8.5');
+    define('ANONYMPINS_BOT_MITIGATION_VERSION', '0.8.6');
 }
 
 if (!defined('ANONYMPINS_BOT_MITIGATION_FILE')) {
@@ -120,6 +120,77 @@ function fingerprint_get_effective_profiles(array $defaultProfiles): array {
         'admin'    => SecurityProfiles::deepMerge($defaultProfiles['admin'], $saved['admin'] ?? []),
         'api'      => SecurityProfiles::deepMerge($defaultProfiles['api'], $saved['api'] ?? []),
     ];
+}
+
+/**
+ * Retrieves the compiled whitelist rules combining default bot rules and admin-defined entries.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function fingerprint_get_whitelist_rules(): array {
+    $rules = \Anonympins\Fingerprint\FingerprintEngine::default_whitelist();
+    $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+    $customEntries = is_array($saved) && isset($saved['whitelist_entries']) && is_array($saved['whitelist_entries'])
+        ? $saved['whitelist_entries']
+        : [];
+
+    $ipEntries = [];
+    $pathEntries = [];
+    $hostPathEntries = [];
+    $graphqlEntries = [];
+
+    foreach ($customEntries as $entry) {
+        if (!is_array($entry)) {
+            continue;
+        }
+        $type = $entry['type'] ?? '';
+        $val = trim((string)($entry['value'] ?? ''));
+        if ($val === '') {
+            continue;
+        }
+
+        switch ($type) {
+            case 'ip':
+                $ipEntries[] = $val;
+                break;
+            case 'path':
+                $pathEntries[] = $val;
+                break;
+            case 'host_path':
+                $hostPathEntries[] = $val;
+                break;
+            case 'graphql':
+                $graphqlEntries[] = $val;
+                break;
+        }
+    }
+
+    if (!empty($ipEntries)) {
+        $rules[] = [
+            'type'    => 'allowlist',
+            'entries' => array_values(array_unique($ipEntries)),
+        ];
+    }
+    if (!empty($pathEntries)) {
+        $rules[] = [
+            'type'    => 'path_allowlist',
+            'entries' => array_values(array_unique($pathEntries)),
+        ];
+    }
+    if (!empty($hostPathEntries)) {
+        $rules[] = [
+            'type'    => 'host_path_allowlist',
+            'entries' => array_values(array_unique($hostPathEntries)),
+        ];
+    }
+    if (!empty($graphqlEntries)) {
+        $rules[] = [
+            'type'    => 'graphql_operation_allowlist',
+            'entries' => array_values(array_unique($graphqlEntries)),
+        ];
+    }
+
+    return apply_filters('fingerprint_whitelist_rules', $rules, $customEntries);
 }
 
 /**
@@ -359,6 +430,12 @@ add_action('plugins_loaded', function () use ($fingerprint_security_profiles) {
     }
 
     $contextConfig['overrides']['challengeTemplate'] = fingerprint_get_challenge_template();
+    $customWhitelist = fingerprint_get_whitelist_rules();
+    if (isset($contextConfig['overrides']['whitelist']) && is_array($contextConfig['overrides']['whitelist'])) {
+        $contextConfig['overrides']['whitelist'] = array_merge($customWhitelist, $contextConfig['overrides']['whitelist']);
+    } else {
+        $contextConfig['overrides']['whitelist'] = $customWhitelist;
+    }
     $contextConfig['overrides']['threatReportHandler'] = function (string $endpoint, array $payload): void {
         if (function_exists('wp_remote_post')) {
             wp_remote_post($endpoint, [
@@ -893,6 +970,22 @@ add_action('admin_enqueue_scripts', function ($hook = '') {
     }
 
     document.addEventListener("DOMContentLoaded", function() {
+        const wlTypeSelect = document.getElementById("whitelist_type");
+        const wlValueInput = document.getElementById("whitelist_value");
+        if (wlTypeSelect && wlValueInput) {
+            const placeholders = {
+                "ip": "e.g. 192.168.1.100 or 10.0.0.0/8 or 2001:db8::/32",
+                "path": "e.g. /wp-cron.php or /api/webhooks/*",
+                "host_path": "e.g. api.example.com/v1/* or sub.domain.com/status",
+                "graphql": "e.g. query:GetPublicData or mutation:*"
+            };
+            wlTypeSelect.addEventListener("change", function() {
+                wlValueInput.placeholder = placeholders[wlTypeSelect.value] || "";
+            });
+        }
+    });
+
+    document.addEventListener("DOMContentLoaded", function() {
         fingerprintFetchTelemetry();
     });';
 
@@ -1023,6 +1116,117 @@ function fingerprint_render_admin_page(): void {
         update_option('anonympins_security_options', $saved);
     }
 
+    if (isset($_POST['fingerprint_add_whitelist']) && check_admin_referer('fingerprint_add_whitelist_nonce', 'fingerprint_nonce_add_whitelist')) {
+        $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+        if (!is_array($saved)) {
+            $saved = [];
+        }
+        if (!isset($saved['whitelist_entries']) || !is_array($saved['whitelist_entries'])) {
+            $saved['whitelist_entries'] = [];
+        }
+
+        $type = isset($_POST['whitelist_type']) ? sanitize_key(wp_unslash($_POST['whitelist_type'])) : '';
+        $value = isset($_POST['whitelist_value']) ? sanitize_text_field(wp_unslash($_POST['whitelist_value'])) : '';
+        $value = trim($value);
+        $description = isset($_POST['whitelist_description']) ? sanitize_text_field(wp_unslash($_POST['whitelist_description'])) : '';
+
+        $errorMsg = null;
+        $validTypes = ['ip', 'path', 'host_path', 'graphql'];
+
+        if (!in_array($type, $validTypes, true)) {
+            $errorMsg = __('Invalid whitelist type specified.', 'anonympins-bot-mitigation-pow');
+        } elseif ($value === '') {
+            $errorMsg = __('Whitelist value cannot be empty.', 'anonympins-bot-mitigation-pow');
+        } else {
+            switch ($type) {
+                case 'ip':
+                    if ($value === '*' || $value === '0.0.0.0/0' || $value === '::/0') {
+                        $errorMsg = __('Overly permissive wildcard IP ranges are prohibited.', 'anonympins-bot-mitigation-pow');
+                    } elseif (str_contains($value, '/')) {
+                        $parts = explode('/', $value, 2);
+                        $ipPart = $parts[0];
+                        $maskPart = $parts[1];
+                        $isV4 = filter_var($ipPart, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
+                        $isV6 = filter_var($ipPart, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+                        $maskInt = is_numeric($maskPart) ? (int)$maskPart : -1;
+                        if (!$isV4 && !$isV6) {
+                            $errorMsg = __('Invalid IP address in CIDR notation.', 'anonympins-bot-mitigation-pow');
+                        } elseif ($isV4 && ($maskInt < 0 || $maskInt > 32)) {
+                            $errorMsg = __('Invalid IPv4 CIDR mask (must be between 0 and 32).', 'anonympins-bot-mitigation-pow');
+                        } elseif ($isV6 && ($maskInt < 0 || $maskInt > 128)) {
+                            $errorMsg = __('Invalid IPv6 CIDR mask (must be between 0 and 128).', 'anonympins-bot-mitigation-pow');
+                        }
+                    } elseif (filter_var($value, FILTER_VALIDATE_IP) === false) {
+                        $errorMsg = __('Invalid IPv4 or IPv6 address.', 'anonympins-bot-mitigation-pow');
+                    }
+                    break;
+                case 'path':
+                    if (!str_starts_with($value, '/')) {
+                        $errorMsg = __('Path must begin with a forward slash (e.g. /my-path or /api/*).', 'anonympins-bot-mitigation-pow');
+                    } elseif ($value === '/' || $value === '/*') {
+                        $errorMsg = __('Overly permissive root path wildcard is prohibited.', 'anonympins-bot-mitigation-pow');
+                    }
+                    break;
+                case 'host_path':
+                    if (!str_contains($value, '/') || str_starts_with($value, '/')) {
+                        $errorMsg = __('Host+Path must include a hostname and path (e.g. api.example.com/v1/*).', 'anonympins-bot-mitigation-pow');
+                    }
+                    break;
+                case 'graphql':
+                    if (!str_contains($value, ':')) {
+                        $errorMsg = __('GraphQL operation must be in the format type:operationName (e.g. query:GetPosts or mutation:*).', 'anonympins-bot-mitigation-pow');
+                    } else {
+                        $gqlParts = explode(':', $value, 2);
+                        if (!in_array($gqlParts[0], ['query', 'mutation', 'subscription'], true) || trim($gqlParts[1]) === '') {
+                            $errorMsg = __('GraphQL operation type must be query, mutation, or subscription.', 'anonympins-bot-mitigation-pow');
+                        }
+                    }
+                    break;
+            }
+        }
+
+        if ($errorMsg !== null) {
+            echo '<div class="notice notice-error is-dismissible"><p><strong>' . esc_html($errorMsg) . '</strong></p></div>';
+        } else {
+            $exists = false;
+            foreach ($saved['whitelist_entries'] as $existing) {
+                if (($existing['type'] ?? '') === $type && strcasecmp((string)($existing['value'] ?? ''), $value) === 0) {
+                    $exists = true;
+                    break;
+                }
+            }
+
+            if ($exists) {
+                echo '<div class="notice notice-warning is-dismissible"><p><strong>' . esc_html__('This whitelist entry already exists.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
+            } else {
+                $saved['whitelist_entries'][] = [
+                    'id'          => uniqid('wl_', true),
+                    'type'        => $type,
+                    'value'       => $value,
+                    'description' => $description,
+                    'created_at'  => time(),
+                ];
+                update_option('anonympins_security_options', $saved);
+                echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Whitelist entry added successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
+            }
+        }
+    }
+
+    if (isset($_POST['fingerprint_delete_whitelist']) && check_admin_referer('fingerprint_delete_whitelist_nonce', 'fingerprint_nonce_delete_whitelist')) {
+        $saved = get_option('anonympins_security_options', get_option('fingerprint_security_options', []));
+        if (is_array($saved) && isset($saved['whitelist_entries']) && is_array($saved['whitelist_entries'])) {
+            $deleteId = isset($_POST['whitelist_delete_id']) ? sanitize_text_field(wp_unslash($_POST['whitelist_delete_id'])) : '';
+            $originalCount = count($saved['whitelist_entries']);
+            $saved['whitelist_entries'] = array_values(array_filter($saved['whitelist_entries'], function ($entry) use ($deleteId) {
+                return ($entry['id'] ?? '') !== $deleteId;
+            }));
+            if (count($saved['whitelist_entries']) < $originalCount) {
+                update_option('anonympins_security_options', $saved);
+                echo '<div class="notice notice-success is-dismissible"><p><strong>' . esc_html__('Whitelist entry removed successfully.', 'anonympins-bot-mitigation-pow') . '</strong></p></div>';
+            }
+        }
+    }
+
     if (isset($_POST['fingerprint_clear_store']) && check_admin_referer('fingerprint_clear_nonce', 'fingerprint_nonce_clear')) {
         $store = new WpDbStore();
         $store->clear();
@@ -1047,6 +1251,23 @@ function fingerprint_render_admin_page(): void {
     $store = new WpDbStore();
     $totalRows = $store->getTotalCount();
     $expiredRows = $store->getExpiredCount();
+
+    $whitelistEntries = (is_array($savedOptions) && isset($savedOptions['whitelist_entries']) && is_array($savedOptions['whitelist_entries']))
+        ? $savedOptions['whitelist_entries']
+        : [];
+
+    $entriesByType = [
+        'ip'        => [],
+        'path'      => [],
+        'host_path' => [],
+        'graphql'   => [],
+    ];
+    foreach ($whitelistEntries as $entry) {
+        $t = $entry['type'] ?? 'ip';
+        if (isset($entriesByType[$t])) {
+            $entriesByType[$t][] = $entry;
+        }
+    }
 
     $prometheusRaw = MetricsManager::getPrometheusMetrics($frontendConfig);
     ?>
@@ -1137,6 +1358,7 @@ function fingerprint_render_admin_page(): void {
         <!-- NAVIGATION TABS -->
         <h2 class="nav-tab-wrapper">
             <a href="#tab-settings" class="nav-tab nav-tab-active" onclick="fingerprintSwitchTab(event, 'tab-settings')"><?php esc_html_e('Settings & profiles', 'anonympins-bot-mitigation-pow'); ?></a>
+            <a href="#tab-whitelist" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-whitelist')"><?php esc_html_e('Allowlist / Whitelist', 'anonympins-bot-mitigation-pow'); ?></a>
             <a href="#tab-appearance" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-appearance')"><?php esc_html_e('Challenge appearance', 'anonympins-bot-mitigation-pow'); ?></a>
             <a href="#tab-sandbox" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-sandbox')"><?php esc_html_e('Sandbox / test mode', 'anonympins-bot-mitigation-pow'); ?></a>
             <a href="#tab-metrics" class="nav-tab" onclick="fingerprintSwitchTab(event, 'tab-metrics')"><?php esc_html_e('Metrics & weights view', 'anonympins-bot-mitigation-pow'); ?></a>
@@ -1232,6 +1454,176 @@ function fingerprint_render_admin_page(): void {
                     </button>
                 </p>
             </form>
+        </div>
+
+        <div id="tab-whitelist" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">
+            <h3><?php esc_html_e('Add an allowlist entry', 'anonympins-bot-mitigation-pow'); ?></h3>
+            <p class="description"><?php esc_html_e('Allowed entries bypass standard suspicion inspection and challenge requirements.', 'anonympins-bot-mitigation-pow'); ?></p>
+            <form method="post" action="" style="background:#f6f7f7;padding:16px;border:1px solid #c3c4c7;border-radius:4px;margin-bottom:24px;">
+                <?php wp_nonce_field('fingerprint_add_whitelist_nonce', 'fingerprint_nonce_add_whitelist'); ?>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+                    <div>
+                        <label for="whitelist_type" style="font-weight:600;display:block;margin-bottom:4px;"><?php esc_html_e('Type of entry:', 'anonympins-bot-mitigation-pow'); ?></label>
+                        <select name="whitelist_type" id="whitelist_type" style="min-width:180px;">
+                            <option value="ip"><?php esc_html_e('IP or CIDR Block', 'anonympins-bot-mitigation-pow'); ?></option>
+                            <option value="path"><?php esc_html_e('URL Path', 'anonympins-bot-mitigation-pow'); ?></option>
+                            <option value="host_path"><?php esc_html_e('Host + Path', 'anonympins-bot-mitigation-pow'); ?></option>
+                            <option value="graphql"><?php esc_html_e('GraphQL Operation', 'anonympins-bot-mitigation-pow'); ?></option>
+                        </select>
+                    </div>
+                    <div style="flex:1;min-width:260px;">
+                        <label for="whitelist_value" style="font-weight:600;display:block;margin-bottom:4px;"><?php esc_html_e('Value / pattern:', 'anonympins-bot-mitigation-pow'); ?></label>
+                        <input type="text" name="whitelist_value" id="whitelist_value" class="regular-text" style="width:100%;" placeholder="e.g. 192.168.1.100 or 10.0.0.0/8 or 2001:db8::/32" required>
+                    </div>
+                    <div style="flex:1;min-width:200px;">
+                        <label for="whitelist_description" style="font-weight:600;display:block;margin-bottom:4px;"><?php esc_html_e('Description / note (optional):', 'anonympins-bot-mitigation-pow'); ?></label>
+                        <input type="text" name="whitelist_description" id="whitelist_description" class="regular-text" style="width:100%;" placeholder="<?php esc_attr_e('e.g. Stripe webhook, office IP', 'anonympins-bot-mitigation-pow'); ?>">
+                    </div>
+                    <div>
+                        <?php submit_button(esc_html__('Add to allowlist', 'anonympins-bot-mitigation-pow'), 'primary', 'fingerprint_add_whitelist', false); ?>
+                    </div>
+                </div>
+            </form>
+
+            <!-- 1. TABLE: IP & CIDR -->
+            <div style="margin-bottom:28px;">
+                <h4 style="margin-bottom:8px;"><span class="dashicons dashicons-admin-site-alt3" style="vertical-align:text-bottom;"></span> <?php esc_html_e('1. IP & CIDR block allowlist', 'anonympins-bot-mitigation-pow'); ?> (<code>type: allowlist</code>)</h4>
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th style="width:300px;"><?php esc_html_e('IP / CIDR pattern', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th><?php esc_html_e('Description', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:140px;"><?php esc_html_e('Date added', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:80px;text-align:right;"><?php esc_html_e('Action', 'anonympins-bot-mitigation-pow'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($entriesByType['ip'])): ?>
+                            <tr><td colspan="4" style="color:#646970;padding:12px;"><em><?php esc_html_e('No IP entries configured.', 'anonympins-bot-mitigation-pow'); ?></em></td></tr>
+                        <?php else: ?>
+                            <?php foreach ($entriesByType['ip'] as $item): ?>
+                            <tr>
+                                <td><code><?php echo esc_html($item['value']); ?></code></td>
+                                <td><?php echo esc_html($item['description'] ?? ''); ?></td>
+                                <td><?php echo esc_html(!empty($item['created_at']) ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $item['created_at']) : '--'); ?></td>
+                                <td style="text-align:right;">
+                                    <form method="post" action="" style="display:inline;">
+                                        <?php wp_nonce_field('fingerprint_delete_whitelist_nonce', 'fingerprint_nonce_delete_whitelist'); ?>
+                                        <input type="hidden" name="whitelist_delete_id" value="<?php echo esc_attr($item['id']); ?>">
+                                        <button type="submit" name="fingerprint_delete_whitelist" class="button button-small button-link-delete" onclick="return confirm('<?php echo esc_js(__('Remove this IP from allowlist?', 'anonympins-bot-mitigation-pow')); ?>');"><?php esc_html_e('Remove', 'anonympins-bot-mitigation-pow'); ?></button>
+                                    </form>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 2. TABLE: URL PATH -->
+            <div style="margin-bottom:28px;">
+                <h4 style="margin-bottom:8px;"><span class="dashicons dashicons-admin-links" style="vertical-align:text-bottom;"></span> <?php esc_html_e('2. URL path allowlist', 'anonympins-bot-mitigation-pow'); ?> (<code>type: path_allowlist</code>)</h4>
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th style="width:300px;"><?php esc_html_e('Path / wildcard pattern', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th><?php esc_html_e('Description', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:140px;"><?php esc_html_e('Date added', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:80px;text-align:right;"><?php esc_html_e('Action', 'anonympins-bot-mitigation-pow'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($entriesByType['path'])): ?>
+                            <tr><td colspan="4" style="color:#646970;padding:12px;"><em><?php esc_html_e('No path entries configured.', 'anonympins-bot-mitigation-pow'); ?></em></td></tr>
+                        <?php else: ?>
+                            <?php foreach ($entriesByType['path'] as $item): ?>
+                            <tr>
+                                <td><code><?php echo esc_html($item['value']); ?></code></td>
+                                <td><?php echo esc_html($item['description'] ?? ''); ?></td>
+                                <td><?php echo esc_html(!empty($item['created_at']) ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $item['created_at']) : '--'); ?></td>
+                                <td style="text-align:right;">
+                                    <form method="post" action="" style="display:inline;">
+                                        <?php wp_nonce_field('fingerprint_delete_whitelist_nonce', 'fingerprint_nonce_delete_whitelist'); ?>
+                                        <input type="hidden" name="whitelist_delete_id" value="<?php echo esc_attr($item['id']); ?>">
+                                        <button type="submit" name="fingerprint_delete_whitelist" class="button button-small button-link-delete" onclick="return confirm('<?php echo esc_js(__('Remove this path from allowlist?', 'anonympins-bot-mitigation-pow')); ?>');"><?php esc_html_e('Remove', 'anonympins-bot-mitigation-pow'); ?></button>
+                                    </form>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 3. TABLE: HOST + PATH -->
+            <div style="margin-bottom:28px;">
+                <h4 style="margin-bottom:8px;"><span class="dashicons dashicons-networking" style="vertical-align:text-bottom;"></span> <?php esc_html_e('3. Host + Path allowlist', 'anonympins-bot-mitigation-pow'); ?> (<code>type: host_path_allowlist</code>)</h4>
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th style="width:300px;"><?php esc_html_e('Host + Path pattern', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th><?php esc_html_e('Description', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:140px;"><?php esc_html_e('Date added', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:80px;text-align:right;"><?php esc_html_e('Action', 'anonympins-bot-mitigation-pow'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($entriesByType['host_path'])): ?>
+                            <tr><td colspan="4" style="color:#646970;padding:12px;"><em><?php esc_html_e('No host+path entries configured.', 'anonympins-bot-mitigation-pow'); ?></em></td></tr>
+                        <?php else: ?>
+                            <?php foreach ($entriesByType['host_path'] as $item): ?>
+                            <tr>
+                                <td><code><?php echo esc_html($item['value']); ?></code></td>
+                                <td><?php echo esc_html($item['description'] ?? ''); ?></td>
+                                <td><?php echo esc_html(!empty($item['created_at']) ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $item['created_at']) : '--'); ?></td>
+                                <td style="text-align:right;">
+                                    <form method="post" action="" style="display:inline;">
+                                        <?php wp_nonce_field('fingerprint_delete_whitelist_nonce', 'fingerprint_nonce_delete_whitelist'); ?>
+                                        <input type="hidden" name="whitelist_delete_id" value="<?php echo esc_attr($item['id']); ?>">
+                                        <button type="submit" name="fingerprint_delete_whitelist" class="button button-small button-link-delete" onclick="return confirm('<?php echo esc_js(__('Remove this host+path from allowlist?', 'anonympins-bot-mitigation-pow')); ?>');"><?php esc_html_e('Remove', 'anonympins-bot-mitigation-pow'); ?></button>
+                                    </form>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 4. TABLE: GRAPHQL -->
+            <div style="margin-bottom:28px;">
+                <h4 style="margin-bottom:8px;"><span class="dashicons dashicons-rest-api" style="vertical-align:text-bottom;"></span> <?php esc_html_e('4. GraphQL operations allowlist', 'anonympins-bot-mitigation-pow'); ?> (<code>type: graphql_operation_allowlist</code>)</h4>
+                <table class="wp-list-table widefat fixed striped">
+                    <thead>
+                        <tr>
+                            <th style="width:300px;"><?php esc_html_e('Operation pattern (type:name)', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th><?php esc_html_e('Description', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:140px;"><?php esc_html_e('Date added', 'anonympins-bot-mitigation-pow'); ?></th>
+                            <th style="width:80px;text-align:right;"><?php esc_html_e('Action', 'anonympins-bot-mitigation-pow'); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($entriesByType['graphql'])): ?>
+                            <tr><td colspan="4" style="color:#646970;padding:12px;"><em><?php esc_html_e('No GraphQL entries configured.', 'anonympins-bot-mitigation-pow'); ?></em></td></tr>
+                        <?php else: ?>
+                            <?php foreach ($entriesByType['graphql'] as $item): ?>
+                            <tr>
+                                <td><code><?php echo esc_html($item['value']); ?></code></td>
+                                <td><?php echo esc_html($item['description'] ?? ''); ?></td>
+                                <td><?php echo esc_html(!empty($item['created_at']) ? date_i18n(get_option('date_format') . ' ' . get_option('time_format'), $item['created_at']) : '--'); ?></td>
+                                <td style="text-align:right;">
+                                    <form method="post" action="" style="display:inline;">
+                                        <?php wp_nonce_field('fingerprint_delete_whitelist_nonce', 'fingerprint_nonce_delete_whitelist'); ?>
+                                        <input type="hidden" name="whitelist_delete_id" value="<?php echo esc_attr($item['id']); ?>">
+                                        <button type="submit" name="fingerprint_delete_whitelist" class="button button-small button-link-delete" onclick="return confirm('<?php echo esc_js(__('Remove this GraphQL operation from allowlist?', 'anonympins-bot-mitigation-pow')); ?>');"><?php esc_html_e('Remove', 'anonympins-bot-mitigation-pow'); ?></button>
+                                    </form>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
 
         <div id="tab-appearance" class="fingerprint-tab-content" style="display:none;background:#fff;padding:20px;border:1px solid #ccd0d4;border-top:none;">

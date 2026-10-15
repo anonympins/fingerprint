@@ -1,3 +1,19 @@
+## Version 0.8.6
+
+- 🌐 **Streaming graph topology anomaly scoring (`graphTopologyScore`)**:
+  - **Transition & calculation fixes**: corrected edge-case evaluation and transition delta tracking in session graph traversal, improving accuracy for low & slow scraper detection across distributed subnets.
+  - **Test suite synchronization**: updated and expanded client-side unit tests in `fingerprint.test.js` to ensure stability and detection parity.
+
+- 🔌 **WordPress plugin: allowlist management panel & code hardening**:
+  - **Dedicated allowlist management**: introduced a dedicated administration panel with segmented tables for IP/CIDR blocks, URL paths, Host + Path rules, and GraphQL operations.
+  - **Strict input validation**: added strict format validation for CIDRs, paths, and GraphQL operations with single-click removal and anti-tamper nonces.
+  - **Syntax & PHPCS compliance**: cleaned up control structures in `anonympins-bot-mitigation-pow.php` (resolved `DisallowLonelyIf` sniffs).
+
+- 🌍 **Full internationalization (i18n) & language catalogs**:
+  - Completed translation catalogs (`.po` and compiled binary `.mo`) covering 100% of the plugin interface across English, French (`fr_FR`), Spanish (`es_ES`), German (`de_DE`), Portuguese (`pt_PT`), Russian (`ru_RU`), Greek (`el_GR`), Italian (`it_IT`), and Simplified Chinese (`zh_CN`).
+
+---
+
 ## Version 0.8.5
 
 - ☕ **Java: Polymorphic headers translation & key decoding**:

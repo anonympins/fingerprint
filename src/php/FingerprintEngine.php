@@ -599,20 +599,12 @@ class FingerprintEngine
         $blockList = new BlockList();
         $whitelistRules = $this->securityConfig['whitelist'] ?? [];
 
-        $allowlistRule = null;
         foreach ($whitelistRules as $rule) {
-            if (($rule['type'] ?? '') === 'allowlist') {
-                $allowlistRule = $rule;
-                break;
+            if (($rule['type'] ?? '') === 'allowlist' && !empty($rule['entries']) && is_array($rule['entries'])) {
+                foreach ($rule['entries'] as $entry) {
+                    $blockList->add((string)$entry);
+                }
             }
-        }
-
-        if (empty($allowlistRule['entries'])) {
-            return $blockList;
-        }
-
-        foreach ($allowlistRule['entries'] as $entry) {
-            $blockList->add($entry);
         }
         return $blockList;
     }
@@ -638,26 +630,18 @@ class FingerprintEngine
     private function isPathInAllowlist(string $requestPath): bool
     {
         $whitelistRules = $this->securityConfig['whitelist'] ?? [];
-        $pathAllowlistRule = null;
         foreach ($whitelistRules as $rule) {
-            if (($rule['type'] ?? '') === 'path_allowlist') {
-                $pathAllowlistRule = $rule;
-                break;
-            }
-        }
-
-        if (empty($pathAllowlistRule['entries'])) {
-            return false;
-        }
-
-        foreach ($pathAllowlistRule['entries'] as $entry) {
-            if (str_ends_with($entry, '*')) {
-                $base = substr($entry, 0, -1);
-                if (str_starts_with($requestPath, $base)) {
-                    return true;
+            if (($rule['type'] ?? '') === 'path_allowlist' && !empty($rule['entries']) && is_array($rule['entries'])) {
+                foreach ($rule['entries'] as $entry) {
+                    if (str_ends_with($entry, '*')) {
+                        $base = substr($entry, 0, -1);
+                        if (str_starts_with($requestPath, $base)) {
+                            return true;
+                        }
+                    } elseif ($requestPath === $entry) {
+                        return true;
+                    }
                 }
-            } elseif ($requestPath === $entry) {
-                return true;
             }
         }
 
@@ -678,21 +662,13 @@ class FingerprintEngine
         }
 
         $whitelistRules = $this->securityConfig['whitelist'] ?? [];
-        $hostPathRule = null;
         foreach ($whitelistRules as $rule) {
-            if (($rule['type'] ?? '') === 'host_path_allowlist') {
-                $hostPathRule = $rule;
-                break;
-            }
-        }
-
-        if (empty($hostPathRule['entries'])) {
-            return false;
-        }
-
-        foreach ($hostPathRule['entries'] as $entry) {
-            if (RequestUtils::hostPathMatches($requestHost, $requestPath, $entry)) {
-                return true;
+            if (($rule['type'] ?? '') === 'host_path_allowlist' && !empty($rule['entries']) && is_array($rule['entries'])) {
+                foreach ($rule['entries'] as $entry) {
+                    if (RequestUtils::hostPathMatches($requestHost, $requestPath, $entry)) {
+                        return true;
+                    }
+                }
             }
         }
         return false;
@@ -1982,25 +1958,19 @@ class FingerprintEngine
         }
 
         $whitelistRules = $this->securityConfig['whitelist'] ?? [];
-        $graphqlRule = null;
         foreach ($whitelistRules as $rule) {
-            if (($rule['type'] ?? '') === 'graphql_operation_allowlist') {
-                $graphqlRule = $rule;
-                break;
+            if (($rule['type'] ?? '') === 'graphql_operation_allowlist' && !empty($rule['entries']) && is_array($rule['entries'])) {
+                foreach ($rule['entries'] as $entry) {
+                    $parts = explode(':', (string)$entry, 2);
+                    if (count($parts) !== 2) continue;
+                    [$entryType, $entryName] = $parts;
+                    if ($entryType !== $operationType) continue;
+
+                    if ($entryName === $operationName || $entryName === '*') return true;
+
+                    if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) return true;
+                }
             }
-        }
-
-        if (empty($graphqlRule['entries'])) {
-            return false;
-        }
-
-        foreach ($graphqlRule['entries'] as $entry) {
-            [$entryType, $entryName] = explode(':', $entry, 2);
-            if ($entryType !== $operationType) continue;
-
-            if ($entryName === $operationName || $entryName === '*') return true;
-
-            if (str_ends_with($entryName, '*') && str_starts_with($operationName, substr($entryName, 0, -1))) return true;
         }
 
         return false;
