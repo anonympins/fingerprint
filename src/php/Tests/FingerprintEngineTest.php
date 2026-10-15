@@ -288,6 +288,39 @@ class FingerprintEngineTest extends TestCase
         $this->assertEquals(0, $decision['score']);
     }
 
+    public function testAllowsMultipleAllowlistRules(): void
+    {
+        $config = SecurityProfiles::createSecurityProfile('strict', [
+            'whitelist' => [
+                ['type' => 'allowlist', 'entries' => ['10.0.0.1']],
+                ['type' => 'allowlist', 'entries' => ['192.168.1.0/24']],
+                ['type' => 'path_allowlist', 'entries' => ['/webhooks/*']],
+                ['type' => 'path_allowlist', 'entries' => ['/status']],
+                ['type' => 'host_path_allowlist', 'entries' => ['api.example.com/v1/*']],
+                ['type' => 'graphql_operation_allowlist', 'entries' => ['query:PublicQuery']]
+            ]
+        ]);
+        $engine = new FingerprintEngine($config);
+
+        // 1. IP dans le deuxième bloc allowlist
+        $resIp = $engine->processRequest($this->createRequestContext(['clientIp' => '192.168.1.42']));
+        $this->assertEquals('next', $resIp['action']);
+        $this->assertEquals(100.0, $resIp['vector']['whitelisted']);
+
+        // 2. Path dans la seconde règle path_allowlist
+        $resPath = $engine->processRequest($this->createRequestContext(['path' => '/status']));
+        $this->assertEquals('next', $resPath['action']);
+        $this->assertEquals(100.0, $resPath['vector']['whitelisted']);
+
+        // 3. Host + Path
+        $resHostPath = $engine->processRequest($this->createRequestContext([
+            'path' => '/v1/users',
+            'headers' => ['host' => 'api.example.com']
+        ]));
+        $this->assertEquals('next', $resHostPath['action']);
+        $this->assertEquals(100.0, $resHostPath['vector']['whitelisted']);
+    }
+
     public function testApplebotWhitelist(): void
     {
         $rule = FingerprintEngine::applebot_whitelist();

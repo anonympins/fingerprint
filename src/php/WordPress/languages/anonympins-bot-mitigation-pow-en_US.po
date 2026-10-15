@@ -1,0 +1,622 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: Anonympins Bot Mitigation with Proof-of-Work 0.8.5\n"
+"Report-Msgid-Bugs-To: https://github.com/anonympins/fingerprint/issues\n"
+"POT-Creation-Date: 2026-09-24 12:00+0000\n"
+"PO-Revision-Date: 2026-09-24 12:00+0000\n"
+"Last-Translator: Anonympins\n"
+"Language-Team: English (United States)\n"
+"Language: en_US\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "Anonympins bot mitigation"
+msgstr "Anonympins bot mitigation"
+
+msgid "High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress."
+msgstr "High-performance client-side anti-bot protection and Proof-of-Work challenge verification for WordPress."
+
+msgid "[Anonympins bot mitigation security warning]"
+msgstr "[Anonympins bot mitigation security warning]"
+
+msgid "Your website is currently running on unencrypted HTTP. In this mode, modern web browsers disable the native Web Cryptography API (crypto.subtle) for security reasons, forcing a JavaScript fallback simulation that is slower and vulnerable to Man-in-the-Middle (MitM) attacks. We strongly recommend deploying a TLS/SSL certificate and enforcing HTTPS to ensure the cryptographic integrity of Proof-of-Work computations and identity protection."
+msgstr "Your website is currently running on unencrypted HTTP. In this mode, modern web browsers disable the native Web Cryptography API (crypto.subtle) for security reasons, forcing a JavaScript fallback simulation that is slower and vulnerable to Man-in-the-Middle (MitM) attacks. We strongly recommend deploying a TLS/SSL certificate and enforcing HTTPS to ensure the cryptographic integrity of Proof-of-Work computations and identity protection."
+
+msgid "Audit-Only dry-run is active: visitors will not be blocked or challenged."
+msgstr "Audit-Only dry-run is active: visitors will not be blocked or challenged."
+
+msgid "Enforced test mode: suspicion analysis and PoW challenges are actively triggered."
+msgstr "Enforced test mode: suspicion analysis and PoW challenges are actively triggered."
+
+msgid "[Anonympins bot mitigation sandbox active]"
+msgstr "[Anonympins bot mitigation sandbox active]"
+
+msgid "Sandbox mode is currently ENABLED."
+msgstr "Sandbox mode is currently ENABLED."
+
+msgid "Configure sandbox"
+msgstr "Configure sandbox"
+
+msgid "Unauthorized access."
+msgstr "Unauthorized access."
+
+msgid "You do not have sufficient permissions to access this page."
+msgstr "You do not have sufficient permissions to access this page."
+
+msgid "Client-side behavioral and cryptographic anti-bot protection without third-party CAPTCHA for WordPress."
+msgstr "Client-side behavioral and cryptographic anti-bot protection without third-party CAPTCHA for WordPress."
+
+msgid "Official documentation reference:"
+msgstr "Official documentation reference:"
+
+msgid "View full configuration options on GitHub"
+msgstr "View full configuration options on GitHub"
+
+msgid "GitHub Repository"
+msgstr "GitHub Repository"
+
+msgid "HTTPS Status"
+msgstr "HTTPS Status"
+
+msgid "Active (WebCrypto Subtle available)"
+msgstr "Active (WebCrypto Subtle available)"
+
+msgid "WebAssembly (WASM) status"
+msgstr "WebAssembly (WASM) status"
+
+msgid "Active (SIMD128)"
+msgstr "Active (SIMD128)"
+
+msgid "Binary installed (%s KB) & enabled."
+msgstr "Binary installed (%s KB) & enabled."
+
+msgid "Installed (Disabled)"
+msgstr "Installed (Disabled)"
+
+msgid "fp.wasm found but disabled in settings."
+msgstr "fp.wasm found but disabled in settings."
+
+msgid "Not installed"
+msgstr "Not installed"
+
+msgid "fp.wasm missing (run node build-wasm.js)."
+msgstr "fp.wasm missing (run node build-wasm.js)."
+
+msgid "SQL cache ($wpdb)"
+msgstr "SQL cache ($wpdb)"
+
+msgid "Insecure (Unencrypted HTTP)"
+msgstr "Insecure (Unencrypted HTTP)"
+
+msgid "keys in database"
+msgstr "keys in database"
+
+msgid " %d expired keys awaiting cron purge"
+msgstr " %d expired keys awaiting cron purge"
+
+msgid "Active Profiles"
+msgstr "Active Profiles"
+
+msgid "Active profiles"
+msgstr "Active profiles"
+
+msgid "Frontend:"
+msgstr "Frontend:"
+
+msgid "Admin:"
+msgstr "Admin:"
+
+msgid "REST API:"
+msgstr "REST API:"
+
+msgid "Sandbox Mode"
+msgstr "Sandbox Mode"
+
+msgid "Sandbox mode"
+msgstr "Sandbox mode"
+
+msgid "GitHub repository"
+msgstr "GitHub repository"
+
+msgid "Active (Simulation)"
+msgstr "Active (Simulation)"
+
+msgid "Production (Enforced)"
+msgstr "Production (Enforced)"
+
+msgid "Audit-Only: non-blocking observation."
+msgstr "Audit-Only: non-blocking observation."
+
+msgid "Testing: challenges & mitigations active."
+msgstr "Testing: challenges & mitigations active."
+
+msgid "Bot protection active across all visitors."
+msgstr "Bot protection active across all visitors."
+
+msgid "Settings & profiles"
+msgstr "Settings & profiles"
+
+msgid "Allowlist / Whitelist"
+msgstr "Allowlist / Whitelist"
+
+msgid "Challenge appearance"
+msgstr "Challenge appearance"
+
+msgid "Sandbox / test mode"
+msgstr "Sandbox / test mode"
+
+msgid "Metrics & weights view"
+msgstr "Metrics & weights view"
+
+msgid "Prometheus stream"
+msgstr "Prometheus stream"
+
+msgid "Prometheus settings updated successfully."
+msgstr "Prometheus settings updated successfully."
+
+msgid "Challenge appearance reset to default successfully."
+msgstr "Challenge appearance reset to default successfully."
+
+msgid "Challenge appearance updated successfully."
+msgstr "Challenge appearance updated successfully."
+
+msgid "Invalid whitelist type specified."
+msgstr "Invalid whitelist type specified."
+
+msgid "Whitelist value cannot be empty."
+msgstr "Whitelist value cannot be empty."
+
+msgid "Overly permissive wildcard IP ranges are prohibited."
+msgstr "Overly permissive wildcard IP ranges are prohibited."
+
+msgid "Invalid IP address in CIDR notation."
+msgstr "Invalid IP address in CIDR notation."
+
+msgid "Invalid IPv4 CIDR mask (must be between 0 and 32)."
+msgstr "Invalid IPv4 CIDR mask (must be between 0 and 32)."
+
+msgid "Invalid IPv6 CIDR mask (must be between 0 and 128)."
+msgstr "Invalid IPv6 CIDR mask (must be between 0 and 128)."
+
+msgid "Invalid IPv4 or IPv6 address."
+msgstr "Invalid IPv4 or IPv6 address."
+
+msgid "Path must begin with a forward slash (e.g. /my-path or /api/*)."
+msgstr "Path must begin with a forward slash (e.g. /my-path or /api/*)."
+
+msgid "Overly permissive root path wildcard is prohibited."
+msgstr "Overly permissive root path wildcard is prohibited."
+
+msgid "Host+Path must include a hostname and path (e.g. api.example.com/v1/*)."
+msgstr "Host+Path must include a hostname and path (e.g. api.example.com/v1/*)."
+
+msgid "GraphQL operation must be in the format type:operationName (e.g. query:GetPosts or mutation:*)."
+msgstr "GraphQL operation must be in the format type:operationName (e.g. query:GetPosts or mutation:*)."
+
+msgid "GraphQL operation type must be query, mutation, or subscription."
+msgstr "GraphQL operation type must be query, mutation, or subscription."
+
+msgid "This whitelist entry already exists."
+msgstr "This whitelist entry already exists."
+
+msgid "Add an allowlist entry"
+msgstr "Add an allowlist entry"
+
+msgid "Allowed entries bypass standard suspicion inspection and challenge requirements."
+msgstr "Allowed entries bypass standard suspicion inspection and challenge requirements."
+
+msgid "Type of entry:"
+msgstr "Type of entry:"
+
+msgid "IP or CIDR Block"
+msgstr "IP or CIDR Block"
+
+msgid "URL Path"
+msgstr "URL Path"
+
+msgid "Host + Path"
+msgstr "Host + Path"
+
+msgid "GraphQL Operation"
+msgstr "GraphQL Operation"
+
+msgid "Value / pattern:"
+msgstr "Value / pattern:"
+
+msgid "Description / note (optional):"
+msgstr "Description / note (optional):"
+
+msgid "e.g. Stripe webhook, office IP"
+msgstr "e.g. Stripe webhook, office IP"
+
+msgid "1. Target security profiles"
+msgstr "1. Target security profiles"
+
+msgid "Visitors & frontend"
+msgstr "Visitors & frontend"
+
+msgid "Add to allowlist"
+msgstr "Add to allowlist"
+
+msgid "1. IP & CIDR block allowlist"
+msgstr "1. IP & CIDR block allowlist"
+
+msgid "IP / CIDR pattern"
+msgstr "IP / CIDR pattern"
+
+msgid "Description"
+msgstr "Description"
+
+msgid "Date added"
+msgstr "Date added"
+
+msgid "Action"
+msgstr "Action"
+
+msgid "No IP entries configured."
+msgstr "No IP entries configured."
+
+msgid "Remove this IP from allowlist?"
+msgstr "Remove this IP from allowlist?"
+
+msgid "Remove this path from allowlist?"
+msgstr "Remove this path from allowlist?"
+
+msgid "Remove this host+path from allowlist?"
+msgstr "Remove this host+path from allowlist?"
+
+msgid "Remove"
+msgstr "Remove"
+
+msgid "2. URL path allowlist"
+msgstr "2. URL path allowlist"
+
+msgid "Path / wildcard pattern"
+msgstr "Path / wildcard pattern"
+
+msgid "No path entries configured."
+msgstr "No path entries configured."
+
+msgid "3. Host + Path allowlist"
+msgstr "3. Host + Path allowlist"
+
+msgid "Host + Path pattern"
+msgstr "Host + Path pattern"
+
+msgid "No host+path entries configured."
+msgstr "No host+path entries configured."
+
+msgid "4. GraphQL operations allowlist"
+msgstr "4. GraphQL operations allowlist"
+
+msgid "Operation pattern (type:name)"
+msgstr "Operation pattern (type:name)"
+
+msgid "No GraphQL entries configured."
+msgstr "No GraphQL entries configured."
+
+msgid "Remove this GraphQL operation from allowlist?"
+msgstr "Remove this GraphQL operation from allowlist?"
+
+msgid "Whitelist entry added successfully."
+msgstr "Whitelist entry added successfully."
+
+msgid "Whitelist entry removed successfully."
+msgstr "Whitelist entry removed successfully."
+
+msgid "Sandbox / Test Mode"
+msgstr "Sandbox / Test Mode"
+
+msgid "Administration area (wp-login / wp-admin)"
+msgstr "Administration area (wp-login / wp-admin)"
+
+msgid "1. Target Security Profiles"
+msgstr "1. Target Security Profiles"
+
+msgid "Visitors & Frontend"
+msgstr "Visitors & Frontend"
+
+msgid "Blog (Optimal for content, smooth UX)"
+msgstr "Blog (Optimal for content, smooth UX)"
+
+msgid "Balanced (General purpose)"
+msgstr "Balanced (General purpose)"
+
+msgid "Strict (Maximum protection)"
+msgstr "Strict (Maximum protection)"
+
+msgid "E-commerce (anti-scraping / scalping)"
+msgstr "E-commerce (anti-scraping / scalping)"
+
+msgid "Administration Area (wp-login / wp-admin)"
+msgstr "Administration Area (wp-login / wp-admin)"
+
+msgid "Strict (Recommended to secure logins)"
+msgstr "Strict (Recommended to secure logins)"
+
+msgid "Balanced"
+msgstr "Balanced"
+
+msgid "REST API (/wp-json/)"
+msgstr "REST API (/wp-json/)"
+
+msgid "API (JSON challenges & machine PoW)"
+msgstr "API (JSON challenges & machine PoW)"
+
+msgid "Strict"
+msgstr "Strict"
+
+msgid "2. Action Thresholds (Frontend)"
+msgstr "2. Action Thresholds (Frontend)"
+
+msgid "2. Action thresholds (frontend)"
+msgstr "2. Action thresholds (frontend)"
+
+msgid "Suspicion Score Thresholds (0 - 100)"
+msgstr "Suspicion Score Thresholds (0 - 100)"
+
+msgid "Suspicion score thresholds (0 - 100)"
+msgstr "Suspicion score thresholds (0 - 100)"
+
+msgid "Low (Initial challenge):"
+msgstr "Low (Initial challenge):"
+
+msgid "Low (initial challenge):"
+msgstr "Low (initial challenge):"
+
+msgid "Medium (hardened challenge):"
+msgstr "Medium (hardened challenge):"
+
+msgid "High (Heavy Proof-of-Work):"
+msgstr "High (Heavy Proof-of-Work):"
+
+msgid "Block (Immediate 403 Forbidden):"
+msgstr "Block (Immediate 403 Forbidden):"
+
+msgid "High (heavy proof-of-work):"
+msgstr "High (heavy proof-of-work):"
+
+msgid "Block (immediate 403 forbidden):"
+msgstr "Block (immediate 403 forbidden):"
+
+msgid "Advanced Behaviors"
+msgstr "Advanced Behaviors"
+
+msgid "Advanced behaviors"
+msgstr "Advanced behaviors"
+
+msgid "Automatically challenge unknown new devices (without device_id cookie)"
+msgstr "Automatically challenge unknown new devices (without device_id cookie)"
+
+msgid "Enable recursive WAF inspection (SQL, NoSQL, Log4j, Traversal in GET/POST)"
+msgstr "Enable recursive WAF inspection (SQL, NoSQL, Log4j, Traversal in GET/POST)"
+
+msgid "Enable WebAssembly (WASM) cryptographic acceleration"
+msgstr "Enable WebAssembly (WASM) cryptographic acceleration"
+
+msgid "Verbose mode in PHP logs (Debugging)"
+msgstr "Verbose mode in PHP logs (Debugging)"
+
+msgid "Save Changes"
+msgstr "Save Changes"
+
+msgid "Save changes"
+msgstr "Save changes"
+
+msgid "SQL cache table ($wpdb) cleared successfully."
+msgstr "SQL cache table ($wpdb) cleared successfully."
+
+msgid "Store maintenance:"
+msgstr "Store maintenance:"
+
+msgid "Purge all stored sessions and nonces?"
+msgstr "Purge all stored sessions and nonces?"
+
+msgid "Clear SQL cache table ($wpdb)"
+msgstr "Clear SQL cache table ($wpdb)"
+
+msgid "Sandbox Mode & Dry-Run Configuration"
+msgstr "Sandbox Mode & Dry-Run Configuration"
+
+msgid "Sandbox mode & dry-run configuration"
+msgstr "Sandbox mode & dry-run configuration"
+
+msgid "Sandbox activation"
+msgstr "Sandbox activation"
+
+msgid "Sandbox Activation"
+msgstr "Sandbox Activation"
+
+msgid "Enable sandbox mode"
+msgstr "Enable sandbox mode"
+
+msgid "Enable Sandbox Mode"
+msgstr "Enable Sandbox Mode"
+
+msgid "Behavior & Enforcement"
+msgstr "Behavior & Enforcement"
+
+msgid "Audit Only / Dry-Run (Never block or challenge visitors)"
+msgstr "Audit Only / Dry-Run (Never block or challenge visitors)"
+
+msgid "Behavior & enforcement"
+msgstr "Behavior & enforcement"
+
+msgid "Audit only / dry-run (never block or challenge visitors)"
+msgstr "Audit only / dry-run (never block or challenge visitors)"
+
+msgid "Add diagnostic HTTP headers (X-Fingerprint-Sandbox: active)"
+msgstr "Add diagnostic HTTP headers (X-Fingerprint-Sandbox: active)"
+
+msgid "Log evaluated scores and suspicious attempts to PHP error_log"
+msgstr "Log evaluated scores and suspicious attempts to PHP error_log"
+
+msgid "Test IP whitelist filter"
+msgstr "Test IP whitelist filter"
+
+msgid "Test IP Whitelist Filter"
+msgstr "Test IP Whitelist Filter"
+
+msgid "Current weight"
+msgstr "Current weight"
+
+msgid "Current Weight"
+msgstr "Current Weight"
+
+msgid "Use my IP"
+msgstr "Use my IP"
+
+msgid "Save sandbox settings"
+msgstr "Save sandbox settings"
+
+msgid "Save Sandbox Settings"
+msgstr "Save Sandbox Settings"
+
+msgid "Live challenged visitors & suspicion monitor"
+msgstr "Live challenged visitors & suspicion monitor"
+
+msgid "Live Challenged Visitors & Suspicion Monitor"
+msgstr "Live Challenged Visitors & Suspicion Monitor"
+
+msgid "Recent challenges:"
+msgstr "Recent challenges:"
+
+msgid "Start real-time SSE stream"
+msgstr "Start real-time SSE stream"
+
+msgid "Poll now (REST)"
+msgstr "Poll now (REST)"
+
+msgid "Clear feed"
+msgstr "Clear feed"
+
+msgid "Challenged visitors stream"
+msgstr "Challenged visitors stream"
+
+msgid "Time"
+msgstr "Time"
+
+msgid "IP"
+msgstr "IP"
+
+msgid "URI"
+msgstr "URI"
+
+msgid "Score"
+msgstr "Score"
+
+msgid "Awaiting incoming challenges..."
+msgstr "Awaiting incoming challenges..."
+
+msgid "Inspection & suspicion vector"
+msgstr "Inspection & suspicion vector"
+
+msgid "Challenge page heading"
+msgstr "Challenge page heading"
+
+msgid "Security verification (default)"
+msgstr "Security verification (default)"
+
+msgid "Custom title and heading displayed on the challenge page. Leave blank for default."
+msgstr "Custom title and heading displayed on the challenge page. Leave blank for default."
+
+msgid "Challenge message"
+msgstr "Challenge message"
+
+msgid "Behavioral & Transport Indicator Weights"
+msgstr "Behavioral & Transport Indicator Weights"
+
+msgid "Indicator / Metric"
+msgstr "Indicator / Metric"
+
+msgid "Indicator / metric"
+msgstr "Indicator / metric"
+
+msgid "Description & Detection Role"
+msgstr "Description & Detection Role"
+
+msgid "Description & detection role"
+msgstr "Description & detection role"
+
+msgid "Behavioral suspicion indicator."
+msgstr "Behavioral suspicion indicator."
+
+msgid "Update Metric Weights"
+msgstr "Update Metric Weights"
+
+msgid "Behavioral & transport indicator weights"
+msgstr "Behavioral & transport indicator weights"
+
+msgid "Update metric weights"
+msgstr "Update metric weights"
+
+msgid "Real-Time Prometheus Metrics"
+msgstr "Real-Time Prometheus Metrics"
+
+msgid "Real-time prometheus metrics"
+msgstr "Real-time prometheus metrics"
+
+msgid "Metrics endpoint path"
+msgstr "Metrics endpoint path"
+
+msgid "Custom path for direct Prometheus scraping (default: /metrics). Leave empty to disable direct path scraping."
+msgstr "Custom path for direct Prometheus scraping (default: /metrics). Leave empty to disable direct path scraping."
+
+msgid "Scrape URL:"
+msgstr "Scrape URL:"
+
+msgid "Save prometheus settings"
+msgstr "Save prometheus settings"
+
+msgid "Please wait while we verify your browser security..."
+msgstr "Please wait while we verify your browser security..."
+
+msgid "Human-readable instruction presented to visitors during challenge verification."
+msgstr "Human-readable instruction presented to visitors during challenge verification."
+
+msgid "Accent color"
+msgstr "Accent color"
+
+msgid "Primary accent color applied to the verification loader and highlights."
+msgstr "Primary accent color applied to the verification loader and highlights."
+
+msgid "Save appearance settings"
+msgstr "Save appearance settings"
+
+msgid "Reset to default"
+msgstr "Reset to default"
+
+msgid "Reset challenge appearance to defaults?"
+msgstr "Reset challenge appearance to defaults?"
+
+msgid "SSE disconnected"
+msgstr "SSE disconnected"
+
+msgid "Connecting to SSE stream..."
+msgstr "Connecting to SSE stream..."
+
+msgid "SSE live connected"
+msgstr "SSE live connected"
+
+msgid "Stop stream"
+msgstr "Stop stream"
+
+msgid "SSE reconnecting..."
+msgstr "SSE reconnecting..."
+
+msgid "Clear the live challenged visitors feed?"
+msgstr "Clear the live challenged visitors feed?"
+
+msgid "No challenged visitors recorded yet."
+msgstr "No challenged visitors recorded yet."
+
+msgid "Select an entry from the list to inspect its vector."
+msgstr "Select an entry from the list to inspect its vector."
+
+msgid "No entry selected."
+msgstr "No entry selected."
+
+msgid "No indicators recorded for this entry."
+msgstr "No indicators recorded for this entry."
