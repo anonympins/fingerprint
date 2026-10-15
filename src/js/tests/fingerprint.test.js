@@ -3264,7 +3264,7 @@ describe('IP Registration and Filtering', () => {
 
         it('should detect superhuman fast coordinated transitions (<300ms) across multiple subnets', async () => {
             let lastScore = 0.0;
-            for (let i = 1; i <= 4; i++) {
+            for (let i = 1; i <= 6; i++) {
                 const ip = `198.51.10${i}.${i * 10}`;
                 const sess = `bot-sess-${i}`;
                 const fp = `bot-fp-${i}`;
